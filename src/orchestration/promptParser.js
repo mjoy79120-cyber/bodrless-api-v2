@@ -216,7 +216,7 @@ function _enrichParams(parsed) {
 
   // Determine transport type based on route
   const requiresBus = _isBusRoute(originCode, destinationCode);
-  const requiresFlight = !requiresBus;
+  const requiresFlight = true; // Always search flights as primary option
 
   // Default nights if not specified
   const nights = parsed.nights || _defaultNights(parsed.departureDate, parsed.returnDate);
