@@ -135,10 +135,14 @@ function _parseWithRules(prompt) {
   const nightsMatch = lower.match(/(\d+)\s*(nights?|days?)/);
   const nights = nightsMatch ? parseInt(nightsMatch[1]) : 3;
 
+  // Extract explicit date — supports formats like:
+  // "24 April 2026", "April 24 2026", "24/04/2026", "2026-04-24"
+  const departureDate = _extractDate(lower) || _resolveRelativeDate(lower) || _defaultDepartureDate();
+
   return {
     origin,
     destination,
-    departureDate: _resolveRelativeDate(lower),
+    departureDate,
     returnDate: null,
     passengers,
     budget,
@@ -146,6 +150,61 @@ function _parseWithRules(prompt) {
     tripType: lower.includes('one way') ? 'one_way' : 'round_trip',
     preferences: [],
   };
+}
+
+/**
+ * Extract an explicit date from the prompt
+ */
+function _extractDate(prompt) {
+  const months = {
+    january: '01', february: '02', march: '03', april: '04',
+    may: '05', june: '06', july: '07', august: '08',
+    september: '09', october: '10', november: '11', december: '12',
+    jan: '01', feb: '02', mar: '03', apr: '04',
+    jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+  };
+
+  // Match "24 April 2026" or "April 24 2026"
+  const longMatch = prompt.match(/(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})/i)
+    || prompt.match(/(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})\s+(\d{4})/i);
+
+  if (longMatch) {
+    const day = longMatch[1].length <= 2 && !isNaN(longMatch[1])
+      ? longMatch[1].padStart(2, '0')
+      : longMatch[2].padStart(2, '0');
+    const monthName = isNaN(longMatch[1]) ? longMatch[1].toLowerCase() : longMatch[2].toLowerCase();
+    const year = longMatch[3] || longMatch[longMatch.length - 1];
+    const month = months[monthName];
+    if (month) return `${year}-${month}-${day}`;
+  }
+
+  // Match "24/04/2026" or "04/24/2026"
+  const slashMatch = prompt.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slashMatch) {
+    return `${slashMatch[3]}-${slashMatch[2].padStart(2, '0')}-${slashMatch[1].padStart(2, '0')}`;
+  }
+
+  // Match ISO format "2026-04-24"
+  const isoMatch = prompt.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return isoMatch[0];
+
+  // Match just month + year e.g. "April 2026"
+  const monthYearMatch = prompt.match(/(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})/i);
+  if (monthYearMatch) {
+    const month = months[monthYearMatch[1].toLowerCase()];
+    return `${monthYearMatch[2]}-${month}-01`;
+  }
+
+  return null;
+}
+
+/**
+ * Default departure date — 2 weeks from today
+ */
+function _defaultDepartureDate() {
+  const date = new Date();
+  date.setDate(date.getDate() + 14);
+  return date.toISOString().split('T')[0];
 }
 
 /**

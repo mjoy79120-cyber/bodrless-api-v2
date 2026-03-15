@@ -289,7 +289,12 @@ class OrchestrationEngine {
    * Validate that we have minimum required trip parameters
    */
   _validateTripParams(params) {
-    const required = ['origin', 'destination', 'departureDate', 'passengers'];
+    const required = ['origin', 'destination', 'passengers'];
+    if (!params.departureDate) {
+      const date = new Date();
+      date.setDate(date.getDate() + 14);
+      params.departureDate = date.toISOString().split('T')[0];
+    }
     const missing = required.filter(field => !params[field]);
 
     if (missing.length > 0) {
