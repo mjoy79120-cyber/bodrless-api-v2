@@ -96,8 +96,8 @@ class OrchestrationEngine {
 
     try {
       const results = await flightService.search({
-        origin: tripParams.origin,
-        destination: tripParams.destination,
+        origin: tripParams.originCode || tripParams.origin,
+        destination: tripParams.destinationCode || tripParams.destination,
         departureDate: tripParams.departureDate,
         returnDate: tripParams.returnDate,
         passengers: tripParams.passengers,

@@ -6,13 +6,7 @@ const { logger } = require('../utils/logger');
 
 class HotelService {
   async search({ destination, checkIn, checkOut, guests, budget, minRating }) {
-    try {
-      // TODO: Connect to Booking.com or Expedia API
-      return this._getMockHotels({ destination, checkIn, checkOut, guests, minRating });
-    } catch (error) {
-      logger.error('Hotel search failed', { error: error.message });
-      return [];
-    }
+    return this._getMockHotels({ destination, checkIn, checkOut, guests, minRating });
   }
 
   _getMockHotels({ destination, checkIn, checkOut, guests, minRating }) {

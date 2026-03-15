@@ -23,6 +23,10 @@ class FlightService {
    * Search for flights across all connected providers
    */
   async search({ origin, destination, departureDate, returnDate, passengers, cabinClass }) {
+    // Always use mock data in development
+    if (process.env.NODE_ENV !== 'production' || !process.env.AMADEUS_API_KEY) {
+      return this._getMockFlights({ origin, destination, departureDate, passengers });
+    }
     try {
       const results = await this._searchAmadeus({
         origin, destination, departureDate, returnDate, passengers, cabinClass
