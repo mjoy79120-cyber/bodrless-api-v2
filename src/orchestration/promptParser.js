@@ -45,15 +45,14 @@ const BUS_ROUTES = [
  */
 async function parsePrompt(prompt) {
   try {
-    // First try LLM parsing for best accuracy
     const parsed = await _parseWithLLM(prompt);
     return _enrichParams(parsed);
   } catch (error) {
     logger.warn('LLM parsing failed, falling back to rule-based parser', {
       error: error.message
     });
-    // Fallback to rule-based parsing
-    return _parseWithRules(prompt);
+    const parsed = _parseWithRules(prompt);
+    return _enrichParams(parsed); // Always enrich — this sets originCode, requiresFlight etc
   }
 }
 
