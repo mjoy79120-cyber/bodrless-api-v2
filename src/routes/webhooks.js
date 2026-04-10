@@ -20,7 +20,7 @@ const { logger } = require('../utils/logger');
 
 // ── GET /api/webhooks/whatsapp ───────────────────────────────
 // WhatsApp webhook verification (required by Meta)
-router.get('/api/webhooks/whatsapp', (req, res) => {
+router.get('/whatsapp', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
