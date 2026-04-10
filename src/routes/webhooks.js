@@ -20,16 +20,16 @@ const { logger } = require('../utils/logger');
 
 // ── GET /api/webhooks/whatsapp ───────────────────────────────
 // WhatsApp webhook verification (required by Meta)
-router.get('/whatsapp', (req, res) => {
+router.get('/api/webhooks/whatsapp', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-    logger.info('WhatsApp webhook verified');
+    console.log('Webhook verified');
     res.status(200).send(challenge);
   } else {
-    res.status(403).json({ error: 'Verification failed' });
+    res.sendStatus(403);
   }
 });
 
