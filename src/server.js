@@ -46,4 +46,13 @@ app.listen(PORT, () => {
   logger.info(`Environment: ${process.env.NODE_ENV}`);
 });
 
+// Keep alive ping every 4 minutes
+const https = require('https');
+setInterval(() => {
+  https.get('https://bodrless-api-v2-production.up.railway.app/health', (res) => {
+    console.log('Keep alive ping:', res.statusCode);
+  }).on('error', (err) => {
+    console.log('Keep alive error:', err.message);
+  });
+}, 4 * 60 * 1000);
 module.exports = app;
