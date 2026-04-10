@@ -25,7 +25,7 @@ router.get('/whatsapp', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && token === 'bodrless-webhook-secret') {
+  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
     console.log('Webhook verified');
     res.status(200).send(challenge);
   } else {
