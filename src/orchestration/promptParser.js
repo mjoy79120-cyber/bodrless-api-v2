@@ -18,6 +18,7 @@ const { logger } = require('../utils/logger');
 // African city → airport/location code mapping
 // Expand this as you add more corridors
 const CITY_CODES = {
+  // EAST AFRICA
   'nairobi': 'NBO', 'nbo': 'NBO',
   'mombasa': 'MBA', 'mba': 'MBA',
   'zanzibar': 'ZNZ', 'znz': 'ZNZ',
@@ -25,12 +26,83 @@ const CITY_CODES = {
   'kigali': 'KGL', 'kgl': 'KGL',
   'kampala': 'EBB', 'entebbe': 'EBB',
   'addis ababa': 'ADD', 'add': 'ADD',
+  'diani': 'UKA', 'ukunda': 'UKA',
+  'masai mara': 'MRE', 'mara': 'MRE',
+  'amboseli': 'ASV',
+  'kilifi': 'MBA',
+  'naivasha': 'NBO',
+  'arusha': 'ARK',
+
+  // WEST AFRICA
   'lagos': 'LOS', 'los': 'LOS',
   'accra': 'ACC', 'acc': 'ACC',
-  'johannesburg': 'JNB', 'jnb': 'JNB',
+  'dakar': 'DKR',
+  'abidjan': 'ABJ',
+  'douala': 'DLA',
+
+  // SOUTHERN AFRICA
+  'johannesburg': 'JNB', 'jnb': 'JNB', 'joburg': 'JNB', 'jozi': 'JNB',
   'cape town': 'CPT', 'cpt': 'CPT',
+  'victoria falls': 'VFA',
+  'livingstone': 'LVI',
+  'lusaka': 'LUN',
+  'harare': 'HRE',
+
+  // NORTH AFRICA
   'cairo': 'CAI', 'cai': 'CAI',
   'casablanca': 'CMN', 'cmn': 'CMN',
+  'marrakech': 'RAK',
+  'tunis': 'TUN',
+
+  // MIDDLE EAST
+  'dubai': 'DXB', 'dxb': 'DXB',
+  'abu dhabi': 'AUH',
+  'doha': 'DOH',
+  'riyadh': 'RUH',
+  'muscat': 'MCT',
+  'istanbul': 'IST',
+
+  // ASIA
+  'bangkok': 'BKK', 'bkk': 'BKK',
+  'bali': 'DPS', 'denpasar': 'DPS',
+  'tokyo': 'NRT', 'nrt': 'NRT',
+  'singapore': 'SIN', 'sin': 'SIN',
+  'mumbai': 'BOM', 'bombay': 'BOM',
+  'delhi': 'DEL', 'new delhi': 'DEL',
+  'kuala lumpur': 'KUL',
+  'seoul': 'ICN',
+  'beijing': 'PEK',
+  'shanghai': 'PVG',
+  'hong kong': 'HKG',
+  'chiang mai': 'CNX',
+  'phuket': 'HKT',
+
+  // EUROPE
+  'london': 'LHR', 'lhr': 'LHR',
+  'paris': 'CDG', 'cdg': 'CDG',
+  'amsterdam': 'AMS', 'ams': 'AMS',
+  'barcelona': 'BCN', 'bcn': 'BCN',
+  'madrid': 'MAD',
+  'rome': 'FCO',
+  'milan': 'MXP',
+  'frankfurt': 'FRA',
+  'zurich': 'ZRH',
+  'vienna': 'VIE',
+  'brussels': 'BRU',
+  'lisbon': 'LIS',
+  'athens': 'ATH',
+  'prague': 'PRG',
+
+  // AMERICAS
+  'new york': 'JFK', 'nyc': 'JFK', 'jfk': 'JFK',
+  'miami': 'MIA', 'mia': 'MIA',
+  'los angeles': 'LAX', 'la': 'LAX',
+  'toronto': 'YYZ',
+  'cancun': 'CUN',
+  'mexico city': 'MEX',
+  'sao paulo': 'GRU',
+  'buenos aires': 'EZE',
+  'bogota': 'BOG',
 };
 
 // Routes where bus is preferred/available over flight
