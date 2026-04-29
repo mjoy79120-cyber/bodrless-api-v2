@@ -288,17 +288,48 @@ class OrchestrationEngine {
   /**
    * Validate that we have minimum required trip parameters
    */
-  _validateTripParams(params) {
-    const required = ['origin', 'destination', 'passengers'];
+_validateTripParams(params) {
+    // Default departure date if missing
     if (!params.departureDate) {
       const date = new Date();
       date.setDate(date.getDate() + 14);
       params.departureDate = date.toISOString().split('T')[0];
     }
-    const missing = required.filter(field => !params[field]);
 
-    if (missing.length > 0) {
-      throw new Error(`Missing required trip parameters: ${missing.join(', ')}`);
+    // Default origin to Nairobi if missing
+    if (!params.origin) {
+      params.origin = 'Nairobi';
+      params.originCode = 'NBO';
+    }
+
+    // Default passengers to 2 if missing
+    if (!params.passengers) {
+      params.passengers = 2;
+    }
+
+    // Default budget to mid if missing
+    if (!params.budget) {
+      params.budget = 'mid';
+    }
+
+    // Default nights to 3 if missing
+    if (!params.nights) {
+      params.nights = 3;
+    }
+
+    // Set return date if missing
+    if (!params.returnDate && params.departureDate) {
+      const date = new Date(params.departureDate);
+      date.setDate(date.getDate() + (params.nights || 3));
+      params.returnDate = date.toISOString().split('T')[0];
+    }
+
+    // Only destination is truly required
+    if (!params.destination) {
+      const error = new Error('Missing required trip parameters: destination');
+      error.code = 'incomplete_prompt';
+      error.missingFields = ['destination'];
+      throw error;
     }
   }
 
