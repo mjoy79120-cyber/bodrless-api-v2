@@ -12,6 +12,9 @@ const busService = require('../integrations/buses');
 const { parsePrompt } = require('./promptParser');
 const { rankPackages } = require('./packageRanker');
 
+// ✅ NEW: IMPORT INVENTORY
+const { hotels: inventoryHotels, transfers: inventoryTransfers } = require('../data/mockInventory');
+
 class OrchestrationEngine {
 
   async orchestrate(prompt, agencyId) {
@@ -45,7 +48,7 @@ class OrchestrationEngine {
 
       return {
         sessionId,
-        packages: rankedPackages.slice(0, 4), // ALWAYS 4
+        packages: rankedPackages.slice(0, 4),
         tripParams,
         generatedAt: new Date().toISOString(),
         processingTimeMs: duration,
@@ -57,7 +60,7 @@ class OrchestrationEngine {
     }
   }
 
-  async _searchFlights(tripParams, sessionId) {
+  async _searchFlights(tripParams) {
     if (!tripParams.requiresFlight) return [];
 
     try {
@@ -105,7 +108,7 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────────────────────
-  // 🔥 CORE FIX (ALWAYS RETURNS 4 PACKAGES)
+  // 🔥 UPGRADED COORDINATION (INVENTORY + FALLBACK)
   // ─────────────────────────────────────────────
   async _coordinateResults({ flights, buses, hotels, tripParams }) {
 
@@ -117,23 +120,21 @@ class OrchestrationEngine {
     const safeTransport =
       transportPool.length > 0
         ? transportPool
-        : this._generateMockFlights(tripParams);
+        : this._generateMockFlights();
+
+    // ✅ USE INVENTORY HOTELS FIRST
+    const filteredInventoryHotels = inventoryHotels.filter(
+      h => h.location.toLowerCase() === tripParams.destination.toLowerCase()
+    );
 
     const safeHotels =
-      hotels.length > 0
-        ? hotels
-        : this._generateMockHotels(tripParams.destination);
+      filteredInventoryHotels.length > 0
+        ? filteredInventoryHotels
+        : hotels.length > 0
+          ? hotels
+          : this._generateMockHotels(tripParams.destination);
 
     const packages = [];
-
-    const transfers = (origin, destination) => ({
-      provider: "Bodrless Transfers",
-      vehicleType: "Private SUV",
-      pickupLocation: origin,
-      dropoffLocation: destination,
-      price: 40,
-      id: "mock-transfer"
-    });
 
     let i = 0;
 
@@ -141,14 +142,16 @@ class OrchestrationEngine {
       const transport = safeTransport[i % safeTransport.length];
       const hotel = safeHotels[i % safeHotels.length];
 
+      // ✅ USE INVENTORY TRANSFERS
+      const transfer =
+        inventoryTransfers[i % inventoryTransfers.length] ||
+        this._mockTransfer(tripParams.destination);
+
       packages.push(
         this._buildPackage({
           transport,
           hotel,
-          transfers: transfers(
-            `${tripParams.destination} Airport`,
-            tripParams.destination
-          ),
+          transfers: transfer,
           tripParams,
         })
       );
@@ -160,9 +163,9 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────────────────────
-  // MOCK DATA (GLOBAL SAFE)
+  // MOCK DATA (FALLBACK ONLY)
   // ─────────────────────────────────────────────
-  _generateMockFlights(tripParams) {
+  _generateMockFlights() {
     return [
       {
         id: "F1",
@@ -210,6 +213,17 @@ class OrchestrationEngine {
         pricePerNight: 120,
       }
     ];
+  }
+
+  _mockTransfer(destination) {
+    return {
+      id: "T1",
+      provider: "Bodrless Transfers",
+      vehicleType: "Private SUV",
+      pickupLocation: `${destination} Airport`,
+      dropoffLocation: destination,
+      price: 40,
+    };
   }
 
   _buildPackage({ transport, hotel, transfers, tripParams }) {
