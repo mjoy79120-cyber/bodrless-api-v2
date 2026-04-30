@@ -12,8 +12,11 @@ const busService = require('../integrations/buses');
 const { parsePrompt } = require('./promptParser');
 const { rankPackages } = require('./packageRanker');
 
-// ✅ NEW: IMPORT INVENTORY
-const { hotels: inventoryHotels, transfers: inventoryTransfers } = require('../../data/mockInventory');
+// ✅ FIXED IMPORT PATH
+const {
+  hotels: inventoryHotels = [],
+  transfers: inventoryTransfers = []
+} = require('../data/mockInventory');
 
 class OrchestrationEngine {
 
@@ -48,7 +51,7 @@ class OrchestrationEngine {
 
       return {
         sessionId,
-        packages: rankedPackages.slice(0, 4),
+        packages: rankedPackages.slice(0, 4), // ALWAYS 4
         tripParams,
         generatedAt: new Date().toISOString(),
         processingTimeMs: duration,
@@ -108,7 +111,7 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────────────────────
-  // 🔥 UPGRADED COORDINATION (INVENTORY + FALLBACK)
+  // 🔥 CORE COORDINATION (INVENTORY + FALLBACK)
   // ─────────────────────────────────────────────
   async _coordinateResults({ flights, buses, hotels, tripParams }) {
 
@@ -122,9 +125,11 @@ class OrchestrationEngine {
         ? transportPool
         : this._generateMockFlights();
 
-    // ✅ USE INVENTORY HOTELS FIRST
+    // ✅ FILTER INVENTORY HOTELS FIRST
     const filteredInventoryHotels = inventoryHotels.filter(
-      h => h.location.toLowerCase() === tripParams.destination.toLowerCase()
+      h =>
+        (h.location || '').toLowerCase() ===
+        (tripParams.destination || '').toLowerCase()
     );
 
     const safeHotels =
@@ -134,6 +139,12 @@ class OrchestrationEngine {
           ? hotels
           : this._generateMockHotels(tripParams.destination);
 
+    // ✅ SAFE TRANSFERS FROM INVENTORY
+    const safeTransfers =
+      inventoryTransfers.length > 0
+        ? inventoryTransfers
+        : [];
+
     const packages = [];
 
     let i = 0;
@@ -142,9 +153,8 @@ class OrchestrationEngine {
       const transport = safeTransport[i % safeTransport.length];
       const hotel = safeHotels[i % safeHotels.length];
 
-      // ✅ USE INVENTORY TRANSFERS
       const transfer =
-        inventoryTransfers[i % inventoryTransfers.length] ||
+        safeTransfers[i % safeTransfers.length] ||
         this._mockTransfer(tripParams.destination);
 
       packages.push(
@@ -165,6 +175,7 @@ class OrchestrationEngine {
   // ─────────────────────────────────────────────
   // MOCK DATA (FALLBACK ONLY)
   // ─────────────────────────────────────────────
+
   _generateMockFlights() {
     return [
       {
@@ -177,17 +188,6 @@ class OrchestrationEngine {
         arrivalTime: "20:00",
         duration: "10h",
         price: 450
-      },
-      {
-        id: "F2",
-        type: "flight",
-        provider: "Qatar Airways",
-        airline: "Qatar Airways",
-        flightNumber: "QR 1334",
-        departureTime: "18:00",
-        arrivalTime: "06:00",
-        duration: "9h",
-        price: 520
       }
     ];
   }
@@ -202,15 +202,6 @@ class OrchestrationEngine {
         reviewCount: 4000,
         location: destination,
         pricePerNight: 180,
-      },
-      {
-        id: "H2",
-        name: `${destination} City Hotel`,
-        stars: 4,
-        rating: 4.4,
-        reviewCount: 2100,
-        location: destination,
-        pricePerNight: 120,
       }
     ];
   }
