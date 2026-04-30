@@ -13,7 +13,7 @@ const { parsePrompt } = require('./promptParser');
 const { rankPackages } = require('./packageRanker');
 
 // ✅ NEW: IMPORT INVENTORY
-const { hotels: inventoryHotels, transfers: inventoryTransfers } = require('../data/mockInventory');
+const { hotels: inventoryHotels, transfers: inventoryTransfers } = require('../../data/mockInventory');
 
 class OrchestrationEngine {
 
