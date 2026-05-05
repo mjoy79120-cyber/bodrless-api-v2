@@ -30,15 +30,15 @@ app.use('/api/', limiter);
 // ─── Routes ───────────────────────────────────────────────
 const widgetRoutes = require('./routes/widget');
 
-app.use('/api/trips', tripRoutes);         // Core orchestration
-app.use('/api/webhooks', webhookRoutes);   // WhatsApp + supplier webhooks
-app.use('/api/agencies', agencyRoutes);    // Agency management
-app.use('/health', healthRoutes);          // Health check
-app.use('/widget.js', widgetRoutes);       // Embeddable widget
+app.use('/api/trips', tripRoutes);
+app.use('/api/webhooks', webhookRoutes);
+app.use('/api/agencies', agencyRoutes);
+app.use('/health', healthRoutes);
+app.use('/widget.js', widgetRoutes);
 
-// ✅ Serve your test HTML file (NO folder restructuring needed)
+// ✅ FIXED: serve file from ROOT (NOT /src)
 app.get('/test-widget.html', (req, res) => {
-  res.sendFile(path.join(__dirname, 'test-widget.html'));
+  res.sendFile(path.join(__dirname, '../test-widget.html'));
 });
 
 // ─── Global Error Handler ─────────────────────────────────
