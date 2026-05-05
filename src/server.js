@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const path = require('path');
 const { logger } = require('./utils/logger');
 
 const tripRoutes = require('./routes/trips');
@@ -34,6 +35,11 @@ app.use('/api/webhooks', webhookRoutes);   // WhatsApp + supplier webhooks
 app.use('/api/agencies', agencyRoutes);    // Agency management
 app.use('/health', healthRoutes);          // Health check
 app.use('/widget.js', widgetRoutes);       // Embeddable widget
+
+// ✅ Serve your test HTML file (NO folder restructuring needed)
+app.get('/test-widget.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'test-widget.html'));
+});
 
 // ─── Global Error Handler ─────────────────────────────────
 app.use((err, req, res, next) => {
