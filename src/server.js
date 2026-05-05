@@ -27,10 +27,13 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 // ─── Routes ───────────────────────────────────────────────
+const widgetRoutes = require('./routes/widget');
+
 app.use('/api/trips', tripRoutes);         // Core orchestration
 app.use('/api/webhooks', webhookRoutes);   // WhatsApp + supplier webhooks
 app.use('/api/agencies', agencyRoutes);    // Agency management
 app.use('/health', healthRoutes);          // Health check
+app.use('/widget.js', widgetRoutes);       // Embeddable widget
 
 // ─── Global Error Handler ─────────────────────────────────
 app.use((err, req, res, next) => {
@@ -49,7 +52,7 @@ app.listen(PORT, () => {
 // Keep alive ping every 4 minutes
 const https = require('https');
 setInterval(() => {
-  https.get('https://bodrless-api-v2-production.up.railway.app/health', (res) => {
+  https.get('https://bodrless-api-v2.onrender.com/health',
     console.log('Keep alive ping:', res.statusCode);
   }).on('error', (err) => {
     console.log('Keep alive error:', err.message);
