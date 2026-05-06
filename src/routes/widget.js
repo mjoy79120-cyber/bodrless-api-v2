@@ -66,6 +66,7 @@ router.get('/', (req, res) => {
         padding: 8px 10px;
         border-radius: 10px;
         max-width: 85%;
+        white-space: pre-wrap;
       }
 
       .user {
@@ -95,6 +96,25 @@ router.get('/', (req, res) => {
         color: white;
         border: none;
         padding: 10px 14px;
+        cursor: pointer;
+      }
+
+      .pkg {
+        background: #fff;
+        border: 1px solid #eee;
+        border-radius: 10px;
+        padding: 10px;
+        margin-top: 8px;
+      }
+
+      .book-btn {
+        margin-top: 8px;
+        background: #E07B39;
+        color: white;
+        border: none;
+        padding: 8px;
+        width: 100%;
+        border-radius: 8px;
         cursor: pointer;
       }
     \`;
@@ -144,6 +164,35 @@ router.get('/', (req, res) => {
       messages.scrollTop = messages.scrollHeight;
     }
 
+    function renderPackages(packages) {
+      packages.slice(0, 4).forEach((p, i) => {
+
+        const div = document.createElement("div");
+        div.className = "pkg";
+
+        div.innerHTML = `
+          <b>Package ${i + 1}</b><br/><br/>
+
+          ✈️ ${p.transport?.providerName || "Flight included"}<br/>
+          🏨 ${p.hotel?.name || "Hotel included"} (${p.hotel?.stars || 3}⭐)<br/>
+          🚗 ${p.transfers?.vehicleType || "Transfer included"}<br/><br/>
+
+          📅 ${p.summary?.nights || 3} nights<br/>
+          💰 <b>$${p.summary?.pricePerPerson || 0}</b> per person<br/>
+
+          <button class="book-btn">
+            Book This Package
+          </button>
+        `;
+
+        messages.appendChild(div);
+
+        div.querySelector(".book-btn").onclick = () => {
+          alert("Booking coming soon for package " + p.packageId);
+        };
+      });
+    }
+
     async function send() {
       const text = input.value.trim();
       if (!text) return;
@@ -166,7 +215,6 @@ router.get('/', (req, res) => {
         });
 
         const data = await res.json();
-        console.log("[BODRLESS RESPONSE]", data);
 
         const packages = data.packages || [];
 
@@ -175,14 +223,10 @@ router.get('/', (req, res) => {
           return;
         }
 
-        addMsg("Here are your trip options 👇", "bot");
+        addMsg("Here are your trip packages ✈️", "bot");
 
-        packages.slice(0, 4).forEach((p, i) => {
-          addMsg(
-            \`\${i + 1}. \${p.hotel?.name || "Hotel"} - $\${p.summary?.pricePerPerson || 0}\`,
-            "bot"
-          );
-        });
+        // ✅ FIXED: FULL PACKAGE RENDERING
+        renderPackages(packages);
 
       } catch (err) {
         console.log(err);
