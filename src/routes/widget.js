@@ -20,15 +20,15 @@ router.get('/', (req, res) => {
 
     if (document.getElementById("bodrless-widget-root")) return;
 
-    // ───────── STYLE ─────────
+    // ───── STYLE ─────
     const style = document.createElement("style");
     style.innerHTML = \`
       #bodrless-chat {
         position: fixed;
         bottom: 20px;
         right: 20px;
-        width: 360px;
-        height: 520px;
+        width: 380px;
+        height: 560px;
         background: #fff;
         z-index: 999999;
         display: none;
@@ -62,21 +62,37 @@ router.get('/', (req, res) => {
       }
 
       .msg {
-        margin: 6px 0;
-        padding: 8px 10px;
+        margin: 8px 0;
+        padding: 10px;
         border-radius: 10px;
-        max-width: 85%;
-        white-space: pre-wrap;
+        max-width: 90%;
       }
 
-      .user {
+      .user { background: #1A1A2E; color: white; margin-left: auto; }
+      .bot { background: #f1f1f1; }
+
+      .package {
+        background: #fff;
+        border: 1px solid #eee;
+        padding: 10px;
+        border-radius: 10px;
+        margin: 8px 0;
+      }
+
+      .price {
+        color: #E07B39;
+        font-weight: bold;
+      }
+
+      .book {
         background: #1A1A2E;
         color: white;
-        margin-left: auto;
-      }
-
-      .bot {
-        background: #f1f1f1;
+        border: none;
+        padding: 8px;
+        width: 100%;
+        margin-top: 8px;
+        border-radius: 6px;
+        cursor: pointer;
       }
 
       #bodrless-input-area {
@@ -98,30 +114,11 @@ router.get('/', (req, res) => {
         padding: 10px 14px;
         cursor: pointer;
       }
-
-      .pkg {
-        background: #fff;
-        border: 1px solid #eee;
-        border-radius: 10px;
-        padding: 10px;
-        margin-top: 8px;
-      }
-
-      .book-btn {
-        margin-top: 8px;
-        background: #E07B39;
-        color: white;
-        border: none;
-        padding: 8px;
-        width: 100%;
-        border-radius: 8px;
-        cursor: pointer;
-      }
     \`;
 
     document.head.appendChild(style);
 
-    // ───────── HTML ─────────
+    // ───── HTML ─────
     const root = document.createElement("div");
     root.id = "bodrless-widget-root";
     root.innerHTML = \`
@@ -133,7 +130,7 @@ router.get('/', (req, res) => {
         <div id="bodrless-messages"></div>
 
         <div id="bodrless-input-area">
-          <input id="bodrless-input" placeholder="Type your trip..." />
+          <input id="bodrless-input" placeholder="Where do you want to go?" />
           <button id="bodrless-send">➤</button>
         </div>
       </div>
@@ -145,7 +142,7 @@ router.get('/', (req, res) => {
     const input = document.getElementById("bodrless-input");
     const messages = document.getElementById("bodrless-messages");
 
-    // ───────── FLOAT BUTTON ─────────
+    // ───── FLOAT BUTTON ─────
     const btn = document.createElement("button");
     btn.id = "bodrless-trigger";
     btn.innerText = "Plan Trip ✈️";
@@ -164,33 +161,29 @@ router.get('/', (req, res) => {
       messages.scrollTop = messages.scrollHeight;
     }
 
-    function renderPackages(packages) {
-      packages.slice(0, 4).forEach((p, i) => {
+    function addPackage(p, i) {
+      const div = document.createElement("div");
+      div.className = "package";
 
-        const div = document.createElement("div");
-        div.className = "pkg";
+      const total =
+        (p.summary?.totalPrice ||
+        (p.transport?.price || 0) +
+        (p.hotel?.pricePerNight || 0) * (p.summary?.nights || 3) +
+        (p.transfers?.price || 0));
 
-        div.innerHTML = `
-          <b>Package ${i + 1}</b><br/><br/>
+      div.innerHTML = \`
+        <b>Package \${i + 1}</b><br/><br/>
 
-          ✈️ ${p.transport?.providerName || "Flight included"}<br/>
-          🏨 ${p.hotel?.name || "Hotel included"} (${p.hotel?.stars || 3}⭐)<br/>
-          🚗 ${p.transfers?.vehicleType || "Transfer included"}<br/><br/>
+        ✈️ Transport: \${p.transport?.provider || "Flight"}<br/>
+        🏨 Hotel: \${p.hotel?.name || "Hotel"}<br/>
+        🚗 Transfers: Included<br/><br/>
 
-          📅 ${p.summary?.nights || 3} nights<br/>
-          💰 <b>$${p.summary?.pricePerPerson || 0}</b> per person<br/>
+        <span class="price">$ \${total}</span> per person<br/>
 
-          <button class="book-btn">
-            Book This Package
-          </button>
-        `;
+        <button class="book">Book Now</button>
+      \`;
 
-        messages.appendChild(div);
-
-        div.querySelector(".book-btn").onclick = () => {
-          alert("Booking coming soon for package " + p.packageId);
-        };
-      });
+      messages.appendChild(div);
     }
 
     async function send() {
@@ -215,22 +208,22 @@ router.get('/', (req, res) => {
         });
 
         const data = await res.json();
+        console.log("[BODRLESS]", data);
 
         const packages = data.packages || [];
 
         if (!packages.length) {
-          addMsg("No packages found. Try adding more details.", "bot");
+          addMsg("No packages found", "bot");
           return;
         }
 
-        addMsg("Here are your trip packages ✈️", "bot");
+        addMsg("Here are your trip packages 👇", "bot");
 
-        // ✅ FIXED: FULL PACKAGE RENDERING
-        renderPackages(packages);
+        packages.slice(0, 4).forEach((p, i) => addPackage(p, i));
 
-      } catch (err) {
-        console.log(err);
-        addMsg("Something went wrong. Try again.", "bot");
+      } catch (e) {
+        console.log(e);
+        addMsg("Error loading packages", "bot");
       }
     }
 
