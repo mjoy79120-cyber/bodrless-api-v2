@@ -7,87 +7,154 @@ router.get('/', (req, res) => {
   const apiBase = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
 
   res.setHeader('Content-Type', 'application/javascript');
+
   res.send(`
 (function() {
 
+  // ─────────────────────────────────────────────
+  // SAFE BOOT (fixes missing button issue)
+  // ─────────────────────────────────────────────
+  function bootWhenReady() {
+    if (!document.body) {
+      return setTimeout(bootWhenReady, 50);
+    }
+    initWidget();
+  }
+
   function initWidget() {
 
+    // ─────────────────────────────────────────────
+    // STYLES
+    // ─────────────────────────────────────────────
     var style = document.createElement('style');
     style.innerHTML = \`
-      #bodrless-widget * { box-sizing: border-box; font-family: -apple-system, Arial; }
+      #bodrless-widget * {
+        box-sizing: border-box;
+        font-family: -apple-system, Arial;
+      }
 
       #bodrless-chat {
-        display:none; position:fixed; z-index:99999;
-        bottom:24px; right:24px; width:390px; height:580px;
-        background:white; border-radius:20px;
+        display:none;
+        position:fixed;
+        z-index:99999;
+        bottom:24px;
+        right:24px;
+        width:390px;
+        height:580px;
+        background:white;
+        border-radius:20px;
         box-shadow:0 20px 60px rgba(0,0,0,0.2);
-        flex-direction:column; overflow:hidden;
+        flex-direction:column;
+        overflow:hidden;
       }
+
       #bodrless-chat.open { display:flex; }
 
       @media (max-width:480px){
-        #bodrless-chat { width:100%; height:92vh; bottom:0; right:0; left:0; }
+        #bodrless-chat {
+          width:100%;
+          height:92vh;
+          bottom:0;
+          right:0;
+          left:0;
+        }
       }
 
       #bodrless-header {
-        background:#1A1A2E; color:white;
-        padding:16px; display:flex;
-        justify-content:space-between; align-items:center;
+        background:#1A1A2E;
+        color:white;
+        padding:16px;
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
       }
+
       #bodrless-header h3 { margin:0; font-size:15px; }
       #bodrless-header p { margin:2px 0 0; font-size:12px; opacity:0.7; }
 
       #bodrless-messages {
-        flex:1; overflow-y:auto; padding:16px;
-        display:flex; flex-direction:column; gap:10px;
+        flex:1;
+        overflow-y:auto;
+        padding:16px;
+        display:flex;
+        flex-direction:column;
+        gap:10px;
       }
 
       .b-msg {
-        max-width:85%; padding:10px 14px;
-        border-radius:14px; font-size:13px;
+        max-width:85%;
+        padding:10px 14px;
+        border-radius:14px;
+        font-size:13px;
       }
+
       .b-msg.bot { background:#F5F7FA; }
       .b-msg.user { background:#1A1A2E; color:white; align-self:flex-end; }
 
       .b-package {
         border:1px solid #E2E8F0;
-        border-radius:12px; padding:12px;
+        border-radius:12px;
+        padding:12px;
+        margin-top:6px;
       }
 
       .b-book-btn {
-        width:100%; margin-top:10px;
-        background:#E07B39; color:white;
-        border:none; border-radius:8px;
-        padding:10px; cursor:pointer;
+        width:100%;
+        margin-top:10px;
+        background:#E07B39;
+        color:white;
+        border:none;
+        border-radius:8px;
+        padding:10px;
+        cursor:pointer;
       }
 
       #bodrless-input-area {
-        padding:12px; border-top:1px solid #eee;
-        display:flex; gap:8px;
+        padding:12px;
+        border-top:1px solid #eee;
+        display:flex;
+        gap:8px;
       }
+
       #bodrless-input {
-        flex:1; padding:10px; border-radius:20px;
+        flex:1;
+        padding:10px;
+        border-radius:20px;
         border:1px solid #ddd;
       }
+
       #bodrless-send {
-        background:#1A1A2E; color:white;
-        border:none; border-radius:50%;
-        width:40px; height:40px; cursor:pointer;
+        background:#1A1A2E;
+        color:white;
+        border:none;
+        border-radius:50%;
+        width:40px;
+        height:40px;
+        cursor:pointer;
       }
 
       #bodrless-trigger-btn {
-        position:fixed; bottom:24px; right:24px;
-        background:#1A1A2E; color:white;
-        border:none; border-radius:50px;
-        padding:12px 20px; cursor:pointer;
+        position:fixed;
+        bottom:24px;
+        right:24px;
+        background:#1A1A2E;
+        color:white;
+        border:none;
+        border-radius:50px;
+        padding:12px 20px;
+        cursor:pointer;
         z-index:99997;
       }
     \`;
+
     document.head.appendChild(style);
 
-    // ── MAIN CONTAINER ──
+    // ─────────────────────────────────────────────
+    // UI
+    // ─────────────────────────────────────────────
     var container = document.createElement('div');
     container.id = 'bodrless-widget';
+
     container.innerHTML = \`
       <div id="bodrless-chat">
         <div id="bodrless-header">
@@ -123,7 +190,9 @@ router.get('/', (req, res) => {
 
     document.getElementById('bodrless-close').onclick = closeChat;
 
-    // ── SAFE TRIGGER (FIXED) ──
+    // ─────────────────────────────────────────────
+    // SAFE TRIGGER BUTTON
+    // ─────────────────────────────────────────────
     var existingTrigger = document.getElementById('bodrless-trigger');
 
     if (existingTrigger) {
@@ -134,10 +203,12 @@ router.get('/', (req, res) => {
       btn.innerText = 'Plan Your Trip ✈️';
 
       (document.body || document.documentElement).appendChild(btn);
-
       btn.addEventListener('click', openChat);
     }
 
+    // ─────────────────────────────────────────────
+    // CHAT LOGIC
+    // ─────────────────────────────────────────────
     function addMsg(type, text) {
       var div = document.createElement('div');
       div.className = 'b-msg ' + type;
@@ -186,12 +257,10 @@ router.get('/', (req, res) => {
 
   }
 
-  // ── DOM READY FIX ──
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initWidget);
-  } else {
-    initWidget();
-  }
+  // ─────────────────────────────────────────────
+  // START SAFE BOOT
+  // ─────────────────────────────────────────────
+  bootWhenReady();
 
 })();
   `);
