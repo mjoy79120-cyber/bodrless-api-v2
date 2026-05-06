@@ -1,3 +1,6 @@
+const express = require('express');
+const router = express.Router();
+
 router.get('/', (req, res) => {
   const agencyKey = req.query.key || 'bodrless-test-key';
   const agencyName = req.query.name || 'Your Travel Agent';
@@ -18,7 +21,6 @@ router.get('/', (req, res) => {
       return;
     }
 
-    // prevent double init
     if (document.getElementById("bodrless-widget")) return;
 
     // ── STYLE ───────────────────────────────
@@ -65,7 +67,13 @@ router.get('/', (req, res) => {
         padding: 12px;
       }
 
-      .msg { margin: 8px 0; padding: 10px; border-radius: 10px; max-width: 85%; }
+      .msg {
+        margin: 8px 0;
+        padding: 10px;
+        border-radius: 10px;
+        max-width: 85%;
+      }
+
       .bot { background: #f1f1f1; }
       .user { background: #1A1A2E; color: white; margin-left: auto; }
     \`;
@@ -113,11 +121,8 @@ router.get('/', (req, res) => {
 
     console.log("[BODRLESS] floating button mounted");
 
-    // optional inline trigger
     var inline = document.getElementById("bodrless-trigger");
     if (inline) inline.onclick = openChat;
-
-    document.getElementById("bodrless-send").onclick = send;
 
     function addMsg(text, type) {
       var div = document.createElement("div");
@@ -142,11 +147,13 @@ router.get('/', (req, res) => {
         body: JSON.stringify({ prompt: text })
       })
       .then(r => r.json())
-      .then(data => {
+      .then(() => {
         addMsg("Got it — building your trip...", "bot");
       })
       .catch(() => addMsg("Error connecting", "bot"));
     }
+
+    document.getElementById("bodrless-send").onclick = send;
 
   }
 
@@ -159,3 +166,5 @@ router.get('/', (req, res) => {
 })();
   `);
 });
+
+module.exports = router;
