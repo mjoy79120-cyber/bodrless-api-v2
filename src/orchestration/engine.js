@@ -1,6 +1,6 @@
 /**
  * BODRLESS ORCHESTRATION ENGINE (FIXED)
- * ─────────────────────────────────────────────────────────────
+ * ─────────────────────────────────────────────
  */
 
 const { v4: uuidv4 } = require('uuid');
@@ -59,14 +59,13 @@ class OrchestrationEngine {
     }
   }
 
-  // ─────────────────────────────────────────────
   async _searchFlights(tripParams) {
     if (!tripParams.requiresFlight) return [];
 
     try {
       return await flightService.search({
-        origin: tripParams.originCode || tripParams.origin,
-        destination: tripParams.destinationCode || tripParams.destination,
+        origin: tripParams.origin,
+        destination: tripParams.destination,
         departureDate: tripParams.departureDate,
         returnDate: tripParams.returnDate,
         passengers: tripParams.passengers,
@@ -80,12 +79,7 @@ class OrchestrationEngine {
     if (!tripParams.requiresBus) return [];
 
     try {
-      return await busService.search({
-        origin: tripParams.origin,
-        destination: tripParams.destination,
-        departureDate: tripParams.departureDate,
-        passengers: tripParams.passengers,
-      });
+      return await busService.search(tripParams);
     } catch {
       return [];
     }
@@ -98,6 +92,7 @@ class OrchestrationEngine {
         checkIn: tripParams.departureDate,
         checkOut: tripParams.returnDate,
         guests: tripParams.passengers,
+        budget: tripParams.budget,
       });
     } catch {
       return [];
@@ -105,95 +100,85 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────────────────────
+  // CORE PACKAGE BUILDER
+  // ─────────────────────────────────────────────
   async _coordinateResults({ flights, buses, hotels, tripParams }) {
 
-    const transportPool = flights.length > 0 ? flights : [...flights, ...buses];
-    const safeTransport = transportPool.length > 0 ? transportPool : this._generateMockFlights();
+    const transportPool =
+      tripParams.requiresFlight ? flights : [...flights, ...buses];
 
-    const filteredInventoryHotels = inventoryHotels.filter(
-      h => (h.location || '').toLowerCase() === (tripParams.destination || '').toLowerCase()
-    );
+    const safeTransport =
+      transportPool.length ? transportPool : this._mockFlights();
 
     const safeHotels =
-      filteredInventoryHotels.length > 0
-        ? filteredInventoryHotels
-        : hotels.length > 0
-          ? hotels
-          : this._generateMockHotels(tripParams.destination);
+      hotels.length ? hotels : this._mockHotels(tripParams.destination);
 
     const safeTransfers =
-      inventoryTransfers.length > 0
-        ? inventoryTransfers
-        : [];
+      inventoryTransfers.length ? inventoryTransfers : [];
 
     const packages = [];
 
-    let i = 0;
-
-    while (packages.length < 4) {
+    for (let i = 0; i < 4; i++) {
 
       const transport = safeTransport[i % safeTransport.length];
       const hotel = safeHotels[i % safeHotels.length];
       const transfer = safeTransfers[i % safeTransfers.length] || this._mockTransfer(tripParams.destination);
 
-      packages.push(
-        this._buildPackage({
-          transport,
-          hotel,
-          transfers: transfer,
-          tripParams,
-        })
-      );
-
-      i++;
+      packages.push(this._buildPackage({
+        transport,
+        hotel,
+        transfer,
+        tripParams
+      }));
     }
 
     return packages;
   }
 
   // ─────────────────────────────────────────────
-  // FIXED PACKAGE BUILDER (IMPORTANT)
+  // FIXED PACKAGE STRUCTURE (THIS IS THE KEY)
   // ─────────────────────────────────────────────
-  _buildPackage({ transport, hotel, transfers, tripParams }) {
+  _buildPackage({ transport, hotel, transfer, tripParams }) {
 
-    const transportCost = (transport?.price || 0) * (tripParams.passengers || 1);
-    const hotelCost = (hotel?.pricePerNight || 0) * (tripParams.nights || 1);
-    const transferCost = transfers?.price || 0;
+    const transportCost = (transport.price || 0) * (tripParams.passengers || 1);
+    const hotelCost = (hotel.pricePerNight || 0) * (tripParams.nights || 1);
+    const transferCost = transfer.price || 0;
 
     const totalPrice = transportCost + hotelCost + transferCost;
-    const pricePerPerson = Math.round(totalPrice / (tripParams.passengers || 1));
 
     return {
       packageId: uuidv4(),
 
-      hotel: {
-        name: hotel?.name || "Standard Hotel",
-        stars: hotel?.stars || 3,
-        rating: hotel?.rating || 4.0
+      summary: {
+        route: `${tripParams.origin} → ${tripParams.destination}`,
+        dates: `${tripParams.departureDate} → ${tripParams.returnDate}`,
+        passengers: tripParams.passengers,
+        nights: tripParams.nights,
+
+        // 🔥 CRITICAL FOR WIDGET
+        totalPrice: Math.round(totalPrice),
+        pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1))
       },
 
       transport: {
-        provider: transport?.provider || "Flight included",
-        type: transport?.type || "flight",
-        flightNumber: transport?.flightNumber || null,
-        duration: transport?.duration || null
+        providerName: transport.airline || transport.provider || "Flight",
+        flightNumber: transport.flightNumber || "",
+        departureTime: transport.departureTime || "",
+        arrivalTime: transport.arrivalTime || "",
+        price: transport.price || 0
+      },
+
+      hotel: {
+        name: hotel.name || "Hotel",
+        stars: hotel.stars || 3,
+        rating: hotel.rating || 4.0,
+        pricePerNight: hotel.pricePerNight || 0
       },
 
       transfers: {
-        provider: transfers?.provider || "Airport transfer",
-        vehicleType: transfers?.vehicleType || "Standard car",
-        price: transferCost,
-        included: transferCost > 0
-      },
-
-      summary: {
-        route: `${tripParams.origin} → ${tripParams.destination}`,
-        dates: `${tripParams.departureDate} — ${tripParams.returnDate}`,
-        passengers: tripParams.passengers || 1,
-        nights: tripParams.nights || 1,
-
-        pricePerPerson: pricePerPerson,
-        totalPrice: Math.round(totalPrice)
+        provider: transfer.provider || "Transfer Service",
+        vehicleType: transfer.vehicleType || "Car",
+        price: transfer.price || 0
       },
 
       status: "available"
@@ -201,27 +186,30 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────────────────────
-  _generateMockFlights() {
+  // MOCKS
+  // ─────────────────────────────────────────────
+  _mockFlights() {
     return [{
-      type: "flight",
-      provider: "Kenya Airways",
-      price: 450,
-      duration: "10h"
+      airline: "Kenya Airways",
+      flightNumber: "KQ 784",
+      departureTime: "10:00",
+      arrivalTime: "20:00",
+      price: 450
     }];
   }
 
-  _generateMockHotels(destination) {
+  _mockHotels(destination) {
     return [{
       name: `${destination} Grand Hotel`,
       stars: 5,
-      rating: 4.7,
-      pricePerNight: 180
+      pricePerNight: 180,
+      rating: 4.7
     }];
   }
 
   _mockTransfer(destination) {
     return {
-      provider: "Airport Pickup",
+      provider: "Bodrless Transfers",
       vehicleType: "SUV",
       price: 40
     };
