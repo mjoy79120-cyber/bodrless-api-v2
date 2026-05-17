@@ -14,22 +14,60 @@ let uploadedInventory = [];
 // POST upload
 router.post("/", upload.single("inventory"), (req, res) => {
 
+  if (!req.file) {
+    return res.status(400).json({
+      success: false,
+      error: "No file uploaded"
+    });
+  }
+
   const results = [];
 
   fs.createReadStream(req.file.path)
     .pipe(csv())
-    .on("data", (data) => results.push(data))
+
+    .on("data", (data) => {
+
+      // ✅ NORMALIZE INVENTORY
+      results.push({
+
+        type:
+          data.type?.toLowerCase(),
+
+        name:
+          data.provider_or_name,
+
+        location:
+          data.origin_or_city,
+
+        destination:
+          data.destination_or_country,
+
+        price:
+          Number(data.price_usd || 0),
+
+        category:
+          data.category,
+
+        notes:
+          data.duration_or_notes
+      });
+    })
+
     .on("end", () => {
 
       uploadedInventory = results;
 
-      // SAVE uploaded inventory permanently
+      // SAVE JSON
       fs.writeFileSync(
         "src/data/uploadedInventory.json",
         JSON.stringify(results, null, 2)
       );
 
-      console.log("Parsed Inventory:", uploadedInventory);
+      console.log(
+        "Normalized Inventory:",
+        uploadedInventory
+      );
 
       res.json({
         success: true,
