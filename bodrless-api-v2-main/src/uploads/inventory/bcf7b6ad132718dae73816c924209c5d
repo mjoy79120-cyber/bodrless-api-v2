@@ -1,0 +1,9 @@
+type,name,location,destination,price,details
+hotel,Bangkok Grand Palace Hotel,Bangkok,,180,5-star hotel with breakfast
+hotel,Siam Riverside Hotel,Bangkok,,120,4-star riverside stay
+transfer,Airport Transfer,Bangkok,,30,Private airport pickup
+transfer,Shared Shuttle,Bangkok,,15,Shared hotel shuttle
+flight,Kenya Airways Flight,Nairobi,Bangkok,520,KQ direct flight
+bus,EasyCoach,Nairobi,Mombasa,15,VIP bus service
+activity,Island Tour,Zanzibar,,80,Full-day snorkeling tour
+hotel,Ocean Paradise Resort,Zanzibar,,250,Beachfront luxury resort

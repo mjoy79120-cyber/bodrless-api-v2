@@ -10,6 +10,7 @@ const tripRoutes = require('./routes/trips');
 const webhookRoutes = require('./routes/webhooks');
 const agencyRoutes = require('./routes/agencies');
 const healthRoutes = require('./routes/health');
+const uploadRoutes = require('./routes/uploads');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,10 +22,11 @@ app.use(express.json());
 
 // Rate limiting — protect against abuse
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 100,
   message: { error: 'Too many requests, please try again later.' }
 });
+
 app.use('/api/', limiter);
 
 // ─── Routes ───────────────────────────────────────────────
@@ -33,20 +35,33 @@ const widgetRoutes = require('./routes/widget');
 app.use('/api/trips', tripRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/agencies', agencyRoutes);
+app.use('/api/uploads', uploadRoutes);
+
 app.use('/health', healthRoutes);
 app.use('/widget.js', widgetRoutes);
 
-// ✅ FIXED: serve file from ROOT (NOT /src)
+// Serve widget test page
 app.get('/test-widget.html', (req, res) => {
   res.sendFile(path.join(__dirname, '../test-widget.html'));
+});
+
+// Root route
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Bodrless API is running'
+  });
 });
 
 // ─── Global Error Handler ─────────────────────────────────
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
+
   res.status(500).json({
     error: 'Something went wrong',
-    message: process.env.NODE_ENV === 'development' ? err.message : undefined
+    message:
+      process.env.NODE_ENV === 'development'
+        ? err.message
+        : undefined
   });
 });
 
@@ -59,11 +74,13 @@ app.listen(PORT, () => {
 const https = require('https');
 
 setInterval(() => {
-  https.get('https://bodrless-api-v2.onrender.com/health', (res) => {
-    console.log('Keep alive ping:', res.statusCode);
-  }).on('error', (err) => {
-    console.log('Keep alive error:', err.message);
-  });
+  https
+    .get('https://bodrless-api-v2.onrender.com/health', (res) => {
+      console.log('Keep alive ping:', res.statusCode);
+    })
+    .on('error', (err) => {
+      console.log('Keep alive error:', err.message);
+    });
 }, 4 * 60 * 1000);
 
 module.exports = app;

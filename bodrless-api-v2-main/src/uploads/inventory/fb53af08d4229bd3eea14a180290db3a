@@ -1,0 +1,201 @@
+Agent Name,Country,Specific City/Region,Inventory Type,Item Description,Rate (USD),Allotted Capacity,Booked Units,Available Units,Availability Status
+Africa Safari Excellence,Egypt,Luxor (Nile Front),Flight,Regional Turboprop Shuttle (Premium),407.52,10,5,5,Low Availability
+Africa Safari Excellence,Egypt,Sharm El Sheikh,Hotel,Ocean View Luxury Villas - All Inclusive / Full Board,357.28,51,24,27,Available
+Africa Safari Excellence,Kenya,Kisumu (Lake Victoria),Transfer,VIP Luxury Limousine Service (Kisumu (Lake Victoria)),246.91,53,0,53,Available
+Africa Safari Excellence,Kenya,Maasai Mara Region,Transfer,Private Airport Chauffeur Sedan (Maasai Mara Region),237.31,12,7,5,Low Availability
+Africa Safari Excellence,Kenya,Nairobi (Westlands),Flight,Regional Turboprop Shuttle (Premium),474.34,32,13,19,Available
+Africa Safari Excellence,Morocco,Fes (Old City),Hotel,5-Star Business & Spa Hotel - Room & Breakfast,670.09,18,5,13,Available
+Africa Safari Excellence,Namibia,Swakopmund (Coastal),Hotel,Ocean View Luxury Villas - All Inclusive / Full Board,705.32,35,17,18,Available
+Africa Safari Excellence,South Africa,Cape Town (V&A Waterfront),Transfer,Private Airport Chauffeur Sedan (Cape Town (V&A Waterfront)),310.14,23,23,0,Sold Out
+Africa Safari Excellence,South Africa,Johannesburg (Sandton CBD),Flight,International Inbound Charter Flight,684.31,32,8,24,Available
+Africa Safari Excellence,South Africa,Kruger National Park Area,Transfer,Shared Shuttle Van Transfer (Kruger National Park Area),47.23,55,52,3,Low Availability
+Africa Safari Excellence,Tanzania,Zanzibar (Stone Town),Hotel,Luxury Executive Suites - Room & Breakfast,399.41,28,16,12,Available
+Africa Safari Excellence,Tanzania,Zanzibar (Stone Town),Transfer,Shared Shuttle Van Transfer (Zanzibar (Stone Town)),167.42,24,0,24,Available
+AfroBound Logistics,Egypt,Alexandria (Corniche),Transfer,VIP Luxury Limousine Service (Alexandria (Corniche)),120.14,59,54,5,Low Availability
+AfroBound Logistics,Egypt,Luxor (Nile Front),Hotel,Luxury Executive Suites - Room & Breakfast,747.02,49,21,28,Available
+AfroBound Logistics,Kenya,Maasai Mara Region,Flight,Inter-City Express Flight,912.77,57,23,34,Available
+AfroBound Logistics,Morocco,Agadir (Beach Resort),Flight,International Inbound Charter Flight,648.13,46,28,18,Available
+AfroBound Logistics,Morocco,Agadir (Beach Resort),Transfer,Private Airport Chauffeur Sedan (Agadir (Beach Resort)),250.95,13,3,10,Available
+AfroBound Logistics,Morocco,Fes (Old City),Flight,Regional Turboprop Shuttle (Premium),384.92,33,1,32,Available
+AfroBound Logistics,Morocco,Marrakech (Medina),Transfer,Private 4x4 Vehicle Inter-City Transfer (Marrakech (Medina)),133.7,60,3,57,Available
+AfroBound Logistics,Namibia,Etosha Region,Transfer,Private 4x4 Vehicle Inter-City Transfer (Etosha Region),248.41,47,42,5,Low Availability
+AfroBound Logistics,Namibia,Swakopmund (Coastal),Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,544.34,31,13,18,Available
+AfroBound Logistics,Namibia,Windhoek (Central),Transfer,VIP Luxury Limousine Service (Windhoek (Central)),298.13,13,6,7,Low Availability
+AfroBound Logistics,South Africa,Cape Town (V&A Waterfront),Hotel,Contemporary Downtown Hotel - Room & Breakfast,426.71,49,15,34,Available
+AfroBound Logistics,South Africa,Durban (Umhlanga Rocks),Flight,International Inbound Charter Flight,592.71,58,33,25,Available
+AfroBound Logistics,South Africa,Johannesburg (Sandton CBD),Transfer,Private 4x4 Vehicle Inter-City Transfer (Johannesburg (Sandton CBD)),234.13,21,20,1,Low Availability
+AfroBound Logistics,South Africa,Kruger National Park Area,Flight,Domestic Jet Connection (Economy Class),834.47,53,24,29,Available
+AfroBound Logistics,Tanzania,Arusha (Safari Hub),Transfer,Private 4x4 Vehicle Inter-City Transfer (Arusha (Safari Hub)),293.22,13,3,10,Available
+AfroBound Logistics,Tanzania,Dar es Salaam (City Centre),Flight,Domestic Jet Connection (Economy Class),541.59,54,32,22,Available
+AfroBound Logistics,Tanzania,Zanzibar (Nungwi Beach),Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,145.14,47,46,1,Low Availability
+AfroBound Logistics,Tanzania,Zanzibar (Stone Town),Hotel,Luxury Executive Suites - Room & Breakfast,267.27,20,9,11,Available
+Cape Town Jetsetters,Egypt,Alexandria (Corniche),Flight,Regional Turboprop Shuttle (Premium),376.53,20,14,6,Low Availability
+Cape Town Jetsetters,Egypt,Alexandria (Corniche),Transfer,VIP Luxury Limousine Service (Alexandria (Corniche)),259.29,43,6,37,Available
+Cape Town Jetsetters,Egypt,Alexandria (Corniche),Transfer,Private Airport Chauffeur Sedan (Alexandria (Corniche)),242.18,17,11,6,Low Availability
+Cape Town Jetsetters,Egypt,Alexandria (Corniche),Transfer,Private Airport Chauffeur Sedan (Alexandria (Corniche)),306.94,57,21,36,Available
+Cape Town Jetsetters,Egypt,Alexandria (Corniche),Transfer,Private 4x4 Vehicle Inter-City Transfer (Alexandria (Corniche)),237.27,31,9,22,Available
+Cape Town Jetsetters,Egypt,Cairo (Downtown/Giza),Transfer,Shared Shuttle Van Transfer (Cairo (Downtown/Giza)),34.5,24,15,9,Low Availability
+Cape Town Jetsetters,Egypt,Cairo (Downtown/Giza),Transfer,Private Airport Chauffeur Sedan (Cairo (Downtown/Giza)),39.33,36,14,22,Available
+Cape Town Jetsetters,Egypt,Luxor (Nile Front),Flight,International Inbound Charter Flight,770.62,12,12,0,Sold Out
+Cape Town Jetsetters,Egypt,Luxor (Nile Front),Hotel,Boutique Heritage Hotel - Room & Breakfast,509.49,13,3,10,Available
+Cape Town Jetsetters,Egypt,Luxor (Nile Front),Transfer,VIP Luxury Limousine Service (Luxor (Nile Front)),319.72,23,23,0,Sold Out
+Cape Town Jetsetters,Egypt,Sharm El Sheikh,Transfer,Shared Shuttle Van Transfer (Sharm El Sheikh),324.55,54,30,24,Available
+Cape Town Jetsetters,Kenya,Maasai Mara Region,Hotel,Riverfront Safari Lodge - All Inclusive / Full Board,674.09,11,7,4,Low Availability
+Cape Town Jetsetters,Kenya,Maasai Mara Region,Hotel,Premium Wilderness Lodge - All Inclusive / Full Board,167.78,23,14,9,Low Availability
+Cape Town Jetsetters,Kenya,Maasai Mara Region,Transfer,Shared Shuttle Van Transfer (Maasai Mara Region),116.12,31,11,20,Available
+Cape Town Jetsetters,Kenya,Nairobi (Westlands),Transfer,Private Airport Chauffeur Sedan (Nairobi (Westlands)),210.62,27,20,7,Low Availability
+Cape Town Jetsetters,Morocco,Agadir (Beach Resort),Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,480.24,41,14,27,Available
+Cape Town Jetsetters,Morocco,Agadir (Beach Resort),Transfer,Private Airport Chauffeur Sedan (Agadir (Beach Resort)),304.33,19,10,9,Low Availability
+Cape Town Jetsetters,Morocco,Agadir (Beach Resort),Transfer,Private Airport Chauffeur Sedan (Agadir (Beach Resort)),296.48,48,13,35,Available
+Cape Town Jetsetters,Morocco,Casablanca (Anfa District),Hotel,Contemporary Downtown Hotel - Room & Breakfast,452.09,42,21,21,Available
+Cape Town Jetsetters,Morocco,Fes (Old City),Hotel,Boutique Heritage Hotel - Room & Breakfast,572.68,43,13,30,Available
+Cape Town Jetsetters,Morocco,Fes (Old City),Transfer,VIP Luxury Limousine Service (Fes (Old City)),304.62,49,14,35,Available
+Cape Town Jetsetters,Namibia,Etosha Region,Flight,Regional Turboprop Shuttle (Premium),773.77,58,38,20,Available
+Cape Town Jetsetters,Namibia,Etosha Region,Flight,Regional Turboprop Shuttle (Premium),177.46,54,35,19,Available
+Cape Town Jetsetters,Namibia,Windhoek (Central),Flight,International Inbound Charter Flight,194.28,49,38,11,Available
+Cape Town Jetsetters,South Africa,Kruger National Park Area,Flight,Regional Turboprop Shuttle (Premium),754.64,36,10,26,Available
+Cape Town Jetsetters,South Africa,Kruger National Park Area,Flight,International Inbound Charter Flight,643.21,29,26,3,Low Availability
+Cape Town Jetsetters,Tanzania,Arusha (Safari Hub),Flight,International Inbound Charter Flight,587.67,42,3,39,Available
+Cape Town Jetsetters,Tanzania,Dar es Salaam (City Centre),Hotel,Boutique Heritage Hotel - Room & Breakfast,479.05,45,27,18,Available
+Cape Town Jetsetters,Tanzania,Zanzibar (Stone Town),Transfer,VIP Luxury Limousine Service (Zanzibar (Stone Town)),294.22,47,38,9,Low Availability
+Kilimanjaro Expeditions,Egypt,Alexandria (Corniche),Flight,Regional Turboprop Shuttle (Premium),168.58,38,21,17,Available
+Kilimanjaro Expeditions,Egypt,Luxor (Nile Front),Flight,Domestic Jet Connection (Economy Class),583.43,48,32,16,Available
+Kilimanjaro Expeditions,Egypt,Luxor (Nile Front),Flight,Inter-City Express Flight,759.12,24,5,19,Available
+Kilimanjaro Expeditions,Egypt,Luxor (Nile Front),Flight,International Inbound Charter Flight,683.74,40,19,21,Available
+Kilimanjaro Expeditions,Egypt,Luxor (Nile Front),Hotel,5-Star Business & Spa Hotel - Room & Breakfast,127.11,58,8,50,Available
+Kilimanjaro Expeditions,Egypt,Sharm El Sheikh,Flight,Inter-City Express Flight,640.74,34,33,1,Low Availability
+Kilimanjaro Expeditions,Egypt,Sharm El Sheikh,Transfer,Private 4x4 Vehicle Inter-City Transfer (Sharm El Sheikh),209.77,50,0,50,Available
+Kilimanjaro Expeditions,Kenya,Maasai Mara Region,Hotel,Riverfront Safari Lodge - All Inclusive / Full Board,316.27,22,9,13,Available
+Kilimanjaro Expeditions,Kenya,Maasai Mara Region,Transfer,Shared Shuttle Van Transfer (Maasai Mara Region),109.19,50,27,23,Available
+Kilimanjaro Expeditions,Kenya,Mombasa (Diani Beach),Transfer,Private 4x4 Vehicle Inter-City Transfer (Mombasa (Diani Beach)),84.36,26,25,1,Low Availability
+Kilimanjaro Expeditions,Morocco,Casablanca (Anfa District),Transfer,Private 4x4 Vehicle Inter-City Transfer (Casablanca (Anfa District)),241.2,23,12,11,Available
+Kilimanjaro Expeditions,Morocco,Casablanca (Anfa District),Transfer,Private 4x4 Vehicle Inter-City Transfer (Casablanca (Anfa District)),82.04,37,20,17,Available
+Kilimanjaro Expeditions,Morocco,Marrakech (Medina),Transfer,Private Airport Chauffeur Sedan (Marrakech (Medina)),272.97,23,13,10,Available
+Kilimanjaro Expeditions,Morocco,Marrakech (Medina),Transfer,Private 4x4 Vehicle Inter-City Transfer (Marrakech (Medina)),326.34,55,30,25,Available
+Kilimanjaro Expeditions,Namibia,Etosha Region,Transfer,Private Airport Chauffeur Sedan (Etosha Region),312.35,34,15,19,Available
+Kilimanjaro Expeditions,Namibia,Swakopmund (Coastal),Hotel,Ocean View Luxury Villas - All Inclusive / Full Board,477.53,26,22,4,Low Availability
+Kilimanjaro Expeditions,Namibia,Swakopmund (Coastal),Hotel,Ocean View Luxury Villas - All Inclusive / Full Board,732.24,25,21,4,Low Availability
+Kilimanjaro Expeditions,Namibia,Windhoek (Central),Flight,Regional Turboprop Shuttle (Premium),610.93,14,13,1,Low Availability
+Kilimanjaro Expeditions,Namibia,Windhoek (Central),Hotel,Contemporary Downtown Hotel - Room & Breakfast,192.15,48,44,4,Low Availability
+Kilimanjaro Expeditions,South Africa,Cape Town (V&A Waterfront),Hotel,Boutique Heritage Hotel - Room & Breakfast,564.84,42,28,14,Available
+Kilimanjaro Expeditions,South Africa,Cape Town (V&A Waterfront),Transfer,VIP Luxury Limousine Service (Cape Town (V&A Waterfront)),236.44,15,1,14,Available
+Kilimanjaro Expeditions,South Africa,Durban (Umhlanga Rocks),Transfer,Private Airport Chauffeur Sedan (Durban (Umhlanga Rocks)),103.62,10,1,9,Low Availability
+Kilimanjaro Expeditions,South Africa,Johannesburg (Sandton CBD),Hotel,Contemporary Downtown Hotel - Room & Breakfast,116.78,28,14,14,Available
+Kilimanjaro Expeditions,South Africa,Kruger National Park Area,Hotel,Riverfront Safari Lodge - All Inclusive / Full Board,456.6,20,20,0,Sold Out
+Kilimanjaro Expeditions,South Africa,Kruger National Park Area,Transfer,VIP Luxury Limousine Service (Kruger National Park Area),49.72,23,7,16,Available
+Kilimanjaro Expeditions,Tanzania,Dar es Salaam (City Centre),Hotel,Boutique Heritage Hotel - Room & Breakfast,253.64,30,18,12,Available
+Kilimanjaro Expeditions,Tanzania,Dar es Salaam (City Centre),Transfer,Private 4x4 Vehicle Inter-City Transfer (Dar es Salaam (City Centre)),70.19,11,9,2,Low Availability
+Marrakech Dream Voyages,Egypt,Alexandria (Corniche),Transfer,Private Airport Chauffeur Sedan (Alexandria (Corniche)),126.73,43,32,11,Available
+Marrakech Dream Voyages,Egypt,Cairo (Downtown/Giza),Flight,Domestic Jet Connection (Economy Class),586.07,25,5,20,Available
+Marrakech Dream Voyages,Egypt,Luxor (Nile Front),Hotel,Boutique Heritage Hotel - Room & Breakfast,319.85,38,27,11,Available
+Marrakech Dream Voyages,Kenya,Kisumu (Lake Victoria),Flight,Inter-City Express Flight,155.3,58,45,13,Available
+Marrakech Dream Voyages,Kenya,Maasai Mara Region,Flight,Inter-City Express Flight,201.85,36,30,6,Low Availability
+Marrakech Dream Voyages,Kenya,Nairobi (Westlands),Flight,Domestic Jet Connection (Economy Class),663.62,55,17,38,Available
+Marrakech Dream Voyages,Morocco,Casablanca (Anfa District),Flight,Domestic Jet Connection (Economy Class),229.58,35,6,29,Available
+Marrakech Dream Voyages,Morocco,Casablanca (Anfa District),Hotel,Contemporary Downtown Hotel - Room & Breakfast,716.5,23,10,13,Available
+Marrakech Dream Voyages,Morocco,Fes (Old City),Transfer,Shared Shuttle Van Transfer (Fes (Old City)),197.61,11,9,2,Low Availability
+Marrakech Dream Voyages,Namibia,Etosha Region,Hotel,Premium Wilderness Lodge - All Inclusive / Full Board,172.1,24,17,7,Low Availability
+Marrakech Dream Voyages,South Africa,Durban (Umhlanga Rocks),Flight,Regional Turboprop Shuttle (Premium),672.02,13,10,3,Low Availability
+Marrakech Dream Voyages,South Africa,Durban (Umhlanga Rocks),Transfer,Private Airport Chauffeur Sedan (Durban (Umhlanga Rocks)),70.25,58,54,4,Low Availability
+Marrakech Dream Voyages,South Africa,Durban (Umhlanga Rocks),Transfer,VIP Luxury Limousine Service (Durban (Umhlanga Rocks)),139.8,57,1,56,Available
+Marrakech Dream Voyages,South Africa,Johannesburg (Sandton CBD),Transfer,Shared Shuttle Van Transfer (Johannesburg (Sandton CBD)),105.48,25,12,13,Available
+Marrakech Dream Voyages,South Africa,Kruger National Park Area,Hotel,Riverfront Safari Lodge - All Inclusive / Full Board,133.5,41,1,40,Available
+Marrakech Dream Voyages,South Africa,Kruger National Park Area,Transfer,Private Airport Chauffeur Sedan (Kruger National Park Area),209.82,39,37,2,Low Availability
+Marrakech Dream Voyages,Tanzania,Arusha (Safari Hub),Flight,Regional Turboprop Shuttle (Premium),272.7,23,21,2,Low Availability
+Marrakech Dream Voyages,Tanzania,Arusha (Safari Hub),Hotel,Luxury Executive Suites - Room & Breakfast,213.95,51,47,4,Low Availability
+Marrakech Dream Voyages,Tanzania,Arusha (Safari Hub),Transfer,Private Airport Chauffeur Sedan (Arusha (Safari Hub)),232.41,12,3,9,Low Availability
+Marrakech Dream Voyages,Tanzania,Zanzibar (Stone Town),Transfer,Private Airport Chauffeur Sedan (Zanzibar (Stone Town)),148.64,48,22,26,Available
+Nile & Beyond,Egypt,Cairo (Downtown/Giza),Transfer,Shared Shuttle Van Transfer (Cairo (Downtown/Giza)),66.65,58,11,47,Available
+Nile & Beyond,Kenya,Kisumu (Lake Victoria),Flight,Inter-City Express Flight,909.01,37,12,25,Available
+Nile & Beyond,Kenya,Maasai Mara Region,Hotel,Riverfront Safari Lodge - All Inclusive / Full Board,134.99,37,23,14,Available
+Nile & Beyond,Kenya,Mombasa (Diani Beach),Transfer,Private 4x4 Vehicle Inter-City Transfer (Mombasa (Diani Beach)),202.59,53,32,21,Available
+Nile & Beyond,Kenya,Nairobi (Westlands),Transfer,Shared Shuttle Van Transfer (Nairobi (Westlands)),180.38,46,30,16,Available
+Nile & Beyond,Morocco,Agadir (Beach Resort),Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,710.43,41,34,7,Low Availability
+Nile & Beyond,Morocco,Marrakech (Medina),Flight,Domestic Jet Connection (Economy Class),869.56,56,31,25,Available
+Nile & Beyond,Morocco,Marrakech (Medina),Hotel,Contemporary Downtown Hotel - Room & Breakfast,453.73,30,30,0,Sold Out
+Nile & Beyond,Namibia,Windhoek (Central),Hotel,Luxury Executive Suites - Room & Breakfast,637.38,39,19,20,Available
+Nile & Beyond,Namibia,Windhoek (Central),Transfer,VIP Luxury Limousine Service (Windhoek (Central)),74.69,24,8,16,Available
+Nile & Beyond,Namibia,Windhoek (Central),Transfer,Private 4x4 Vehicle Inter-City Transfer (Windhoek (Central)),79.26,35,16,19,Available
+Nile & Beyond,South Africa,Cape Town (V&A Waterfront),Hotel,Boutique Heritage Hotel - Room & Breakfast,347.81,57,8,49,Available
+Nile & Beyond,South Africa,Durban (Umhlanga Rocks),Transfer,VIP Luxury Limousine Service (Durban (Umhlanga Rocks)),202.99,34,32,2,Low Availability
+Nile & Beyond,South Africa,Durban (Umhlanga Rocks),Transfer,Shared Shuttle Van Transfer (Durban (Umhlanga Rocks)),70.46,40,11,29,Available
+Nile & Beyond,Tanzania,Arusha (Safari Hub),Transfer,VIP Luxury Limousine Service (Arusha (Safari Hub)),42.28,35,7,28,Available
+Nile & Beyond,Tanzania,Dar es Salaam (City Centre),Flight,Inter-City Express Flight,377.74,33,12,21,Available
+Nile & Beyond,Tanzania,Dar es Salaam (City Centre),Transfer,Shared Shuttle Van Transfer (Dar es Salaam (City Centre)),266.82,22,1,21,Available
+Nile & Beyond,Tanzania,Zanzibar (Nungwi Beach),Flight,Domestic Jet Connection (Economy Class),617.79,60,28,32,Available
+Okavango Wild Tours,Egypt,Alexandria (Corniche),Flight,Domestic Jet Connection (Economy Class),399.8,32,30,2,Low Availability
+Okavango Wild Tours,Egypt,Luxor (Nile Front),Flight,International Inbound Charter Flight,712.31,23,8,15,Available
+Okavango Wild Tours,Egypt,Sharm El Sheikh,Transfer,Shared Shuttle Van Transfer (Sharm El Sheikh),80.26,51,21,30,Available
+Okavango Wild Tours,Kenya,Kisumu (Lake Victoria),Flight,International Inbound Charter Flight,483.94,15,13,2,Low Availability
+Okavango Wild Tours,Kenya,Mombasa (Diani Beach),Flight,Inter-City Express Flight,363.08,17,17,0,Sold Out
+Okavango Wild Tours,Kenya,Mombasa (Diani Beach),Transfer,VIP Luxury Limousine Service (Mombasa (Diani Beach)),123.84,45,20,25,Available
+Okavango Wild Tours,Kenya,Nairobi (Westlands),Flight,International Inbound Charter Flight,300.57,60,38,22,Available
+Okavango Wild Tours,Kenya,Nairobi (Westlands),Flight,Inter-City Express Flight,829.21,55,27,28,Available
+Okavango Wild Tours,Kenya,Nairobi (Westlands),Flight,Domestic Jet Connection (Economy Class),497.71,26,9,17,Available
+Okavango Wild Tours,Kenya,Nairobi (Westlands),Flight,Domestic Jet Connection (Economy Class),939.72,50,36,14,Available
+Okavango Wild Tours,Morocco,Agadir (Beach Resort),Transfer,Shared Shuttle Van Transfer (Agadir (Beach Resort)),297.42,46,33,13,Available
+Okavango Wild Tours,Morocco,Casablanca (Anfa District),Flight,International Inbound Charter Flight,539.13,36,2,34,Available
+Okavango Wild Tours,Morocco,Casablanca (Anfa District),Transfer,Private 4x4 Vehicle Inter-City Transfer (Casablanca (Anfa District)),176.98,10,4,6,Low Availability
+Okavango Wild Tours,Morocco,Marrakech (Medina),Hotel,Boutique Heritage Hotel - Room & Breakfast,264.83,22,20,2,Low Availability
+Okavango Wild Tours,Morocco,Marrakech (Medina),Transfer,Shared Shuttle Van Transfer (Marrakech (Medina)),79.26,51,16,35,Available
+Okavango Wild Tours,Morocco,Marrakech (Medina),Transfer,VIP Luxury Limousine Service (Marrakech (Medina)),274.06,42,15,27,Available
+Okavango Wild Tours,Namibia,Windhoek (Central),Flight,International Inbound Charter Flight,696.43,60,13,47,Available
+Okavango Wild Tours,South Africa,Cape Town (V&A Waterfront),Hotel,Boutique Heritage Hotel - Room & Breakfast,593.86,55,41,14,Available
+Okavango Wild Tours,South Africa,Cape Town (V&A Waterfront),Hotel,Boutique Heritage Hotel - Room & Breakfast,258.13,47,23,24,Available
+Okavango Wild Tours,South Africa,Durban (Umhlanga Rocks),Hotel,Luxury Executive Suites - Room & Breakfast,578.41,11,10,1,Low Availability
+Okavango Wild Tours,South Africa,Kruger National Park Area,Transfer,Shared Shuttle Van Transfer (Kruger National Park Area),41.7,40,2,38,Available
+Okavango Wild Tours,Tanzania,Arusha (Safari Hub),Transfer,VIP Luxury Limousine Service (Arusha (Safari Hub)),295.29,41,23,18,Available
+Okavango Wild Tours,Tanzania,Dar es Salaam (City Centre),Hotel,Boutique Heritage Hotel - Room & Breakfast,187.6,33,19,14,Available
+Okavango Wild Tours,Tanzania,Zanzibar (Nungwi Beach),Flight,Domestic Jet Connection (Economy Class),489.15,29,7,22,Available
+Okavango Wild Tours,Tanzania,Zanzibar (Nungwi Beach),Flight,Regional Turboprop Shuttle (Premium),545.8,26,25,1,Low Availability
+Okavango Wild Tours,Tanzania,Zanzibar (Stone Town),Hotel,Boutique Heritage Hotel - Room & Breakfast,193.91,14,11,3,Low Availability
+Safari Horizons,Kenya,Kisumu (Lake Victoria),Hotel,5-Star Business & Spa Hotel - Room & Breakfast,604.2,30,11,19,Available
+Safari Horizons,Kenya,Kisumu (Lake Victoria),Transfer,VIP Luxury Limousine Service (Kisumu (Lake Victoria)),116.32,54,38,16,Available
+Safari Horizons,Kenya,Maasai Mara Region,Transfer,Shared Shuttle Van Transfer (Maasai Mara Region),324.33,49,14,35,Available
+Safari Horizons,Kenya,Mombasa (Diani Beach),Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,738.04,36,23,13,Available
+Safari Horizons,Namibia,Windhoek (Central),Hotel,Luxury Executive Suites - Room & Breakfast,241.11,42,12,30,Available
+Safari Horizons,South Africa,Kruger National Park Area,Transfer,Shared Shuttle Van Transfer (Kruger National Park Area),64.16,12,7,5,Low Availability
+Safari Horizons,Tanzania,Arusha (Safari Hub),Hotel,5-Star Business & Spa Hotel - Room & Breakfast,407.72,29,25,4,Low Availability
+Safari Horizons,Tanzania,Arusha (Safari Hub),Transfer,Private 4x4 Vehicle Inter-City Transfer (Arusha (Safari Hub)),133.47,47,26,21,Available
+Safari Horizons,Tanzania,Dar es Salaam (City Centre),Flight,Regional Turboprop Shuttle (Premium),248.42,27,20,7,Low Availability
+Safari Horizons,Tanzania,Zanzibar (Nungwi Beach),Transfer,Private 4x4 Vehicle Inter-City Transfer (Zanzibar (Nungwi Beach)),83.26,53,48,5,Low Availability
+Serengeti Travel Partners,Egypt,Cairo (Downtown/Giza),Hotel,5-Star Business & Spa Hotel - Room & Breakfast,628.59,54,16,38,Available
+Serengeti Travel Partners,Egypt,Luxor (Nile Front),Flight,Inter-City Express Flight,349.54,42,5,37,Available
+Serengeti Travel Partners,Kenya,Kisumu (Lake Victoria),Flight,International Inbound Charter Flight,658.34,34,29,5,Low Availability
+Serengeti Travel Partners,Kenya,Mombasa (Diani Beach),Transfer,Private 4x4 Vehicle Inter-City Transfer (Mombasa (Diani Beach)),299.2,57,11,46,Available
+Serengeti Travel Partners,Kenya,Mombasa (Diani Beach),Transfer,Private Airport Chauffeur Sedan (Mombasa (Diani Beach)),183.99,55,49,6,Low Availability
+Serengeti Travel Partners,Morocco,Agadir (Beach Resort),Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,467.44,28,27,1,Low Availability
+Serengeti Travel Partners,Morocco,Casablanca (Anfa District),Hotel,Luxury Executive Suites - Room & Breakfast,284.29,19,2,17,Available
+Serengeti Travel Partners,Morocco,Marrakech (Medina),Hotel,Luxury Executive Suites - Room & Breakfast,737.21,57,18,39,Available
+Serengeti Travel Partners,Morocco,Marrakech (Medina),Hotel,Contemporary Downtown Hotel - Room & Breakfast,434.66,31,0,31,Available
+Serengeti Travel Partners,Morocco,Marrakech (Medina),Transfer,Private Airport Chauffeur Sedan (Marrakech (Medina)),232.92,54,19,35,Available
+Serengeti Travel Partners,Namibia,Etosha Region,Flight,Inter-City Express Flight,378.4,19,4,15,Available
+Serengeti Travel Partners,Namibia,Etosha Region,Flight,International Inbound Charter Flight,239.81,39,14,25,Available
+Serengeti Travel Partners,Namibia,Swakopmund (Coastal),Transfer,VIP Luxury Limousine Service (Swakopmund (Coastal)),284.57,54,9,45,Available
+Serengeti Travel Partners,South Africa,Durban (Umhlanga Rocks),Flight,Inter-City Express Flight,798.85,24,8,16,Available
+Serengeti Travel Partners,South Africa,Durban (Umhlanga Rocks),Flight,Domestic Jet Connection (Economy Class),440.25,25,19,6,Low Availability
+Serengeti Travel Partners,South Africa,Durban (Umhlanga Rocks),Hotel,5-Star Business & Spa Hotel - Room & Breakfast,630.84,42,14,28,Available
+Serengeti Travel Partners,Tanzania,Arusha (Safari Hub),Flight,International Inbound Charter Flight,506.45,33,24,9,Low Availability
+Serengeti Travel Partners,Tanzania,Zanzibar (Nungwi Beach),Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,405.93,27,1,26,Available
+Victoria Falls Travel Co,Egypt,Cairo (Downtown/Giza),Hotel,Luxury Executive Suites - Room & Breakfast,452.12,17,8,9,Low Availability
+Victoria Falls Travel Co,Egypt,Cairo (Downtown/Giza),Hotel,Contemporary Downtown Hotel - Room & Breakfast,580.71,14,0,14,Available
+Victoria Falls Travel Co,Egypt,Sharm El Sheikh,Flight,Regional Turboprop Shuttle (Premium),824.17,16,12,4,Low Availability
+Victoria Falls Travel Co,Egypt,Sharm El Sheikh,Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,682.09,23,10,13,Available
+Victoria Falls Travel Co,Kenya,Kisumu (Lake Victoria),Hotel,Luxury Executive Suites - Room & Breakfast,669.9,57,0,57,Available
+Victoria Falls Travel Co,Kenya,Nairobi (Westlands),Hotel,5-Star Business & Spa Hotel - Room & Breakfast,688.53,42,19,23,Available
+Victoria Falls Travel Co,Morocco,Fes (Old City),Transfer,Private Airport Chauffeur Sedan (Fes (Old City)),230.27,46,39,7,Low Availability
+Victoria Falls Travel Co,Morocco,Marrakech (Medina),Transfer,Shared Shuttle Van Transfer (Marrakech (Medina)),69.38,22,3,19,Available
+Victoria Falls Travel Co,Namibia,Swakopmund (Coastal),Hotel,All-Inclusive Beachfront Resort - All Inclusive / Full Board,597.76,26,23,3,Low Availability
+Victoria Falls Travel Co,Namibia,Swakopmund (Coastal),Hotel,Ocean View Luxury Villas - All Inclusive / Full Board,371.52,37,13,24,Available
+Victoria Falls Travel Co,Namibia,Swakopmund (Coastal),Hotel,Ocean View Luxury Villas - All Inclusive / Full Board,291.59,31,31,0,Sold Out
+Victoria Falls Travel Co,Namibia,Swakopmund (Coastal),Transfer,Shared Shuttle Van Transfer (Swakopmund (Coastal)),88.33,49,31,18,Available
+Victoria Falls Travel Co,South Africa,Cape Town (V&A Waterfront),Hotel,Luxury Executive Suites - Room & Breakfast,637.08,25,2,23,Available
+Victoria Falls Travel Co,South Africa,Durban (Umhlanga Rocks),Flight,Domestic Jet Connection (Economy Class),719.0,16,4,12,Available
+Victoria Falls Travel Co,South Africa,Durban (Umhlanga Rocks),Transfer,Private Airport Chauffeur Sedan (Durban (Umhlanga Rocks)),311.8,13,2,11,Available
+Victoria Falls Travel Co,South Africa,Johannesburg (Sandton CBD),Hotel,Contemporary Downtown Hotel - Room & Breakfast,448.3,54,34,20,Available
+Victoria Falls Travel Co,South Africa,Kruger National Park Area,Hotel,Riverfront Safari Lodge - All Inclusive / Full Board,159.07,12,3,9,Low Availability
+Victoria Falls Travel Co,South Africa,Kruger National Park Area,Transfer,Private 4x4 Vehicle Inter-City Transfer (Kruger National Park Area),300.25,53,49,4,Low Availability
+Victoria Falls Travel Co,Tanzania,Arusha (Safari Hub),Hotel,Luxury Executive Suites - Room & Breakfast,338.33,59,38,21,Available
+Victoria Falls Travel Co,Tanzania,Dar es Salaam (City Centre),Flight,Inter-City Express Flight,172.02,45,9,36,Available
+Victoria Falls Travel Co,Tanzania,Dar es Salaam (City Centre),Hotel,Boutique Heritage Hotel - Room & Breakfast,525.2,47,23,24,Available
+Victoria Falls Travel Co,Tanzania,Dar es Salaam (City Centre),Transfer,Shared Shuttle Van Transfer (Dar es Salaam (City Centre)),141.86,53,32,21,Available

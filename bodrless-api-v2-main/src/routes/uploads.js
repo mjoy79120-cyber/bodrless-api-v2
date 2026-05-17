@@ -23,6 +23,12 @@ router.post("/", upload.single("inventory"), (req, res) => {
 
       uploadedInventory = results;
 
+      // SAVE uploaded inventory permanently
+      fs.writeFileSync(
+        "src/data/uploadedInventory.json",
+        JSON.stringify(results, null, 2)
+      );
+
       console.log("Parsed Inventory:", uploadedInventory);
 
       res.json({
