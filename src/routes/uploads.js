@@ -12,6 +12,82 @@ const upload = multer({
 let uploadedInventory = [];
 
 // ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
+function detectType(data, values) {
+
+  const searchable = JSON.stringify(data).toLowerCase();
+
+  if (
+    searchable.includes("flight") ||
+    searchable.includes("airline")
+  ) {
+    return "flight";
+  }
+
+  if (
+    searchable.includes("hotel") ||
+    searchable.includes("resort") ||
+    searchable.includes("villa")
+  ) {
+    return "hotel";
+  }
+
+  if (
+    searchable.includes("transfer") ||
+    searchable.includes("airport pickup")
+  ) {
+    return "transfer";
+  }
+
+  if (
+    searchable.includes("bus")
+  ) {
+    return "bus";
+  }
+
+  return "unknown";
+}
+
+function extractPrice(data, values) {
+
+  const possiblePriceFields = [
+    data["Rate (USD)"],
+    data.price,
+    data.amount,
+    data.price_usd,
+    data.cost
+  ];
+
+  for (const field of possiblePriceFields) {
+
+    const num = Number(field);
+
+    if (!isNaN(num) && num > 0) {
+      return num;
+    }
+  }
+
+  // fallback scan entire row
+  for (const value of values) {
+
+    const cleaned =
+      String(value)
+        .replace("$", "")
+        .replace(",", "")
+        .trim();
+
+    const num = Number(cleaned);
+
+    if (!isNaN(num) && num > 0) {
+      return num;
+    }
+  }
+
+  return 0;
+}
+
+// ─────────────────────────────────────────────
 // POST UPLOAD
 // ─────────────────────────────────────────────
 router.post("/", upload.single("inventory"), (req, res) => {
@@ -34,39 +110,26 @@ router.post("/", upload.single("inventory"), (req, res) => {
 
       const values = Object.values(data);
 
-      // FLEXIBLE NORMALIZATION
       const normalized = {
 
-        type: (
-          data.type ||
-          data.category ||
-          values.find(v => {
+        type: detectType(data, values),
 
-            const val =
-              String(v).toLowerCase();
-
-            return (
-              val.includes("hotel") ||
-              val.includes("flight") ||
-              val.includes("transfer") ||
-              val.includes("bus")
-            );
-          }) ||
-          "unknown"
-        )
-          .toString()
-          .toLowerCase(),
+        provider:
+          data["Agent Name"] ||
+          data.provider ||
+          "",
 
         name:
+          data["Item Description"] ||
           data.provider_or_name ||
           data.name ||
-          data.provider ||
           data.hotel ||
           data.airline ||
           values[0] ||
           "Unknown",
 
         location:
+          data["Specific City/Region"] ||
           data.origin_or_city ||
           data.city ||
           data.origin ||
@@ -75,25 +138,25 @@ router.post("/", upload.single("inventory"), (req, res) => {
           "",
 
         destination:
+          data.Country ||
           data.destination_or_country ||
           data.destination ||
-          data.country ||
           values[2] ||
           "",
 
         price:
+          extractPrice(data, values),
+
+        capacity:
           Number(
-
-            data.price_usd ||
-            data.price ||
-            data.amount ||
-
-            values.find(v =>
-              !isNaN(Number(v))
-            ) ||
-
+            data["Available Units"] ||
+            data.capacity ||
             0
           ),
+
+        availability:
+          data["Availability Status"] ||
+          "Available",
 
         category:
           data.category || "",
@@ -111,7 +174,7 @@ router.post("/", upload.single("inventory"), (req, res) => {
 
       uploadedInventory = results;
 
-      // SAVE JSON LOCALLY
+      // SAVE JSON
       fs.writeFileSync(
         "src/data/uploadedInventory.json",
         JSON.stringify(results, null, 2)
