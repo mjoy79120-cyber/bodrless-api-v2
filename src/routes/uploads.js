@@ -13,172 +13,275 @@ const upload = multer({
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
-function detectType(data) {
-  const searchable = JSON.stringify(data).toLowerCase();
 
-  if (searchable.includes("flight") || searchable.includes("airline")) return "flight";
-  if (searchable.includes("hotel") || searchable.includes("resort") || searchable.includes("villa")) return "hotel";
-  if (searchable.includes("transfer") || searchable.includes("airport pickup")) return "transfer";
-  if (searchable.includes("bus")) return "bus";
+function normalizeKeys(obj) {
+  const normalized = {};
 
-  return "unknown";
+  Object.keys(obj).forEach(key => {
+    normalized[key.toLowerCase().trim()] = obj[key];
+  });
+
+  return normalized;
 }
 
-function extractPrice(data, values) {
-  const possiblePriceFields = [
-    data["Rate (USD)"],
-    data.price,
-    data.amount,
-    data.price_usd,
-    data.cost,
-    data["price_per_night_usd"]
+function findField(data, possibleFields) {
+  for (const field of possibleFields) {
+    if (data[field] !== undefined && data[field] !== "") {
+      return data[field];
+    }
+  }
+
+  return "";
+}
+
+function extractPrice(data) {
+  const priceFields = [
+    "price",
+    "rate",
+    "amount",
+    "cost",
+    "price_usd",
+    "rate_usd",
+    "price_per_night",
+    "price_per_night_usd",
+    "rate (usd)"
   ];
 
-  for (const field of possiblePriceFields) {
-    const num = Number(field);
-    if (!isNaN(num) && num > 0) return num;
+  for (const field of priceFields) {
+    if (data[field]) {
+      const cleaned = String(data[field])
+        .replace(/\$/g, "")
+        .replace(/,/g, "")
+        .trim();
+
+      const num = Number(cleaned);
+
+      if (!isNaN(num) && num > 0) {
+        return num;
+      }
+    }
   }
 
-  for (const value of values) {
-    const cleaned = String(value).replace("$", "").replace(",", "").trim();
-    const num = Number(cleaned);
-    if (!isNaN(num) && num > 0) return num;
-  }
-
-  return 0;
+  return null;
 }
 
 // ─────────────────────────────────────────────
 // UPLOAD ROUTE
 // ─────────────────────────────────────────────
+
 router.post("/", upload.single("inventory"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ success: false, error: "No file uploaded" });
-  }
 
-  const agencyId = req.body.agencyId;
-  const fileType = req.body.fileType;
+  try {
 
-  if (!agencyId || !fileType) {
-    return res.status(400).json({
-      success: false,
-      error: "agencyId and fileType required"
-    });
-  }
-
-  const results = [];
-
-  fs.createReadStream(req.file.path)
-    .pipe(csv())
-    .on("data", (data) => {
-      const values = Object.values(data);
-
-      results.push({
-        name: data.hotel_name || data.airline || data.name || values[0] || "Unknown",
-        location: data.city || data.location || data.origin || values[1] || "",
-        destination: data.destination || data.country || values[2] || "",
-        origin: data.origin || "",
-        airline: data.airline || "",
-        price: extractPrice(data, values),
-        provider: data.provider || data["Agent Name"] || ""
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: "No file uploaded"
       });
-    })
+    }
 
-    .on("end", async () => {
-      try {
-        const tableMap = {
-          hotels: "hotels",
-          flights: "flights",
-          transfers: "transfers",
-          bus: "buses"
-        };
+    const agencyId = req.body.agencyId;
+    const fileType = req.body.fileType;
 
-        const table = tableMap[fileType];
+    if (!agencyId || !fileType) {
+      return res.status(400).json({
+        success: false,
+        error: "agencyId and fileType required"
+      });
+    }
 
-        if (!table) {
-          return res.status(400).json({
+    const results = [];
+
+    fs.createReadStream(req.file.path)
+      .pipe(csv())
+
+      .on("data", (row) => {
+
+        const data = normalizeKeys(row);
+
+        // ─────────────────────────────
+        // HOTELS
+        // ─────────────────────────────
+        if (fileType === "hotels") {
+
+          const hotel = {
+            agency_id: agencyId,
+
+            name: findField(data, [
+              "hotel_name",
+              "hotel",
+              "name",
+              "property"
+            ]),
+
+            location: findField(data, [
+              "city",
+              "location",
+              "destination",
+              "country"
+            ]),
+
+            price_per_night: extractPrice(data),
+
+            stars: Number(findField(data, [
+              "stars",
+              "star_rating"
+            ])) || null,
+
+            rating: Number(findField(data, [
+              "rating",
+              "review_score"
+            ])) || null
+          };
+
+          if (hotel.name && hotel.price_per_night) {
+            results.push(hotel);
+          }
+        }
+
+        // ─────────────────────────────
+        // FLIGHTS
+        // ─────────────────────────────
+        if (fileType === "flights") {
+
+          const flight = {
+            agency_id: agencyId,
+
+            origin: findField(data, [
+              "origin",
+              "from",
+              "departure_city"
+            ]),
+
+            destination: findField(data, [
+              "destination",
+              "to",
+              "arrival_city"
+            ]),
+
+            airline: findField(data, [
+              "airline",
+              "carrier"
+            ]),
+
+            flight_number: findField(data, [
+              "flight_number",
+              "flight_no"
+            ]),
+
+            price: extractPrice(data)
+          };
+
+          if (
+            flight.origin &&
+            flight.destination &&
+            flight.price
+          ) {
+            results.push(flight);
+          }
+        }
+
+        // ─────────────────────────────
+        // TRANSFERS
+        // ─────────────────────────────
+        if (fileType === "transfers") {
+
+          const transfer = {
+            agency_id: agencyId,
+
+            provider: findField(data, [
+              "provider",
+              "company",
+              "name"
+            ]),
+
+            vehicle_type: findField(data, [
+              "vehicle_type",
+              "vehicle",
+              "car_type"
+            ]),
+
+            price: extractPrice(data)
+          };
+
+          if (transfer.provider && transfer.price) {
+            results.push(transfer);
+          }
+        }
+
+      })
+
+      .on("end", async () => {
+
+        try {
+
+          if (!results.length) {
+
+            fs.unlink(req.file.path, () => {});
+
+            return res.status(400).json({
+              success: false,
+              error: "No valid inventory rows found"
+            });
+          }
+
+          const tableMap = {
+            hotels: "hotels",
+            flights: "flights",
+            transfers: "transfers"
+          };
+
+          const table = tableMap[fileType];
+
+          const { error } = await supabase
+            .from(table)
+            .insert(results);
+
+          fs.unlink(req.file.path, () => {});
+
+          if (error) {
+            throw error;
+          }
+
+          return res.json({
+            success: true,
+            fileType,
+            uploadedRows: results.length,
+            message: "Inventory uploaded successfully"
+          });
+
+        } catch (err) {
+
+          console.error(err);
+
+          return res.status(500).json({
             success: false,
-            error: "Invalid fileType"
+            error: err.message
           });
         }
 
-        if (!results.length) {
-          return res.status(400).json({
-            success: false,
-            error: "CSV is empty or unreadable"
-          });
-        }
+      })
 
-        const insertData = results.map(item => {
-          if (fileType === "hotels") {
-            return {
-              agency_id: agencyId,
-              name: item.name,
-              location: item.location,
-              price_per_night: item.price,
-              stars: 4,
-              rating: 4.5
-            };
-          }
+      .on("error", (err) => {
 
-          if (fileType === "flights") {
-            return {
-              agency_id: agencyId,
-              origin: item.origin,
-              destination: item.destination,
-              airline: item.airline,
-              price: item.price,
-              flight_number: "AUTO"
-            };
-          }
-
-          if (fileType === "transfers") {
-            return {
-              agency_id: agencyId,
-              provider: item.name,
-              vehicle_type: "Car",
-              price: item.price
-            };
-          }
-
-          return null;
-        }).filter(Boolean);
-
-        const { error } = await supabase
-          .from(table)
-          .insert(insertData);
-
-        // 🧹 cleanup temp file (IMPORTANT for Render)
-        fs.unlink(req.file.path, () => {});
-
-        if (error) throw error;
-
-        return res.json({
-          success: true,
-          agencyId,
-          fileType,
-          uploadedRows: insertData.length,
-          message: "Uploaded to Supabase successfully"
-        });
-
-      } catch (err) {
         console.error(err);
 
         return res.status(500).json({
           success: false,
           error: err.message
         });
-      }
-    })
-
-    .on("error", (err) => {
-      console.error(err);
-
-      return res.status(500).json({
-        success: false,
-        error: err.message
       });
+
+  } catch (err) {
+
+    console.error(err);
+
+    return res.status(500).json({
+      success: false,
+      error: err.message
     });
+  }
+
 });
 
 module.exports = router;
