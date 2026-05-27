@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 router.get('/', (req, res) => {
+
   const agencyKey = req.query.key || 'bodrless-test-key';
   const agencyName = req.query.name || 'Your Travel Agent';
   const apiBase = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
@@ -165,20 +166,27 @@ router.get('/', (req, res) => {
       const div = document.createElement("div");
       div.className = "package";
 
+      const transportPrice = p?.transport?.price || 0;
+      const hotelPrice = p?.hotel?.pricePerNight || 0;
+      const nights = p?.summary?.nights || 1;
+      const transferPrice = p?.transfers?.price || 0;
+
       const total =
-        (p.summary?.totalPrice ||
-        (p.transport?.price || 0) +
-        (p.hotel?.pricePerNight || 0) * (p.summary?.nights || 3) +
-        (p.transfers?.price || 0));
+        p?.summary?.totalPrice ||
+        (transportPrice + (hotelPrice * nights) + transferPrice);
 
       div.innerHTML = \`
         <b>Package \${i + 1}</b><br/><br/>
 
-        ✈️ Transport: \${p.transport?.provider || "Flight"}<br/>
-        🏨 Hotel: \${p.hotel?.name || "Hotel"}<br/>
-        🚗 Transfers: Included<br/><br/>
+        ✈️ \${p?.transport?.providerName || p?.transport?.airline || "Transport"}<br/>
+        🏨 \${p?.hotel?.name || "Hotel"}<br/>
+        🚗 \${p?.transfers?.provider || "Transfer"}<br/><br/>
 
-        <span class="price">$ \${total}</span> per person<br/>
+        📅 \${p?.summary?.dates || ""}<br/>
+        👥 \${p?.summary?.passengers || 1} travellers<br/><br/>
+
+        <span class="price">$ \${Math.round(total)}</span> total<br/>
+        <small>$ \${p?.summary?.pricePerPerson || 0} per person</small><br/>
 
         <button class="book">Book Now</button>
       \`;
@@ -187,6 +195,7 @@ router.get('/', (req, res) => {
     }
 
     async function send() {
+
       const text = input.value.trim();
       if (!text) return;
 
@@ -194,6 +203,7 @@ router.get('/', (req, res) => {
       input.value = "";
 
       try {
+
         const res = await fetch("${apiBase}/api/trips/orchestrate", {
           method: "POST",
           headers: {
@@ -210,20 +220,22 @@ router.get('/', (req, res) => {
         const data = await res.json();
         console.log("[BODRLESS]", data);
 
-        const packages = data.packages || [];
+        const packages = Array.isArray(data?.packages)
+          ? data.packages
+          : [];
 
-        if (!packages.length) {
-          addMsg("No packages found", "bot");
+        if (packages.length === 0) {
+          addMsg("No travel packages found for your request.", "bot");
           return;
         }
 
-        addMsg("Here are your trip packages 👇", "bot");
+        addMsg(\`Here are \${packages.length} trip options 👇\`, "bot");
 
         packages.slice(0, 4).forEach((p, i) => addPackage(p, i));
 
       } catch (e) {
         console.log(e);
-        addMsg("Error loading packages", "bot");
+        addMsg("Unable to load packages right now. Please try again.", "bot");
       }
     }
 

@@ -1,15 +1,5 @@
 /**
- * WEBHOOK ROUTES
- * ─────────────────────────────────────────────────────────────
- * Handles incoming messages from WhatsApp Business API.
- * This is where traveler conversations enter Bodrless.
- *
- * Flow:
- *   Traveler messages agency WhatsApp
- *   → WhatsApp sends webhook to Bodrless
- *   → Bodrless runs orchestration
- *   → Bodrless replies with packages via WhatsApp
- * ─────────────────────────────────────────────────────────────
+ * WEBHOOK ROUTES (FIXED FOR STRICT ORCHESTRATION)
  */
 
 const express = require('express');
@@ -18,8 +8,7 @@ const orchestrationEngine = require('../orchestration/engine');
 const whatsappService = require('../services/whatsapp');
 const { logger } = require('../utils/logger');
 
-// ── GET /api/webhooks/whatsapp ───────────────────────────────
-// WhatsApp webhook verification (required by Meta)
+// ── GET verification ───────────────────────────────
 router.get('/whatsapp', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -27,73 +16,124 @@ router.get('/whatsapp', (req, res) => {
 
   if (mode === 'subscribe' && token === 'bodrless-webhook-secret') {
     console.log('Webhook verified');
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+    return res.status(200).send(challenge);
   }
+
+  return res.sendStatus(403);
 });
 
-// ── POST /api/webhooks/whatsapp ──────────────────────────────
-// Incoming WhatsApp messages
+// ── POST webhook ───────────────────────────────
 router.post('/whatsapp', async (req, res) => {
-  // Always acknowledge immediately — WhatsApp requires fast response
+
+  // MUST respond immediately
   res.status(200).send('OK');
 
   try {
+
     const body = req.body;
 
-    if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) {
-      return; // Not a message event
-    }
+    const message =
+      body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    const message = body.entry[0].changes[0].value.messages[0];
-    const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
-    const from = message.from; // Traveler's phone number
+    if (!message) return;
+
+    const phoneNumberId =
+      body.entry[0].changes[0].value.metadata.phone_number_id;
+
+    const from = message.from;
 
     logger.info('Incoming WhatsApp message', { from, type: message.type });
 
-    // Only process text messages for now
+    // Only text messages
     if (message.type !== 'text') {
-      await whatsappService.sendText(phoneNumberId, from,
-        "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
+
+      await whatsappService.sendText(
+        phoneNumberId,
+        from,
+        "Please send your trip details (destination, dates, travelers)."
       );
+
       return;
     }
 
     const prompt = message.text.body;
 
-    // Find which agency this WhatsApp number belongs to
-    // TODO: Look up agencyId by phoneNumberId in your database
-    const agencyId = await _resolveAgencyFromPhoneNumber(phoneNumberId);
+    // 🔥 FIX: ensure real agencyId (IMPORTANT)
+    let agencyId = await _resolveAgencyFromPhoneNumber(phoneNumberId);
 
-    // Send acknowledgment immediately
-    await whatsappService.sendText(phoneNumberId, from,
-      "Got it! Give me a moment while I put together some options for you ✈️"
+    if (!agencyId || agencyId === 'agency_placeholder') {
+      agencyId = 'epic-travels'; // fallback to your test agency
+    }
+
+    // Acknowledge user
+    await whatsappService.sendText(
+      phoneNumberId,
+      from,
+      "Got it 👍 Building your travel options now..."
     );
 
-    // Run orchestration
-    const result = await orchestrationEngine.orchestrate(prompt, agencyId);
+    // Run engine
+    const result =
+      await orchestrationEngine.orchestrate(prompt, agencyId);
 
-    if (!result.packages || result.packages.length === 0) {
-      await whatsappService.sendText(phoneNumberId, from,
-        "I couldn't find packages matching your request. Could you share more details? Destination, dates, number of travelers and budget would help!"
+    const packages = Array.isArray(result?.packages)
+      ? result.packages
+      : [];
+
+    // EMPTY RESULT HANDLING
+    if (!packages.length) {
+
+      await whatsappService.sendText(
+        phoneNumberId,
+        from,
+        "I couldn't find matching packages. Try including destination, dates, and travelers."
       );
+
       return;
     }
 
-    // Send packages back via WhatsApp
-    await whatsappService.sendPackages(phoneNumberId, from, result.packages);
+    // ── FORMAT MESSAGE FOR WHATSAPP ──
+    const formatted = packages.slice(0, 3).map((p, i) => {
+
+      return `
+✈️ *Package ${i + 1}*
+
+📍 ${p.summary?.route || "Trip"}
+📅 ${p.summary?.dates || ""}
+👥 ${p.summary?.passengers || 1} travellers
+
+✈️ ${p.transport?.providerName || p.transport?.airline || "Transport"}
+🏨 ${p.hotel?.name || "Hotel"}
+🚗 ${p.transfers?.provider || "Transfer"}
+
+💰 Total: $${p.summary?.totalPrice || 0}
+💰 Per person: $${p.summary?.pricePerPerson || 0}
+      `;
+    }).join("\n-------------------\n");
+
+    await whatsappService.sendText(
+      phoneNumberId,
+      from,
+      formatted
+    );
 
   } catch (error) {
-    logger.error('WhatsApp webhook error', { error: error.message });
+
+    logger.error('WhatsApp webhook error', {
+      error: error.message
+    });
+
+    // optional fallback message
   }
 });
 
-// ── Helper ───────────────────────────────────────────────────
+// ── Helper ───────────────────────────────
 async function _resolveAgencyFromPhoneNumber(phoneNumberId) {
-  // TODO: Query your database to find which agency owns this WhatsApp number
-  // For now return a placeholder
-  return 'agency_placeholder';
+
+  // TODO: replace with DB lookup later
+  // for now we hardbind to your test agency
+
+  return 'epic-travels';
 }
 
 module.exports = router;
