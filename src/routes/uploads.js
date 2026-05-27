@@ -1,7 +1,7 @@
 const express = require("express");
 const multer = require("multer");
 const csv = require("csv-parser");
-const fs = require("fs"); // ✅ FIX 1
+const fs = require("fs");
 const supabase = require("../utils/supabase");
 
 const router = express.Router();
@@ -49,7 +49,7 @@ function extractPrice(data, values) {
 }
 
 // ─────────────────────────────────────────────
-// POST UPLOAD (SUPABASE VERSION FIXED)
+// UPLOAD ROUTE
 // ─────────────────────────────────────────────
 router.post("/", upload.single("inventory"), async (req, res) => {
   if (!req.file) {
@@ -74,28 +74,9 @@ router.post("/", upload.single("inventory"), async (req, res) => {
       const values = Object.values(data);
 
       results.push({
-        type: fileType || detectType(data),
-
-        name:
-          data.hotel_name ||
-          data.airline ||
-          data.name ||
-          values[0] ||
-          "Unknown",
-
-        location:
-          data.city ||
-          data.location ||
-          data.origin ||
-          values[1] ||
-          "",
-
-        destination:
-          data.destination ||
-          data.country ||
-          values[2] ||
-          "",
-
+        name: data.hotel_name || data.airline || data.name || values[0] || "Unknown",
+        location: data.city || data.location || data.origin || values[1] || "",
+        destination: data.destination || data.country || values[2] || "",
         origin: data.origin || "",
         airline: data.airline || "",
         price: extractPrice(data, values),
@@ -121,9 +102,13 @@ router.post("/", upload.single("inventory"), async (req, res) => {
           });
         }
 
-        // ─────────────────────────────
-        // BULK INSERT (FASTER + CLEANER)
-        // ─────────────────────────────
+        if (!results.length) {
+          return res.status(400).json({
+            success: false,
+            error: "CSV is empty or unreadable"
+          });
+        }
+
         const insertData = results.map(item => {
           if (fileType === "hotels") {
             return {
@@ -163,13 +148,16 @@ router.post("/", upload.single("inventory"), async (req, res) => {
           .from(table)
           .insert(insertData);
 
+        // 🧹 cleanup temp file (IMPORTANT for Render)
+        fs.unlink(req.file.path, () => {});
+
         if (error) throw error;
 
         return res.json({
           success: true,
           agencyId,
           fileType,
-          uploadedRows: results.length,
+          uploadedRows: insertData.length,
           message: "Uploaded to Supabase successfully"
         });
 
