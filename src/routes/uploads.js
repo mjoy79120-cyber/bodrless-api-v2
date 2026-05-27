@@ -1,6 +1,7 @@
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
+const path = require("path");
 const csv = require("csv-parser");
 
 const router = express.Router();
@@ -9,14 +10,13 @@ const upload = multer({
   dest: "src/uploads/inventory/"
 });
 
-let uploadedInventory = [];
-
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
-function detectType(data, values) {
+function detectType(data) {
 
-  const searchable = JSON.stringify(data).toLowerCase();
+  const searchable =
+    JSON.stringify(data).toLowerCase();
 
   if (
     searchable.includes("flight") ||
@@ -56,7 +56,8 @@ function extractPrice(data, values) {
     data.price,
     data.amount,
     data.price_usd,
-    data.cost
+    data.cost,
+    data["price_per_night_usd"]
   ];
 
   for (const field of possiblePriceFields) {
@@ -68,7 +69,7 @@ function extractPrice(data, values) {
     }
   }
 
-  // fallback scan entire row
+  // fallback scan
   for (const value of values) {
 
     const cleaned =
@@ -100,6 +101,17 @@ router.post("/", upload.single("inventory"), (req, res) => {
     });
   }
 
+  const agencyId = req.body.agencyId;
+  const fileType = req.body.fileType;
+
+  if (!agencyId || !fileType) {
+
+    return res.status(400).json({
+      success: false,
+      error: "agencyId and fileType required"
+    });
+  }
+
   const results = [];
 
   fs.createReadStream(req.file.path)
@@ -112,7 +124,8 @@ router.post("/", upload.single("inventory"), (req, res) => {
 
       const normalized = {
 
-        type: detectType(data, values),
+        type:
+          fileType || detectType(data),
 
         provider:
           data["Agent Name"] ||
@@ -120,6 +133,7 @@ router.post("/", upload.single("inventory"), (req, res) => {
           "",
 
         name:
+          data.hotel_name ||
           data["Item Description"] ||
           data.provider_or_name ||
           data.name ||
@@ -130,8 +144,8 @@ router.post("/", upload.single("inventory"), (req, res) => {
 
         location:
           data["Specific City/Region"] ||
-          data.origin_or_city ||
           data.city ||
+          data.origin_or_city ||
           data.origin ||
           data.location ||
           values[1] ||
@@ -139,9 +153,18 @@ router.post("/", upload.single("inventory"), (req, res) => {
 
         destination:
           data.Country ||
+          data.country ||
           data.destination_or_country ||
           data.destination ||
           values[2] ||
+          "",
+
+        origin:
+          data.origin ||
+          "",
+
+        airline:
+          data.airline ||
           "",
 
         price:
@@ -159,7 +182,8 @@ router.post("/", upload.single("inventory"), (req, res) => {
           "Available",
 
         category:
-          data.category || "",
+          data.category ||
+          "",
 
         notes:
           data.duration_or_notes ||
@@ -172,22 +196,40 @@ router.post("/", upload.single("inventory"), (req, res) => {
 
     .on("end", () => {
 
-      uploadedInventory = results;
+      // CREATE AGENCY FOLDER IF MISSING
+      const agencyFolder =
+        `src/data/agencies/${agencyId}`;
 
-      // SAVE JSON
+      if (!fs.existsSync(agencyFolder)) {
+
+        fs.mkdirSync(
+          agencyFolder,
+          { recursive: true }
+        );
+      }
+
+      // SAVE INVENTORY
+      const savePath =
+        path.join(
+          agencyFolder,
+          `${fileType}.json`
+        );
+
       fs.writeFileSync(
-        "src/data/uploadedInventory.json",
+        savePath,
         JSON.stringify(results, null, 2)
       );
 
       console.log(
-        "Normalized Inventory:",
-        uploadedInventory
+        `${fileType} inventory saved for ${agencyId}`
       );
 
       res.json({
         success: true,
+        agencyId,
+        fileType,
         uploadedRows: results.length,
+        savedTo: savePath,
         inventory: results
       });
     })
@@ -203,16 +245,35 @@ router.post("/", upload.single("inventory"), (req, res) => {
     });
 });
 
-
 // ─────────────────────────────────────────────
 // GET INVENTORY
 // ─────────────────────────────────────────────
-router.get("/", (req, res) => {
+router.get("/:agencyId/:fileType", (req, res) => {
+
+  const { agencyId, fileType } = req.params;
+
+  const filePath =
+    `src/data/agencies/${agencyId}/${fileType}.json`;
+
+  if (!fs.existsSync(filePath)) {
+
+    return res.status(404).json({
+      success: false,
+      error: "Inventory not found"
+    });
+  }
+
+  const inventory =
+    JSON.parse(
+      fs.readFileSync(filePath)
+    );
 
   res.json({
     success: true,
-    total: uploadedInventory.length,
-    inventory: uploadedInventory
+    agencyId,
+    fileType,
+    total: inventory.length,
+    inventory
   });
 });
 
