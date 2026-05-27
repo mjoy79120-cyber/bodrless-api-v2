@@ -1,13 +1,12 @@
 const express = require("express");
 const multer = require("multer");
-const fs = require("fs");
-const path = require("path");
 const csv = require("csv-parser");
+const supabase = require("../utils/supabase");
 
 const router = express.Router();
 
 const upload = multer({
-  dest: "src/uploads/inventory/"
+  dest: "tmp/"
 });
 
 // ─────────────────────────────────────────────
@@ -15,34 +14,21 @@ const upload = multer({
 // ─────────────────────────────────────────────
 function detectType(data) {
 
-  const searchable =
-    JSON.stringify(data).toLowerCase();
+  const searchable = JSON.stringify(data).toLowerCase();
 
-  if (
-    searchable.includes("flight") ||
-    searchable.includes("airline")
-  ) {
+  if (searchable.includes("flight") || searchable.includes("airline")) {
     return "flight";
   }
 
-  if (
-    searchable.includes("hotel") ||
-    searchable.includes("resort") ||
-    searchable.includes("villa")
-  ) {
+  if (searchable.includes("hotel") || searchable.includes("resort") || searchable.includes("villa")) {
     return "hotel";
   }
 
-  if (
-    searchable.includes("transfer") ||
-    searchable.includes("airport pickup")
-  ) {
+  if (searchable.includes("transfer") || searchable.includes("airport pickup")) {
     return "transfer";
   }
 
-  if (
-    searchable.includes("bus")
-  ) {
+  if (searchable.includes("bus")) {
     return "bus";
   }
 
@@ -61,40 +47,29 @@ function extractPrice(data, values) {
   ];
 
   for (const field of possiblePriceFields) {
-
     const num = Number(field);
-
-    if (!isNaN(num) && num > 0) {
-      return num;
-    }
+    if (!isNaN(num) && num > 0) return num;
   }
 
-  // fallback scan
   for (const value of values) {
-
-    const cleaned =
-      String(value)
-        .replace("$", "")
-        .replace(",", "")
-        .trim();
+    const cleaned = String(value)
+      .replace("$", "")
+      .replace(",", "")
+      .trim();
 
     const num = Number(cleaned);
-
-    if (!isNaN(num) && num > 0) {
-      return num;
-    }
+    if (!isNaN(num) && num > 0) return num;
   }
 
   return 0;
 }
 
 // ─────────────────────────────────────────────
-// POST UPLOAD
+// POST UPLOAD (SUPABASE VERSION)
 // ─────────────────────────────────────────────
-router.post("/", upload.single("inventory"), (req, res) => {
+router.post("/", upload.single("inventory"), async (req, res) => {
 
   if (!req.file) {
-
     return res.status(400).json({
       success: false,
       error: "No file uploaded"
@@ -105,7 +80,6 @@ router.post("/", upload.single("inventory"), (req, res) => {
   const fileType = req.body.fileType;
 
   if (!agencyId || !fileType) {
-
     return res.status(400).json({
       success: false,
       error: "agencyId and fileType required"
@@ -115,123 +89,108 @@ router.post("/", upload.single("inventory"), (req, res) => {
   const results = [];
 
   fs.createReadStream(req.file.path)
-
     .pipe(csv())
-
     .on("data", (data) => {
 
       const values = Object.values(data);
 
       const normalized = {
 
-        type:
-          fileType || detectType(data),
-
-        provider:
-          data["Agent Name"] ||
-          data.provider ||
-          "",
+        type: fileType || detectType(data),
 
         name:
           data.hotel_name ||
-          data["Item Description"] ||
-          data.provider_or_name ||
-          data.name ||
-          data.hotel ||
           data.airline ||
+          data.name ||
           values[0] ||
           "Unknown",
 
         location:
-          data["Specific City/Region"] ||
           data.city ||
-          data.origin_or_city ||
-          data.origin ||
           data.location ||
+          data.origin ||
           values[1] ||
           "",
 
         destination:
-          data.Country ||
-          data.country ||
-          data.destination_or_country ||
           data.destination ||
+          data.country ||
           values[2] ||
           "",
 
-        origin:
-          data.origin ||
-          "",
+        origin: data.origin || "",
+        airline: data.airline || "",
 
-        airline:
-          data.airline ||
-          "",
+        price: extractPrice(data, values),
 
-        price:
-          extractPrice(data, values),
-
-        capacity:
-          Number(
-            data["Available Units"] ||
-            data.capacity ||
-            0
-          ),
-
-        availability:
-          data["Availability Status"] ||
-          "Available",
-
-        category:
-          data.category ||
-          "",
-
-        notes:
-          data.duration_or_notes ||
-          data.notes ||
-          ""
+        provider: data.provider || data["Agent Name"] || ""
       };
 
       results.push(normalized);
     })
 
-    .on("end", () => {
+    .on("end", async () => {
 
-      // CREATE AGENCY FOLDER IF MISSING
-      const agencyFolder =
-        `src/data/agencies/${agencyId}`;
+      try {
 
-      if (!fs.existsSync(agencyFolder)) {
+        // ─────────────────────────────────────────
+        // SAVE TO SUPABASE (CORE FIX)
+        // ─────────────────────────────────────────
 
-        fs.mkdirSync(
-          agencyFolder,
-          { recursive: true }
-        );
+        for (const item of results) {
+
+          if (fileType === "hotels") {
+
+            await supabase.from("hotels").insert({
+              agency_id: agencyId,
+              name: item.name,
+              location: item.location,
+              price_per_night: item.price,
+              stars: 4,
+              rating: 4.5
+            });
+          }
+
+          if (fileType === "flights") {
+
+            await supabase.from("flights").insert({
+              agency_id: agencyId,
+              origin: item.origin,
+              destination: item.destination,
+              airline: item.airline,
+              price: item.price,
+              flight_number: "AUTO"
+            });
+          }
+
+          if (fileType === "transfers") {
+
+            await supabase.from("transfers").insert({
+              agency_id: agencyId,
+              provider: item.name,
+              vehicle_type: "Car",
+              price: item.price
+            });
+          }
+        }
+
+        res.json({
+          success: true,
+          agencyId,
+          fileType,
+          uploadedRows: results.length,
+          message: "Uploaded to Supabase successfully"
+        });
+
+      } catch (err) {
+
+        console.error(err);
+
+        res.status(500).json({
+          success: false,
+          error: err.message
+        });
       }
-
-      // SAVE INVENTORY
-      const savePath =
-        path.join(
-          agencyFolder,
-          `${fileType}.json`
-        );
-
-      fs.writeFileSync(
-        savePath,
-        JSON.stringify(results, null, 2)
-      );
-
-      console.log(
-        `${fileType} inventory saved for ${agencyId}`
-      );
-
-      res.json({
-        success: true,
-        agencyId,
-        fileType,
-        uploadedRows: results.length,
-        savedTo: savePath,
-        inventory: results
-      });
     })
 
     .on("error", (err) => {
@@ -243,38 +202,6 @@ router.post("/", upload.single("inventory"), (req, res) => {
         error: err.message
       });
     });
-});
-
-// ─────────────────────────────────────────────
-// GET INVENTORY
-// ─────────────────────────────────────────────
-router.get("/:agencyId/:fileType", (req, res) => {
-
-  const { agencyId, fileType } = req.params;
-
-  const filePath =
-    `src/data/agencies/${agencyId}/${fileType}.json`;
-
-  if (!fs.existsSync(filePath)) {
-
-    return res.status(404).json({
-      success: false,
-      error: "Inventory not found"
-    });
-  }
-
-  const inventory =
-    JSON.parse(
-      fs.readFileSync(filePath)
-    );
-
-  res.json({
-    success: true,
-    agencyId,
-    fileType,
-    total: inventory.length,
-    inventory
-  });
 });
 
 module.exports = router;

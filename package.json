@@ -9,6 +9,7 @@
     "test": "jest"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.106.2",
     "axios": "^1.6.0",
     "cors": "^2.8.5",
     "csv-parser": "^3.2.1",

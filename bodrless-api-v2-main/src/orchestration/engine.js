@@ -1,38 +1,24 @@
-/**
- * BODRLESS ORCHESTRATION ENGINE (STRICT INVENTORY MODE)
- */
+const { v4: uuidv4 } = require("uuid");
+const { logger } = require("../utils/logger");
 
-const { v4: uuidv4 } = require('uuid');
-const fs = require("fs");
-const path = require("path");
-const { logger } = require('../utils/logger');
+const supabase = require("../utils/supabase");
 
-const flightService = require('../integrations/flights');
-const hotelService = require('../integrations/hotels');
-const transferService = require('../integrations/transfers');
-const busService = require('../integrations/buses');
+const flightService = require("../integrations/flights");
+const hotelService = require("../integrations/hotels");
+const transferService = require("../integrations/transfers");
+const busService = require("../integrations/buses");
 
-const { parsePrompt } = require('./promptParser');
-const { rankPackages } = require('./packageRanker');
+const { parsePrompt } = require("./promptParser");
+const { rankPackages } = require("./packageRanker");
 
 // ─────────────────────────────
-// LOAD AGENCY INVENTORY
+// HELPERS
 // ─────────────────────────────
-function loadAgencyInventory(agencyId, type) {
-  try {
-    const filePath = path.join(
-      __dirname,
-      `../data/agencies/${agencyId}/${type}.json`
-    );
-
-    if (!fs.existsSync(filePath)) return [];
-
-    return JSON.parse(fs.readFileSync(filePath));
-
-  } catch (err) {
-    console.error(err);
-    return [];
-  }
+function normalize(text = "") {
+  return String(text)
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(",", "");
 }
 
 class OrchestrationEngine {
@@ -50,28 +36,60 @@ class OrchestrationEngine {
     try {
 
       const tripParams = await parsePrompt(prompt);
+      tripParams.agencyId = agencyId;
 
       this._validateTripParams(tripParams);
 
-      // PASS AGENCY ID DOWN
-      const flightsResult = await this._searchFlights(tripParams, agencyId);
-      const busesResult = await this._searchBuses(tripParams);
-      const hotelsResult = await this._searchHotels(tripParams, agencyId);
-      const transfers = loadAgencyInventory(agencyId, "transfers");
+      // ─────────────────────────────
+      // SUPABASE DATA LOADING
+      // ─────────────────────────────
+      const [flightsRes, hotelsRes, transfersRes] = await Promise.all([
 
-      const packages = await this._coordinateResults({
-        flights: flightsResult,
-        buses: busesResult,
-        hotels: hotelsResult,
-        transfers,
+        supabase.from("flights").select("*").eq("agency_id", agencyId),
+
+        supabase.from("hotels").select("*").eq("agency_id", agencyId),
+
+        supabase.from("transfers").select("*").eq("agency_id", agencyId)
+      ]);
+
+      const flights = flightsRes.data || [];
+      const hotels = hotelsRes.data || [];
+      const transfers = transfersRes.data || [];
+
+      // ─────────────────────────────
+      // STRICT MATCHING (NO FALLBACK DATA)
+      // ─────────────────────────────
+      const matchedFlights = flights.filter(f =>
+        normalize(f.destination).includes(normalize(tripParams.destination))
+      );
+
+      const matchedHotels = hotels.filter(h =>
+        normalize(h.location || h.destination).includes(normalize(tripParams.destination))
+      );
+
+      const matchedTransfers = transfers;
+
+      // 🚨 STRICT MODE: if no inventory → return empty
+      if (!matchedFlights.length || !matchedHotels.length) {
+        return {
+          sessionId,
+          packages: [],
+          tripParams,
+          generatedAt: new Date().toISOString(),
+          message: "No agency inventory found for this route"
+        };
+      }
+
+      const packages = this._buildPackages({
+        flights: matchedFlights,
+        hotels: matchedHotels,
+        transfers: matchedTransfers,
         tripParams
       });
 
-      const rankedPackages = rankPackages(packages, tripParams);
-
       return {
         sessionId,
-        packages: rankedPackages.slice(0, 4),
+        packages: rankPackages(packages, tripParams).slice(0, 4),
         tripParams,
         generatedAt: new Date().toISOString(),
         processingTimeMs: Date.now() - startTime
@@ -88,139 +106,44 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // FLIGHTS (AGENCY ONLY + API fallback)
+  // PACKAGE BUILDER
   // ─────────────────────────────
-  async _searchFlights(tripParams, agencyId) {
-
-    const flights = loadAgencyInventory(agencyId, "flights");
-
-    const matched = flights.filter(f =>
-      (f.destination || "")
-        .toLowerCase()
-        .includes(tripParams.destination.toLowerCase())
-    );
-
-    if (matched.length) return matched;
-
-    try {
-      return await flightService.search({
-        origin: tripParams.origin,
-        destination: tripParams.destination,
-        departureDate: tripParams.departureDate,
-        returnDate: tripParams.returnDate,
-        passengers: tripParams.passengers
-      });
-    } catch {
-      return [];
-    }
-  }
-
-  // ─────────────────────────────
-  // HOTELS (AGENCY ONLY + API fallback)
-  // ─────────────────────────────
-  async _searchHotels(tripParams, agencyId) {
-
-    const hotels = loadAgencyInventory(agencyId, "hotels");
-
-    const matched = hotels.filter(h =>
-      (h.location || h.destination || "")
-        .toLowerCase()
-        .includes(tripParams.destination.toLowerCase())
-    );
-
-    if (matched.length) return matched;
-
-    try {
-      return await hotelService.search({
-        destination: tripParams.destination,
-        checkIn: tripParams.departureDate,
-        checkOut: tripParams.returnDate,
-        guests: tripParams.passengers
-      });
-    } catch {
-      return [];
-    }
-  }
-
-  // ─────────────────────────────
-  // BUSES (API ONLY)
-  // ─────────────────────────────
-  async _searchBuses(tripParams) {
-    if (!tripParams.requiresBus) return [];
-
-    try {
-      return await busService.search(tripParams);
-    } catch {
-      return [];
-    }
-  }
-
-  // ─────────────────────────────
-  // CORE PACKAGE BUILDER (STRICT MODE)
-  // ─────────────────────────────
-  async _coordinateResults({
-    flights,
-    buses,
-    hotels,
-    transfers,
-    tripParams
-  }) {
-
-    // STRICT MODE: no inventory = no packages
-    if (!flights.length || !hotels.length) {
-      return [];
-    }
-
-    const transportPool =
-      tripParams.requiresFlight ? flights : [...flights, ...buses];
+  _buildPackages({ flights, hotels, transfers, tripParams }) {
 
     const packages = [];
 
     for (let i = 0; i < 4; i++) {
 
-      const transport = transportPool[i % transportPool.length];
+      const flight = flights[i % flights.length];
       const hotel = hotels[i % hotels.length];
       const transfer = transfers[i % transfers.length];
 
-      packages.push(this._buildPackage({
-        transport,
+      const transportCost = (flight.price || 0) * (tripParams.passengers || 1);
+      const hotelCost = (hotel.price_per_night || hotel.pricePerNight || 0) * (tripParams.nights || 1);
+      const transferCost = transfer?.price || 0;
+
+      const totalPrice = transportCost + hotelCost + transferCost;
+
+      packages.push({
+        packageId: uuidv4(),
+
+        summary: {
+          route: `${tripParams.origin} → ${tripParams.destination}`,
+          dates: `${tripParams.departureDate} → ${tripParams.returnDate}`,
+          passengers: tripParams.passengers,
+          nights: tripParams.nights,
+          totalPrice: Math.round(totalPrice),
+          pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1))
+        },
+
+        transport: flight,
         hotel,
-        transfer,
-        tripParams
-      }));
+        transfers: transfer,
+        status: "available"
+      });
     }
 
     return packages;
-  }
-
-  // ─────────────────────────────
-  // PACKAGE STRUCTURE
-  // ─────────────────────────────
-  _buildPackage({ transport, hotel, transfer, tripParams }) {
-
-    const transportCost = (transport.price || 0) * (tripParams.passengers || 1);
-    const hotelCost = (hotel.pricePerNight || 0) * (tripParams.nights || 1);
-    const transferCost = transfer?.price || 0;
-
-    const totalPrice = transportCost + hotelCost + transferCost;
-
-    return {
-      packageId: uuidv4(),
-
-      summary: {
-        route: `${tripParams.origin} → ${tripParams.destination}`,
-        dates: `${tripParams.departureDate} → ${tripParams.returnDate}`,
-        passengers: tripParams.passengers,
-        nights: tripParams.nights,
-        totalPrice: Math.round(totalPrice),
-        pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1))
-      },
-
-      transport,
-      hotel,
-      transfers: transfer,
-      status: "available"
-    };
   }
 
   // ─────────────────────────────
