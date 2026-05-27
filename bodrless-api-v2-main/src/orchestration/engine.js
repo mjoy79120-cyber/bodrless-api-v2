@@ -1,46 +1,70 @@
 /**
- * BODRLESS ORCHESTRATION ENGINE (FIXED)
- * ─────────────────────────────────────────────
+ * BODRLESS ORCHESTRATION ENGINE (STRICT INVENTORY MODE)
  */
 
 const { v4: uuidv4 } = require('uuid');
+const fs = require("fs");
+const path = require("path");
 const { logger } = require('../utils/logger');
+
 const flightService = require('../integrations/flights');
 const hotelService = require('../integrations/hotels');
 const transferService = require('../integrations/transfers');
 const busService = require('../integrations/buses');
+
 const { parsePrompt } = require('./promptParser');
 const { rankPackages } = require('./packageRanker');
 
-const {
-  hotels: inventoryHotels = [],
-  transfers: inventoryTransfers = []
-} = require('../data/mockInventory');
+// ─────────────────────────────
+// LOAD AGENCY INVENTORY
+// ─────────────────────────────
+function loadAgencyInventory(agencyId, type) {
+  try {
+    const filePath = path.join(
+      __dirname,
+      `../data/agencies/${agencyId}/${type}.json`
+    );
+
+    if (!fs.existsSync(filePath)) return [];
+
+    return JSON.parse(fs.readFileSync(filePath));
+
+  } catch (err) {
+    console.error(err);
+    return [];
+  }
+}
 
 class OrchestrationEngine {
 
   async orchestrate(prompt, agencyId) {
+
     const sessionId = uuidv4();
     const startTime = Date.now();
 
-    logger.info(`[${sessionId}] Orchestration started`, { agencyId, prompt });
+    logger.info(`[${sessionId}] Orchestration started`, {
+      agencyId,
+      prompt
+    });
 
     try {
+
       const tripParams = await parsePrompt(prompt);
 
       this._validateTripParams(tripParams);
 
-      const [flightResults, busResults, hotelResults] = await Promise.allSettled([
-        this._searchFlights(tripParams),
-        this._searchBuses(tripParams),
-        this._searchHotels(tripParams),
-      ]);
+      // PASS AGENCY ID DOWN
+      const flightsResult = await this._searchFlights(tripParams, agencyId);
+      const busesResult = await this._searchBuses(tripParams);
+      const hotelsResult = await this._searchHotels(tripParams, agencyId);
+      const transfers = loadAgencyInventory(agencyId, "transfers");
 
       const packages = await this._coordinateResults({
-        flights: flightResults.status === 'fulfilled' ? flightResults.value : [],
-        buses: busResults.status === 'fulfilled' ? busResults.value : [],
-        hotels: hotelResults.status === 'fulfilled' ? hotelResults.value : [],
-        tripParams,
+        flights: flightsResult,
+        buses: busesResult,
+        hotels: hotelsResult,
+        transfers,
+        tripParams
       });
 
       const rankedPackages = rankPackages(packages, tripParams);
@@ -50,17 +74,33 @@ class OrchestrationEngine {
         packages: rankedPackages.slice(0, 4),
         tripParams,
         generatedAt: new Date().toISOString(),
-        processingTimeMs: Date.now() - startTime,
+        processingTimeMs: Date.now() - startTime
       };
 
     } catch (error) {
-      logger.error(`[${sessionId}] Orchestration failed`, { error: error.message });
+
+      logger.error(`[${sessionId}] Orchestration failed`, {
+        error: error.message
+      });
+
       throw error;
     }
   }
 
-  async _searchFlights(tripParams) {
-    if (!tripParams.requiresFlight) return [];
+  // ─────────────────────────────
+  // FLIGHTS (AGENCY ONLY + API fallback)
+  // ─────────────────────────────
+  async _searchFlights(tripParams, agencyId) {
+
+    const flights = loadAgencyInventory(agencyId, "flights");
+
+    const matched = flights.filter(f =>
+      (f.destination || "")
+        .toLowerCase()
+        .includes(tripParams.destination.toLowerCase())
+    );
+
+    if (matched.length) return matched;
 
     try {
       return await flightService.search({
@@ -68,13 +108,43 @@ class OrchestrationEngine {
         destination: tripParams.destination,
         departureDate: tripParams.departureDate,
         returnDate: tripParams.returnDate,
-        passengers: tripParams.passengers,
+        passengers: tripParams.passengers
       });
     } catch {
       return [];
     }
   }
 
+  // ─────────────────────────────
+  // HOTELS (AGENCY ONLY + API fallback)
+  // ─────────────────────────────
+  async _searchHotels(tripParams, agencyId) {
+
+    const hotels = loadAgencyInventory(agencyId, "hotels");
+
+    const matched = hotels.filter(h =>
+      (h.location || h.destination || "")
+        .toLowerCase()
+        .includes(tripParams.destination.toLowerCase())
+    );
+
+    if (matched.length) return matched;
+
+    try {
+      return await hotelService.search({
+        destination: tripParams.destination,
+        checkIn: tripParams.departureDate,
+        checkOut: tripParams.returnDate,
+        guests: tripParams.passengers
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  // ─────────────────────────────
+  // BUSES (API ONLY)
+  // ─────────────────────────────
   async _searchBuses(tripParams) {
     if (!tripParams.requiresBus) return [];
 
@@ -85,44 +155,32 @@ class OrchestrationEngine {
     }
   }
 
-  async _searchHotels(tripParams) {
-    try {
-      return await hotelService.search({
-        destination: tripParams.destination,
-        checkIn: tripParams.departureDate,
-        checkOut: tripParams.returnDate,
-        guests: tripParams.passengers,
-        budget: tripParams.budget,
-      });
-    } catch {
+  // ─────────────────────────────
+  // CORE PACKAGE BUILDER (STRICT MODE)
+  // ─────────────────────────────
+  async _coordinateResults({
+    flights,
+    buses,
+    hotels,
+    transfers,
+    tripParams
+  }) {
+
+    // STRICT MODE: no inventory = no packages
+    if (!flights.length || !hotels.length) {
       return [];
     }
-  }
-
-  // ─────────────────────────────────────────────
-  // CORE PACKAGE BUILDER
-  // ─────────────────────────────────────────────
-  async _coordinateResults({ flights, buses, hotels, tripParams }) {
 
     const transportPool =
       tripParams.requiresFlight ? flights : [...flights, ...buses];
-
-    const safeTransport =
-      transportPool.length ? transportPool : this._mockFlights();
-
-    const safeHotels =
-      hotels.length ? hotels : this._mockHotels(tripParams.destination);
-
-    const safeTransfers =
-      inventoryTransfers.length ? inventoryTransfers : [];
 
     const packages = [];
 
     for (let i = 0; i < 4; i++) {
 
-      const transport = safeTransport[i % safeTransport.length];
-      const hotel = safeHotels[i % safeHotels.length];
-      const transfer = safeTransfers[i % safeTransfers.length] || this._mockTransfer(tripParams.destination);
+      const transport = transportPool[i % transportPool.length];
+      const hotel = hotels[i % hotels.length];
+      const transfer = transfers[i % transfers.length];
 
       packages.push(this._buildPackage({
         transport,
@@ -135,14 +193,14 @@ class OrchestrationEngine {
     return packages;
   }
 
-  // ─────────────────────────────────────────────
-  // FIXED PACKAGE STRUCTURE (THIS IS THE KEY)
-  // ─────────────────────────────────────────────
+  // ─────────────────────────────
+  // PACKAGE STRUCTURE
+  // ─────────────────────────────
   _buildPackage({ transport, hotel, transfer, tripParams }) {
 
     const transportCost = (transport.price || 0) * (tripParams.passengers || 1);
     const hotelCost = (hotel.pricePerNight || 0) * (tripParams.nights || 1);
-    const transferCost = transfer.price || 0;
+    const transferCost = transfer?.price || 0;
 
     const totalPrice = transportCost + hotelCost + transferCost;
 
@@ -154,69 +212,24 @@ class OrchestrationEngine {
         dates: `${tripParams.departureDate} → ${tripParams.returnDate}`,
         passengers: tripParams.passengers,
         nights: tripParams.nights,
-
-        // 🔥 CRITICAL FOR WIDGET
         totalPrice: Math.round(totalPrice),
         pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1))
       },
 
-      transport: {
-        providerName: transport.airline || transport.provider || "Flight",
-        flightNumber: transport.flightNumber || "",
-        departureTime: transport.departureTime || "",
-        arrivalTime: transport.arrivalTime || "",
-        price: transport.price || 0
-      },
-
-      hotel: {
-        name: hotel.name || "Hotel",
-        stars: hotel.stars || 3,
-        rating: hotel.rating || 4.0,
-        pricePerNight: hotel.pricePerNight || 0
-      },
-
-      transfers: {
-        provider: transfer.provider || "Transfer Service",
-        vehicleType: transfer.vehicleType || "Car",
-        price: transfer.price || 0
-      },
-
+      transport,
+      hotel,
+      transfers: transfer,
       status: "available"
     };
   }
 
-  // ─────────────────────────────────────────────
-  // MOCKS
-  // ─────────────────────────────────────────────
-  _mockFlights() {
-    return [{
-      airline: "Kenya Airways",
-      flightNumber: "KQ 784",
-      departureTime: "10:00",
-      arrivalTime: "20:00",
-      price: 450
-    }];
-  }
-
-  _mockHotels(destination) {
-    return [{
-      name: `${destination} Grand Hotel`,
-      stars: 5,
-      pricePerNight: 180,
-      rating: 4.7
-    }];
-  }
-
-  _mockTransfer(destination) {
-    return {
-      provider: "Bodrless Transfers",
-      vehicleType: "SUV",
-      price: 40
-    };
-  }
-
+  // ─────────────────────────────
+  // VALIDATION
+  // ─────────────────────────────
   _validateTripParams(params) {
-    if (!params.destination) throw new Error("Missing destination");
+    if (!params.destination) {
+      throw new Error("Missing destination");
+    }
   }
 }
 
