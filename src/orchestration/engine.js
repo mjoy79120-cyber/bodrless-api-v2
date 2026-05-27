@@ -1,4 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
+const fs = require("fs");
+const path = require("path");
+
 const { logger } = require('../utils/logger');
 
 const flightService = require('../integrations/flights');
@@ -8,8 +11,36 @@ const busService = require('../integrations/buses');
 const { parsePrompt } = require('./promptParser');
 const { rankPackages } = require('./packageRanker');
 
-const uploadedInventory =
-  require('../data/uploadedInventory.json');
+// ─────────────────────────────
+// LOAD AGENCY INVENTORY
+// ─────────────────────────────
+function loadAgencyInventory(
+  agencyId,
+  fileType
+) {
+
+  try {
+
+    const filePath = path.join(
+      __dirname,
+      `../data/agencies/${agencyId}/${fileType}.json`
+    );
+
+    if (!fs.existsSync(filePath)) {
+      return [];
+    }
+
+    return JSON.parse(
+      fs.readFileSync(filePath)
+    );
+
+  } catch (err) {
+
+    console.error(err);
+
+    return [];
+  }
+}
 
 class OrchestrationEngine {
 
@@ -27,19 +58,32 @@ class OrchestrationEngine {
       const tripParams =
         await parsePrompt(prompt);
 
-      this._validateTripParams(tripParams);
+      // ADD AGENCY
+      tripParams.agencyId =
+        agencyId;
+
+      this._validateTripParams(
+        tripParams
+      );
 
       const flights =
-        await this._searchFlights(tripParams);
+        await this._searchFlights(
+          tripParams
+        );
 
       const hotels =
-        await this._searchHotels(tripParams);
+        await this._searchHotels(
+          tripParams
+        );
 
       const transfers =
-        await this._searchTransfers(tripParams);
+        await this._searchTransfers(
+          tripParams
+        );
 
       const packages =
         this._buildPackages({
+
           flights,
           hotels,
           transfers,
@@ -47,22 +91,29 @@ class OrchestrationEngine {
         });
 
       return {
+
         sessionId,
-        packages: rankPackages(
-          packages,
-          tripParams
-        ).slice(0, 4),
+
+        packages:
+          rankPackages(
+            packages,
+            tripParams
+          ).slice(0, 4),
 
         tripParams,
+
         generatedAt:
           new Date().toISOString()
       };
 
     } catch (error) {
 
-      logger.error("Engine failure", {
-        error: error.message
-      });
+      logger.error(
+        "Engine failure",
+        {
+          error: error.message
+        }
+      );
 
       throw error;
     }
@@ -71,9 +122,14 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // FLEXIBLE MATCHING
   // ─────────────────────────────
-  _matchesDestination(item, destination) {
+  _matchesDestination(
+    item,
+    destination
+  ) {
 
-    if (!destination) return true;
+    if (!destination) {
+      return true;
+    }
 
     const search =
       destination.toLowerCase();
@@ -83,6 +139,8 @@ class OrchestrationEngine {
       ${item.location || ""}
       ${item.name || ""}
       ${item.notes || ""}
+      ${item.origin || ""}
+      ${item.airline || ""}
     `.toLowerCase();
 
     return combined.includes(search);
@@ -91,52 +149,78 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // FLIGHTS
   // ─────────────────────────────
-  async _searchFlights(tripParams) {
+  async _searchFlights(
+    tripParams
+  ) {
 
     const uploadedFlights =
-      uploadedInventory.filter(item =>
+      loadAgencyInventory(
+        tripParams.agencyId,
+        "flights"
+      );
 
-        (
-          item.type === 'flight' ||
-          item.type === 'bus'
-        ) &&
+    const matchedFlights =
+      uploadedFlights.filter(flight =>
 
         this._matchesDestination(
-          item,
+          flight,
           tripParams.destination
         )
       );
 
-    if (uploadedFlights.length) {
+    if (matchedFlights.length) {
 
-      return uploadedFlights.map(flight => ({
+      return matchedFlights.map(
+        flight => ({
 
-        airline:
-          flight.name ||
+          airline:
+            flight.airline ||
 
-          flight.provider ||
+            flight.name ||
 
-          "Flight",
+            "Flight",
 
-        flightNumber: "BDR001",
+          flightNumber:
+            "BDR001",
 
-        departureTime: "08:00",
+          departureTime:
+            "08:00",
 
-        arrivalTime: "12:00",
+          arrivalTime:
+            "12:00",
 
-        price:
-          Number(flight.price || 0)
-      }));
+          origin:
+            flight.origin || "",
+
+          destination:
+            flight.destination || "",
+
+          price:
+            Number(
+              flight.price || 0
+            )
+        })
+      );
     }
 
     try {
 
       return await flightService.search({
-        origin: tripParams.origin,
-        destination: tripParams.destination,
-        departureDate: tripParams.departureDate,
-        returnDate: tripParams.returnDate,
-        passengers: tripParams.passengers,
+
+        origin:
+          tripParams.origin,
+
+        destination:
+          tripParams.destination,
+
+        departureDate:
+          tripParams.departureDate,
+
+        returnDate:
+          tripParams.returnDate,
+
+        passengers:
+          tripParams.passengers,
       });
 
     } catch {
@@ -148,44 +232,68 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // HOTELS
   // ─────────────────────────────
-  async _searchHotels(tripParams) {
+  async _searchHotels(
+    tripParams
+  ) {
 
     const uploadedHotels =
-      uploadedInventory.filter(item =>
+      loadAgencyInventory(
+        tripParams.agencyId,
+        "hotels"
+      );
 
-        item.type === 'hotel' &&
+    const matchedHotels =
+      uploadedHotels.filter(hotel =>
 
         this._matchesDestination(
-          item,
+          hotel,
           tripParams.destination
         )
       );
 
-    if (uploadedHotels.length) {
+    if (matchedHotels.length) {
 
-      return uploadedHotels.map(hotel => ({
+      return matchedHotels.map(
+        hotel => ({
 
-        name:
-          hotel.name ||
+          name:
+            hotel.name ||
 
-          "Hotel",
+            "Hotel",
 
-        stars: 4,
+          stars: 4,
 
-        rating: 4.5,
+          rating: 4.5,
 
-        pricePerNight:
-          Number(hotel.price || 0)
-      }));
+          category:
+            hotel.category || "",
+
+          location:
+            hotel.location || "",
+
+          pricePerNight:
+            Number(
+              hotel.price || 0
+            )
+        })
+      );
     }
 
     try {
 
       return await hotelService.search({
-        destination: tripParams.destination,
-        checkIn: tripParams.departureDate,
-        checkOut: tripParams.returnDate,
-        guests: tripParams.passengers,
+
+        destination:
+          tripParams.destination,
+
+        checkIn:
+          tripParams.departureDate,
+
+        checkOut:
+          tripParams.returnDate,
+
+        guests:
+          tripParams.passengers,
       });
 
     } catch {
@@ -197,41 +305,67 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // TRANSFERS
   // ─────────────────────────────
-  async _searchTransfers(tripParams) {
+  async _searchTransfers(
+    tripParams
+  ) {
 
     const uploadedTransfers =
-      uploadedInventory.filter(item =>
-
-        item.type === 'transfer' &&
-
-        this._matchesDestination(
-          item,
-          tripParams.destination
-        )
+      loadAgencyInventory(
+        tripParams.agencyId,
+        "transfers"
       );
 
-    return uploadedTransfers.map(t => ({
+    const matchedTransfers =
+      uploadedTransfers.filter(
+        transfer =>
 
-      provider:
-        t.name ||
+          this._matchesDestination(
+            transfer,
+            tripParams.destination
+          )
+      );
 
-        "Transfer",
+    if (matchedTransfers.length) {
 
-      vehicleType: "Transfer",
+      return matchedTransfers.map(
+        t => ({
 
-      price:
-        Number(t.price || 0)
-    }));
+          provider:
+            t.name ||
+
+            t.provider ||
+
+            "Transfer",
+
+          vehicleType:
+            t.category ||
+
+            "Transfer",
+
+          location:
+            t.location || "",
+
+          price:
+            Number(
+              t.price || 0
+            )
+        })
+      );
+    }
+
+    return [];
   }
 
   // ─────────────────────────────
   // BUILD PACKAGES
   // ─────────────────────────────
   _buildPackages({
+
     flights,
     hotels,
     transfers,
     tripParams
+
   }) {
 
     const safeFlights =
@@ -242,9 +376,11 @@ class OrchestrationEngine {
     const safeHotels =
       hotels.length
         ? hotels
-        : [this._mockHotel(
-            tripParams.destination
-          )];
+        : [
+            this._mockHotel(
+              tripParams.destination
+            )
+          ];
 
     const safeTransfers =
       transfers.length
@@ -271,14 +407,21 @@ class OrchestrationEngine {
         ];
 
       const totalPrice =
+
         (flight.price || 0) +
-        ((hotel.pricePerNight || 0) *
-          (tripParams.nights || 1)) +
+
+        (
+          (hotel.pricePerNight || 0) *
+
+          (tripParams.nights || 1)
+        ) +
+
         (transfer.price || 0);
 
       packages.push({
 
-        packageId: uuidv4(),
+        packageId:
+          uuidv4(),
 
         summary: {
 
@@ -295,18 +438,25 @@ class OrchestrationEngine {
 
           pricePerPerson:
             Math.round(
+
               totalPrice /
-              (tripParams.passengers || 1)
+
+              (
+                tripParams.passengers || 1
+              )
             )
         },
 
-        transport: flight,
+        transport:
+          flight,
 
         hotel,
 
-        transfers: transfer,
+        transfers:
+          transfer,
 
-        status: "available"
+        status:
+          "available"
       });
     }
 
@@ -320,13 +470,17 @@ class OrchestrationEngine {
 
     return {
 
-      airline: "Kenya Airways",
+      airline:
+        "Kenya Airways",
 
-      flightNumber: "KQ100",
+      flightNumber:
+        "KQ100",
 
-      departureTime: "08:00",
+      departureTime:
+        "08:00",
 
-      arrivalTime: "12:00",
+      arrivalTime:
+        "12:00",
 
       price: 400
     };
@@ -354,13 +508,16 @@ class OrchestrationEngine {
       provider:
         "Bodrless Transfers",
 
-      vehicleType: "SUV",
+      vehicleType:
+        "SUV",
 
       price: 40
     };
   }
 
-  _validateTripParams(params) {
+  _validateTripParams(
+    params
+  ) {
 
     if (!params.destination) {
 
