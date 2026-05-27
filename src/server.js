@@ -1,9 +1,11 @@
 require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
+const https = require('https');
 const { logger } = require('./utils/logger');
 
 const tripRoutes = require('./routes/trips');
@@ -11,16 +13,19 @@ const webhookRoutes = require('./routes/webhooks');
 const agencyRoutes = require('./routes/agencies');
 const healthRoutes = require('./routes/health');
 const uploadRoutes = require('./routes/uploads');
+const widgetRoutes = require('./routes/widget');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// ─── Security Middleware ───────────────────────────────────
+// ✅ IMPORTANT: Render PORT safety
+const PORT = process.env.PORT;
+
+// ─── Security Middleware ─────────────────────────────
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
-// Rate limiting — protect against abuse
+// ─── Rate Limiting ───────────────────────────────────
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -29,9 +34,7 @@ const limiter = rateLimit({
 
 app.use('/api/', limiter);
 
-// ─── Routes ───────────────────────────────────────────────
-const widgetRoutes = require('./routes/widget');
-
+// ─── Routes ──────────────────────────────────────────
 app.use('/api/trips', tripRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/agencies', agencyRoutes);
@@ -40,19 +43,19 @@ app.use('/api/uploads', uploadRoutes);
 app.use('/health', healthRoutes);
 app.use('/widget.js', widgetRoutes);
 
-// Serve widget test page
+// ─── Test Page ────────────────────────────────────────
 app.get('/test-widget.html', (req, res) => {
   res.sendFile(path.join(__dirname, '../test-widget.html'));
 });
 
-// Root route
+// ─── Root ─────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     message: 'Bodrless API is running'
   });
 });
 
-// ─── Global Error Handler ─────────────────────────────────
+// ─── Global Error Handler ─────────────────────────────
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
 
@@ -65,14 +68,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
+// ─────────────────────────────────────────────
+// ✅ FIX: Render-safe server start
+// ─────────────────────────────────────────────
+const server = app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Bodrless API running on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV}`);
 });
 
-// ─── Keep alive ping every 4 minutes ──────────────────────
-const https = require('https');
-
+// ─── Keep alive ping (safe guarded) ────────────────
 setInterval(() => {
   https
     .get('https://bodrless-api-v2.onrender.com/health', (res) => {
