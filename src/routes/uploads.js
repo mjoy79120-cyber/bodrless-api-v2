@@ -1,6 +1,7 @@
 const express = require("express");
 const multer = require("multer");
 const csv = require("csv-parser");
+const fs = require("fs"); // ✅ FIX 1
 const supabase = require("../utils/supabase");
 
 const router = express.Router();
@@ -13,30 +14,17 @@ const upload = multer({
 // HELPERS
 // ─────────────────────────────────────────────
 function detectType(data) {
-
   const searchable = JSON.stringify(data).toLowerCase();
 
-  if (searchable.includes("flight") || searchable.includes("airline")) {
-    return "flight";
-  }
-
-  if (searchable.includes("hotel") || searchable.includes("resort") || searchable.includes("villa")) {
-    return "hotel";
-  }
-
-  if (searchable.includes("transfer") || searchable.includes("airport pickup")) {
-    return "transfer";
-  }
-
-  if (searchable.includes("bus")) {
-    return "bus";
-  }
+  if (searchable.includes("flight") || searchable.includes("airline")) return "flight";
+  if (searchable.includes("hotel") || searchable.includes("resort") || searchable.includes("villa")) return "hotel";
+  if (searchable.includes("transfer") || searchable.includes("airport pickup")) return "transfer";
+  if (searchable.includes("bus")) return "bus";
 
   return "unknown";
 }
 
 function extractPrice(data, values) {
-
   const possiblePriceFields = [
     data["Rate (USD)"],
     data.price,
@@ -52,11 +40,7 @@ function extractPrice(data, values) {
   }
 
   for (const value of values) {
-    const cleaned = String(value)
-      .replace("$", "")
-      .replace(",", "")
-      .trim();
-
+    const cleaned = String(value).replace("$", "").replace(",", "").trim();
     const num = Number(cleaned);
     if (!isNaN(num) && num > 0) return num;
   }
@@ -65,15 +49,11 @@ function extractPrice(data, values) {
 }
 
 // ─────────────────────────────────────────────
-// POST UPLOAD (SUPABASE VERSION)
+// POST UPLOAD (SUPABASE VERSION FIXED)
 // ─────────────────────────────────────────────
 router.post("/", upload.single("inventory"), async (req, res) => {
-
   if (!req.file) {
-    return res.status(400).json({
-      success: false,
-      error: "No file uploaded"
-    });
+    return res.status(400).json({ success: false, error: "No file uploaded" });
   }
 
   const agencyId = req.body.agencyId;
@@ -91,11 +71,9 @@ router.post("/", upload.single("inventory"), async (req, res) => {
   fs.createReadStream(req.file.path)
     .pipe(csv())
     .on("data", (data) => {
-
       const values = Object.values(data);
 
-      const normalized = {
-
+      results.push({
         type: fileType || detectType(data),
 
         name:
@@ -120,61 +98,74 @@ router.post("/", upload.single("inventory"), async (req, res) => {
 
         origin: data.origin || "",
         airline: data.airline || "",
-
         price: extractPrice(data, values),
-
         provider: data.provider || data["Agent Name"] || ""
-      };
-
-      results.push(normalized);
+      });
     })
 
     .on("end", async () => {
-
       try {
+        const tableMap = {
+          hotels: "hotels",
+          flights: "flights",
+          transfers: "transfers",
+          bus: "buses"
+        };
 
-        // ─────────────────────────────────────────
-        // SAVE TO SUPABASE (CORE FIX)
-        // ─────────────────────────────────────────
+        const table = tableMap[fileType];
 
-        for (const item of results) {
+        if (!table) {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid fileType"
+          });
+        }
 
+        // ─────────────────────────────
+        // BULK INSERT (FASTER + CLEANER)
+        // ─────────────────────────────
+        const insertData = results.map(item => {
           if (fileType === "hotels") {
-
-            await supabase.from("hotels").insert({
+            return {
               agency_id: agencyId,
               name: item.name,
               location: item.location,
               price_per_night: item.price,
               stars: 4,
               rating: 4.5
-            });
+            };
           }
 
           if (fileType === "flights") {
-
-            await supabase.from("flights").insert({
+            return {
               agency_id: agencyId,
               origin: item.origin,
               destination: item.destination,
               airline: item.airline,
               price: item.price,
               flight_number: "AUTO"
-            });
+            };
           }
 
           if (fileType === "transfers") {
-
-            await supabase.from("transfers").insert({
+            return {
               agency_id: agencyId,
               provider: item.name,
               vehicle_type: "Car",
               price: item.price
-            });
+            };
           }
-        }
 
-        res.json({
+          return null;
+        }).filter(Boolean);
+
+        const { error } = await supabase
+          .from(table)
+          .insert(insertData);
+
+        if (error) throw error;
+
+        return res.json({
           success: true,
           agencyId,
           fileType,
@@ -183,10 +174,9 @@ router.post("/", upload.single("inventory"), async (req, res) => {
         });
 
       } catch (err) {
-
         console.error(err);
 
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
           error: err.message
         });
@@ -194,10 +184,9 @@ router.post("/", upload.single("inventory"), async (req, res) => {
     })
 
     .on("error", (err) => {
-
       console.error(err);
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         error: err.message
       });
