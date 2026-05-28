@@ -62,9 +62,8 @@ router.post('/whatsapp', async (req, res) => {
 
     const prompt = message.text.body;
 
-    // Find which agency this WhatsApp number belongs to
-    // TODO: Look up agencyId by phoneNumberId in your database
-    const agencyId = await _resolveAgencyFromPhoneNumber(phoneNumberId);
+    // TEMP: hardcoded for test number — replace with DB lookup when going live
+    const agencyId = 'epic-travels';
 
     // Send acknowledgment immediately
     await whatsappService.sendText(phoneNumberId, from,
@@ -88,12 +87,5 @@ router.post('/whatsapp', async (req, res) => {
     logger.error('WhatsApp webhook error', { error: error.message });
   }
 });
-
-// ── Helper ───────────────────────────────────────────────────
-async function _resolveAgencyFromPhoneNumber(phoneNumberId) {
-  // TODO: Query your database to find which agency owns this WhatsApp number
-  // For now return a placeholder
-  return 'agency_placeholder';
-}
 
 module.exports = router;
