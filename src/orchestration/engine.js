@@ -1,10 +1,10 @@
-const { v4: uuidv4 } = require('uuid');
+const { v4: uuidv4 } = require("uuid");
 const supabase = require("../utils/supabase");
 
-const { logger } = require('../utils/logger');
+const { logger } = require("../utils/logger");
 
-const { parsePrompt } = require('./promptParser');
-const { rankPackages } = require('./packageRanker');
+const { parsePrompt } = require("./promptParser");
+const { rankPackages } = require("./packageRanker");
 
 class OrchestrationEngine {
 
@@ -25,7 +25,10 @@ class OrchestrationEngine {
       tripParams.agencyId =
         agencyId;
 
-      console.log("PARSED TRIP PARAMS:", tripParams);
+      console.log(
+        "PARSED TRIP PARAMS:",
+        tripParams
+      );
 
       this._validateTripParams(
         tripParams
@@ -46,9 +49,20 @@ class OrchestrationEngine {
           tripParams
         );
 
-      console.log("FINAL FLIGHTS:", flights.length);
-      console.log("FINAL HOTELS:", hotels.length);
-      console.log("FINAL TRANSFERS:", transfers.length);
+      console.log(
+        "FINAL FLIGHTS:",
+        flights
+      );
+
+      console.log(
+        "FINAL HOTELS:",
+        hotels
+      );
+
+      console.log(
+        "FINAL TRANSFERS:",
+        transfers
+      );
 
       const packages =
         this._buildPackages({
@@ -89,67 +103,57 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // SMART MATCHING
+  // NORMALIZE TEXT
+  // ─────────────────────────────
+  _normalize(text) {
+
+    return String(text || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, "")
+      .trim();
+  }
+
+  // ─────────────────────────────
+  // DESTINATION MATCHING
   // ─────────────────────────────
   _matchesDestination(
     item,
-    destination,
-    destinationCode
+    destination
   ) {
 
-    if (!destination && !destinationCode) {
+    if (!destination) {
       return true;
     }
 
-    const normalize = (text) => {
-      return String(text || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9 ]/g, "")
-        .trim();
-    };
-
-    const searchDestination =
-      normalize(destination);
-
-    const searchCode =
-      normalize(destinationCode);
+    const search =
+      this._normalize(destination);
 
     const combined =
-      normalize(`
+      this._normalize(`
+
         ${item.destination || ""}
         ${item.location || ""}
+        ${item.city || ""}
+        ${item.country || ""}
         ${item.name || ""}
-        ${item.notes || ""}
+        ${item.hotel_name || ""}
         ${item.origin || ""}
         ${item.airline || ""}
         ${item.provider || ""}
-        ${item.city || ""}
-        ${item.country || ""}
+        ${item.notes || ""}
       `);
 
-    console.log("SEARCH DEST:", searchDestination);
-    console.log("SEARCH CODE:", searchCode);
+    console.log("SEARCH:", search);
     console.log("COMBINED:", combined);
 
-    // direct destination match
     if (
-      searchDestination &&
-      combined.includes(searchDestination)
+      combined.includes(search)
     ) {
       return true;
     }
 
-    // airport code match
-    if (
-      searchCode &&
-      combined.includes(searchCode)
-    ) {
-      return true;
-    }
-
-    // word-by-word matching
     const words =
-      searchDestination.split(" ");
+      search.split(" ");
 
     return words.some(word =>
       word.length > 2 &&
@@ -173,51 +177,83 @@ class OrchestrationEngine {
 
     if (error) {
 
-      console.error("FLIGHT ERROR:", error);
+      console.error(
+        "FLIGHT ERROR:",
+        error
+      );
 
       return [];
     }
 
-    console.log("SUPABASE FLIGHTS:", data);
+    console.log(
+      "SUPABASE FLIGHTS:",
+      data
+    );
 
     const matchedFlights =
       (data || []).filter(flight =>
 
         this._matchesDestination(
           flight,
-          tripParams.destination,
-          tripParams.destinationCode
+          tripParams.destination
         )
       );
 
-    console.log("MATCHED FLIGHTS:", matchedFlights);
+    console.log(
+      "MATCHED FLIGHTS:",
+      matchedFlights
+    );
 
     return matchedFlights.map(
       flight => ({
 
         airline:
+
           flight.airline ||
+
+          flight.provider ||
+
           "Flight",
 
         flightNumber:
+
           flight.flight_number ||
+
           "AUTO",
 
         departureTime:
+
+          flight.departure_time ||
+
           "08:00",
 
         arrivalTime:
+
+          flight.arrival_time ||
+
           "12:00",
 
         origin:
-          flight.origin || "",
+
+          flight.origin ||
+
+          "",
 
         destination:
-          flight.destination || "",
+
+          flight.destination ||
+
+          "",
 
         price:
+
           Number(
-            flight.price || 0
+
+            flight.price ||
+
+            flight.amount ||
+
+            0
           )
       })
     );
@@ -239,47 +275,79 @@ class OrchestrationEngine {
 
     if (error) {
 
-      console.error("HOTEL ERROR:", error);
+      console.error(
+        "HOTEL ERROR:",
+        error
+      );
 
       return [];
     }
 
-    console.log("SUPABASE HOTELS:", data);
+    console.log(
+      "SUPABASE HOTELS:",
+      data
+    );
 
     const matchedHotels =
       (data || []).filter(hotel =>
 
         this._matchesDestination(
           hotel,
-          tripParams.destination,
-          tripParams.destinationCode
+          tripParams.destination
         )
       );
 
-    console.log("MATCHED HOTELS:", matchedHotels);
+    console.log(
+      "MATCHED HOTELS:",
+      matchedHotels
+    );
 
     return matchedHotels.map(
       hotel => ({
 
         name:
+
           hotel.name ||
+
+          hotel.hotel_name ||
+
           "Hotel",
 
         stars:
-          hotel.stars || 4,
+
+          Number(
+            hotel.stars || 4
+          ),
 
         rating:
-          hotel.rating || 4.5,
+
+          Number(
+            hotel.rating || 4.5
+          ),
 
         category:
+
           hotel.category || "",
 
         location:
-          hotel.location || "",
+
+          hotel.location ||
+
+          hotel.city ||
+
+          "",
 
         pricePerNight:
+
           Number(
-            hotel.price_per_night || 0
+
+            hotel.price_per_night ||
+
+            hotel.price ||
+
+            hotel.rate ||
+
+            0
           )
       })
     );
@@ -301,42 +369,65 @@ class OrchestrationEngine {
 
     if (error) {
 
-      console.error("TRANSFER ERROR:", error);
+      console.error(
+        "TRANSFER ERROR:",
+        error
+      );
 
       return [];
     }
 
-    console.log("SUPABASE TRANSFERS:", data);
+    console.log(
+      "SUPABASE TRANSFERS:",
+      data
+    );
 
     const matchedTransfers =
       (data || []).filter(t =>
 
         this._matchesDestination(
           t,
-          tripParams.destination,
-          tripParams.destinationCode
+          tripParams.destination
         )
       );
 
-    console.log("MATCHED TRANSFERS:", matchedTransfers);
+    console.log(
+      "MATCHED TRANSFERS:",
+      matchedTransfers
+    );
 
     return matchedTransfers.map(
       t => ({
 
         provider:
+
           t.provider ||
+
+          t.name ||
+
           "Transfer",
 
         vehicleType:
+
           t.vehicle_type ||
+
           "Transfer",
 
         location:
-          t.location || "",
+
+          t.location ||
+
+          "",
 
         price:
+
           Number(
-            t.price || 0
+
+            t.price ||
+
+            t.amount ||
+
+            0
           )
       })
     );
@@ -362,7 +453,9 @@ class OrchestrationEngine {
 
     ) {
 
-      console.log("NO INVENTORY FOUND");
+      console.log(
+        "NO INVENTORY FOUND"
+      );
 
       return [];
     }
@@ -370,8 +463,11 @@ class OrchestrationEngine {
     const packages = [];
 
     const maxLength = Math.max(
+
       flights.length || 1,
+
       hotels.length || 1,
+
       transfers.length || 1
     );
 
@@ -382,16 +478,19 @@ class OrchestrationEngine {
     ) {
 
       const flight =
+
         flights[
           i % (flights.length || 1)
         ] || {};
 
       const hotel =
+
         hotels[
           i % (hotels.length || 1)
         ] || {};
 
       const transfer =
+
         transfers[
           i % (transfers.length || 1)
         ] || {};
