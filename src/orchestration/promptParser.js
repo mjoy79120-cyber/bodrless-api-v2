@@ -7,15 +7,13 @@
  * Input:  "Nairobi to Zanzibar, 2 people, mid-budget, last week of April"
  * Output: { origin: 'NBO', destination: 'ZNZ', passengers: 2, ... }
  *
- * This uses an LLM (Claude) to parse the prompt reliably.
- * We always validate the output before passing to the engine.
+ * Uses Google Gemini to parse the prompt reliably.
  * ─────────────────────────────────────────────────────────────
  */
 
 const axios = require('axios');
 const { logger } = require('../utils/logger');
 
-// African city → airport/location code mapping
 const CITY_CODES = {
   // EAST AFRICA
   'nairobi': 'NBO', 'nbo': 'NBO',
@@ -104,22 +102,18 @@ const CITY_CODES = {
   'bogota': 'BOG',
 };
 
-// Routes where bus is preferred/available over flight
 const BUS_ROUTES = [
-  ['NBO', 'MBA'], // Nairobi ↔ Mombasa
-  ['NBO', 'KGL'], // Nairobi ↔ Kigali (via bus)
-  ['NBO', 'EBB'], // Nairobi ↔ Kampala
+  ['NBO', 'MBA'],
+  ['NBO', 'KGL'],
+  ['NBO', 'EBB'],
 ];
 
-/**
- * Parse a natural language prompt into structured trip parameters
- */
 async function parsePrompt(prompt) {
   try {
-    const parsed = await _parseWithLLM(prompt);
+    const parsed = await _parseWithGemini(prompt);
     return _enrichParams(parsed);
   } catch (error) {
-    logger.warn('LLM parsing failed, falling back to rule-based parser', {
+    logger.warn('Gemini parsing failed, falling back to rule-based parser', {
       error: error.message
     });
     const parsed = _parseWithRules(prompt);
@@ -127,18 +121,13 @@ async function parsePrompt(prompt) {
   }
 }
 
-/**
- * Use Claude to parse the prompt — most accurate
- */
-async function _parseWithLLM(prompt) {
+async function _parseWithGemini(prompt) {
   const response = await axios.post(
-    'https://api.anthropic.com/v1/messages',
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
     {
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
-      messages: [{
-        role: 'user',
-        content: `Extract trip details from this travel prompt and return ONLY valid JSON. No explanation, no markdown.
+      contents: [{
+        parts: [{
+          text: `Extract trip details from this travel prompt and return ONLY valid JSON. No explanation, no markdown, no code blocks.
 
 Prompt: "${prompt}"
 
@@ -158,57 +147,70 @@ Return JSON with these fields:
 IMPORTANT:
 - Always use full city names, never abbreviations or codes (not "LA", use "los angeles"; not "CPT", use "cape town")
 - origin and destination must be full city names in lowercase
+- origin is where the traveler is coming FROM, destination is where they want to GO
 - Today's date: ${new Date().toISOString().split('T')[0]}
 - If dates are relative (e.g. "next month", "last week of April"), resolve them to actual dates.
 - If a field is not mentioned, use null for strings and 1 for passengers.`
-      }]
+        }]
+      }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 500,
+      }
     },
     {
       headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
+        'Content-Type': 'application/json'
       }
     }
   );
 
-  const content = response.data.content[0].text;
+  const content = response.data.candidates[0].content.parts[0].text;
   const cleaned = content.replace(/```json|```/g, '').trim();
   return JSON.parse(cleaned);
 }
 
-/**
- * Rule-based fallback parser
- */
 function _parseWithRules(prompt) {
   const lower = prompt.toLowerCase();
 
-  // Extract passengers
   const passengerMatch = lower.match(/(\d+)\s*(people|persons|passengers|adults|pax)/);
   const passengers = passengerMatch ? parseInt(passengerMatch[1]) : 1;
 
-  // Extract budget
   let budget = 'mid';
   if (lower.includes('luxury') || lower.includes('5 star') || lower.includes('five star')) budget = 'luxury';
   else if (lower.includes('high budget') || lower.includes('premium') || lower.includes('business')) budget = 'high';
   else if (lower.includes('low budget') || lower.includes('budget') || lower.includes('cheap')) budget = 'low';
   else if (lower.includes('mid budget') || lower.includes('moderate')) budget = 'mid';
 
-  // Extract cities — match longer names first to avoid partial matches
+  // Sort longest first to avoid partial matches
   const sortedCities = Object.keys(CITY_CODES).sort((a, b) => b.length - a.length);
   let origin = null;
   let destination = null;
-  for (const city of sortedCities) {
-    if (lower.includes(city)) {
-      if (!origin) origin = city;
-      else if (!destination && city !== origin) {
-        destination = city;
-        break;
+
+  // Look for "from X to Y" pattern first
+  const fromToMatch = lower.match(/from\s+([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s*,|\s*\d|$)/);
+  if (fromToMatch) {
+    const fromCity = fromToMatch[1].trim();
+    const toCity = fromToMatch[2].trim();
+    for (const city of sortedCities) {
+      if (fromCity.includes(city) && !origin) origin = city;
+      if (toCity.includes(city) && !destination) destination = city;
+    }
+  }
+
+  // Fallback: pick first two cities found
+  if (!origin || !destination) {
+    for (const city of sortedCities) {
+      if (lower.includes(city)) {
+        if (!origin) origin = city;
+        else if (!destination && city !== origin) {
+          destination = city;
+          break;
+        }
       }
     }
   }
 
-  // Extract nights
   const nightsMatch = lower.match(/(\d+)\s*(nights?|days?)/);
   const nights = nightsMatch ? parseInt(nightsMatch[1]) : 3;
 
@@ -227,9 +229,6 @@ function _parseWithRules(prompt) {
   };
 }
 
-/**
- * Extract an explicit date from the prompt
- */
 function _extractDate(prompt) {
   const months = {
     january: '01', february: '02', march: '03', april: '04',
@@ -269,18 +268,12 @@ function _extractDate(prompt) {
   return null;
 }
 
-/**
- * Default departure date — 2 weeks from today
- */
 function _defaultDepartureDate() {
   const date = new Date();
   date.setDate(date.getDate() + 14);
   return date.toISOString().split('T')[0];
 }
 
-/**
- * Enrich parsed params with derived values
- */
 function _enrichParams(parsed) {
   const originCode = _resolveToCode(parsed.origin);
   const destinationCode = _resolveToCode(parsed.destination);
@@ -307,8 +300,6 @@ function _enrichParams(parsed) {
     budget: parsed.budget || 'mid',
   };
 }
-
-// ── Helper functions ──────────────────────────────────────────
 
 function _resolveToCode(city) {
   if (!city) return null;
