@@ -25,6 +25,8 @@ class OrchestrationEngine {
       tripParams.agencyId =
         agencyId;
 
+      console.log("PARSED TRIP PARAMS:", tripParams);
+
       this._validateTripParams(
         tripParams
       );
@@ -43,6 +45,10 @@ class OrchestrationEngine {
         await this._searchTransfers(
           tripParams
         );
+
+      console.log("FINAL FLIGHTS:", flights.length);
+      console.log("FINAL HOTELS:", hotels.length);
+      console.log("FINAL TRANSFERS:", transfers.length);
 
       const packages =
         this._buildPackages({
@@ -83,39 +89,78 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // FLEXIBLE MATCHING
+  // SMART MATCHING
   // ─────────────────────────────
   _matchesDestination(
     item,
-    destination
+    destination,
+    destinationCode
   ) {
 
-    if (!destination) {
+    if (!destination && !destinationCode) {
       return true;
     }
 
-    const search =
-      destination.toLowerCase();
+    const normalize = (text) => {
+      return String(text || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]/g, "")
+        .trim();
+    };
 
-    const combined = `
-      ${item.destination || ""}
-      ${item.location || ""}
-      ${item.name || ""}
-      ${item.notes || ""}
-      ${item.origin || ""}
-      ${item.airline || ""}
-      ${item.provider || ""}
-    `.toLowerCase();
+    const searchDestination =
+      normalize(destination);
 
-    return combined.includes(search);
+    const searchCode =
+      normalize(destinationCode);
+
+    const combined =
+      normalize(`
+        ${item.destination || ""}
+        ${item.location || ""}
+        ${item.name || ""}
+        ${item.notes || ""}
+        ${item.origin || ""}
+        ${item.airline || ""}
+        ${item.provider || ""}
+        ${item.city || ""}
+        ${item.country || ""}
+      `);
+
+    console.log("SEARCH DEST:", searchDestination);
+    console.log("SEARCH CODE:", searchCode);
+    console.log("COMBINED:", combined);
+
+    // direct destination match
+    if (
+      searchDestination &&
+      combined.includes(searchDestination)
+    ) {
+      return true;
+    }
+
+    // airport code match
+    if (
+      searchCode &&
+      combined.includes(searchCode)
+    ) {
+      return true;
+    }
+
+    // word-by-word matching
+    const words =
+      searchDestination.split(" ");
+
+    return words.some(word =>
+      word.length > 2 &&
+      combined.includes(word)
+    );
   }
 
   // ─────────────────────────────
-  // FLIGHTS (SUPABASE)
+  // FLIGHTS
   // ─────────────────────────────
-  async _searchFlights(
-    tripParams
-  ) {
+  async _searchFlights(tripParams) {
 
     const { data, error } =
       await supabase
@@ -128,31 +173,34 @@ class OrchestrationEngine {
 
     if (error) {
 
-      console.error(error);
+      console.error("FLIGHT ERROR:", error);
 
       return [];
     }
 
+    console.log("SUPABASE FLIGHTS:", data);
+
     const matchedFlights =
-      data.filter(flight =>
+      (data || []).filter(flight =>
 
         this._matchesDestination(
           flight,
-          tripParams.destination
+          tripParams.destination,
+          tripParams.destinationCode
         )
       );
+
+    console.log("MATCHED FLIGHTS:", matchedFlights);
 
     return matchedFlights.map(
       flight => ({
 
         airline:
           flight.airline ||
-
           "Flight",
 
         flightNumber:
           flight.flight_number ||
-
           "AUTO",
 
         departureTime:
@@ -176,11 +224,9 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // HOTELS (SUPABASE)
+  // HOTELS
   // ─────────────────────────────
-  async _searchHotels(
-    tripParams
-  ) {
+  async _searchHotels(tripParams) {
 
     const { data, error } =
       await supabase
@@ -193,26 +239,30 @@ class OrchestrationEngine {
 
     if (error) {
 
-      console.error(error);
+      console.error("HOTEL ERROR:", error);
 
       return [];
     }
 
+    console.log("SUPABASE HOTELS:", data);
+
     const matchedHotels =
-      data.filter(hotel =>
+      (data || []).filter(hotel =>
 
         this._matchesDestination(
           hotel,
-          tripParams.destination
+          tripParams.destination,
+          tripParams.destinationCode
         )
       );
+
+    console.log("MATCHED HOTELS:", matchedHotels);
 
     return matchedHotels.map(
       hotel => ({
 
         name:
           hotel.name ||
-
           "Hotel",
 
         stars:
@@ -236,11 +286,9 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // TRANSFERS (SUPABASE)
+  // TRANSFERS
   // ─────────────────────────────
-  async _searchTransfers(
-    tripParams
-  ) {
+  async _searchTransfers(tripParams) {
 
     const { data, error } =
       await supabase
@@ -253,31 +301,34 @@ class OrchestrationEngine {
 
     if (error) {
 
-      console.error(error);
+      console.error("TRANSFER ERROR:", error);
 
       return [];
     }
 
+    console.log("SUPABASE TRANSFERS:", data);
+
     const matchedTransfers =
-      data.filter(t =>
+      (data || []).filter(t =>
 
         this._matchesDestination(
           t,
-          tripParams.destination
+          tripParams.destination,
+          tripParams.destinationCode
         )
       );
+
+    console.log("MATCHED TRANSFERS:", matchedTransfers);
 
     return matchedTransfers.map(
       t => ({
 
         provider:
           t.provider ||
-
           "Transfer",
 
         vehicleType:
           t.vehicle_type ||
-
           "Transfer",
 
         location:
@@ -303,25 +354,15 @@ class OrchestrationEngine {
 
   }) {
 
-    const safeFlights =
-      flights;
-
-    const safeHotels =
-      hotels;
-
-    const safeTransfers =
-      transfers;
-
-    // NO INVENTORY FOUND
     if (
 
-      !safeFlights.length &&
-
-      !safeHotels.length &&
-
-      !safeTransfers.length
+      !flights.length &&
+      !hotels.length &&
+      !transfers.length
 
     ) {
+
+      console.log("NO INVENTORY FOUND");
 
       return [];
     }
@@ -329,9 +370,9 @@ class OrchestrationEngine {
     const packages = [];
 
     const maxLength = Math.max(
-      safeFlights.length || 1,
-      safeHotels.length || 1,
-      safeTransfers.length || 1
+      flights.length || 1,
+      hotels.length || 1,
+      transfers.length || 1
     );
 
     for (
@@ -341,18 +382,18 @@ class OrchestrationEngine {
     ) {
 
       const flight =
-        safeFlights[
-          i % safeFlights.length
+        flights[
+          i % (flights.length || 1)
         ] || {};
 
       const hotel =
-        safeHotels[
-          i % safeHotels.length
+        hotels[
+          i % (hotels.length || 1)
         ] || {};
 
       const transfer =
-        safeTransfers[
-          i % safeTransfers.length
+        transfers[
+          i % (transfers.length || 1)
         ] || {};
 
       const totalPrice =
@@ -415,9 +456,7 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // VALIDATION
   // ─────────────────────────────
-  _validateTripParams(
-    params
-  ) {
+  _validateTripParams(params) {
 
     if (!params.destination) {
 
