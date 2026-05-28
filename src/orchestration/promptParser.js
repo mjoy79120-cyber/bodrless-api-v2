@@ -16,7 +16,6 @@ const axios = require('axios');
 const { logger } = require('../utils/logger');
 
 // African city → airport/location code mapping
-// Expand this as you add more corridors
 const CITY_CODES = {
   // EAST AFRICA
   'nairobi': 'NBO', 'nbo': 'NBO',
@@ -27,7 +26,7 @@ const CITY_CODES = {
   'kampala': 'EBB', 'entebbe': 'EBB',
   'addis ababa': 'ADD', 'add': 'ADD',
   'diani': 'UKA', 'ukunda': 'UKA',
-  'masai mara': 'MRE', 'mara': 'MRE',
+  'masai mara': 'MRE', 'maasai mara': 'MRE', 'mara': 'MRE',
   'amboseli': 'ASV',
   'kilifi': 'MBA',
   'naivasha': 'NBO',
@@ -96,7 +95,7 @@ const CITY_CODES = {
   // AMERICAS
   'new york': 'JFK', 'nyc': 'JFK', 'jfk': 'JFK',
   'miami': 'MIA', 'mia': 'MIA',
-  'los angeles': 'LAX', 'la': 'LAX',
+  'los angeles': 'LAX', 'lax': 'LAX',
   'toronto': 'YYZ',
   'cancun': 'CUN',
   'mexico city': 'MEX',
@@ -124,7 +123,7 @@ async function parsePrompt(prompt) {
       error: error.message
     });
     const parsed = _parseWithRules(prompt);
-    return _enrichParams(parsed); // Always enrich — this sets originCode, requiresFlight etc
+    return _enrichParams(parsed);
   }
 }
 
@@ -145,8 +144,8 @@ Prompt: "${prompt}"
 
 Return JSON with these fields:
 {
-  "origin": "city name",
-  "destination": "city name", 
+  "origin": "full city name in lowercase (e.g. nairobi, cape town, zanzibar)",
+  "destination": "full city name in lowercase (e.g. nairobi, cape town, zanzibar)",
   "departureDate": "YYYY-MM-DD or null",
   "returnDate": "YYYY-MM-DD or null",
   "passengers": number,
@@ -156,9 +155,12 @@ Return JSON with these fields:
   "preferences": []
 }
 
-Today's date: ${new Date().toISOString().split('T')[0]}
-If dates are relative (e.g. "next month", "last week of April"), resolve them to actual dates.
-If a field is not mentioned, use null for strings and 1 for passengers.`
+IMPORTANT:
+- Always use full city names, never abbreviations or codes (not "LA", use "los angeles"; not "CPT", use "cape town")
+- origin and destination must be full city names in lowercase
+- Today's date: ${new Date().toISOString().split('T')[0]}
+- If dates are relative (e.g. "next month", "last week of April"), resolve them to actual dates.
+- If a field is not mentioned, use null for strings and 1 for passengers.`
       }]
     },
     {
@@ -192,13 +194,17 @@ function _parseWithRules(prompt) {
   else if (lower.includes('low budget') || lower.includes('budget') || lower.includes('cheap')) budget = 'low';
   else if (lower.includes('mid budget') || lower.includes('moderate')) budget = 'mid';
 
-  // Extract cities
+  // Extract cities — match longer names first to avoid partial matches
+  const sortedCities = Object.keys(CITY_CODES).sort((a, b) => b.length - a.length);
   let origin = null;
   let destination = null;
-  for (const [city, code] of Object.entries(CITY_CODES)) {
+  for (const city of sortedCities) {
     if (lower.includes(city)) {
       if (!origin) origin = city;
-      else if (!destination) destination = city;
+      else if (!destination && city !== origin) {
+        destination = city;
+        break;
+      }
     }
   }
 
@@ -206,8 +212,6 @@ function _parseWithRules(prompt) {
   const nightsMatch = lower.match(/(\d+)\s*(nights?|days?)/);
   const nights = nightsMatch ? parseInt(nightsMatch[1]) : 3;
 
-  // Extract explicit date — supports formats like:
-  // "24 April 2026", "April 24 2026", "24/04/2026", "2026-04-24"
   const departureDate = _extractDate(lower) || _resolveRelativeDate(lower) || _defaultDepartureDate();
 
   return {
@@ -235,7 +239,6 @@ function _extractDate(prompt) {
     jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
   };
 
-  // Match "24 April 2026" or "April 24 2026"
   const longMatch = prompt.match(/(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})/i)
     || prompt.match(/(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})\s+(\d{4})/i);
 
@@ -249,17 +252,14 @@ function _extractDate(prompt) {
     if (month) return `${year}-${month}-${day}`;
   }
 
-  // Match "24/04/2026" or "04/24/2026"
   const slashMatch = prompt.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (slashMatch) {
     return `${slashMatch[3]}-${slashMatch[2].padStart(2, '0')}-${slashMatch[1].padStart(2, '0')}`;
   }
 
-  // Match ISO format "2026-04-24"
   const isoMatch = prompt.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return isoMatch[0];
 
-  // Match just month + year e.g. "April 2026"
   const monthYearMatch = prompt.match(/(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})/i);
   if (monthYearMatch) {
     const month = months[monthYearMatch[1].toLowerCase()];
@@ -285,14 +285,11 @@ function _enrichParams(parsed) {
   const originCode = _resolveToCode(parsed.origin);
   const destinationCode = _resolveToCode(parsed.destination);
 
-  // Determine transport type based on route
   const requiresBus = _isBusRoute(originCode, destinationCode);
-  const requiresFlight = true; // Always search flights as primary option
+  const requiresFlight = true;
 
-  // Default nights if not specified
   const nights = parsed.nights || _defaultNights(parsed.departureDate, parsed.returnDate);
 
-  // Set return date if not provided
   const returnDate = parsed.returnDate ||
     (parsed.departureDate ? _addDays(parsed.departureDate, nights) : null);
 
