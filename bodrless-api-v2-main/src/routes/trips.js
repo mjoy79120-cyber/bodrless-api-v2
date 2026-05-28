@@ -1,40 +1,41 @@
 /**
- * TRIP ROUTES (WIDGET SAFE FIXED VERSION)
+ * TRIP ROUTES
  * ─────────────────────────────────────────────
- * Always returns packages (never empty)
- * Safe for widget + API + testing
+ * Handles orchestration for widget and API.
+ * Resolves agency from api key in header.
  */
 
 const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
 const orchestrationEngine = require('../orchestration/engine');
+const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 
-/**
- * OPTIONAL AUTH (prevents widget breaking)
- * If auth fails → still continue
- */
-function optionalAuth(req, res, next) {
-  try {
-    if (typeof require('../middleware/auth').authenticateAgency === 'function') {
-      return require('../middleware/auth').authenticateAgency(req, res, next);
-    }
-    return next();
-  } catch (err) {
-    req.agency = { id: 'demo-agency' };
-    return next();
+// ─────────────────────────────────────────────
+// RESOLVE AGENCY FROM API KEY
+// ─────────────────────────────────────────────
+async function resolveAgency(apiKey, agencyId) {
+  if (apiKey) {
+    const { data } = await supabase
+      .from('agencies')
+      .select('id, name')
+      .eq('api_key', apiKey)
+      .single();
+    if (data) return data.id;
   }
+  if (agencyId) return agencyId;
+  return null;
 }
 
 // ─────────────────────────────────────────────
 // ORCHESTRATE
 // ─────────────────────────────────────────────
-router.post('/orchestrate', optionalAuth, async (req, res) => {
+router.post('/orchestrate', async (req, res) => {
 
   const schema = Joi.object({
     prompt: Joi.string().min(5).max(500).required(),
-    agencyId: Joi.string().required(),
+    agencyId: Joi.string().optional(),
     channelType: Joi.string().valid('whatsapp', 'widget', 'api').default('api'),
     sessionId: Joi.string().optional(),
   });
@@ -44,75 +45,55 @@ router.post('/orchestrate', optionalAuth, async (req, res) => {
   if (error) {
     return res.json({
       success: false,
-      packages: generateFallbackPackages(value?.prompt || ''),
+      packages: [],
       error: error.details[0].message
     });
   }
 
   try {
+    const apiKey = req.headers['x-api-key'] || null;
+    const resolvedAgencyId = await resolveAgency(apiKey, value.agencyId);
 
-    logger.info('Orchestration started', {
-      agencyId: value.agencyId,
-      prompt: value.prompt
-    });
-
-    let result = null;
-
-    try {
-      result = await orchestrationEngine.orchestrate(
-        value.prompt,
-        value.agencyId
-      );
-    } catch (engineErr) {
-      logger.warn('Engine failed, using fallback', {
-        error: engineErr.message
+    if (!resolvedAgencyId) {
+      return res.json({
+        success: false,
+        packages: [],
+        error: 'Invalid agency key. Please check your API key.'
       });
     }
 
-    // ─────────────────────────────────────────────
-    // SAFE EXTRACTION
-    // ─────────────────────────────────────────────
-    let packages = Array.isArray(result?.packages)
-      ? result.packages
-      : Array.isArray(result?.data?.packages)
-        ? result.data.packages
-        : [];
+    logger.info('Orchestration started', {
+      agencyId: resolvedAgencyId,
+      prompt: value.prompt
+    });
 
-    // ─────────────────────────────────────────────
-    // FORCE FALLBACK IF EMPTY
-    // ─────────────────────────────────────────────
-    if (!packages || packages.length === 0) {
-      packages = generateFallbackPackages(value.prompt);
-    }
+    const result = await orchestrationEngine.orchestrate(
+      value.prompt,
+      resolvedAgencyId
+    );
 
-    // limit to 4 packages max
-    packages = packages.slice(0, 4);
+    const packages = Array.isArray(result?.packages) ? result.packages : [];
 
     return res.json({
       success: true,
-      packages,
+      packages: packages.slice(0, 4),
       sessionId: result?.sessionId || `sess_${Date.now()}`
     });
 
   } catch (err) {
-
-    logger.error('Orchestration fatal error', {
-      error: err.message
-    });
-
+    logger.error('Orchestration error', { error: err.message });
     return res.json({
-      success: true,
-      packages: generateFallbackPackages(value.prompt),
-      error: 'fallback_mode'
+      success: false,
+      packages: [],
+      error: err.message
     });
   }
 });
 
-
 // ─────────────────────────────────────────────
-// BOOKING (UNCHANGED SAFE)
+// BOOKING
 // ─────────────────────────────────────────────
-router.post('/book', optionalAuth, async (req, res) => {
+router.post('/book', async (req, res) => {
 
   const schema = Joi.object({
     packageId: Joi.string().required(),
@@ -132,10 +113,7 @@ router.post('/book', optionalAuth, async (req, res) => {
   const { error } = schema.validate(req.body);
 
   if (error) {
-    return res.json({
-      success: false,
-      error: error.details[0].message
-    });
+    return res.json({ success: false, error: error.details[0].message });
   }
 
   return res.json({
@@ -146,45 +124,14 @@ router.post('/book', optionalAuth, async (req, res) => {
   });
 });
 
-
 // ─────────────────────────────────────────────
 // BOOKING STATUS
 // ─────────────────────────────────────────────
-router.get('/booking/:bookingId', optionalAuth, async (req, res) => {
+router.get('/booking/:bookingId', async (req, res) => {
   return res.json({
     bookingId: req.params.bookingId,
     status: 'confirmed'
   });
 });
-
-
-// ─────────────────────────────────────────────
-// FALLBACK PACKAGES (CRITICAL)
-// ─────────────────────────────────────────────
-function generateFallbackPackages(prompt) {
-
-  return [
-    {
-      hotel: { name: "Mid-range Hotel Option" },
-      transport: { provider: "Flight included" },
-      summary: { pricePerPerson: 450, nights: 3, passengers: 2 }
-    },
-    {
-      hotel: { name: "Budget Friendly Stay" },
-      transport: { provider: "Economy flight" },
-      summary: { pricePerPerson: 320, nights: 3, passengers: 2 }
-    },
-    {
-      hotel: { name: "Comfort Experience Hotel" },
-      transport: { provider: "Direct flight" },
-      summary: { pricePerPerson: 600, nights: 4, passengers: 2 }
-    },
-    {
-      hotel: { name: "Luxury Resort Package" },
-      transport: { provider: "Premium airline" },
-      summary: { pricePerPerson: 1100, nights: 5, passengers: 2 }
-    }
-  ];
-}
 
 module.exports = router;
