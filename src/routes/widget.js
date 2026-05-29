@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 
 router.get('/', (req, res) => {
-  const agencyKey = req.query.key || 'bodrless-test-key';
-  const agencyName = req.query.name || 'Your Travel Agent';
+  const agencyKey = req.query.key || 'epic-travels';
+  const agencyName = req.query.name || 'Epic Travels';
   const apiBase = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
 
   res.setHeader('Content-Type', 'application/javascript');
@@ -59,6 +59,7 @@ router.get('/', (req, res) => {
         padding: 10px;
         overflow-y: auto;
         font-size: 13px;
+        background: #fafafa;
       }
 
       .msg {
@@ -74,23 +75,24 @@ router.get('/', (req, res) => {
       .package {
         background: #fff;
         border: 1px solid #eee;
-        padding: 10px;
+        padding: 12px;
         border-radius: 10px;
-        margin: 8px 0;
+        margin: 10px 0;
       }
 
       .price {
         color: #E07B39;
         font-weight: bold;
+        font-size: 16px;
       }
 
       .book {
         background: #1A1A2E;
         color: white;
         border: none;
-        padding: 8px;
+        padding: 10px;
         width: 100%;
-        margin-top: 8px;
+        margin-top: 10px;
         border-radius: 6px;
         cursor: pointer;
       }
@@ -102,7 +104,7 @@ router.get('/', (req, res) => {
 
       #bodrless-input {
         flex: 1;
-        padding: 10px;
+        padding: 12px;
         border: none;
         outline: none;
       }
@@ -111,7 +113,7 @@ router.get('/', (req, res) => {
         background: #1A1A2E;
         color: white;
         border: none;
-        padding: 10px 14px;
+        padding: 10px 16px;
         cursor: pointer;
       }
     \`;
@@ -123,12 +125,10 @@ router.get('/', (req, res) => {
     root.id = "bodrless-widget-root";
     root.innerHTML = \`
       <div id="bodrless-chat">
-        <div style="background:#1A1A2E;color:#fff;padding:12px;">
+        <div style="background:#1A1A2E;color:#fff;padding:12px;font-weight:bold;">
           ${agencyName}
         </div>
-
         <div id="bodrless-messages"></div>
-
         <div id="bodrless-input-area">
           <input id="bodrless-input" placeholder="Where do you want to go?" />
           <button id="bodrless-send">➤</button>
@@ -165,25 +165,41 @@ router.get('/', (req, res) => {
       const div = document.createElement("div");
       div.className = "package";
 
-      const total =
-        (p.summary?.totalPrice ||
+      const total = p.summary?.totalPrice ||
         (p.transport?.price || 0) +
-        (p.hotel?.pricePerNight || 0) * (p.summary?.nights || 3) +
-        (p.transfers?.price || 0));
+        ((p.hotel?.pricePerNight || 0) * (p.summary?.nights || 3)) +
+        (p.transfers?.price || 0);
+
+      const hasTransfer = p.transfers?.provider || p.transfers?.vehicleType;
 
       div.innerHTML = \`
         <b>Package \${i + 1}</b><br/><br/>
 
-        ✈️ Transport: \${p.transport?.provider || "Flight"}<br/>
-        🏨 Hotel: \${p.hotel?.name || "Hotel"}<br/>
-        🚗 Transfers: Included<br/><br/>
+        ✈️ <b>Flight:</b> \${p.transport?.airline || "TBC"}<br/>
+        📍 \${p.transport?.origin || "TBC"} → \${p.transport?.destination || "TBC"}<br/>
+        🕐 Departs: \${p.transport?.departureTime || "TBC"} · Arrives: \${p.transport?.arrivalTime || "TBC"}<br/>
+        💰 Flight: $\${p.transport?.price || 0}<br/><br/>
 
-        <span class="price">$ \${total}</span> per person<br/>
+        🏨 <b>Hotel:</b> \${p.hotel?.name || "TBC"}<br/>
+        📍 \${p.hotel?.location || "TBC"}<br/>
+        ⭐ Rating: \${p.hotel?.rating || "N/A"}/5<br/>
+        🌙 \${p.summary?.nights || 1} nights @ $\${p.hotel?.pricePerNight || 0}/night<br/><br/>
+
+        \${hasTransfer ? \`
+        🚗 <b>Transfer:</b> \${p.transfers?.provider || "TBC"}<br/>
+        🚙 \${p.transfers?.vehicleType || "Car"}<br/>
+        💰 Transfer: $\${p.transfers?.price || 0}<br/><br/>
+        \` : ''}
+
+        👥 \${p.summary?.passengers || 1} traveller(s) · 🌙 \${p.summary?.nights || 1} nights<br/>
+        <span class="price">$\${Math.round(total)}</span> total<br/>
+        <small>$\${p.summary?.pricePerPerson || 0} per person</small>
 
         <button class="book">Book Now</button>
       \`;
 
       messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
     }
 
     async function send() {
@@ -193,7 +209,11 @@ router.get('/', (req, res) => {
       addMsg(text, "user");
       input.value = "";
 
+      addMsg("Searching for packages... ✈️", "bot");
+
       try {
+        console.log("USING AGENCY:", "${agencyKey}");
+
         const res = await fetch("${apiBase}/api/trips/orchestrate", {
           method: "POST",
           headers: {
@@ -208,26 +228,34 @@ router.get('/', (req, res) => {
         });
 
         const data = await res.json();
-        console.log("[BODRLESS]", data);
+        console.log("FULL RESPONSE:", data);
 
-        const packages = data.packages || [];
+        const packages = data?.packages || [];
+        console.log("PACKAGES:", packages);
 
-        if (!packages.length) {
-          addMsg("No packages found", "bot");
+        // Remove the searching message
+        const searching = messages.lastChild;
+        if (searching) messages.removeChild(searching);
+
+        if (!Array.isArray(packages) || !packages.length) {
+          addMsg("No packages found for your request. Try adding more details like destination, dates and budget.", "bot");
           return;
         }
 
-        addMsg("Here are your trip packages 👇", "bot");
-
+        addMsg(\`Found \${packages.length} trip option(s) 👇\`, "bot");
         packages.slice(0, 4).forEach((p, i) => addPackage(p, i));
 
       } catch (e) {
-        console.log(e);
-        addMsg("Error loading packages", "bot");
+        console.log("WIDGET ERROR:", e);
+        addMsg("Unable to load trips right now. Please try again.", "bot");
       }
     }
 
     document.getElementById("bodrless-send").onclick = send;
+
+    input.addEventListener("keypress", function(e) {
+      if (e.key === "Enter") send();
+    });
 
     console.log("[BODRLESS] widget loaded");
   }
