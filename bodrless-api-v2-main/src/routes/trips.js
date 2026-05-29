@@ -2,31 +2,13 @@
  * TRIP ROUTES
  * ─────────────────────────────────────────────
  * Handles orchestration for widget and API.
- * Resolves agency from api key in header.
  */
 
 const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
 const orchestrationEngine = require('../orchestration/engine');
-const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
-
-// ─────────────────────────────────────────────
-// RESOLVE AGENCY FROM API KEY
-// ─────────────────────────────────────────────
-async function resolveAgency(apiKey, agencyId) {
-  if (apiKey) {
-    const { data } = await supabase
-      .from('agencies')
-      .select('id, name')
-      .eq('api_key', apiKey)
-      .single();
-    if (data) return data.id;
-  }
-  if (agencyId) return agencyId;
-  return null;
-}
 
 // ─────────────────────────────────────────────
 // ORCHESTRATE
@@ -51,16 +33,8 @@ router.post('/orchestrate', async (req, res) => {
   }
 
   try {
-    const apiKey = req.headers['x-api-key'] || null;
-    const resolvedAgencyId = await resolveAgency(apiKey, value.agencyId);
-
-    if (!resolvedAgencyId) {
-      return res.json({
-        success: false,
-        packages: [],
-        error: 'Invalid agency key. Please check your API key.'
-      });
-    }
+    // Use agencyId from request body directly
+    const resolvedAgencyId = value.agencyId || 'epic-travels';
 
     logger.info('Orchestration started', {
       agencyId: resolvedAgencyId,
