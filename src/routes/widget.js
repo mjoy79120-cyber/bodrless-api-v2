@@ -37,8 +37,7 @@ router.get('/', (req, res) => {
       '  box-shadow: 0 20px 60px rgba(30,42,94,0.18), 0 0 0 1px rgba(30,42,94,0.1);',
       '  font-family: Montserrat, sans-serif;',
       '}',
-      '#bodrless-chat.open { display: flex; animation: slideUp 0.3s ease; }',
-      '@keyframes slideUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }',
+      '#bodrless-chat.open { display: flex; }',
       '@keyframes fadeUp { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }',
       '@keyframes bounce { 0%,60%,100% { transform:translateY(0); opacity:0.6; } 30% { transform:translateY(-6px); opacity:1; } }',
       '#et-header {',
@@ -59,7 +58,7 @@ router.get('/', (req, res) => {
       '#et-close { background: rgba(255,255,255,0.1); border: none; color: white; width: 28px; height: 28px; border-radius: 50%; cursor: pointer; font-size: 13px; transition: background 0.2s; }',
       '#et-close:hover { background: var(--et-red); }',
       '#bodrless-messages { flex: 1; padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; }',
-      '.msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; font-size: 12.5px; line-height: 1.5; animation: fadeUp 0.25s ease; }',
+      '.msg { padding: 10px 14px; border-radius: 14px; max-width: 85%; font-size: 12.5px; line-height: 1.5; }',
       '.user { background: var(--et-navy); color: white; margin-left: auto; border-bottom-right-radius: 4px; }',
       '.bot { background: var(--et-white); color: var(--et-navy); border: 1px solid var(--et-border); border-bottom-left-radius: 4px; }',
       '.typing { background: var(--et-white); border: 1px solid var(--et-border); padding: 12px 16px; border-radius: 14px; display: flex; gap: 5px; align-items: center; width: fit-content; }',
@@ -72,17 +71,18 @@ router.get('/', (req, res) => {
       '.et-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }',
       '.et-suggestion { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: rgba(255,255,255,0.9); padding: 5px 10px; border-radius: 20px; font-size: 11px; cursor: pointer; transition: all 0.2s; font-family: Montserrat,sans-serif; }',
       '.et-suggestion:hover { background: var(--et-red); border-color: var(--et-red); color: white; }',
-      '.package { background: var(--et-white); border: 1px solid var(--et-border); border-radius: 14px; overflow: hidden; animation: fadeUp 0.3s ease; box-shadow: 0 2px 10px rgba(30,42,94,0.07); }',
-      '.pkg-header { background: var(--et-navy); padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; }',
+      '.package { background: var(--et-white); border: 1px solid var(--et-border); border-radius: 14px; overflow: visible; height: auto; box-shadow: 0 2px 10px rgba(30,42,94,0.07); margin-bottom: 4px; }',
+      '.pkg-header { background: var(--et-navy); padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; border-radius: 14px 14px 0 0; }',
       '.pkg-title { font-family: Lora,serif; color: white; font-size: 13px; }',
       '.pkg-route { background: var(--et-red); color: white; font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 20px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
-      '.pkg-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 0; }',
-      '.pkg-row { display: flex; align-items: flex-start; gap: 10px; font-size: 12px; color: var(--et-navy); padding: 8px 0; border-bottom: 1px dashed var(--et-border); }',
+      '.pkg-body { padding: 12px 14px; display: flex; flex-direction: column; height: auto; min-height: 20px; }',
+      '.pkg-row { display: flex; align-items: flex-start; gap: 10px; font-size: 12px; color: var(--et-navy); padding: 8px 0; border-bottom: 1px dashed var(--et-border); height: auto; }',
       '.pkg-row:last-child { border-bottom: none; }',
       '.pkg-icon { font-size: 15px; width: 22px; flex-shrink: 0; }',
+      '.pkg-detail { flex: 1; }',
       '.pkg-detail strong { display: block; font-weight: 600; font-size: 12px; margin-bottom: 2px; color: var(--et-navy); }',
-      '.pkg-detail small { color: var(--et-muted); font-size: 11px; line-height: 1.4; }',
-      '.pkg-footer { padding: 10px 14px; background: var(--et-cream); display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--et-border); }',
+      '.pkg-detail small { color: var(--et-muted); font-size: 11px; line-height: 1.4; display: block; }',
+      '.pkg-footer { padding: 10px 14px; background: var(--et-cream); display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--et-border); height: auto; border-radius: 0 0 14px 14px; }',
       '.pkg-price { font-family: Lora,serif; color: var(--et-navy); font-size: 20px; font-weight: 600; line-height: 1; }',
       '.pkg-price small { font-family: Montserrat,sans-serif; font-size: 10px; color: var(--et-muted); display: block; font-weight: 400; margin-top: 2px; }',
       '.book { background: var(--et-red); color: white; border: none; padding: 9px 18px; border-radius: 20px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: Montserrat,sans-serif; transition: all 0.2s; }',
@@ -134,11 +134,9 @@ router.get('/', (req, res) => {
     header.appendChild(headerLeft);
     header.appendChild(closeBtn);
 
-    // Messages
     const messages = document.createElement("div");
     messages.id = "bodrless-messages";
 
-    // Input area
     const inputArea = document.createElement("div");
     inputArea.id = "bodrless-input-area";
 
@@ -159,7 +157,6 @@ router.get('/', (req, res) => {
     root.appendChild(chatDiv);
     document.body.appendChild(root);
 
-    // Trigger button
     const triggerBtn = document.createElement("button");
     triggerBtn.id = "bodrless-trigger";
     triggerBtn.innerHTML = "✈️ Plan Your Trip";
@@ -188,13 +185,7 @@ router.get('/', (req, res) => {
       const suggestionsDiv = document.createElement("div");
       suggestionsDiv.className = "et-suggestions";
 
-      const suggestions = [
-        "Nairobi to Zanzibar",
-        "Cape Town 5 nights",
-        "Masai Mara Safari",
-        "Kigali Rwanda",
-        "Cairo Egypt"
-      ];
+      const suggestions = ["Nairobi to Zanzibar", "Cape Town 5 nights", "Masai Mara Safari", "Kigali Rwanda", "Cairo Egypt"];
 
       suggestions.forEach(function(s) {
         const btn = document.createElement("span");
@@ -232,6 +223,30 @@ router.get('/', (req, res) => {
       if (t) t.remove();
     }
 
+    function makeRow(icon, title, subtitle) {
+      const row = document.createElement("div");
+      row.className = "pkg-row";
+
+      const iconSpan = document.createElement("span");
+      iconSpan.className = "pkg-icon";
+      iconSpan.innerText = icon;
+
+      const detail = document.createElement("div");
+      detail.className = "pkg-detail";
+
+      const strong = document.createElement("strong");
+      strong.innerText = title;
+
+      const small = document.createElement("small");
+      small.innerText = subtitle;
+
+      detail.appendChild(strong);
+      detail.appendChild(small);
+      row.appendChild(iconSpan);
+      row.appendChild(detail);
+      return row;
+    }
+
     function addPackage(p, i) {
       const div = document.createElement("div");
       div.className = "package";
@@ -253,13 +268,10 @@ router.get('/', (req, res) => {
       const nights = p.summary && p.summary.nights ? p.summary.nights : 1;
       const passengers = p.summary && p.summary.passengers ? p.summary.passengers : 1;
       const ppp = p.summary && p.summary.pricePerPerson ? p.summary.pricePerPerson : 0;
-      const route = p.summary && p.summary.route ? p.summary.route : flightFrom + " → " + flightTo;
+      const route = p.summary && p.summary.route ? p.summary.route : flightFrom + " to " + flightTo;
       const hasTransfer = p.transfers && p.transfers.provider;
-      const transferProvider = hasTransfer ? p.transfers.provider : "";
-      const transferVehicle = hasTransfer && p.transfers.vehicleType ? p.transfers.vehicleType : "Car";
-      const transferPrice = hasTransfer && p.transfers.price ? p.transfers.price : 0;
 
-      // Header
+      // Package header
       const pkgHeader = document.createElement("div");
       pkgHeader.className = "pkg-header";
       const pkgTitle = document.createElement("span");
@@ -271,85 +283,58 @@ router.get('/', (req, res) => {
       pkgHeader.appendChild(pkgTitle);
       pkgHeader.appendChild(pkgRoute);
 
-      // Body
+      // Package body
       const pkgBody = document.createElement("div");
       pkgBody.className = "pkg-body";
+      pkgBody.style.height = "auto";
 
-      // Flight row
-      const flightRow = document.createElement("div");
-      flightRow.className = "pkg-row";
-      const flightIcon = document.createElement("span");
-      flightIcon.className = "pkg-icon";
-      flightIcon.innerText = "✈️";
-      const flightDetail = document.createElement("div");
-      flightDetail.className = "pkg-detail";
-      const flightStrong = document.createElement("strong");
-      flightStrong.innerText = airline;
-      const flightSmall = document.createElement("small");
-      flightSmall.innerText = flightFrom + " → " + flightTo + " | Departs " + depTime + " · Arrives " + arrTime;
-      flightDetail.appendChild(flightStrong);
-      flightDetail.appendChild(flightSmall);
-      flightRow.appendChild(flightIcon);
-      flightRow.appendChild(flightDetail);
+      pkgBody.appendChild(makeRow(
+        "✈️",
+        airline,
+        flightFrom + " → " + flightTo + " | Departs " + depTime + " · Arrives " + arrTime
+      ));
 
-      // Hotel row
-      const hotelRow = document.createElement("div");
-      hotelRow.className = "pkg-row";
-      const hotelIcon = document.createElement("span");
-      hotelIcon.className = "pkg-icon";
-      hotelIcon.innerText = "🏨";
-      const hotelDetail = document.createElement("div");
-      hotelDetail.className = "pkg-detail";
-      const hotelStrong = document.createElement("strong");
-      hotelStrong.innerText = hotelName;
-      const hotelSmall = document.createElement("small");
-      hotelSmall.innerText = hotelLoc + " · " + nights + " nights · $" + hotelPPN + "/night · Rating: " + hotelRating + "/5";
-      hotelDetail.appendChild(hotelStrong);
-      hotelDetail.appendChild(hotelSmall);
-      hotelRow.appendChild(hotelIcon);
-      hotelRow.appendChild(hotelDetail);
+      pkgBody.appendChild(makeRow(
+        "🏨",
+        hotelName,
+        hotelLoc + " · " + nights + " nights · $" + hotelPPN + "/night · Rating: " + hotelRating + "/5"
+      ));
 
-      pkgBody.appendChild(flightRow);
-      pkgBody.appendChild(hotelRow);
-
-      // Transfer row
       if (hasTransfer) {
-        const transferRow = document.createElement("div");
-        transferRow.className = "pkg-row";
-        const transferIcon = document.createElement("span");
-        transferIcon.className = "pkg-icon";
-        transferIcon.innerText = "🚗";
-        const transferDetail = document.createElement("div");
-        transferDetail.className = "pkg-detail";
-        const transferStrong = document.createElement("strong");
-        transferStrong.innerText = transferProvider;
-        const transferSmall = document.createElement("small");
-        transferSmall.innerText = transferVehicle + " · $" + transferPrice;
-        transferDetail.appendChild(transferStrong);
-        transferDetail.appendChild(transferSmall);
-        transferRow.appendChild(transferIcon);
-        transferRow.appendChild(transferDetail);
-        pkgBody.appendChild(transferRow);
+        const transferVehicle = p.transfers.vehicleType ? p.transfers.vehicleType : "Car";
+        const transferPrice = p.transfers.price ? p.transfers.price : 0;
+        pkgBody.appendChild(makeRow(
+          "🚗",
+          p.transfers.provider,
+          transferVehicle + " · $" + transferPrice
+        ));
       }
 
-      // Footer
+      // Package footer
       const pkgFooter = document.createElement("div");
       pkgFooter.className = "pkg-footer";
+      pkgFooter.style.height = "auto";
+
       const pkgPrice = document.createElement("div");
       pkgPrice.className = "pkg-price";
       pkgPrice.innerText = "$" + Math.round(total);
+
       const pkgPriceSub = document.createElement("small");
       pkgPriceSub.innerText = "$" + ppp + "/person · " + passengers + " traveller(s)";
       pkgPrice.appendChild(pkgPriceSub);
+
       const bookBtn = document.createElement("button");
       bookBtn.className = "book";
       bookBtn.innerText = "Book Now";
+
       pkgFooter.appendChild(pkgPrice);
       pkgFooter.appendChild(bookBtn);
 
+      div.style.height = "auto";
       div.appendChild(pkgHeader);
       div.appendChild(pkgBody);
       div.appendChild(pkgFooter);
+
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
     }
