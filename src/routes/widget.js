@@ -13,124 +13,447 @@ router.get('/', (req, res) => {
 
   function initWidget() {
 
-    if (!document.body) {
-      setTimeout(initWidget, 50);
-      return;
-    }
-
+    if (!document.body) { setTimeout(initWidget, 50); return; }
     if (document.getElementById("bodrless-widget-root")) return;
 
-    // ───── STYLE ─────
     const style = document.createElement("style");
     style.innerHTML = \`
+      @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Lora:wght@600&display=swap');
+
+      :root {
+        --et-navy: #1E2A5E;
+        --et-red: #C0392B;
+        --et-white: #FFFFFF;
+        --et-cream: #F8F9FC;
+        --et-border: #E4E8F0;
+        --et-muted: #8892A4;
+        --et-shadow: 0 20px 60px rgba(30,42,94,0.18);
+      }
+
       #bodrless-chat {
         position: fixed;
-        bottom: 20px;
-        right: 20px;
-        width: 380px;
-        height: 560px;
-        background: #fff;
+        bottom: 90px;
+        right: 24px;
+        width: 390px;
+        height: 630px;
+        background: var(--et-cream);
         z-index: 999999;
         display: none;
         flex-direction: column;
-        border-radius: 14px;
+        border-radius: 20px;
         overflow: hidden;
-        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        font-family: Arial;
+        box-shadow: var(--et-shadow), 0 0 0 1px rgba(30,42,94,0.1);
+        font-family: 'Montserrat', sans-serif;
       }
 
-      #bodrless-chat.open { display: flex; }
+      #bodrless-chat.open { display: flex; animation: slideUp 0.3s ease; }
 
-      #bodrless-trigger {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        z-index: 999998;
-        background: #1A1A2E;
-        color: white;
+      @keyframes slideUp {
+        from { opacity: 0; transform: translateY(16px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      #et-header {
+        background: var(--et-navy);
+        padding: 14px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+        border-bottom: 3px solid var(--et-red);
+      }
+
+      #et-header-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      #et-logo-wrap {
+        width: 42px;
+        height: 42px;
+        background: white;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+
+      #et-logo-wrap img {
+        width: 38px;
+        height: 38px;
+        object-fit: contain;
+      }
+
+      #et-header-text h3 {
+        font-family: 'Lora', serif;
+        font-size: 15px;
+        color: var(--et-white);
+        margin: 0 0 2px 0;
+        line-height: 1.2;
+      }
+
+      #et-header-text h3 span { color: var(--et-red); }
+
+      #et-header-text p {
+        font-size: 10px;
+        color: rgba(255,255,255,0.6);
+        margin: 0;
+        font-weight: 400;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+      }
+
+      #et-close {
+        background: rgba(255,255,255,0.1);
         border: none;
-        padding: 12px 18px;
-        border-radius: 999px;
+        color: white;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
         cursor: pointer;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.2s;
+        flex-shrink: 0;
       }
+
+      #et-close:hover { background: var(--et-red); }
 
       #bodrless-messages {
         flex: 1;
-        padding: 10px;
+        padding: 14px;
         overflow-y: auto;
-        font-size: 13px;
-        background: #fafafa;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--et-border) transparent;
       }
+
+      #bodrless-messages::-webkit-scrollbar { width: 3px; }
+      #bodrless-messages::-webkit-scrollbar-thumb { background: var(--et-border); border-radius: 4px; }
 
       .msg {
-        margin: 8px 0;
-        padding: 10px;
-        border-radius: 10px;
-        max-width: 90%;
+        padding: 10px 14px;
+        border-radius: 14px;
+        max-width: 85%;
+        font-size: 12.5px;
+        line-height: 1.5;
+        animation: fadeUp 0.25s ease;
       }
 
-      .user { background: #1A1A2E; color: white; margin-left: auto; }
-      .bot { background: #f1f1f1; }
+      @keyframes fadeUp {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      .user {
+        background: var(--et-navy);
+        color: white;
+        margin-left: auto;
+        border-bottom-right-radius: 4px;
+      }
+
+      .bot {
+        background: var(--et-white);
+        color: var(--et-navy);
+        border: 1px solid var(--et-border);
+        border-bottom-left-radius: 4px;
+      }
+
+      .typing {
+        background: var(--et-white);
+        border: 1px solid var(--et-border);
+        padding: 12px 16px;
+        border-radius: 14px;
+        border-bottom-left-radius: 4px;
+        display: flex;
+        gap: 5px;
+        align-items: center;
+        width: fit-content;
+      }
+
+      .typing span {
+        width: 7px;
+        height: 7px;
+        background: var(--et-navy);
+        border-radius: 50%;
+        animation: bounce 1.2s infinite;
+      }
+
+      .typing span:nth-child(2) { animation-delay: 0.2s; background: var(--et-red); }
+      .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+      @keyframes bounce {
+        0%, 60%, 100% { transform: translateY(0); opacity: 0.6; }
+        30% { transform: translateY(-6px); opacity: 1; }
+      }
+
+      .et-welcome {
+        background: linear-gradient(135deg, var(--et-navy) 0%, #2d3f82 100%);
+        border-radius: 16px;
+        padding: 16px;
+        color: white;
+        border-left: 4px solid var(--et-red);
+      }
+
+      .et-welcome h4 {
+        font-family: 'Lora', serif;
+        font-size: 14px;
+        margin: 0 0 6px 0;
+        color: white;
+      }
+
+      .et-welcome p {
+        font-size: 11.5px;
+        margin: 0 0 12px 0;
+        color: rgba(255,255,255,0.7);
+        line-height: 1.5;
+      }
+
+      .et-suggestions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .et-suggestion {
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.2);
+        color: rgba(255,255,255,0.9);
+        padding: 5px 10px;
+        border-radius: 20px;
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-family: 'Montserrat', sans-serif;
+      }
+
+      .et-suggestion:hover {
+        background: var(--et-red);
+        border-color: var(--et-red);
+        color: white;
+      }
 
       .package {
-        background: #fff;
-        border: 1px solid #eee;
-        padding: 12px;
-        border-radius: 10px;
-        margin: 10px 0;
+        background: var(--et-white);
+        border: 1px solid var(--et-border);
+        border-radius: 14px;
+        overflow: hidden;
+        animation: fadeUp 0.3s ease;
+        box-shadow: 0 2px 10px rgba(30,42,94,0.07);
       }
 
-      .price {
-        color: #E07B39;
-        font-weight: bold;
-        font-size: 16px;
+      .pkg-header {
+        background: var(--et-navy);
+        padding: 10px 14px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .pkg-title {
+        font-family: 'Lora', serif;
+        color: white;
+        font-size: 13px;
+      }
+
+      .pkg-route {
+        background: var(--et-red);
+        color: white;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 20px;
+        letter-spacing: 0.3px;
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .pkg-body {
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+
+      .pkg-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        font-size: 12px;
+        color: var(--et-navy);
+        padding: 8px 0;
+        border-bottom: 1px dashed var(--et-border);
+      }
+
+      .pkg-row:last-child { border-bottom: none; }
+
+      .pkg-icon {
+        font-size: 15px;
+        width: 22px;
+        flex-shrink: 0;
+      }
+
+      .pkg-detail strong {
+        display: block;
+        font-weight: 600;
+        font-size: 12px;
+        margin-bottom: 2px;
+        color: var(--et-navy);
+      }
+
+      .pkg-detail small {
+        color: var(--et-muted);
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      .pkg-footer {
+        padding: 10px 14px;
+        background: var(--et-cream);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-top: 1px solid var(--et-border);
+      }
+
+      .pkg-price {
+        font-family: 'Lora', serif;
+        color: var(--et-navy);
+        font-size: 20px;
+        font-weight: 600;
+        line-height: 1;
+      }
+
+      .pkg-price small {
+        font-family: 'Montserrat', sans-serif;
+        font-size: 10px;
+        color: var(--et-muted);
+        display: block;
+        font-weight: 400;
+        margin-top: 2px;
       }
 
       .book {
-        background: #1A1A2E;
+        background: var(--et-red);
         color: white;
         border: none;
-        padding: 10px;
-        width: 100%;
-        margin-top: 10px;
-        border-radius: 6px;
+        padding: 9px 18px;
+        border-radius: 20px;
         cursor: pointer;
+        font-size: 12px;
+        font-weight: 600;
+        font-family: 'Montserrat', sans-serif;
+        letter-spacing: 0.3px;
+        transition: all 0.2s;
+      }
+
+      .book:hover {
+        background: #a93226;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(192,57,43,0.35);
       }
 
       #bodrless-input-area {
         display: flex;
-        border-top: 1px solid #eee;
+        border-top: 1px solid var(--et-border);
+        background: var(--et-white);
+        padding: 10px 12px;
+        gap: 8px;
+        flex-shrink: 0;
       }
 
       #bodrless-input {
         flex: 1;
-        padding: 12px;
-        border: none;
+        padding: 10px 14px;
+        border: 1.5px solid var(--et-border);
+        border-radius: 20px;
         outline: none;
+        font-size: 12.5px;
+        font-family: 'Montserrat', sans-serif;
+        background: var(--et-cream);
+        color: var(--et-navy);
+        transition: border-color 0.2s;
       }
 
+      #bodrless-input:focus { border-color: var(--et-navy); }
+      #bodrless-input::placeholder { color: var(--et-muted); font-size: 12px; }
+
       #bodrless-send {
-        background: #1A1A2E;
+        background: var(--et-navy);
         color: white;
         border: none;
-        padding: 10px 16px;
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
         cursor: pointer;
+        font-size: 15px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s;
+        flex-shrink: 0;
+      }
+
+      #bodrless-send:hover { background: var(--et-red); transform: scale(1.08); }
+
+      #bodrless-trigger {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 999998;
+        background: var(--et-navy);
+        color: white;
+        border: none;
+        padding: 13px 20px;
+        border-radius: 999px;
+        cursor: pointer;
+        font-family: 'Montserrat', sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        box-shadow: 0 8px 24px rgba(30,42,94,0.35);
+        transition: all 0.2s;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-left: 3px solid var(--et-red);
+      }
+
+      #bodrless-trigger:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 32px rgba(30,42,94,0.45);
       }
     \`;
 
     document.head.appendChild(style);
 
-    // ───── HTML ─────
     const root = document.createElement("div");
     root.id = "bodrless-widget-root";
     root.innerHTML = \`
       <div id="bodrless-chat">
-        <div style="background:#1A1A2E;color:#fff;padding:12px;font-weight:bold;">
-          ${agencyName}
+        <div id="et-header">
+          <div id="et-header-left">
+            <div id="et-logo-wrap">
+              <img src="https://epictravels.co.ke/apple-touch-icon.png" alt="Epic Travels" onerror="this.style.display='none';this.parentNode.innerHTML='✈️';" />
+            </div>
+            <div id="et-header-text">
+              <h3><span>Epic</span> Travels Kenya</h3>
+              <p>Premium Travel Specialist</p>
+            </div>
+          </div>
+          <button id="et-close">✕</button>
         </div>
         <div id="bodrless-messages"></div>
         <div id="bodrless-input-area">
-          <input id="bodrless-input" placeholder="Where do you want to go?" />
+          <input id="bodrless-input" placeholder="Where would you like to go?" />
           <button id="bodrless-send">➤</button>
         </div>
       </div>
@@ -142,16 +465,40 @@ router.get('/', (req, res) => {
     const input = document.getElementById("bodrless-input");
     const messages = document.getElementById("bodrless-messages");
 
-    // ───── FLOAT BUTTON ─────
     const btn = document.createElement("button");
     btn.id = "bodrless-trigger";
-    btn.innerText = "Plan Trip ✈️";
+    btn.innerHTML = "✈️ Plan Your Trip";
     document.body.appendChild(btn);
+
+    let welcomeShown = false;
 
     btn.onclick = () => {
       chat.classList.add("open");
       input.focus();
+      if (!welcomeShown) { welcomeShown = true; showWelcome(); }
     };
+
+    document.getElementById("et-close").onclick = () => chat.classList.remove("open");
+
+    function showWelcome() {
+      const div = document.createElement("div");
+      div.className = "et-welcome";
+      div.innerHTML = \`
+        <h4>Welcome to Epic Travels 🌍</h4>
+        <p>Tell me your dream destination and I'll find the perfect package — flights, hotels and transfers included.</p>
+        <div class="et-suggestions">
+          <span class="et-suggestion">✈️ Nairobi to Zanzibar</span>
+          <span class="et-suggestion">🏖️ Cape Town 5 nights</span>
+          <span class="et-suggestion">🦁 Masai Mara Safari</span>
+          <span class="et-suggestion">🏔️ Kigali Rwanda</span>
+          <span class="et-suggestion">🕌 Cairo Egypt</span>
+        </div>
+      \`;
+      messages.appendChild(div);
+      div.querySelectorAll(".et-suggestion").forEach(s => {
+        s.onclick = () => { input.value = s.innerText.replace(/^[✈️🏖️🦁🏔️🕌]\s*/, '').trim(); send(); };
+      });
+    }
 
     function addMsg(text, type) {
       const div = document.createElement("div");
@@ -159,6 +506,20 @@ router.get('/', (req, res) => {
       div.innerText = text;
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
+    }
+
+    function showTyping() {
+      const div = document.createElement("div");
+      div.className = "typing";
+      div.id = "et-typing";
+      div.innerHTML = "<span></span><span></span><span></span>";
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function hideTyping() {
+      const t = document.getElementById("et-typing");
+      if (t) t.remove();
     }
 
     function addPackage(p, i) {
@@ -173,29 +534,42 @@ router.get('/', (req, res) => {
       const hasTransfer = p.transfers?.provider || p.transfers?.vehicleType;
 
       div.innerHTML = \`
-        <b>Package \${i + 1}</b><br/><br/>
-
-        ✈️ <b>Flight:</b> \${p.transport?.airline || "TBC"}<br/>
-        📍 \${p.transport?.origin || "TBC"} → \${p.transport?.destination || "TBC"}<br/>
-        🕐 Departs: \${p.transport?.departureTime || "TBC"} · Arrives: \${p.transport?.arrivalTime || "TBC"}<br/>
-        💰 Flight: $\${p.transport?.price || 0}<br/><br/>
-
-        🏨 <b>Hotel:</b> \${p.hotel?.name || "TBC"}<br/>
-        📍 \${p.hotel?.location || "TBC"}<br/>
-        ⭐ Rating: \${p.hotel?.rating || "N/A"}/5<br/>
-        🌙 \${p.summary?.nights || 1} nights @ $\${p.hotel?.pricePerNight || 0}/night<br/><br/>
-
-        \${hasTransfer ? \`
-        🚗 <b>Transfer:</b> \${p.transfers?.provider || "TBC"}<br/>
-        🚙 \${p.transfers?.vehicleType || "Car"}<br/>
-        💰 Transfer: $\${p.transfers?.price || 0}<br/><br/>
-        \` : ''}
-
-        👥 \${p.summary?.passengers || 1} traveller(s) · 🌙 \${p.summary?.nights || 1} nights<br/>
-        <span class="price">$\${Math.round(total)}</span> total<br/>
-        <small>$\${p.summary?.pricePerPerson || 0} per person</small>
-
-        <button class="book">Book Now</button>
+        <div class="pkg-header">
+          <span class="pkg-title">Option \${i + 1}</span>
+          <span class="pkg-route">\${p.summary?.route || "Trip Package"}</span>
+        </div>
+        <div class="pkg-body">
+          <div class="pkg-row">
+            <span class="pkg-icon">✈️</span>
+            <div class="pkg-detail">
+              <strong>\${p.transport?.airline || "Flight"}</strong>
+              <small>\${p.transport?.origin || "TBC"} → \${p.transport?.destination || "TBC"}<br/>Departs \${p.transport?.departureTime || "TBC"} · Arrives \${p.transport?.arrivalTime || "TBC"}</small>
+            </div>
+          </div>
+          <div class="pkg-row">
+            <span class="pkg-icon">🏨</span>
+            <div class="pkg-detail">
+              <strong>\${p.hotel?.name || "Hotel"}</strong>
+              <small>\${p.hotel?.location || "TBC"} · \${p.summary?.nights || 1} nights · $\${p.hotel?.pricePerNight || 0}/night</small>
+            </div>
+          </div>
+          \${hasTransfer ? \`
+          <div class="pkg-row">
+            <span class="pkg-icon">🚗</span>
+            <div class="pkg-detail">
+              <strong>\${p.transfers?.provider || "Transfer"}</strong>
+              <small>\${p.transfers?.vehicleType || "Car"} · $\${p.transfers?.price || 0}</small>
+            </div>
+          </div>
+          \` : ''}
+        </div>
+        <div class="pkg-footer">
+          <div class="pkg-price">
+            $\${Math.round(total)}
+            <small>$\${p.summary?.pricePerPerson || 0}/person · \${p.summary?.passengers || 1} traveller(s)</small>
+          </div>
+          <button class="book">Book Now</button>
+        </div>
       \`;
 
       messages.appendChild(div);
@@ -208,12 +582,9 @@ router.get('/', (req, res) => {
 
       addMsg(text, "user");
       input.value = "";
-
-      addMsg("Searching for packages... ✈️", "bot");
+      showTyping();
 
       try {
-        console.log("USING AGENCY:", "${agencyKey}");
-
         const res = await fetch("${apiBase}/api/trips/orchestrate", {
           method: "POST",
           headers: {
@@ -228,36 +599,28 @@ router.get('/', (req, res) => {
         });
 
         const data = await res.json();
-        console.log("FULL RESPONSE:", data);
+        hideTyping();
 
         const packages = data?.packages || [];
-        console.log("PACKAGES:", packages);
-
-        // Remove the searching message
-        const searching = messages.lastChild;
-        if (searching) messages.removeChild(searching);
 
         if (!Array.isArray(packages) || !packages.length) {
-          addMsg("No packages found for your request. Try adding more details like destination, dates and budget.", "bot");
+          addMsg("I couldn't find packages for that request. Try specifying destination, number of people and nights.", "bot");
           return;
         }
 
-        addMsg(\`Found \${packages.length} trip option(s) 👇\`, "bot");
+        addMsg(\`I found \${packages.length} great option(s) for you 👇\`, "bot");
         packages.slice(0, 4).forEach((p, i) => addPackage(p, i));
 
       } catch (e) {
-        console.log("WIDGET ERROR:", e);
+        hideTyping();
         addMsg("Unable to load trips right now. Please try again.", "bot");
       }
     }
 
     document.getElementById("bodrless-send").onclick = send;
+    input.addEventListener("keypress", e => { if (e.key === "Enter") send(); });
 
-    input.addEventListener("keypress", function(e) {
-      if (e.key === "Enter") send();
-    });
-
-    console.log("[BODRLESS] widget loaded");
+    console.log("[BODRLESS] Epic Travels widget loaded");
   }
 
   if (document.readyState === "loading") {
