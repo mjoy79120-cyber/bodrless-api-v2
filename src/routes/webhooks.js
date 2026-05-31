@@ -63,7 +63,7 @@ router.post('/whatsapp', async (req, res) => {
     const prompt = message.text.body;
 
     // TEMP: hardcoded for test number — replace with DB lookup when going live
-    const agencyId = 'epic-travels';
+    const agencyId = 'accessible-travel';
 
     // Send acknowledgment immediately
     await whatsappService.sendText(phoneNumberId, from,
