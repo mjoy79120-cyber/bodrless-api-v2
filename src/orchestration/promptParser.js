@@ -4,7 +4,8 @@
  * Converts natural language traveler prompts into structured
  * trip parameters the orchestration engine can work with.
  *
- * Supports: English, Swahili, shorthand, vague requests
+ * Supports: English, Swahili, shorthand, vague requests,
+ *           accessibility needs
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -124,9 +125,30 @@ const BUS_ROUTES = [
   ['NBO', 'EBB'],
 ];
 
+// Accessibility keywords — any of these flags the trip as accessibility-needed
+const ACCESSIBILITY_KEYWORDS = [
+  'wheelchair', 'wheel chair', 'disabled', 'disability',
+  'accessible', 'accessibility', 'mobility', 'mobility impaired',
+  'handicapped', 'special needs', 'physically challenged',
+  'crutches', 'walking aid', 'walker', 'blind', 'visually impaired',
+  'deaf', 'hearing impaired', 'elderly', 'senior citizen',
+  'ramp', 'elevator access', 'lift access', 'ground floor',
+  'kiti cha magurudumu', // Swahili for wheelchair
+  'ulemavu', // Swahili for disability
+  'mzee', // Swahili for elderly
+];
+
 async function parsePrompt(prompt) {
   try {
     const parsed = await _parseWithGemini(prompt);
+    // Always run accessibility check on top of LLM result
+    parsed.accessibility = _detectAccessibility(prompt);
+    if (parsed.accessibility) {
+      if (!parsed.preferences) parsed.preferences = [];
+      if (!parsed.preferences.includes('accessible')) {
+        parsed.preferences.push('accessible');
+      }
+    }
     return _enrichParams(parsed);
   } catch (error) {
     logger.warn('Gemini parsing failed, falling back to rule-based parser', {
@@ -135,6 +157,14 @@ async function parsePrompt(prompt) {
     const parsed = _parseWithRules(prompt);
     return _enrichParams(parsed);
   }
+}
+
+// ─────────────────────────────────────────────
+// ACCESSIBILITY DETECTION
+// ─────────────────────────────────────────────
+function _detectAccessibility(prompt) {
+  const lower = prompt.toLowerCase();
+  return ACCESSIBILITY_KEYWORDS.some(keyword => lower.includes(keyword));
 }
 
 async function _parseWithGemini(prompt) {
@@ -156,6 +186,9 @@ The prompt may be in English, Swahili, or mixed. Common Swahili travel words:
 - "bei ya juu" = expensive/luxury
 - "wiki ijayo" = next week
 - "mwezi ujao" = next month
+- "kiti cha magurudumu" = wheelchair
+- "ulemavu" = disability
+- "mzee" = elderly
 
 Return JSON:
 {
@@ -167,7 +200,8 @@ Return JSON:
   "budget": "low|mid|high|luxury",
   "nights": number (default 3),
   "tripType": "round_trip|one_way",
-  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business"] (pick relevant ones)
+  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"] (pick relevant ones),
+  "accessibility": true or false
 }
 
 RULES:
@@ -178,13 +212,14 @@ RULES:
 - "cape town" not "CPT", "zanzibar" not "ZNZ"
 - Resolve relative dates: today is ${new Date().toISOString().split('T')[0]}
 - "next week" → date 7 days from today
-- "next month" → date 30 days from today  
+- "next month" → date 30 days from today
 - "christmas" → ${new Date().getFullYear()}-12-25
 - "new year" → ${new Date().getFullYear() + 1}-01-01
 - If budget not mentioned, use "mid"
 - If nights not mentioned but days mentioned, subtract 1
 - For "weekend" use nights: 2
-- For "week" use nights: 7`
+- For "week" use nights: 7
+- If prompt mentions wheelchair, disabled, accessible, mobility, elderly, special needs → set accessibility: true and add "accessible" to preferences`
         }]
       }],
       generationConfig: {
@@ -201,7 +236,6 @@ RULES:
   const cleaned = content.replace(/```json|```/g, '').trim();
   const parsed = JSON.parse(cleaned);
 
-  // If no origin, default to nairobi
   if (!parsed.origin) parsed.origin = 'nairobi';
 
   return parsed;
@@ -249,7 +283,7 @@ function _parseWithRules(prompt) {
   let origin = null;
   let destination = null;
 
-  // Pattern: "from X to Y" or "X to Y" or "nataka kwenda Y"
+  // Pattern: "from X to Y" or "nataka kwenda Y"
   const fromToMatch = lower.match(/(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
   const kwendaMatch = lower.match(/(?:nataka\s+kwenda|kwenda|going\s+to|travel\s+to|trip\s+to|visit)\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
 
@@ -277,11 +311,10 @@ function _parseWithRules(prompt) {
         else if (city !== origin) { destination = city; break; }
       }
     }
-    // Swap if only one found — it's the destination
     if (origin && !destination) { destination = origin; origin = null; }
   }
 
-  // Default origin to nairobi for Kenyan context
+  // Default origin to nairobi
   if (!origin) origin = 'nairobi';
 
   // Preferences
@@ -293,6 +326,10 @@ function _parseWithRules(prompt) {
   if (lower.match(/adventure|hiking|climb|mountain|mlima/)) preferences.push('adventure');
   if (lower.match(/culture|history|museum|utamaduni/)) preferences.push('culture');
   if (lower.match(/business|conference|meeting|mkutano/)) preferences.push('business');
+
+  // Accessibility detection
+  const accessibility = _detectAccessibility(lower);
+  if (accessibility) preferences.push('accessible');
 
   const departureDate = _extractDate(lower) || _resolveRelativeDate(lower) || _defaultDepartureDate();
 
@@ -306,6 +343,7 @@ function _parseWithRules(prompt) {
     nights,
     tripType: lower.match(/one[\s-]?way|kwenda\s+tu/) ? 'one_way' : 'round_trip',
     preferences,
+    accessibility,
   };
 }
 
@@ -331,7 +369,6 @@ function _extractDate(prompt) {
     if (month) return `${year}-${month}-${day}`;
   }
 
-  // "last week of April" → last 7 days of that month
   const lastWeekMatch = prompt.match(/last\s+week\s+of\s+(january|february|march|april|may|june|july|august|september|october|november|december)/i);
   if (lastWeekMatch) {
     const month = months[lastWeekMatch[1].toLowerCase()];
@@ -416,6 +453,7 @@ function _enrichParams(parsed) {
     requiresBus,
     passengers: parsed.passengers || 1,
     budget: parsed.budget || 'mid',
+    accessibility: parsed.accessibility || false,
   };
 }
 
