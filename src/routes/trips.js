@@ -7,13 +7,13 @@
 const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
+const orchestrationEngine = require('../orchestration/engine');
+const whatsappService = require('../services/whatsapp');
+const { logger } = require('../utils/logger');
 
-const orchestrationEngine =
-  require('../orchestration/engine');
-
-const { logger } =
-  require('../utils/logger');
-
+// Test number for mock notifications
+const MOCK_NOTIFY_NUMBER = '254716098296';
+const MOCK_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 
 // ─────────────────────────────────────────────
 // ORCHESTRATE
@@ -21,179 +21,190 @@ const { logger } =
 router.post('/orchestrate', async (req, res) => {
 
   const schema = Joi.object({
-    prompt: Joi.string()
-      .min(5)
-      .max(500)
-      .required(),
-
-    agencyId: Joi.string()
-      .required(),
-
-    channelType: Joi.string()
-      .valid('whatsapp', 'widget', 'api')
-      .default('api'),
-
-    sessionId: Joi.string()
-      .optional(),
+    prompt: Joi.string().min(5).max(500).required(),
+    agencyId: Joi.string().required(),
+    channelType: Joi.string().valid('whatsapp', 'widget', 'api').default('api'),
+    sessionId: Joi.string().optional(),
   });
 
-  const { error, value } =
-    schema.validate(req.body);
+  const { error, value } = schema.validate(req.body);
 
   if (error) {
-
     return res.json({
       success: false,
       error: error.details[0].message,
-      packages: generateFallbackPackages()
+      packages: []
     });
   }
 
   try {
-
     logger.info('Orchestration started', {
       agencyId: value.agencyId,
       prompt: value.prompt
     });
 
-    const result =
-      await orchestrationEngine.orchestrate(
-        value.prompt,
-        value.agencyId
-      );
+    const result = await orchestrationEngine.orchestrate(
+      value.prompt,
+      value.agencyId
+    );
 
-    let packages =
-      Array.isArray(result?.packages)
-        ? result.packages
-        : [];
-
-    // fallback if engine returns empty
-    if (!packages.length) {
-      packages = generateFallbackPackages();
-    }
+    const packages = Array.isArray(result?.packages) ? result.packages : [];
 
     return res.json({
       success: true,
-      sessionId:
-        result?.sessionId ||
-        `sess_${Date.now()}`,
-
+      sessionId: result?.sessionId || `sess_${Date.now()}`,
       packages: packages.slice(0, 4)
     });
 
   } catch (err) {
-
-    logger.error(
-      'Orchestration fatal error',
-      { error: err.message }
-    );
-
+    logger.error('Orchestration fatal error', { error: err.message });
     return res.json({
-      success: true,
-      error: 'fallback_mode',
-      packages: generateFallbackPackages()
+      success: false,
+      error: err.message,
+      packages: []
     });
   }
 });
 
 
 // ─────────────────────────────────────────────
-// BOOK
+// BOOK — with mock coordination notifications
 // ─────────────────────────────────────────────
 router.post('/book', async (req, res) => {
 
+  const schema = Joi.object({
+    packageIndex: Joi.number().optional(),
+    agencyId: Joi.string().optional(),
+    guestName: Joi.string().optional().default('Valued Guest'),
+    guestPhone: Joi.string().optional(),
+    passengers: Joi.number().optional().default(1),
+    package: Joi.object().optional(),
+  });
+
+  const { error, value } = schema.validate(req.body);
+
+  if (error) {
+    return res.json({ success: false, error: error.details[0].message });
+  }
+
+  const bookingRef = `BDR-${Date.now()}`;
+  const pkg = value.package || {};
+  const transport = pkg.transport || {};
+  const hotel = pkg.hotel || {};
+  const transfers = pkg.transfers || {};
+  const summary = pkg.summary || {};
+
+  const guestName = value.guestName || 'Valued Guest';
+  const passengers = value.passengers || summary.passengers || 1;
+  const nights = summary.nights || 3;
+  const route = summary.route || `${transport.origin || 'Origin'} → ${transport.destination || 'Destination'}`;
+  const totalPrice = summary.totalPrice || 0;
+
+  logger.info('Booking initiated', { bookingRef, agencyId: value.agencyId });
+
+  // Fire notifications asynchronously — don't block the response
+  _sendMockNotifications({
+    bookingRef,
+    guestName,
+    passengers,
+    nights,
+    route,
+    totalPrice,
+    transport,
+    hotel,
+    transfers,
+    agencyId: value.agencyId || 'epic-travels',
+  }).catch(err => logger.error('Notification error', { error: err.message }));
+
   return res.json({
     success: true,
-    message: 'Booking initiated',
-    bookingId: `BDR-${Date.now()}`,
-    status: 'pending_payment'
+    bookingRef,
+    message: 'Booking confirmed! All parties have been notified.',
+    status: 'confirmed',
   });
 });
+
+
+// ─────────────────────────────────────────────
+// MOCK NOTIFICATIONS
+// ─────────────────────────────────────────────
+async function _sendMockNotifications({ bookingRef, guestName, passengers, nights, route, totalPrice, transport, hotel, transfers, agencyId }) {
+
+  const phoneNumberId = MOCK_PHONE_NUMBER_ID;
+  const to = MOCK_NOTIFY_NUMBER;
+
+  if (!phoneNumberId) {
+    logger.warn('WHATSAPP_PHONE_NUMBER_ID not set — skipping mock notifications');
+    return;
+  }
+
+  // Delay helper
+  const delay = ms => new Promise(r => setTimeout(r, ms));
+
+  // ── 1. AGENCY NOTIFICATION ──
+  await whatsappService.sendText(phoneNumberId, to,
+    `✅ *NEW BOOKING — ${bookingRef}*\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `👤 *Guest:* ${guestName} (${passengers} pax)\n` +
+    `🗺️ *Route:* ${route}\n` +
+    `🌙 *Nights:* ${nights}\n` +
+    `✈️ *Flight:* ${transport.airline || 'TBC'} · ${transport.origin || ''} → ${transport.destination || ''}\n` +
+    `🏨 *Hotel:* ${hotel.name || 'TBC'} · ${hotel.location || ''}\n` +
+    `🚗 *Transfer:* ${transfers.provider || 'TBC'}\n` +
+    `💰 *Total:* $${totalPrice}\n` +
+    `💵 *Your commission:* $${Math.round(totalPrice * 0.05)}\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `_[AGENCY NOTIFICATION — Bodrless]_`
+  );
+
+  await delay(1000);
+
+  // ── 2. HOTEL NOTIFICATION ──
+  await whatsappService.sendText(phoneNumberId, to,
+    `🏨 *HOTEL BOOKING ALERT — ${bookingRef}*\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `*To:* ${hotel.name || 'Hotel'}\n` +
+    `👤 *Guest:* ${guestName}\n` +
+    `👥 *Pax:* ${passengers}\n` +
+    `📅 *Check-in:* On arrival from flight ${transport.airline || 'TBC'} ${transport.flightNumber || ''}\n` +
+    `🕐 *Arrival time:* ${transport.arrivalTime || 'TBC'}\n` +
+    `🌙 *Nights:* ${nights}\n` +
+    `📍 *Location:* ${hotel.location || 'TBC'}\n` +
+    `📝 *Special requests:* None\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `_[HOTEL NOTIFICATION — Bodrless]_`
+  );
+
+  await delay(1000);
+
+  // ── 3. TRANSFER NOTIFICATION ──
+  await whatsappService.sendText(phoneNumberId, to,
+    `🚗 *TRANSFER BOOKING ALERT — ${bookingRef}*\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `*To:* ${transfers.provider || 'Transfer Provider'}\n` +
+    `👤 *Guest:* ${guestName}\n` +
+    `👥 *Pax:* ${passengers}\n` +
+    `✈️ *Flight:* ${transport.airline || 'TBC'} ${transport.flightNumber || ''}\n` +
+    `📍 *Pickup:* ${transport.destination || 'TBC'} Airport\n` +
+    `🕐 *Pickup time:* ${transport.arrivalTime || 'TBC'}\n` +
+    `🏨 *Drop-off:* ${hotel.name || 'TBC'} · ${hotel.location || 'TBC'}\n` +
+    `🚙 *Vehicle:* ${transfers.vehicleType || 'Car'}\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `_[TRANSFER NOTIFICATION — Bodrless]_`
+  );
+
+  logger.info('Mock notifications sent', { bookingRef, to });
+}
 
 
 // ─────────────────────────────────────────────
 // BOOKING STATUS
 // ─────────────────────────────────────────────
 router.get('/booking/:bookingId', async (req, res) => {
-
   return res.json({
     bookingId: req.params.bookingId,
     status: 'confirmed'
   });
 });
-
-
-// ─────────────────────────────────────────────
-// FALLBACK PACKAGES
-// ─────────────────────────────────────────────
-function generateFallbackPackages() {
-
-  return [
-
-    {
-      hotel: {
-        name: "Mid-range Hotel Option"
-      },
-
-      transport: {
-        provider: "Flight included"
-      },
-
-      summary: {
-        pricePerPerson: 450,
-        nights: 3,
-        passengers: 2
-      }
-    },
-
-    {
-      hotel: {
-        name: "Budget Friendly Stay"
-      },
-
-      transport: {
-        provider: "Economy flight"
-      },
-
-      summary: {
-        pricePerPerson: 320,
-        nights: 3,
-        passengers: 2
-      }
-    },
-
-    {
-      hotel: {
-        name: "Comfort Experience Hotel"
-      },
-
-      transport: {
-        provider: "Direct flight"
-      },
-
-      summary: {
-        pricePerPerson: 600,
-        nights: 4,
-        passengers: 2
-      }
-    },
-
-    {
-      hotel: {
-        name: "Luxury Resort Package"
-      },
-
-      transport: {
-        provider: "Premium airline"
-      },
-
-      summary: {
-        pricePerPerson: 1100,
-        nights: 5,
-        passengers: 2
-      }
-    }
-  ];
-}
 
 module.exports = router;

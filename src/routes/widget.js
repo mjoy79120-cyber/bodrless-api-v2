@@ -26,6 +26,7 @@ router.get('/', (req, res) => {
       '  --et-cream: #F8F9FC;',
       '  --et-border: #E4E8F0;',
       '  --et-muted: #8892A4;',
+      '  --et-green: #27ae60;',
       '}',
       '#bodrless-chat {',
       '  position: fixed; bottom: 90px; right: 24px;',
@@ -87,6 +88,7 @@ router.get('/', (req, res) => {
       '.pkg-price small { font-family: Montserrat,sans-serif; font-size: 10px; color: var(--et-muted); display: block; font-weight: 400; margin-top: 2px; }',
       '.book { background: var(--et-red); color: white; border: none; padding: 9px 18px; border-radius: 20px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: Montserrat,sans-serif; transition: all 0.2s; }',
       '.book:hover { background: #a93226; transform: translateY(-1px); }',
+      '.book:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }',
       '#bodrless-input-area { display: flex; border-top: 1px solid var(--et-border); background: var(--et-white); padding: 10px 12px; gap: 8px; flex-shrink: 0; }',
       '#bodrless-input { flex: 1; padding: 10px 14px; border: 1.5px solid var(--et-border); border-radius: 20px; outline: none; font-size: 12.5px; font-family: Montserrat,sans-serif; background: var(--et-cream); color: var(--et-navy); transition: border-color 0.2s; }',
       '#bodrless-input:focus { border-color: var(--et-navy); }',
@@ -95,6 +97,12 @@ router.get('/', (req, res) => {
       '#bodrless-send:hover { background: var(--et-red); transform: scale(1.08); }',
       '#bodrless-trigger { position: fixed; bottom: 24px; right: 24px; z-index: 999998; background: var(--et-navy); color: white; border: none; padding: 13px 20px; border-radius: 999px; cursor: pointer; font-family: Montserrat,sans-serif; font-size: 13px; font-weight: 600; box-shadow: 0 8px 24px rgba(30,42,94,0.35); transition: all 0.2s; display: flex; align-items: center; gap: 8px; border-left: 3px solid var(--et-red); }',
       '#bodrless-trigger:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(30,42,94,0.45); }',
+      '.name-form { background: var(--et-white); border: 1px solid var(--et-border); border-radius: 14px; padding: 14px; margin-top: 8px; }',
+      '.name-form p { font-size: 12px; color: var(--et-navy); margin: 0 0 10px 0; font-weight: 500; }',
+      '.name-input { width: 100%; padding: 9px 12px; border: 1.5px solid var(--et-border); border-radius: 10px; outline: none; font-size: 12.5px; font-family: Montserrat,sans-serif; color: var(--et-navy); box-sizing: border-box; margin-bottom: 10px; }',
+      '.name-input:focus { border-color: var(--et-navy); }',
+      '.confirm-btn { background: var(--et-navy); color: white; border: none; padding: 9px 18px; border-radius: 20px; cursor: pointer; font-size: 12px; font-weight: 600; font-family: Montserrat,sans-serif; width: 100%; transition: all 0.2s; }',
+      '.confirm-btn:hover { background: var(--et-red); }',
     ].join('');
 
     document.head.appendChild(style);
@@ -247,9 +255,80 @@ router.get('/', (req, res) => {
       return row;
     }
 
+    function showNameForm(p, bookBtn) {
+      // Remove any existing form
+      const existing = document.getElementById("et-name-form");
+      if (existing) existing.remove();
+
+      const form = document.createElement("div");
+      form.className = "name-form";
+      form.id = "et-name-form";
+
+      const formP = document.createElement("p");
+      formP.innerText = "Please enter your name to confirm booking:";
+
+      const nameInput = document.createElement("input");
+      nameInput.className = "name-input";
+      nameInput.placeholder = "Your full name";
+      nameInput.type = "text";
+
+      const confirmBtn = document.createElement("button");
+      confirmBtn.className = "confirm-btn";
+      confirmBtn.innerText = "Confirm Booking ✈️";
+
+      confirmBtn.onclick = function() {
+        const guestName = nameInput.value.trim();
+        if (!guestName) {
+          nameInput.style.borderColor = "var(--et-red)";
+          nameInput.placeholder = "Please enter your name";
+          return;
+        }
+
+        confirmBtn.innerText = "Processing...";
+        confirmBtn.disabled = true;
+
+        fetch("${apiBase}/api/trips/book", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            agencyId: "${agencyKey}",
+            guestName: guestName,
+            passengers: p.summary && p.summary.passengers ? p.summary.passengers : 1,
+            package: p
+          })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          form.remove();
+          bookBtn.innerText = "✅ Booked!";
+          bookBtn.style.background = "var(--et-green)";
+          bookBtn.disabled = true;
+          addMsg(
+            "🎉 Booking confirmed for " + guestName + "!\n" +
+            "Ref: " + data.bookingRef + "\n" +
+            "Hotel, flight and transfer have all been notified!",
+            "bot"
+          );
+          messages.scrollTop = messages.scrollHeight;
+        })
+        .catch(function() {
+          confirmBtn.innerText = "❌ Failed — Try Again";
+          confirmBtn.disabled = false;
+        });
+      };
+
+      form.appendChild(formP);
+      form.appendChild(nameInput);
+      form.appendChild(confirmBtn);
+      messages.appendChild(form);
+      messages.scrollTop = messages.scrollHeight;
+      nameInput.focus();
+    }
+
     function addPackage(p, i) {
       const div = document.createElement("div");
       div.className = "package";
+      div.style.height = "auto";
 
       const total = p.summary && p.summary.totalPrice ? p.summary.totalPrice :
         (p.transport && p.transport.price ? p.transport.price : 0) +
@@ -271,7 +350,7 @@ router.get('/', (req, res) => {
       const route = p.summary && p.summary.route ? p.summary.route : flightFrom + " to " + flightTo;
       const hasTransfer = p.transfers && p.transfers.provider;
 
-      // Package header
+      // Header
       const pkgHeader = document.createElement("div");
       pkgHeader.className = "pkg-header";
       const pkgTitle = document.createElement("span");
@@ -283,20 +362,18 @@ router.get('/', (req, res) => {
       pkgHeader.appendChild(pkgTitle);
       pkgHeader.appendChild(pkgRoute);
 
-      // Package body
+      // Body
       const pkgBody = document.createElement("div");
       pkgBody.className = "pkg-body";
       pkgBody.style.height = "auto";
 
       pkgBody.appendChild(makeRow(
-        "✈️",
-        airline,
+        "✈️", airline,
         flightFrom + " → " + flightTo + " | Departs " + depTime + " · Arrives " + arrTime
       ));
 
       pkgBody.appendChild(makeRow(
-        "🏨",
-        hotelName,
+        "🏨", hotelName,
         hotelLoc + " · " + nights + " nights · $" + hotelPPN + "/night · Rating: " + hotelRating + "/5"
       ));
 
@@ -304,13 +381,12 @@ router.get('/', (req, res) => {
         const transferVehicle = p.transfers.vehicleType ? p.transfers.vehicleType : "Car";
         const transferPrice = p.transfers.price ? p.transfers.price : 0;
         pkgBody.appendChild(makeRow(
-          "🚗",
-          p.transfers.provider,
+          "🚗", p.transfers.provider,
           transferVehicle + " · $" + transferPrice
         ));
       }
 
-      // Package footer
+      // Footer
       const pkgFooter = document.createElement("div");
       pkgFooter.className = "pkg-footer";
       pkgFooter.style.height = "auto";
@@ -327,10 +403,13 @@ router.get('/', (req, res) => {
       bookBtn.className = "book";
       bookBtn.innerText = "Book Now";
 
+      bookBtn.onclick = function() {
+        showNameForm(p, bookBtn);
+      };
+
       pkgFooter.appendChild(pkgPrice);
       pkgFooter.appendChild(bookBtn);
 
-      div.style.height = "auto";
       div.appendChild(pkgHeader);
       div.appendChild(pkgBody);
       div.appendChild(pkgFooter);
