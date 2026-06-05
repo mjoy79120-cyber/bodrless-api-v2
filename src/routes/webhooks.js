@@ -14,18 +14,18 @@
 
 const express = require('express');
 const router = express.Router();
+const supabase = require('../utils/supabase');
 const orchestrationEngine = require('../orchestration/engine');
 const whatsappService = require('../services/whatsapp');
 const { logger } = require('../utils/logger');
 
 // ── GET /api/webhooks/whatsapp ───────────────────────────────
-// WhatsApp webhook verification (required by Meta)
 router.get('/whatsapp', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && token === 'bodrless-webhook-secret') {
+  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
     console.log('Webhook verified');
     res.status(200).send(challenge);
   } else {
@@ -34,25 +34,22 @@ router.get('/whatsapp', (req, res) => {
 });
 
 // ── POST /api/webhooks/whatsapp ──────────────────────────────
-// Incoming WhatsApp messages
 router.post('/whatsapp', async (req, res) => {
-  // Always acknowledge immediately — WhatsApp requires fast response
   res.status(200).send('OK');
 
   try {
     const body = req.body;
 
     if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) {
-      return; // Not a message event
+      return;
     }
 
     const message = body.entry[0].changes[0].value.messages[0];
     const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
-    const from = message.from; // Traveler's phone number
+    const from = message.from;
 
     logger.info('Incoming WhatsApp message', { from, type: message.type });
 
-    // Only process text messages for now
     if (message.type !== 'text') {
       await whatsappService.sendText(phoneNumberId, from,
         "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
@@ -62,15 +59,13 @@ router.post('/whatsapp', async (req, res) => {
 
     const prompt = message.text.body;
 
-    // TEMP: hardcoded for test number — replace with DB lookup when going live
-    const agencyId = 'accessible-travel';
+    // Resolve agency from phone number ID
+    const agencyId = await _resolveAgency(phoneNumberId);
 
-    // Send acknowledgment immediately
     await whatsappService.sendText(phoneNumberId, from,
-      "Got it! Give me a moment while I put together some options for you ✈️"
+      "Got it! Give me a moment while I put together some options for you."
     );
 
-    // Run orchestration
     const result = await orchestrationEngine.orchestrate(prompt, agencyId);
 
     if (!result.packages || result.packages.length === 0) {
@@ -80,12 +75,29 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    // Send packages back via WhatsApp
     await whatsappService.sendPackages(phoneNumberId, from, result.packages);
 
   } catch (error) {
     logger.error('WhatsApp webhook error', { error: error.message });
   }
 });
+
+// ── Helper ───────────────────────────────────────────────────
+async function _resolveAgency(phoneNumberId) {
+  try {
+    const { data } = await supabase
+      .from('agencies')
+      .select('id')
+      .eq('whatsapp_phone_number_id', phoneNumberId)
+      .single();
+
+    if (data) return data.id;
+  } catch (err) {
+    logger.warn('Could not resolve agency from phone number', { phoneNumberId });
+  }
+
+  // Fallback for test number
+  return process.env.DEFAULT_AGENCY_ID || 'accessible-travel';
+}
 
 module.exports = router;

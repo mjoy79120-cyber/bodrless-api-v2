@@ -108,7 +108,6 @@ const CITY_CODES = {
   'bogota': 'BOG',
 };
 
-// Swahili → English destination mappings
 const SWAHILI_DESTINATIONS = {
   'pwani': 'mombasa',
   'bahari': 'mombasa',
@@ -125,7 +124,6 @@ const BUS_ROUTES = [
   ['NBO', 'EBB'],
 ];
 
-// Accessibility keywords — any of these flags the trip as accessibility-needed
 const ACCESSIBILITY_KEYWORDS = [
   'wheelchair', 'wheel chair', 'disabled', 'disability',
   'accessible', 'accessibility', 'mobility', 'mobility impaired',
@@ -133,15 +131,14 @@ const ACCESSIBILITY_KEYWORDS = [
   'crutches', 'walking aid', 'walker', 'blind', 'visually impaired',
   'deaf', 'hearing impaired', 'elderly', 'senior citizen',
   'ramp', 'elevator access', 'lift access', 'ground floor',
-  'kiti cha magurudumu', // Swahili for wheelchair
-  'ulemavu', // Swahili for disability
-  'mzee', // Swahili for elderly
+  'kiti cha magurudumu',
+  'ulemavu',
+  'mzee',
 ];
 
 async function parsePrompt(prompt) {
   try {
     const parsed = await _parseWithGemini(prompt);
-    // Always run accessibility check on top of LLM result
     parsed.accessibility = _detectAccessibility(prompt);
     if (parsed.accessibility) {
       if (!parsed.preferences) parsed.preferences = [];
@@ -159,9 +156,6 @@ async function parsePrompt(prompt) {
   }
 }
 
-// ─────────────────────────────────────────────
-// ACCESSIBILITY DETECTION
-// ─────────────────────────────────────────────
 function _detectAccessibility(prompt) {
   const lower = prompt.toLowerCase();
   return ACCESSIBILITY_KEYWORDS.some(keyword => lower.includes(keyword));
@@ -228,7 +222,8 @@ RULES:
       }
     },
     {
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 10000
     }
   );
 
@@ -244,12 +239,10 @@ RULES:
 function _parseWithRules(prompt) {
   let lower = prompt.toLowerCase().trim();
 
-  // Translate Swahili destination hints
   for (const [swahili, english] of Object.entries(SWAHILI_DESTINATIONS)) {
     lower = lower.replace(swahili, english);
   }
 
-  // Swahili passenger patterns
   const swahiliPassengerMatch = lower.match(/(\d+)\s*(watu|wenza|watu\s*wawili)/);
   const passengerMatch = lower.match(/(\d+)\s*(people|persons|passengers|adults|pax|travelers?|travellers?)/);
   const passengers = swahiliPassengerMatch
@@ -260,14 +253,12 @@ function _parseWithRules(prompt) {
       : lower.includes('familia') || lower.includes('family') ? 4
       : 1;
 
-  // Budget
   let budget = 'mid';
   if (lower.match(/luxury|5[\s-]?star|five[\s-]?star|premium|first[\s-]?class/)) budget = 'luxury';
   else if (lower.match(/high[\s-]?budget|business[\s-]?class|expensive/)) budget = 'high';
   else if (lower.match(/low[\s-]?budget|cheap|budget|affordable|bei[\s-]?nafuu|economy/)) budget = 'low';
   else if (lower.match(/mid[\s-]?budget|moderate|reasonable/)) budget = 'mid';
 
-  // Nights
   const nightsMatch = lower.match(/(\d+)\s*(nights?|usiku|giku)/);
   const daysMatch = lower.match(/(\d+)\s*(days?|siku)/);
   const nights = nightsMatch
@@ -278,12 +269,10 @@ function _parseWithRules(prompt) {
       : lower.includes('week') && !lower.includes('next week') ? 7
       : 3;
 
-  // Sort longest first to avoid partial matches
   const sortedCities = Object.keys(CITY_CODES).sort((a, b) => b.length - a.length);
   let origin = null;
   let destination = null;
 
-  // Pattern: "from X to Y" or "nataka kwenda Y"
   const fromToMatch = lower.match(/(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
   const kwendaMatch = lower.match(/(?:nataka\s+kwenda|kwenda|going\s+to|travel\s+to|trip\s+to|visit)\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
 
@@ -303,7 +292,6 @@ function _parseWithRules(prompt) {
     }
   }
 
-  // Fallback: pick cities found in text
   if (!destination) {
     for (const city of sortedCities) {
       if (lower.includes(city)) {
@@ -314,10 +302,8 @@ function _parseWithRules(prompt) {
     if (origin && !destination) { destination = origin; origin = null; }
   }
 
-  // Default origin to nairobi
   if (!origin) origin = 'nairobi';
 
-  // Preferences
   const preferences = [];
   if (lower.match(/beach|coast|ocean|bahari|pwani/)) preferences.push('beach');
   if (lower.match(/safari|game|wildlife|mara|serengeti|wanyama/)) preferences.push('safari');
@@ -327,7 +313,6 @@ function _parseWithRules(prompt) {
   if (lower.match(/culture|history|museum|utamaduni/)) preferences.push('culture');
   if (lower.match(/business|conference|meeting|mkutano/)) preferences.push('business');
 
-  // Accessibility detection
   const accessibility = _detectAccessibility(lower);
   if (accessibility) preferences.push('accessible');
 
