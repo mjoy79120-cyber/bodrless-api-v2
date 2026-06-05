@@ -1,77 +1,194 @@
 require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
+
 const { logger } = require('./utils/logger');
+const { authenticateAgency } = require('./middleware/auth');
 
 const tripRoutes = require('./routes/trips');
 const webhookRoutes = require('./routes/webhooks');
 const agencyRoutes = require('./routes/agencies');
 const healthRoutes = require('./routes/health');
 const uploadRoutes = require('./routes/uploads');
+const widgetRoutes = require('./routes/widget');
+
 const app = express();
+
 const PORT = process.env.PORT || 3000;
 
-// ─── Security Middleware ───────────────────────────────────
-app.use(helmet());
-app.use(cors());
+// ─────────────────────────────────────────────
+// SECURITY
+// ─────────────────────────────────────────────
+
+app.set('trust proxy', 1);
+
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: false,
+  })
+);
+
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'x-api-key',
+      'Authorization',
+    ],
+  })
+);
+
 app.use(express.json());
 
-// Rate limiting — protect against abuse
+// ─────────────────────────────────────────────
+// RATE LIMITING
+// ─────────────────────────────────────────────
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  message: { error: 'Too many requests, please try again later.' }
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many requests. Please try again later.',
+  },
 });
 
 app.use('/api/', limiter);
 
-// ─── Routes ───────────────────────────────────────────────
-const widgetRoutes = require('./routes/widget');
+// ─────────────────────────────────────────────
+// WIDGET CACHE CONTROL
+// ─────────────────────────────────────────────
 
-app.use('/api/trips', tripRoutes);
-app.use('/api/webhooks', webhookRoutes);
-app.use('/api/agencies', agencyRoutes);
-app.use('/api/uploads', uploadRoutes);
-app.use('/health', healthRoutes);
-app.use('/widget.js', widgetRoutes);
+app.use('/widget.js', (req, res, next) => {
+  res.setHeader(
+    'Cache-Control',
+    'no-cache, no-store, must-revalidate'
+  );
 
-// ✅ FIXED: serve file from ROOT (NOT /src)
-app.get('/test-widget.html', (req, res) => {
-  res.sendFile(path.join(__dirname, '../test-widget.html'));
+  res.setHeader(
+    'Content-Type',
+    'application/javascript'
+  );
+
+  next();
 });
 
-// ─── Global Error Handler ─────────────────────────────────
-app.use((err, req, res, next) => {
-  logger.error('Unhandled error:', err);
+// ─────────────────────────────────────────────
+// PUBLIC ROUTES
+// ─────────────────────────────────────────────
 
-  res.status(500).json({
-    error: 'Something went wrong',
-    message:
-      process.env.NODE_ENV === 'development'
-        ? err.message
-        : undefined
+app.use('/health', healthRoutes);
+
+app.use('/api/webhooks', webhookRoutes);
+
+app.use('/widget.js', widgetRoutes);
+
+// ─────────────────────────────────────────────
+// PROTECTED ROUTES
+// ─────────────────────────────────────────────
+
+app.use(
+  '/api/trips',
+  authenticateAgency,
+  tripRoutes
+);
+
+app.use(
+  '/api/uploads',
+  authenticateAgency,
+  uploadRoutes
+);
+
+app.use(
+  '/api/agencies',
+  authenticateAgency,
+  agencyRoutes
+);
+
+// ─────────────────────────────────────────────
+// TEST PAGE
+// ─────────────────────────────────────────────
+
+app.get('/test-widget.html', (req, res) => {
+
+  res.setHeader(
+    'Cache-Control',
+    'no-cache, no-store, must-revalidate'
+  );
+
+  res.sendFile(
+    path.join(
+      __dirname,
+      '../test-widget.html'
+    )
+  );
+});
+
+// ─────────────────────────────────────────────
+// ROOT
+// ─────────────────────────────────────────────
+
+app.get('/', (req, res) => {
+
+  res.json({
+    success: true,
+    message: 'Bodrless API is running',
+    environment:
+      process.env.NODE_ENV || 'development',
   });
 });
 
-app.listen(PORT, () => {
-  logger.info(`Bodrless API running on port ${PORT}`);
-  logger.info(`Environment: ${process.env.NODE_ENV}`);
+// ─────────────────────────────────────────────
+// ERROR HANDLER
+// ─────────────────────────────────────────────
+
+app.use((err, req, res, next) => {
+
+  logger.error('Unhandled Error', {
+    message: err.message,
+    stack: err.stack,
+  });
+
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message:
+      process.env.NODE_ENV === 'development'
+        ? err.message
+        : undefined,
+  });
 });
 
-// ─── Keep alive ping every 4 minutes ──────────────────────
-const https = require('https');
+// ─────────────────────────────────────────────
+// START SERVER
+// ─────────────────────────────────────────────
 
-setInterval(() => {
-  https
-    .get('https://bodrless-api-v2.onrender.com/health', (res) => {
-      console.log('Keep alive ping:', res.statusCode);
-    })
-    .on('error', (err) => {
-      console.log('Keep alive error:', err.message);
-    });
-}, 4 * 60 * 1000);
+const server = app.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+
+    logger.info(
+      `🚀 Bodrless API running on port ${PORT}`
+    );
+
+    logger.info(
+      `🌍 Environment: ${
+        process.env.NODE_ENV || 'development'
+      }`
+    );
+
+  }
+);
 
 module.exports = app;

@@ -1,24 +1,47 @@
-// ── Auth Middleware ──────────────────────────────────────────
-// src/middleware/auth.js
-const authenticateAgency = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+const supabase = require('../utils/supabase');
+const { logger } = require('../utils/logger');
 
-  if (!apiKey) {
-    return res.status(401).json({ error: 'API key required' });
+const authenticateAgency = async (req, res, next) => {
+  try {
+    const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+
+    if (!apiKey) {
+      return res.status(401).json({ error: 'API key required' });
+    }
+
+    // Allow widget requests with agencyId directly — validate it exists
+    const agencyId = apiKey || req.body?.agencyId;
+
+    // Check against agencies table OR check agency_id exists in flights table
+    const { data: agency, error } = await supabase
+      .from('flights')
+      .select('agency_id')
+      .eq('agency_id', agencyId)
+      .limit(1)
+      .single();
+
+    if (error || !agency) {
+      // Also check hotels
+      const { data: hotelCheck } = await supabase
+        .from('hotels')
+        .select('agency_id')
+        .eq('agency_id', agencyId)
+        .limit(1)
+        .single();
+
+      if (!hotelCheck) {
+        logger.warn('Invalid API key attempt', { apiKey });
+        return res.status(401).json({ error: 'Invalid API key' });
+      }
+    }
+
+    req.agencyId = agencyId;
+    next();
+
+  } catch (err) {
+    logger.error('Auth middleware error', { error: err.message });
+    next(); // Fail open for now — change to res.status(500) when stable
   }
-
-  // TODO: Validate API key against your database
-  // For now pass through in development
-  if (process.env.NODE_ENV === 'development') {
-    req.agencyId = req.body.agencyId || 'dev-agency';
-    return next();
-  }
-
-  // Production: validate against DB
-  // const agency = await Agency.findByApiKey(apiKey);
-  // if (!agency) return res.status(401).json({ error: 'Invalid API key' });
-  // req.agencyId = agency.id;
-  next();
 };
 
 module.exports = { authenticateAgency };
