@@ -1,146 +1,280 @@
 /**
- * HOTEL INTEGRATION
+ * INTEGRATIONS INDEX
+ * ─────────────────────────────────────────────────────────────
+ * - Hotels: Supabase (real data)
+ * - Transfers: Supabase (real data)
+ * - Buses: Travler (real-time East Africa routes)
+ * ─────────────────────────────────────────────────────────────
  */
+
 const axios = require('axios');
 const { logger } = require('../utils/logger');
+const supabase = require('../utils/supabase');
 
+// ─────────────────────────────────────────────
+// HOTEL SERVICE — Supabase
+// ─────────────────────────────────────────────
 class HotelService {
-  async search({ destination, checkIn, checkOut, guests, budget, minRating }) {
-    return this._getMockHotels({ destination, checkIn, checkOut, guests, minRating });
-  }
+  async search({ destination, agencyId, checkIn, checkOut, guests, minRating }) {
+    try {
+      const { data, error } = await supabase
+        .from('hotels')
+        .select('*')
+        .eq('agency_id', agencyId);
 
-  _getMockHotels({ destination, checkIn, checkOut, guests, minRating }) {
-    logger.warn('Using mock hotel data — configure hotel API keys for real results');
-    const nights = checkIn && checkOut
-      ? Math.round((new Date(checkOut) - new Date(checkIn)) / (1000 * 60 * 60 * 24))
-      : 3;
+      if (error) throw error;
 
-    return [
-      {
-        id: 'mock-hotel-1',
-        name: `${destination} Beach Resort`,
-        stars: 3,
-        rating: 7.8,
-        reviewCount: 342,
-        location: { address: `${destination} Beach Road`, lat: -6.165, lng: 39.202 },
-        roomType: 'Standard Double Room',
-        amenities: ['WiFi', 'Pool', 'Breakfast included'],
-        pricePerNight: 80,
-        checkIn, checkOut, nights,
-        cancellationPolicy: 'Free cancellation 48h before',
-        id: 'mock-hotel-1',
-      },
-      {
-        id: 'mock-hotel-2',
-        name: `Baraza Resort & Spa`,
-        stars: 4,
-        rating: 9.1,
-        reviewCount: 1204,
-        location: { address: `${destination} South Coast`, lat: -6.298, lng: 39.534 },
-        roomType: 'Deluxe Suite',
-        amenities: ['WiFi', 'Spa', 'Pool', 'Breakfast & Dinner', 'Airport Transfer'],
-        pricePerNight: 180,
-        checkIn, checkOut, nights,
-        cancellationPolicy: 'Free cancellation 72h before',
-        id: 'mock-hotel-2',
-      },
-      {
-        id: 'mock-hotel-3',
-        name: `The Residence ${destination}`,
-        stars: 5,
-        rating: 9.6,
-        reviewCount: 876,
-        location: { address: `${destination} North Coast`, lat: -5.987, lng: 39.312 },
-        roomType: 'Ocean View Villa',
-        amenities: ['WiFi', 'Private Pool', 'Butler Service', 'All Inclusive', 'VIP Transfer'],
-        pricePerNight: 420,
-        checkIn, checkOut, nights,
-        cancellationPolicy: 'Non-refundable',
-        id: 'mock-hotel-3',
-      },
-    ].filter(h => h.stars >= (minRating || 3));
+      const nights = checkIn && checkOut
+        ? Math.round((new Date(checkOut) - new Date(checkIn)) / (1000 * 60 * 60 * 24))
+        : 3;
+
+      return (data || [])
+        .filter(h => {
+          const loc = (h.location || '').toLowerCase();
+          const dest = (destination || '').toLowerCase();
+          return loc.includes(dest) || dest.includes(loc);
+        })
+        .filter(h => !minRating || h.stars >= minRating)
+        .map(h => ({
+          id: h.id,
+          name: h.name,
+          stars: h.stars || 4,
+          rating: h.rating || 4.5,
+          location: h.location,
+          pricePerNight: h.price_per_night,
+          nights,
+          checkIn,
+          checkOut,
+          reviews: h.reviews || [],
+          reviewScore: h.review_score || null,
+        }));
+
+    } catch (err) {
+      logger.error('Hotel search failed', { error: err.message });
+      return [];
+    }
   }
 }
 
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// TRAVLER BUS SERVICE — Real-time
+// East Africa routes, seats, bus types
+// ─────────────────────────────────────────────
+class TravlerBusService {
 
-/**
- * BUS INTEGRATION
- * Connect to BuuPass, Easy Coach, etc.
- */
-class BusService {
-  async search({ origin, destination, departureDate, passengers }) {
+  constructor() {
+    this.baseUrl = process.env.TRAVLER_API_URL || 'https://api.travler.africa';
+    this.apiKey = process.env.TRAVLER_API_KEY;
+    this.timeout = 10000;
+  }
+
+  async search({ origin, destination, departureDate, passengers = 1, timePreference = null }) {
     try {
-      // TODO: Connect to BuuPass API
-      return this._getMockBuses({ origin, destination, departureDate, passengers });
-    } catch (error) {
-      logger.error('Bus search failed', { error: error.message });
+      logger.info('Travler: searching buses', { origin, destination, departureDate, timePreference });
+
+      // TODO: Update endpoint when Travler sends docs
+      const response = await axios.get(`${this.baseUrl}/routes/search`, {
+        params: {
+          origin,
+          destination,
+          date: departureDate,
+          passengers,
+        },
+        headers: this._headers(),
+        timeout: this.timeout,
+      });
+
+      const routes = this._normalizeRoutes(response.data);
+      return this._filterByTimePreference(routes, timePreference);
+
+    } catch (err) {
+      logger.error('Travler: bus search failed', { error: err.message });
       return [];
     }
   }
 
-  _getMockBuses({ origin, destination, departureDate, passengers }) {
-    logger.warn('Using mock bus data — configure BUUPASS_API_KEY for real results');
-    return [
-      {
-        id: 'mock-bus-1',
-        type: 'bus',
-        provider: 'BUUPASS',
-        providerName: 'Modern Coast',
-        origin, destination,
-        departureTime: `${departureDate}T21:00:00`,
-        arrivalTime: `${departureDate}T06:00:00`,
-        duration: 'PT9H',
-        stops: 2,
-        arrival: { station: `${destination} Bus Terminal`, time: `${departureDate}T06:00:00` },
-        baggage: { included: true, weight: '20KG' },
-        cancellationPolicy: 'Non-refundable',
-        price: 25 * passengers,
-        currency: 'USD',
-        amenities: ['AC', 'Reclining seats', 'USB charging'],
-      },
-    ];
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-
-/**
- * TRANSFER INTEGRATION
- * Airport/station to hotel transfers
- */
-class TransferService {
-  async search({ pickupLocation, dropoffLocation, passengers }) {
+  async getSeatAvailability({ tripId, date }) {
     try {
-      // TODO: Connect to transfer API
-      return this._getMockTransfer({ pickupLocation, dropoffLocation, passengers });
-    } catch (error) {
-      logger.error('Transfer search failed', { error: error.message });
-      return null;
+      logger.info('Travler: getting seats', { tripId });
+
+      const response = await axios.get(`${this.baseUrl}/trips/${tripId}/seats`, {
+        params: { date },
+        headers: this._headers(),
+        timeout: this.timeout,
+      });
+
+      return this._normalizeSeats(response.data);
+
+    } catch (err) {
+      logger.error('Travler: seat fetch failed', { error: err.message });
+      return [];
     }
   }
 
-  _getMockTransfer({ pickupLocation, dropoffLocation, passengers }) {
+  async bookSeats({ tripId, seatNumbers, passengerDetails, agencyId }) {
+    try {
+      logger.info('Travler: booking seats', { tripId, seatNumbers });
+
+      const response = await axios.post(`${this.baseUrl}/bookings`, {
+        trip_id: tripId,
+        seats: seatNumbers,
+        passengers: passengerDetails,
+        agent_id: agencyId,
+      }, {
+        headers: this._headers(),
+        timeout: this.timeout,
+      });
+
+      return this._normalizeBooking(response.data);
+
+    } catch (err) {
+      logger.error('Travler: booking failed', { error: err.message });
+      throw err;
+    }
+  }
+
+  async getBookingStatus(bookingRef) {
+    try {
+      const response = await axios.get(`${this.baseUrl}/bookings/${bookingRef}`, {
+        headers: this._headers(),
+        timeout: this.timeout,
+      });
+      return response.data;
+    } catch (err) {
+      logger.error('Travler: status check failed', { error: err.message });
+      throw err;
+    }
+  }
+
+  async cancelBooking(bookingRef) {
+    try {
+      const response = await axios.delete(`${this.baseUrl}/bookings/${bookingRef}`, {
+        headers: this._headers(),
+        timeout: this.timeout,
+      });
+      return response.data;
+    } catch (err) {
+      logger.error('Travler: cancellation failed', { error: err.message });
+      throw err;
+    }
+  }
+
+  // Filter by time preference — morning, afternoon, evening, night
+  _filterByTimePreference(routes, timePreference) {
+    if (!timePreference) return routes;
+
+    const preference = timePreference.toLowerCase();
+
+    return routes.filter(route => {
+      if (!route.departureTime) return true;
+
+      const hour = new Date(route.departureTime).getHours();
+
+      if (preference.includes('morning')) return hour >= 5 && hour < 12;
+      if (preference.includes('afternoon')) return hour >= 12 && hour < 17;
+      if (preference.includes('evening')) return hour >= 17 && hour < 21;
+      if (preference.includes('night')) return hour >= 21 || hour < 5;
+
+      return true;
+    });
+  }
+
+  _normalizeRoutes(data) {
+    const routes = data?.routes || data?.data || data || [];
+    return routes.map(route => ({
+      tripId: route.id || route.trip_id,
+      operator: route.operator || route.company || route.bus_company,
+      busType: route.bus_type || route.vehicle_type || route.coach_type || 'Standard',
+      origin: route.origin || route.from,
+      destination: route.destination || route.to,
+      departureTime: route.departure_time || route.departs_at,
+      arrivalTime: route.arrival_time || route.arrives_at,
+      duration: route.duration,
+      price: Number(route.price || route.fare || route.amount || 0),
+      currency: route.currency || 'KES',
+      availableSeats: route.available_seats || route.seats_available,
+      totalSeats: route.total_seats || route.capacity,
+      amenities: route.amenities || [],
+      transportType: 'bus',
+      provider: route.operator || route.company,
+    }));
+  }
+
+  _normalizeSeats(data) {
+    const seats = data?.seats || data?.data || data || [];
+    return seats.map(seat => ({
+      seatNumber: seat.seat_number || seat.number,
+      status: seat.status || (seat.available ? 'available' : 'booked'),
+      type: seat.type || seat.seat_type || 'standard',
+      price: Number(seat.price || seat.fare || 0),
+      deck: seat.deck || 'lower',
+      position: seat.position || null,
+    }));
+  }
+
+  _normalizeBooking(data) {
     return {
-      id: 'mock-transfer-1',
-      provider: 'LocalTransfers',
-      vehicleType: passengers <= 2 ? 'Sedan' : passengers <= 6 ? 'Minivan' : 'Bus',
-      pickupLocation,
-      dropoffLocation,
-      duration: '45 minutes',
-      price: passengers <= 2 ? 25 : 40,
-      currency: 'USD',
-      notes: 'Driver meets you at arrivals with name board',
+      bookingRef: data.booking_ref || data.reference || data.id,
+      status: data.status || 'confirmed',
+      tripId: data.trip_id,
+      seats: data.seats || data.seat_numbers,
+      totalAmount: data.total_amount || data.amount,
+      currency: data.currency || 'KES',
+      passengerDetails: data.passengers,
+      ticket: data.ticket || data.ticket_url || null,
+      confirmedAt: data.confirmed_at || new Date().toISOString(),
+    };
+  }
+
+  _headers() {
+    return {
+      'Authorization': `Bearer ${this.apiKey}`,
+      'Content-Type': 'application/json',
+      'x-api-key': this.apiKey,
     };
   }
 }
 
-// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// TRANSFER SERVICE — Supabase
+// ─────────────────────────────────────────────
+class TransferService {
+  async search({ destination, agencyId, passengers }) {
+    try {
+      const { data, error } = await supabase
+        .from('transfers')
+        .select('*')
+        .eq('agency_id', agencyId);
 
-const { logger: _logger } = require('../utils/logger');
+      if (error) throw error;
 
+      return (data || [])
+        .filter(t => {
+          const loc = (t.location || '').toLowerCase();
+          const dest = (destination || '').toLowerCase();
+          return loc.includes(dest) || dest.includes(loc);
+        })
+        .map(t => ({
+          id: t.id,
+          provider: t.provider,
+          vehicleType: t.vehicle_type,
+          location: t.location,
+          price: t.price,
+          currency: 'USD',
+        }));
+
+    } catch (err) {
+      logger.error('Transfer search failed', { error: err.message });
+      return [];
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// EXPORTS
+// ─────────────────────────────────────────────
 module.exports = {
   hotelService: new HotelService(),
-  busService: new BusService(),
+  busService: new TravlerBusService(),
   transferService: new TransferService(),
 };

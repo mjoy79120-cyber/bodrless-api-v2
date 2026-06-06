@@ -5,7 +5,8 @@
  * trip parameters the orchestration engine can work with.
  *
  * Supports: English, Swahili, shorthand, vague requests,
- *           accessibility needs
+ *           accessibility needs, meal plans, seat preferences,
+ *           train classes, bus seat selection, time preferences
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -136,16 +137,58 @@ const ACCESSIBILITY_KEYWORDS = [
   'mzee',
 ];
 
+// ─────────────────────────────────────────────
+// SEAT POSITION MAPPING FOR BUSES
+// When Travler integration is live, these map
+// to actual seat numbers from the seat map
+// ─────────────────────────────────────────────
+const BUS_SEAT_POSITIONS = {
+  // Window seats — typically A and D columns
+  window: {
+    preference: 'window',
+    columns: ['A', 'D'],
+    note: 'Window seat requested — will select from A or D column when seat map is available'
+  },
+  // Aisle seats — typically B and C columns
+  aisle: {
+    preference: 'aisle',
+    columns: ['B', 'C'],
+    note: 'Aisle seat requested — will select from B or C column when seat map is available'
+  },
+  // Front seats — rows 1-5
+  front: {
+    preference: 'front',
+    rows: [1, 2, 3, 4, 5],
+    note: 'Front seat requested — will select from rows 1-5 when seat map is available'
+  },
+  // Back seats — rows 10+
+  back: {
+    preference: 'back',
+    rows: [10, 11, 12, 13, 14],
+    note: 'Back seat requested — will select from rows 10+ when seat map is available'
+  },
+};
+
 async function parsePrompt(prompt) {
   try {
     const parsed = await _parseWithGemini(prompt);
+
+    // Always run local detection on top of LLM result
     parsed.accessibility = _detectAccessibility(prompt);
+    parsed.seatPreference = parsed.seatPreference || _detectSeatPreference(prompt);
+    parsed.mealPlan = parsed.mealPlan || _detectMealPlan(prompt);
+    parsed.trainClass = parsed.trainClass || _detectTrainClass(prompt);
+    parsed.timePreference = parsed.timePreference || _detectTimePreference(prompt);
+    parsed.transportMode = parsed.transportMode || _detectTransportMode(prompt);
+    parsed.busSeatPosition = _resolveBusSeatPosition(parsed.seatPreference);
+
     if (parsed.accessibility) {
       if (!parsed.preferences) parsed.preferences = [];
       if (!parsed.preferences.includes('accessible')) {
         parsed.preferences.push('accessible');
       }
     }
+
     return _enrichParams(parsed);
   } catch (error) {
     logger.warn('Gemini parsing failed, falling back to rule-based parser', {
@@ -156,18 +199,94 @@ async function parsePrompt(prompt) {
   }
 }
 
+// ─────────────────────────────────────────────
+// DETECTION FUNCTIONS
+// ─────────────────────────────────────────────
+
 function _detectAccessibility(prompt) {
   const lower = prompt.toLowerCase();
   return ACCESSIBILITY_KEYWORDS.some(keyword => lower.includes(keyword));
 }
 
+function _detectSeatPreference(prompt) {
+  const lower = prompt.toLowerCase();
+
+  // Flight seat preferences
+  if (lower.match(/window\s*seat|seat.*window|dirisha/)) return 'window';
+  if (lower.match(/aisle\s*seat|seat.*aisle|njia/)) return 'aisle';
+  if (lower.match(/middle\s*seat|seat.*middle/)) return 'middle';
+  if (lower.match(/extra\s*legroom|leg\s*room|more\s*space/)) return 'extra_legroom';
+  if (lower.match(/front\s*seat|seat.*front|mbele/)) return 'front';
+  if (lower.match(/back\s*seat|seat.*back|nyuma/)) return 'back';
+  if (lower.match(/upper\s*(deck|floor)|top\s*deck/)) return 'upper_deck';
+  if (lower.match(/lower\s*(deck|floor)|bottom\s*deck/)) return 'lower_deck';
+
+  return null;
+}
+
+function _detectMealPlan(prompt) {
+  const lower = prompt.toLowerCase();
+
+  // Hotel meal plans
+  if (lower.match(/all\s*inclusive|all inclusive|everything\s*included/)) return 'all_inclusive';
+  if (lower.match(/full\s*board|full board|breakfast.*lunch.*dinner|chakula\s*chote/)) return 'full_board';
+  if (lower.match(/half\s*board|half board|breakfast.*dinner|dinner.*breakfast/)) return 'half_board';
+  if (lower.match(/bed.*breakfast|b&b|bb|breakfast\s*only|breakfast\s*included/)) return 'bed_and_breakfast';
+  if (lower.match(/room\s*only|no\s*meals|without\s*meals|chumba\s*tu/)) return 'room_only';
+  if (lower.match(/breakfast/)) return 'bed_and_breakfast';
+
+  return null;
+}
+
+function _detectTrainClass(prompt) {
+  const lower = prompt.toLowerCase();
+
+  // SGR and general train classes
+  if (lower.match(/first\s*class|1st\s*class|daraja\s*ya\s*kwanza|business\s*class\s*train/)) return 'first_class';
+  if (lower.match(/economy\s*class|economy\s*train|daraja\s*ya\s*pili|second\s*class/)) return 'economy';
+  if (lower.match(/premium\s*class|premium\s*train/)) return 'premium';
+  if (lower.match(/sgr|standard\s*gauge|madaraka\s*express/)) return 'sgr';
+
+  return null;
+}
+
+function _detectTimePreference(prompt) {
+  const lower = prompt.toLowerCase();
+
+  if (lower.match(/morning|early|asubuhi|alfajiri|6am|7am|8am|9am|10am|11am/)) return 'morning';
+  if (lower.match(/afternoon|mchana|alasiri|12pm|1pm|2pm|3pm|4pm/)) return 'afternoon';
+  if (lower.match(/evening|jioni|5pm|6pm|7pm|8pm/)) return 'evening';
+  if (lower.match(/night|usiku|late|9pm|10pm|11pm|midnight/)) return 'night';
+
+  return null;
+}
+
+function _detectTransportMode(prompt) {
+  const lower = prompt.toLowerCase();
+
+  if (lower.match(/\bbus\b|coach|basi|matatu/)) return 'bus';
+  if (lower.match(/\btrain\b|sgr|rail|treni|madaraka/)) return 'train';
+  if (lower.match(/\bflight\b|\bfly\b|ndege|airline|airways/)) return 'flight';
+  if (lower.match(/\bdrive\b|road\s*trip|self\s*drive|gari/)) return 'drive';
+
+  return null;
+}
+
+function _resolveBusSeatPosition(seatPreference) {
+  if (!seatPreference) return null;
+  return BUS_SEAT_POSITIONS[seatPreference] || null;
+}
+
+// ─────────────────────────────────────────────
+// GEMINI PARSER
+// ─────────────────────────────────────────────
 async function _parseWithGemini(prompt) {
   const response = await axios.post(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
     {
       contents: [{
         parts: [{
-          text: `You are a travel booking assistant. Extract trip details from this prompt and return ONLY valid JSON with no explanation, no markdown, no code blocks.
+          text: `You are a travel booking assistant for East Africa. Extract trip details from this prompt and return ONLY valid JSON with no explanation, no markdown, no code blocks.
 
 Prompt: "${prompt}"
 
@@ -183,42 +302,56 @@ The prompt may be in English, Swahili, or mixed. Common Swahili travel words:
 - "kiti cha magurudumu" = wheelchair
 - "ulemavu" = disability
 - "mzee" = elderly
+- "asubuhi" = morning
+- "mchana" = afternoon
+- "jioni" = evening
+- "basi" = bus
+- "treni" = train
+- "ndege" = plane/flight
+- "dirisha" = window
+- "chakula chote" = all inclusive
 
 Return JSON:
 {
-  "origin": "full city name in lowercase (e.g. nairobi, cape town, zanzibar) or null if not mentioned",
-  "destination": "full city name in lowercase — the place they want to VISIT",
+  "origin": "full city name in lowercase",
+  "destination": "full city name in lowercase",
   "departureDate": "YYYY-MM-DD or null",
   "returnDate": "YYYY-MM-DD or null",
   "passengers": number (default 1),
   "budget": "low|mid|high|luxury",
   "nights": number (default 3),
   "tripType": "round_trip|one_way",
-  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"] (pick relevant ones),
-  "accessibility": true or false
+  "transportMode": "flight|bus|train|drive|null",
+  "seatPreference": "window|aisle|middle|extra_legroom|front|back|upper_deck|lower_deck|null",
+  "mealPlan": "all_inclusive|full_board|half_board|bed_and_breakfast|room_only|null",
+  "trainClass": "first_class|economy|premium|sgr|null",
+  "timePreference": "morning|afternoon|evening|night|null",
+  "accessibility": true or false,
+  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"]
 }
 
 RULES:
 - NEVER use abbreviations — always full city names in lowercase
-- origin = where they are coming FROM (often Nairobi if not mentioned for Kenyan context)
-- destination = where they want to GO — this is the most important field
-- If only one city mentioned, it is the destination; assume origin is nairobi
-- "cape town" not "CPT", "zanzibar" not "ZNZ"
-- Resolve relative dates: today is ${new Date().toISOString().split('T')[0]}
-- "next week" → date 7 days from today
-- "next month" → date 30 days from today
-- "christmas" → ${new Date().getFullYear()}-12-25
-- "new year" → ${new Date().getFullYear() + 1}-01-01
-- If budget not mentioned, use "mid"
-- If nights not mentioned but days mentioned, subtract 1
-- For "weekend" use nights: 2
-- For "week" use nights: 7
-- If prompt mentions wheelchair, disabled, accessible, mobility, elderly, special needs → set accessibility: true and add "accessible" to preferences`
+- origin = where they are coming FROM (default nairobi for Kenya context)
+- destination = where they want to GO
+- transportMode: if they say bus use bus, train use train, flight use flight
+- seatPreference: window seat = window, aisle seat = aisle, front = front, back = back
+- mealPlan: all inclusive = all_inclusive, breakfast included = bed_and_breakfast, full board = full_board
+- trainClass: SGR first class = first_class, SGR economy = economy, Madaraka Express = sgr
+- timePreference: morning bus = morning, evening train = evening
+- For bus seat window/aisle — note this will be resolved to actual seat numbers from Travler seat map
+- Today: ${new Date().toISOString().split('T')[0]}
+- "next week" = ${_addDaysStr(7)}
+- "next month" = ${_addDaysStr(30)}
+- "christmas" = ${new Date().getFullYear()}-12-25
+- "new year" = ${new Date().getFullYear() + 1}-01-01
+- If budget not mentioned use "mid"
+- For "weekend" use nights: 2, for "week" use nights: 7`
         }]
       }],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 600,
+        maxOutputTokens: 800,
       }
     },
     {
@@ -236,6 +369,9 @@ RULES:
   return parsed;
 }
 
+// ─────────────────────────────────────────────
+// RULE-BASED FALLBACK
+// ─────────────────────────────────────────────
 function _parseWithRules(prompt) {
   let lower = prompt.toLowerCase().trim();
 
@@ -316,6 +452,13 @@ function _parseWithRules(prompt) {
   const accessibility = _detectAccessibility(lower);
   if (accessibility) preferences.push('accessible');
 
+  const seatPreference = _detectSeatPreference(lower);
+  const mealPlan = _detectMealPlan(lower);
+  const trainClass = _detectTrainClass(lower);
+  const timePreference = _detectTimePreference(lower);
+  const transportMode = _detectTransportMode(lower);
+  const busSeatPosition = _resolveBusSeatPosition(seatPreference);
+
   const departureDate = _extractDate(lower) || _resolveRelativeDate(lower) || _defaultDepartureDate();
 
   return {
@@ -329,7 +472,22 @@ function _parseWithRules(prompt) {
     tripType: lower.match(/one[\s-]?way|kwenda\s+tu/) ? 'one_way' : 'round_trip',
     preferences,
     accessibility,
+    seatPreference,
+    mealPlan,
+    trainClass,
+    timePreference,
+    transportMode,
+    busSeatPosition,
   };
+}
+
+// ─────────────────────────────────────────────
+// DATE HELPERS
+// ─────────────────────────────────────────────
+function _addDaysStr(days) {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().split('T')[0];
 }
 
 function _extractDate(prompt) {
@@ -401,19 +559,16 @@ function _resolveRelativeDate(prompt) {
     now.setDate(now.getDate() + daysUntilSat);
     return now.toISOString().split('T')[0];
   }
-  if (prompt.includes('christmas')) {
-    return `${now.getFullYear()}-12-25`;
-  }
-  if (prompt.match(/new\s+year/)) {
-    return `${now.getFullYear() + 1}-01-01`;
-  }
-  if (prompt.match(/easter/)) {
-    return `${now.getFullYear()}-04-20`;
-  }
+  if (prompt.includes('christmas')) return `${now.getFullYear()}-12-25`;
+  if (prompt.match(/new\s+year/)) return `${now.getFullYear() + 1}-01-01`;
+  if (prompt.match(/easter/)) return `${now.getFullYear()}-04-20`;
 
   return null;
 }
 
+// ─────────────────────────────────────────────
+// ENRICH PARAMS
+// ─────────────────────────────────────────────
 function _enrichParams(parsed) {
   const originCode = _resolveToCode(parsed.origin);
   const destinationCode = _resolveToCode(parsed.destination);
@@ -439,6 +594,12 @@ function _enrichParams(parsed) {
     passengers: parsed.passengers || 1,
     budget: parsed.budget || 'mid',
     accessibility: parsed.accessibility || false,
+    seatPreference: parsed.seatPreference || null,
+    mealPlan: parsed.mealPlan || null,
+    trainClass: parsed.trainClass || null,
+    timePreference: parsed.timePreference || null,
+    transportMode: parsed.transportMode || null,
+    busSeatPosition: parsed.busSeatPosition || null,
   };
 }
 
