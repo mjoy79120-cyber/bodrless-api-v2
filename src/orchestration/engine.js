@@ -6,61 +6,61 @@ const { rankPackages } = require("./packageRanker");
 
 // ─────────────────────────────────────────────────────────────
 // CONVERSATIONAL MEMORY STORE
-// Stores active conversations so the engine remembers previous 
-// parameters (destinations, budgets, dates) between messages.
 // ─────────────────────────────────────────────────────────────
 const sessionMemory = new Map();
 
 class OrchestrationEngine {
 
-  // Main Entry Point for Orchestration
   async orchestrate(prompt, agencyId, existingSessionId = null) {
     
-    // 1. Retrieve or Create Session
+    // 1. Guard Check: Ensure an Agency ID is strictly provided by the incoming router
+    if (!agencyId) {
+      logger.error("Orchestration blocked: Missing agencyId context");
+      throw new Error("Tenant isolation breach: agencyId is required");
+    }
+
+    // 2. Retrieve or Create Session
     const sessionId = existingSessionId || uuidv4();
     let session = sessionMemory.get(sessionId) || {
       history: [],
-      tripParams: { agencyId },
+      tripParams: { agencyId }, // Session memory is pinned to this specific agency tenant
       isConversationActive: false
     };
 
-    logger.info(`[${sessionId}] Started Orchestration`, {
+    logger.info(`[${sessionId}] Started Orchestration for Tenant: ${agencyId}`, {
       agencyId,
       prompt,
       isContinuing: !!existingSessionId
     });
 
     try {
-      // 2. Parse the new prompt (extracts intent, dates, budget, or destination)
+      // 3. Parse the incoming conversational prompt
       const newParams = await parsePrompt(prompt);
 
-      // 3. Contextual Merge
-      // Merges new requests on top of old ones to preserve conversational state.
+      // 4. Contextual Merge (Keeps parameters isolated within this specific agency context)
       const mergedParams = {
         ...session.tripParams,
         ...newParams,
-        agencyId // Ensure agencyId is never overwritten by incoming params
+        agencyId // Enforce that agencyId can never be overwritten by a malicious prompt payload
       };
 
-      console.log("PREVIOUS PARAMS:", session.tripParams);
-      console.log("NEW EXTRACTED PARAMS:", newParams);
-      console.log("MERGED TRIP PARAMS:", mergedParams);
+      console.log(`[${agencyId}] PREVIOUS STATE:`, session.tripParams);
+      console.log(`[${agencyId}] EXTRACTED PARAMS:`, newParams);
+      console.log(`[${agencyId}] ACTIVE ROUTE CONTEXT:`, mergedParams.agencyId);
 
-      // 4. Validate context
+      // 5. Validate context attributes
       this._validateTripParams(mergedParams);
 
-      // 5. Fetch Inventory using the merged state (Flights/Buses executed in parallel)
+      // 6. Fetch Inventory from tables (Now 100% dynamic based on the active agency parameter)
       const [transports, hotels, transfers] = await Promise.all([
         this._searchTransport(mergedParams),
         this._searchHotels(mergedParams),
         this._searchTransfers(mergedParams)
       ]);
 
-      console.log("FINAL TRANSPORTS (FLIGHT/BUS):", transports.length);
-      console.log("FINAL HOTELS:", hotels.length);
-      console.log("FINAL TRANSFERS:", transfers.length);
+      console.log(`[${agencyId}] INVENTORY COUNTS -> Transports: ${transports.length}, Hotels: ${hotels.length}, Transfers: ${transfers.length}`);
 
-      // 6. Build & Rank Packages
+      // 7. Combinatoric Package Assembly
       const packages = this._buildPackages({
         transports,
         hotels,
@@ -70,7 +70,7 @@ class OrchestrationEngine {
 
       const rankedPackages = rankPackages(packages, mergedParams).slice(0, 4);
 
-      // 7. Generate Conversational Response
+      // 8. Generate Conversational Response
       let replyText = "";
       if (rankedPackages.length > 0) {
         if (session.isConversationActive) {
@@ -82,7 +82,7 @@ class OrchestrationEngine {
         replyText = "I couldn't find matching packages with those exact details right now. Should we try adjusting your dates or budget slightly?";
       }
 
-      // 8. Save State back to Memory
+      // 9. Save State back to Memory
       session.tripParams = mergedParams;
       session.history.push({ role: "user", content: prompt });
       session.history.push({ role: "assistant", content: replyText });
@@ -98,9 +98,8 @@ class OrchestrationEngine {
       };
 
     } catch (error) {
-      logger.error("Engine failure", { error: error.message });
+      logger.error(`Engine failure on tenant [${agencyId}]`, { error: error.message });
 
-      // Handle missing destination smoothly instead of crashing
       if (error.message === "Missing destination") {
         return {
           sessionId,
@@ -115,9 +114,6 @@ class OrchestrationEngine {
     }
   }
 
-  // ─────────────────────────────
-  // NORMALIZE TEXT FOR MATCHING
-  // ─────────────────────────────
   _normalize(text) {
     return String(text || "")
       .toLowerCase()
@@ -125,9 +121,6 @@ class OrchestrationEngine {
       .trim();
   }
 
-  // ─────────────────────────────
-  // INVENTORY DESTINATION FILTERING
-  // ─────────────────────────────
   _matchesDestination(item, destination) {
     if (!destination) return true;
 
@@ -141,7 +134,7 @@ class OrchestrationEngine {
       ${item.hotel_name || ""}
       ${item.origin || ""}
       ${item.airline || ""}
-      ${item.provider || t.operator || ""}
+      ${item.provider || item.operator || ""}
       ${item.notes || ""}
     `);
 
@@ -151,21 +144,17 @@ class OrchestrationEngine {
     return words.some(word => word.length > 2 && combined.includes(word));
   }
 
-  // ─────────────────────────────
-  // INTEGRATED TRANSPORT SEARCH (FLIGHTS + BUSES)
-  // ─────────────────────────────
   async _searchTransport(tripParams) {
     const transportType = this._normalize(tripParams.transportType);
     let flights = [];
     let buses = [];
 
-    // Fetch flights unless explicitly looking for land transit
     if (transportType !== "bus" && transportType !== "train") {
       try {
         const { data, error } = await supabase
           .from("flights")
           .select("*")
-          .eq("agency_id", tripParams.agencyId);
+          .eq("agency_id", tripParams.agencyId); // Strictly filtered by dynamic tenant ID
 
         if (!error && data) flights = data;
       } catch (err) {
@@ -173,13 +162,12 @@ class OrchestrationEngine {
       }
     }
 
-    // Pull regional bus inventory for integrated multi-modal routing
     if (transportType !== "flight") {
       try {
         const { data, error } = await supabase
           .from("buses")
           .select("*")
-          .eq("agency_id", tripParams.agencyId);
+          .eq("agency_id", tripParams.agencyId); // Strictly filtered by dynamic tenant ID
 
         if (!error && data) buses = data;
       } catch (err) {
@@ -187,7 +175,6 @@ class OrchestrationEngine {
       }
     }
 
-    // Map flights into normalized transport structures
     const matchedFlights = flights
       .filter(f => this._matchesDestination(f, tripParams.destination))
       .map(f => ({
@@ -201,7 +188,6 @@ class OrchestrationEngine {
         price: Number(f.price || f.amount || 0)
       }));
 
-    // Map regional bus inventory into the exact same transport format
     const matchedBuses = buses
       .filter(b => this._matchesDestination(b, tripParams.destination))
       .map(b => ({
@@ -215,18 +201,14 @@ class OrchestrationEngine {
         price: Number(b.price || b.amount || 0)
       }));
 
-    // Combine results prioritizing specified preference layouts
     return transportType === "bus" ? [...matchedBuses, ...matchedFlights] : [...matchedFlights, ...matchedBuses];
   }
 
-  // ─────────────────────────────
-  // HOTELS
-  // ─────────────────────────────
   async _searchHotels(tripParams) {
     const { data, error } = await supabase
       .from("hotels")
       .select("*")
-      .eq("agency_id", tripParams.agencyId);
+      .eq("agency_id", tripParams.agencyId); // Dynamic check
 
     if (error) {
       console.error("HOTEL ERROR:", error);
@@ -245,14 +227,11 @@ class OrchestrationEngine {
       }));
   }
 
-  // ─────────────────────────────
-  // TRANSFERS
-  // ─────────────────────────────
   async _searchTransfers(tripParams) {
     const { data, error } = await supabase
       .from("transfers")
       .select("*")
-      .eq("agency_id", tripParams.agencyId);
+      .eq("agency_id", tripParams.agencyId); // Dynamic check
 
     if (error) {
       console.error("TRANSFER ERROR:", error);
@@ -269,21 +248,13 @@ class OrchestrationEngine {
       }));
   }
 
-  // ─────────────────────────────
-  // CONSTRUCT AND MERGE TRAVEL PACKAGES
-  // ─────────────────────────────
   _buildPackages({ transports, hotels, transfers, tripParams }) {
     if (!transports.length && !hotels.length && !transfers.length) {
-      console.log("NO INVENTORY FOUND FOR PARAMETERS");
       return [];
     }
 
     const packages = [];
-    const maxLength = Math.max(
-      transports.length || 1,
-      hotels.length || 1,
-      transfers.length || 1
-    );
+    const maxLength = Math.max(transports.length || 1, hotels.length || 1, transfers.length || 1);
 
     for (let i = 0; i < maxLength; i++) {
       const transport = transports[i % (transports.length || 1)] || {};
@@ -304,7 +275,7 @@ class OrchestrationEngine {
           totalPrice,
           pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1))
         },
-        transport, // Holds normalized properties for either bus or flight seamlessly
+        transport, 
         hotel,
         transfers: transfer,
         status: "available"
@@ -314,9 +285,6 @@ class OrchestrationEngine {
     return packages;
   }
 
-  // ─────────────────────────────
-  // FIELD VALIDATIONS
-  // ─────────────────────────────
   _validateTripParams(params) {
     if (!params.destination) {
       throw new Error("Missing destination");
