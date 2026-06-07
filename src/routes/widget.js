@@ -2,8 +2,9 @@ const express = require('express');
 const router = express.Router();
 
 router.get('/', (req, res) => {
-  const agencyKey = req.query.key || 'epic-travels';
-  const agencyName = req.query.name || 'Epic Travels';
+  // 💡 Updated default fallback key to match your live Render tenant setup
+  const agencyKey = req.query.key || 'accessible-travels';
+  const agencyName = req.query.name || 'Accessible Travels';
   const apiBase = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
 
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
@@ -93,7 +94,7 @@ router.get('/', (req, res) => {
   'logoWrap.appendChild(logoImg);\n' +
   'var headerText = document.createElement("div");\n' +
   'headerText.id = "et-header-text";\n' +
-  'headerText.innerHTML = "<h3><span>' + agencyName + '</span></h3><p>Premium Travel Specialist</p>";\n' +
+  'headerText.innerHTML = "<h3><span>' + agencyName + '</span></h3><p>Accessible Travel Specialist</p>";\n' +
   'headerLeft.appendChild(logoWrap);\n' +
   'headerLeft.appendChild(headerText);\n' +
   'var closeBtn = document.createElement("button");\n' +
