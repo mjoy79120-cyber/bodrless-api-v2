@@ -68,7 +68,7 @@ router.get('/', (req, res) => {
   '"#bodrless-input:focus{border-color:var(--et-navy);}",\n' +
   '"#bodrless-input::placeholder{color:var(--et-muted);font-size:12px;}",\n' +
   '"#bodrless-send{background:var(--et-navy);color:white;border:none;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}",\n' +
-  '"#bodrless-trigger{position:fixed;bottom:24px;right:24px;z-index:999998;background:var(--et-navy);color:white;border:none;padding:13px 20px;border-radius:999px;cursor:pointer;font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(30,42,94,0.35);border-left:3px solid var(--et-red);}",\n' +
+  '"#bodrless-trigger{position:fixed;bottom:24px;right:24px;z-index:999998;background:var(--et-navy);color:white;border:none;padding:13px 20px;border-radius:999px;cursor:pointer;font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(30,42,94,0.35);border-left:3px solid var(--et-red);display:block !important;}",\n' +
   '".name-form{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:14px;margin-top:8px;}",\n' +
   '".name-form p{font-size:12px;color:var(--et-navy);margin:0 0 10px 0;font-weight:500;}",\n' +
   '".name-input{width:100%;padding:9px 12px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:var(--et-navy);box-sizing:border-box;margin-bottom:10px;}",\n' +
@@ -311,7 +311,6 @@ router.get('/', (req, res) => {
   '  .then(function(res) { return res.json(); })\n' +
   '  .then(function(data) {\n' +
   '    hideTyping();\n' +
-  '    // Print contextual explanation text directly from engine.js\n' +
   '    if (data && data.text) { addMsg(data.text, "bot"); }\n' +
   '    var packages = data && data.packages ? data.packages : [];\n' +
   '    if (!packages.length) { if(!data.text) { addMsg("No packages found. Try specifying destination, number of people and nights.", "bot"); } return; }\n' +
