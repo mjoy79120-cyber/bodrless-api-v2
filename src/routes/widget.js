@@ -13,6 +13,14 @@ router.get('/', (req, res) => {
   'if (!document.body) { setTimeout(initWidget, 50); return; }\n' +
   'if (document.getElementById("bodrless-widget-root")) return;\n' +
 
+  '// Initialize or fetch the unique conversational session ID for this browser tab\n' +
+  'var sessionKey = "bodrless_session_" + "' + agencyKey + '";\n' +
+  'if (!sessionStorage.getItem(sessionKey)) {\n' +
+  '  var uuid = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : "sess_" + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);\n' +
+  '  sessionStorage.setItem(sessionKey, uuid);\n' +
+  '}\n' +
+  'var currentSessionId = sessionStorage.getItem(sessionKey);\n' +
+
   'var style = document.createElement("style");\n' +
   'style.innerHTML = [\n' +
   '":root{--et-navy:#1E2A5E;--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F8F9FC;--et-border:#E4E8F0;--et-muted:#8892A4;--et-green:#27ae60;}",\n' +
@@ -298,14 +306,15 @@ router.get('/', (req, res) => {
   '  fetch("' + apiBase + '/api/trips/orchestrate", {\n' +
   '    method: "POST",\n' +
   '    headers: { "Content-Type": "application/json", "x-api-key": "' + agencyKey + '" },\n' +
-  '    body: JSON.stringify({ prompt: text, agencyId: "' + agencyKey + '", channelType: "widget" })\n' +
+  '    body: JSON.stringify({ prompt: text, agencyId: "' + agencyKey + '", channelType: "widget", userSessionId: currentSessionId })\n' +
   '  })\n' +
   '  .then(function(res) { return res.json(); })\n' +
   '  .then(function(data) {\n' +
   '    hideTyping();\n' +
+  '    // Print contextual explanation text directly from engine.js\n' +
+  '    if (data && data.text) { addMsg(data.text, "bot"); }\n' +
   '    var packages = data && data.packages ? data.packages : [];\n' +
-  '    if (!packages.length) { addMsg("No packages found. Try specifying destination, number of people and nights.", "bot"); return; }\n' +
-  '    addMsg("I found " + packages.length + " option(s) for you:", "bot");\n' +
+  '    if (!packages.length) { if(!data.text) { addMsg("No packages found. Try specifying destination, number of people and nights.", "bot"); } return; }\n' +
   '    packages.slice(0, 4).forEach(function(p, i) { addPackage(p, i); });\n' +
   '  })\n' +
   '  .catch(function() { hideTyping(); addMsg("Unable to load trips right now. Please try again.", "bot"); });\n' +
@@ -313,7 +322,7 @@ router.get('/', (req, res) => {
 
   'sendBtn.onclick = send;\n' +
   'input.addEventListener("keypress", function(e) { if (e.key === "Enter") send(); });\n' +
-  'console.log("[BODRLESS] Widget loaded for: ' + agencyKey + '");\n' +
+  'console.log("[BODRLESS] Widget loaded with Session Tracker for: ' + agencyKey + '");\n' +
   '}\n' +
   'if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", initWidget); } else { initWidget(); }\n' +
   '})();\n';
