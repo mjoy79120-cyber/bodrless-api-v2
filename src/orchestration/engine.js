@@ -13,7 +13,7 @@ const sessionMemory = new Map();
 
 class OrchestrationEngine {
 
-  // UPDATED: Added existingSessionId to resume ongoing conversations
+  // Main Entry Point for Orchestration
   async orchestrate(prompt, agencyId, existingSessionId = null) {
     
     // 1. Retrieve or Create Session
@@ -31,16 +31,15 @@ class OrchestrationEngine {
     });
 
     try {
-      // 2. Parse the new prompt (e.g., extracts new budget or destination)
+      // 2. Parse the new prompt (extracts intent, dates, budget, or destination)
       const newParams = await parsePrompt(prompt);
 
-      // 3. Contextual Merge (The Magic Sauce)
-      // This merges new requests ON TOP of previous ones. 
-      // If they already said "Mombasa" and now say "cheaper", it remembers Mombasa.
+      // 3. Contextual Merge
+      // Merges new requests on top of old ones to preserve conversational state.
       const mergedParams = {
         ...session.tripParams,
         ...newParams,
-        agencyId // Ensure agencyId is never overwritten
+        agencyId // Ensure agencyId is never overwritten by incoming params
       };
 
       console.log("PREVIOUS PARAMS:", session.tripParams);
@@ -50,18 +49,20 @@ class OrchestrationEngine {
       // 4. Validate context
       this._validateTripParams(mergedParams);
 
-      // 5. Fetch Inventory using the merged state
-      const flights = await this._searchFlights(mergedParams);
-      const hotels = await this._searchHotels(mergedParams);
-      const transfers = await this._searchTransfers(mergedParams);
+      // 5. Fetch Inventory using the merged state (Flights/Buses executed in parallel)
+      const [transports, hotels, transfers] = await Promise.all([
+        this._searchTransport(mergedParams),
+        this._searchHotels(mergedParams),
+        this._searchTransfers(mergedParams)
+      ]);
 
-      console.log("FINAL FLIGHTS:", flights.length);
+      console.log("FINAL TRANSPORTS (FLIGHT/BUS):", transports.length);
       console.log("FINAL HOTELS:", hotels.length);
       console.log("FINAL TRANSFERS:", transfers.length);
 
       // 6. Build & Rank Packages
       const packages = this._buildPackages({
-        flights,
+        transports,
         hotels,
         transfers,
         tripParams: mergedParams
@@ -73,12 +74,12 @@ class OrchestrationEngine {
       let replyText = "";
       if (rankedPackages.length > 0) {
         if (session.isConversationActive) {
-          replyText = "I've updated the trip based on your new preferences. Here are the adjusted options:";
+          replyText = "I've updated the trip options based on your new preferences. Take a look at these choices:";
         } else {
-          replyText = `I found some great options for your trip to ${mergedParams.destination}. Take a look at these packages:`;
+          replyText = `I found some great travel options for your trip to ${mergedParams.destination}. Here are the packages I put together:`;
         }
       } else {
-        replyText = "I couldn't find packages matching those exact details. Should we try adjusting the budget or dates?";
+        replyText = "I couldn't find matching packages with those exact details right now. Should we try adjusting your dates or budget slightly?";
       }
 
       // 8. Save State back to Memory
@@ -90,7 +91,7 @@ class OrchestrationEngine {
 
       return {
         sessionId,
-        text: replyText, // Return conversational text to your WhatsApp/Frontend
+        text: replyText, 
         packages: rankedPackages,
         tripParams: mergedParams,
         generatedAt: new Date().toISOString()
@@ -115,7 +116,7 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // NORMALIZE TEXT
+  // NORMALIZE TEXT FOR MATCHING
   // ─────────────────────────────
   _normalize(text) {
     return String(text || "")
@@ -125,12 +126,10 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // DESTINATION MATCHING
+  // INVENTORY DESTINATION FILTERING
   // ─────────────────────────────
   _matchesDestination(item, destination) {
-    if (!destination) {
-      return true;
-    }
+    if (!destination) return true;
 
     const search = this._normalize(destination);
     const combined = this._normalize(`
@@ -142,45 +141,82 @@ class OrchestrationEngine {
       ${item.hotel_name || ""}
       ${item.origin || ""}
       ${item.airline || ""}
-      ${item.provider || ""}
+      ${item.provider || t.operator || ""}
       ${item.notes || ""}
     `);
 
-    if (combined.includes(search)) {
-      return true;
-    }
+    if (combined.includes(search)) return true;
 
     const words = search.split(" ");
     return words.some(word => word.length > 2 && combined.includes(word));
   }
 
   // ─────────────────────────────
-  // FLIGHTS
+  // INTEGRATED TRANSPORT SEARCH (FLIGHTS + BUSES)
   // ─────────────────────────────
-  async _searchFlights(tripParams) {
-    const { data, error } = await supabase
-      .from("flights")
-      .select("*")
-      .eq("agency_id", tripParams.agencyId);
+  async _searchTransport(tripParams) {
+    const transportType = this._normalize(tripParams.transportType);
+    let flights = [];
+    let buses = [];
 
-    if (error) {
-      console.error("FLIGHT ERROR:", error);
-      return [];
+    // Fetch flights unless explicitly looking for land transit
+    if (transportType !== "bus" && transportType !== "train") {
+      try {
+        const { data, error } = await supabase
+          .from("flights")
+          .select("*")
+          .eq("agency_id", tripParams.agencyId);
+
+        if (!error && data) flights = data;
+      } catch (err) {
+        console.error("SUPABASE FLIGHT FETCH ERROR:", err);
+      }
     }
 
-    const matchedFlights = (data || []).filter(flight =>
-      this._matchesDestination(flight, tripParams.destination)
-    );
+    // Pull regional bus inventory for integrated multi-modal routing
+    if (transportType !== "flight") {
+      try {
+        const { data, error } = await supabase
+          .from("buses")
+          .select("*")
+          .eq("agency_id", tripParams.agencyId);
 
-    return matchedFlights.map(flight => ({
-      airline: flight.airline || flight.provider || "Flight",
-      flightNumber: flight.flight_number || "AUTO",
-      departureTime: flight.departure_time || "08:00",
-      arrivalTime: flight.arrival_time || "12:00",
-      origin: flight.origin || "",
-      destination: flight.destination || "",
-      price: Number(flight.price || flight.amount || 0)
-    }));
+        if (!error && data) buses = data;
+      } catch (err) {
+        console.error("SUPABASE BUS FETCH ERROR:", err);
+      }
+    }
+
+    // Map flights into normalized transport structures
+    const matchedFlights = flights
+      .filter(f => this._matchesDestination(f, tripParams.destination))
+      .map(f => ({
+        type: "flight",
+        provider: f.airline || f.provider || "Local Airline",
+        referenceNumber: f.flight_number || "AUTO",
+        departureTime: f.departure_time || "08:00",
+        arrivalTime: f.arrival_time || "11:00",
+        origin: f.origin || "Nairobi",
+        destination: f.destination || "",
+        price: Number(f.price || f.amount || 0)
+      }));
+
+    // Map regional bus inventory into the exact same transport format
+    const matchedBuses = buses
+      .filter(b => this._matchesDestination(b, tripParams.destination))
+      .map(b => ({
+        type: "bus",
+        provider: b.operator || b.provider || "Regional Bus",
+        referenceNumber: b.bus_number || b.route_code || "BUS-REG",
+        departureTime: b.departure_time || "07:00",
+        arrivalTime: b.arrival_time || "15:00",
+        origin: b.origin || "Nairobi",
+        destination: b.destination || "",
+        price: Number(b.price || b.amount || 0)
+      }));
+
+    // Combine results prioritizing specified preference layouts
+    return transportType === "bus" ? [...matchedBuses, ...matchedFlights] : [...matchedFlights, ...matchedBuses];
   }
 
   // ─────────────────────────────
@@ -197,18 +233,16 @@ class OrchestrationEngine {
       return [];
     }
 
-    const matchedHotels = (data || []).filter(hotel =>
-      this._matchesDestination(hotel, tripParams.destination)
-    );
-
-    return matchedHotels.map(hotel => ({
-      name: hotel.name || hotel.hotel_name || "Hotel",
-      stars: Number(hotel.stars || 4),
-      rating: Number(hotel.rating || 4.5),
-      category: hotel.category || "",
-      location: hotel.location || hotel.city || "",
-      pricePerNight: Number(hotel.price_per_night || hotel.price || hotel.rate || 0)
-    }));
+    return (data || [])
+      .filter(hotel => this._matchesDestination(hotel, tripParams.destination))
+      .map(hotel => ({
+        name: hotel.name || hotel.hotel_name || "Accommodation",
+        stars: Number(hotel.stars || 4),
+        rating: Number(hotel.rating || 4.5),
+        category: hotel.category || "",
+        location: hotel.location || hotel.city || "",
+        pricePerNight: Number(hotel.price_per_night || hotel.price || hotel.rate || 0)
+      }));
   }
 
   // ─────────────────────────────
@@ -225,41 +259,39 @@ class OrchestrationEngine {
       return [];
     }
 
-    const matchedTransfers = (data || []).filter(t =>
-      this._matchesDestination(t, tripParams.destination)
-    );
-
-    return matchedTransfers.map(t => ({
-      provider: t.provider || t.name || "Transfer",
-      vehicleType: t.vehicle_type || "Transfer",
-      location: t.location || "",
-      price: Number(t.price || t.amount || 0)
-    }));
+    return (data || [])
+      .filter(t => this._matchesDestination(t, tripParams.destination))
+      .map(t => ({
+        provider: t.provider || t.name || "Local Transfer",
+        vehicleType: t.vehicle_type || "Standard Vehicle",
+        location: t.location || "",
+        price: Number(t.price || t.amount || 0)
+      }));
   }
 
   // ─────────────────────────────
-  // BUILD PACKAGES
+  // CONSTRUCT AND MERGE TRAVEL PACKAGES
   // ─────────────────────────────
-  _buildPackages({ flights, hotels, transfers, tripParams }) {
-    if (!flights.length && !hotels.length && !transfers.length) {
-      console.log("NO INVENTORY FOUND");
+  _buildPackages({ transports, hotels, transfers, tripParams }) {
+    if (!transports.length && !hotels.length && !transfers.length) {
+      console.log("NO INVENTORY FOUND FOR PARAMETERS");
       return [];
     }
 
     const packages = [];
     const maxLength = Math.max(
-      flights.length || 1,
+      transports.length || 1,
       hotels.length || 1,
       transfers.length || 1
     );
 
     for (let i = 0; i < maxLength; i++) {
-      const flight = flights[i % (flights.length || 1)] || {};
+      const transport = transports[i % (transports.length || 1)] || {};
       const hotel = hotels[i % (hotels.length || 1)] || {};
       const transfer = transfers[i % (transfers.length || 1)] || {};
 
       const totalPrice =
-        (flight.price || 0) +
+        (transport.price || 0) +
         ((hotel.pricePerNight || 0) * (tripParams.nights || 1)) +
         (transfer.price || 0);
 
@@ -272,7 +304,7 @@ class OrchestrationEngine {
           totalPrice,
           pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1))
         },
-        transport: flight,
+        transport, // Holds normalized properties for either bus or flight seamlessly
         hotel,
         transfers: transfer,
         status: "available"
@@ -283,7 +315,7 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // VALIDATION
+  // FIELD VALIDATIONS
   // ─────────────────────────────
   _validateTripParams(params) {
     if (!params.destination) {
