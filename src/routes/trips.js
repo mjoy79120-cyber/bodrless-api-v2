@@ -39,21 +39,35 @@ router.post('/orchestrate', async (req, res) => {
     });
   }
 
-  try {
-    const resolvedAgencyId = value.agencyId || 'accessible-travel';
+ try {
+  const resolvedAgencyId = value.agencyId || 'accessible-travel';
 
-    logger.info('Orchestration started', {
-      agencyId: resolvedAgencyId,
-      prompt: value.prompt
-    });
+  logger.info('Orchestration started', {
+    agencyId: resolvedAgencyId,
+    prompt: value.prompt
+  });
 
-    console.log("REQUEST BODY:", JSON.stringify(req.body, null, 2));
-console.log("ACTIVE AGENCY:", resolvedAgencyId);
-    const result = await orchestrationEngine.orchestrate(
-  value.prompt,
-  resolvedAgencyId,
-  value.sessionId || null
-);
+  console.log("=================================");
+  console.log("ORCHESTRATE REQUEST RECEIVED");
+  console.log("PROMPT:", value.prompt);
+  console.log("AGENCY:", resolvedAgencyId);
+  console.log("SESSION:", value.sessionId);
+  console.log("=================================");
+
+  const result = await orchestrationEngine.orchestrate(
+    value.prompt,
+    resolvedAgencyId,
+    value.sessionId || null
+  );
+
+  console.log("=================================");
+  console.log("ENGINE RESULT");
+  console.log("PACKAGES:", result?.packages?.length || 0);
+  console.log(
+    "TRIP PARAMS:",
+    JSON.stringify(result?.tripParams, null, 2)
+  );
+  console.log("=================================");
 
     const packages = Array.isArray(result?.packages) ? result.packages : [];
 
