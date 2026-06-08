@@ -52,7 +52,7 @@ router.post('/orchestrate', async (req, res) => {
       resolvedAgencyId,
       {
         conversationHistory: value.conversationHistory || [],
-        previousParams: value.previousParams || null,
+        previousParams: Joi.object().allow(null).optional(),
       }
     );
 
