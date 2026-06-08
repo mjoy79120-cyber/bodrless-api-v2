@@ -22,7 +22,7 @@ router.post('/orchestrate', async (req, res) => {
 
   const schema = Joi.object({
     prompt: Joi.string().min(1).max(500).required(),
-    agencyId: Joi.string().required(),
+    agencyId: Joi.string().default('accessible-travels'),
     channelType: Joi.string().valid('whatsapp', 'widget', 'api').default('api'),
     sessionId: Joi.string().optional(),
     conversationHistory: Joi.array().optional(),
@@ -40,7 +40,7 @@ router.post('/orchestrate', async (req, res) => {
   }
 
   try {
-    const resolvedAgencyId = value.agencyId || 'epic-travels';
+    const resolvedAgencyId = value.agencyId || 'accessible-travels';
 
     logger.info('Orchestration started', {
       agencyId: resolvedAgencyId,
@@ -123,7 +123,7 @@ router.post('/book', async (req, res) => {
     transport,
     hotel,
     transfers,
-    agencyId: value.agencyId || 'epic-travels',
+    agencyId: value.agencyId || 'accessible-travels',
   }).catch(err => logger.error('Notification error', { error: err.message }));
 
   return res.json({
