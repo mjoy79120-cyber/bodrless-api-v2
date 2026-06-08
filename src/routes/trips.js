@@ -22,7 +22,7 @@ router.post('/orchestrate', async (req, res) => {
 
   const schema = Joi.object({
     prompt: Joi.string().min(1).max(500).required(),
-    agencyId: Joi.string().default('accessible-travels'),
+    agencyId: Joi.string().default('accessible-travel'),
     channelType: Joi.string().valid('whatsapp', 'widget', 'api').default('api'),
     sessionId: Joi.string().optional(),
     conversationHistory: Joi.array().optional(),
@@ -47,26 +47,34 @@ router.post('/orchestrate', async (req, res) => {
       prompt: value.prompt
     });
 
+    console.log("REQUEST BODY:", JSON.stringify(req.body, null, 2));
+console.log("ACTIVE AGENCY:", resolvedAgencyId);
     const result = await orchestrationEngine.orchestrate(
-      value.prompt,
-      resolvedAgencyId,
-      {
-        conversationHistory: value.conversationHistory || [],
-        previousParams: Joi.object().allow(null).optional(),
-      }
-    );
+  value.prompt,
+  resolvedAgencyId,
+  value.sessionId || null
+);
 
     const packages = Array.isArray(result?.packages) ? result.packages : [];
 
-    return res.json({
-      success: true,
-      sessionId: result?.sessionId || `sess_${Date.now()}`,
-      packages: packages.slice(0, 4),
-      tripParams: result?.tripParams || null,
-      conversationHistory: result?.conversationHistory || [],
-      intent: result?.intent || null,
-    });
+    console.log("PACKAGES FOUND:", packages.length);
 
+if (packages.length > 0) {
+  console.log(
+    "FIRST PACKAGE:",
+    JSON.stringify(packages[0], null, 2)
+  );
+}
+
+    return res.json({
+  success: true,
+  sessionId: result?.sessionId || `sess_${Date.now()}`,
+  text: result?.text || '',
+  packages: packages.slice(0, 4),
+  tripParams: result?.tripParams || null,
+  conversationHistory: result?.conversationHistory || [],
+  intent: result?.intent || null,
+});
   } catch (err) {
     logger.error('Orchestration fatal error', { error: err.message });
     return res.json({
