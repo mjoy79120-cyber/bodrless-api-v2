@@ -40,7 +40,7 @@ router.post('/orchestrate', async (req, res) => {
   }
 
   try {
-    const resolvedAgencyId = value.agencyId || 'accessible-travels';
+    const resolvedAgencyId = value.agencyId || 'accessible-travel';
 
     logger.info('Orchestration started', {
       agencyId: resolvedAgencyId,
@@ -123,7 +123,7 @@ router.post('/book', async (req, res) => {
     transport,
     hotel,
     transfers,
-    agencyId: value.agencyId || 'accessible-travels',
+    agencyId: value.agencyId || 'accessible-travel',
   }).catch(err => logger.error('Notification error', { error: err.message }));
 
   return res.json({
