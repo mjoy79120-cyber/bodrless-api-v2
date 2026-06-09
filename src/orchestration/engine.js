@@ -60,14 +60,23 @@ class OrchestrationEngine {
         }
       ].slice(-10);
 
-      return {
-        sessionId,
-        packages: rankPackages(packages, tripParams).slice(0, 4),
-        tripParams,
-        intent,
-        conversationHistory: updatedHistory,
-        generatedAt: new Date().toISOString()
-      };
+      const rankedPackages =
+  rankPackages(packages, tripParams).slice(0, 4);
+
+const responseText =
+  rankedPackages.length > 0
+    ? `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.`
+    : `Sorry, I couldn't find any matching travel packages for ${tripParams.destination}.`;
+
+return {
+  sessionId,
+  text: responseText,
+  packages: rankedPackages,
+  tripParams,
+  intent,
+  conversationHistory: updatedHistory,
+  generatedAt: new Date().toISOString()
+};
 
     } catch (error) {
       logger.error("Engine failure", { error: error.message });
