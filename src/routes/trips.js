@@ -22,11 +22,11 @@ router.post('/orchestrate', async (req, res) => {
 
   const schema = Joi.object({
     prompt: Joi.string().min(1).max(500).required(),
-    agencyId: Joi.string().default('accessible-travel'),
+    agencyId: Joi.string().optional(),
     channelType: Joi.string().valid('whatsapp', 'widget', 'api').default('api'),
     sessionId: Joi.string().optional(),
     conversationHistory: Joi.array().optional(),
-    previousParams: Joi.object().optional(),
+    previousParams: Joi.object().allow(null).optional(),
   });
 
   const { error, value } = schema.validate(req.body);
@@ -39,56 +39,34 @@ router.post('/orchestrate', async (req, res) => {
     });
   }
 
- try {
-  const resolvedAgencyId = value.agencyId || 'accessible-travel';
+  try {
+    const resolvedAgencyId = value.agencyId || 'epic-travels';
 
-  logger.info('Orchestration started', {
-    agencyId: resolvedAgencyId,
-    prompt: value.prompt
-  });
+    logger.info('Orchestration started', {
+      agencyId: resolvedAgencyId,
+      prompt: value.prompt
+    });
 
-  console.log("=================================");
-  console.log("ORCHESTRATE REQUEST RECEIVED");
-  console.log("PROMPT:", value.prompt);
-  console.log("AGENCY:", resolvedAgencyId);
-  console.log("SESSION:", value.sessionId);
-  console.log("=================================");
-
-  const result = await orchestrationEngine.orchestrate(
-    value.prompt,
-    resolvedAgencyId,
-    value.sessionId || null
-  );
-
-  console.log("=================================");
-  console.log("ENGINE RESULT");
-  console.log("PACKAGES:", result?.packages?.length || 0);
-  console.log(
-    "TRIP PARAMS:",
-    JSON.stringify(result?.tripParams, null, 2)
-  );
-  console.log("=================================");
+    const result = await orchestrationEngine.orchestrate(
+      value.prompt,
+      resolvedAgencyId,
+      {
+        conversationHistory: value.conversationHistory || [],
+        previousParams: value.previousParams || null,
+      }
+    );
 
     const packages = Array.isArray(result?.packages) ? result.packages : [];
 
-    console.log("PACKAGES FOUND:", packages.length);
-
-if (packages.length > 0) {
-  console.log(
-    "FIRST PACKAGE:",
-    JSON.stringify(packages[0], null, 2)
-  );
-}
-
     return res.json({
-  success: true,
-  sessionId: result?.sessionId || `sess_${Date.now()}`,
-  text: result?.text || '',
-  packages: packages.slice(0, 4),
-  tripParams: result?.tripParams || null,
-  conversationHistory: result?.conversationHistory || [],
-  intent: result?.intent || null,
-});
+      success: true,
+      sessionId: result?.sessionId || `sess_${Date.now()}`,
+      packages: packages.slice(0, 4),
+      tripParams: result?.tripParams || null,
+      conversationHistory: result?.conversationHistory || [],
+      intent: result?.intent || null,
+    });
+
   } catch (err) {
     logger.error('Orchestration fatal error', { error: err.message });
     return res.json({
@@ -145,7 +123,7 @@ router.post('/book', async (req, res) => {
     transport,
     hotel,
     transfers,
-    agencyId: value.agencyId || 'accessible-travel',
+    agencyId: value.agencyId || 'epic-travels',
   }).catch(err => logger.error('Notification error', { error: err.message }));
 
   return res.json({
