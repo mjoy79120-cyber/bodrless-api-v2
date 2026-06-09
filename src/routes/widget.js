@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 
 router.get('/', (req, res) => {
-  const agencyKey = req.query.key || 'accessible-travel';
-  const agencyName = req.query.name || 'accessible travel';
+  const agencyKey = req.query.key || 'epic-travels';
+  const agencyName = req.query.name || 'Epic Travels';
   const apiBase = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
 
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
