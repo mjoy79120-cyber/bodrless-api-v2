@@ -24,7 +24,7 @@ router.post('/orchestrate', async (req, res) => {
     prompt: Joi.string().min(1).max(500).required(),
     agencyId: Joi.string().optional(),
     channelType: Joi.string().valid('whatsapp', 'widget', 'api').default('api'),
-    sessionId: Joi.string().optional(),
+    sessionId: Joi.string().allow(null).optional(),
     conversationHistory: Joi.array().optional(),
     previousParams: Joi.object().allow(null).optional(),
   });
