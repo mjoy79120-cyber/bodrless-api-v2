@@ -20,7 +20,7 @@ const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
 const orchestrationEngine = require('../orchestration/engine');
-const notificationService = require('../services/notificationService');
+const notificationService = require('../services/notifications');
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 
