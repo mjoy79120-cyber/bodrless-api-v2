@@ -3,6 +3,7 @@
  * ─────────────────────────────────────────────
  * Widget + WhatsApp + API Safe
  * Supports conversational follow-ups
+ * Saves searches and bookings to Supabase
  */
 
 const express = require('express');
@@ -10,6 +11,7 @@ const router = express.Router();
 const Joi = require('joi');
 const orchestrationEngine = require('../orchestration/engine');
 const whatsappService = require('../services/whatsapp');
+const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 
 const MOCK_NOTIFY_NUMBER = '254716098296';
@@ -58,6 +60,16 @@ router.post('/orchestrate', async (req, res) => {
 
     const packages = Array.isArray(result?.packages) ? result.packages : [];
 
+    // Save search to Supabase — fire and forget
+    _saveSearch({
+      agencyId: resolvedAgencyId,
+      sessionId: value.sessionId,
+      prompt: value.prompt,
+      tripParams: result?.tripParams,
+      packagesReturned: packages.length,
+      channel: value.channelType,
+    }).catch(err => logger.error('Search save error', { error: err.message }));
+
     return res.json({
       success: true,
       sessionId: result?.sessionId || `sess_${Date.now()}`,
@@ -79,7 +91,7 @@ router.post('/orchestrate', async (req, res) => {
 
 
 // ─────────────────────────────────────────────
-// BOOK — with mock coordination notifications
+// BOOK
 // ─────────────────────────────────────────────
 router.post('/book', async (req, res) => {
 
@@ -87,9 +99,11 @@ router.post('/book', async (req, res) => {
     packageIndex: Joi.number().optional(),
     agencyId: Joi.string().optional(),
     guestName: Joi.string().optional().default('Valued Guest'),
-    guestPhone: Joi.string().optional(),
+    guestPhone: Joi.string().allow('', null).optional(),
+    guestEmail: Joi.string().allow('', null).optional(),
     passengers: Joi.number().optional().default(1),
     package: Joi.object().optional(),
+    channel: Joi.string().optional().default('widget'),
   });
 
   const { error, value } = schema.validate(req.body);
@@ -110,9 +124,30 @@ router.post('/book', async (req, res) => {
   const nights = summary.nights || 3;
   const route = summary.route || `${transport.origin || 'Origin'} to ${transport.destination || 'Destination'}`;
   const totalPrice = summary.totalPrice || 0;
+  const agencyId = value.agencyId || 'epic-travels';
 
-  logger.info('Booking initiated', { bookingRef, agencyId: value.agencyId });
+  logger.info('Booking initiated', { bookingRef, agencyId });
 
+  // Save booking to Supabase
+  _saveBooking({
+    bookingRef,
+    agencyId,
+    guestName,
+    guestPhone: value.guestPhone || null,
+    guestEmail: value.guestEmail || null,
+    passengers,
+    nights,
+    totalPrice,
+    destination: transport.destination || summary.destination || null,
+    origin: transport.origin || summary.origin || null,
+    channel: value.channel || 'widget',
+    transport,
+    hotel,
+    transfers,
+    summary,
+  }).catch(err => logger.error('Booking save error', { error: err.message }));
+
+  // Send notifications
   _sendMockNotifications({
     bookingRef,
     guestName,
@@ -123,7 +158,7 @@ router.post('/book', async (req, res) => {
     transport,
     hotel,
     transfers,
-    agencyId: value.agencyId || 'epic-travels',
+    agencyId,
   }).catch(err => logger.error('Notification error', { error: err.message }));
 
   return res.json({
@@ -133,6 +168,60 @@ router.post('/book', async (req, res) => {
     status: 'confirmed',
   });
 });
+
+
+// ─────────────────────────────────────────────
+// SAVE SEARCH TO SUPABASE
+// ─────────────────────────────────────────────
+async function _saveSearch({ agencyId, sessionId, prompt, tripParams, packagesReturned, channel }) {
+  await supabase.from('trip_searches').insert({
+    agency_id: agencyId,
+    session_id: sessionId || null,
+    prompt,
+    destination: tripParams?.destination || null,
+    origin: tripParams?.origin || null,
+    passengers: tripParams?.passengers || 1,
+    budget: tripParams?.budget || null,
+    nights: tripParams?.nights || null,
+    packages_returned: packagesReturned,
+    channel: channel || 'widget',
+    converted: false,
+  });
+}
+
+
+// ─────────────────────────────────────────────
+// SAVE BOOKING TO SUPABASE
+// ─────────────────────────────────────────────
+async function _saveBooking({ bookingRef, agencyId, guestName, guestPhone, guestEmail, passengers, nights, totalPrice, destination, origin, channel, transport, hotel, transfers, summary }) {
+  await supabase.from('bookings').insert({
+    booking_ref: bookingRef,
+    agency_id: agencyId,
+    guest_name: guestName,
+    guest_phone: guestPhone,
+    guest_email: guestEmail,
+    destination,
+    origin,
+    nights,
+    passengers,
+    total_price: totalPrice,
+    currency: 'USD',
+    status: 'confirmed',
+    channel,
+    flight_details: transport || null,
+    hotel_details: hotel || null,
+    transfer_details: transfers || null,
+    trip_params: summary || null,
+  });
+
+  // Mark search as converted
+  if (summary?.sessionId) {
+    await supabase
+      .from('trip_searches')
+      .update({ converted: true })
+      .eq('session_id', summary.sessionId);
+  }
+}
 
 
 // ─────────────────────────────────────────────
