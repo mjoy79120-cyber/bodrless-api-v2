@@ -36,7 +36,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// Rate limiting — stricter for public API
+// Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -64,16 +64,17 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/health', healthRoutes);
 app.use('/widget.js', widgetRoutes);
 
-// ── Public API v1 (OTA/partner API — uses own API key auth inside routes) ──
+// ── Public API v1 (OTA/partner API) ──────────────────
 app.use('/api/v1', apiV1Routes);
 
-// ── Agency signup — public (no auth needed to sign up) ──
-app.use('/api/agencies/signup', agencyRoutes);
+// ── Agency public endpoints (no auth needed) ─────────
+app.use('/api/agencies/signup',   agencyRoutes);  // legacy
+app.use('/api/agencies/register', agencyRoutes);  // new secure registration
 
-// ── Protected Routes (auth required) ────────────────
-app.use('/api/trips', authenticateAgency, tripRoutes);
+// ── Protected Routes (auth required) ─────────────────
+app.use('/api/trips',    authenticateAgency, tripRoutes);
 app.use('/api/agencies', authenticateAgency, agencyRoutes);
-app.use('/api/uploads', authenticateAgency, uploadRoutes);
+app.use('/api/uploads',  authenticateAgency, uploadRoutes);
 
 // Test page
 app.get('/test-widget.html', (req, res) => {
@@ -88,11 +89,12 @@ app.get('/', (req, res) => {
     version: '1.0',
     description: 'Trip planning and booking infrastructure for travel agents and OTAs',
     endpoints: {
-      public_api: '/api/v1',
-      widget: '/widget.js?key=YOUR_AGENCY_ID',
-      webhooks: '/api/webhooks/whatsapp',
-      health: '/health',
-      signup: 'POST /api/agencies/signup',
+      public_api:  '/api/v1',
+      widget:      '/widget.js?key=YOUR_AGENCY_ID',
+      webhooks:    '/api/webhooks/whatsapp',
+      health:      '/health',
+      signup:      'POST /api/agencies/signup',
+      register:    'POST /api/agencies/register',
     },
     docs: 'https://bodrless-api-v2.onrender.com/api/v1',
   });
@@ -113,7 +115,7 @@ app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Environment: ${process.env.NODE_ENV}`);
 });
 
-// Keep alive — only in production
+// Keep alive — production only
 if (process.env.NODE_ENV === 'production') {
   const renderUrl = process.env.RENDER_EXTERNAL_URL || 'https://bodrless-api-v2.onrender.com';
   setInterval(() => {
