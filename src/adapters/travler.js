@@ -1,218 +1,451 @@
 /**
- * TRAVLER ADAPTER
+ * IABIRI ADAPTER (Travler Bus)
  * ─────────────────────────────────────────────
- * Normalizes Travler API responses into
+ * Normalizes IABIRI/99Synergy API responses into
  * Bodrless standard format
+ *
+ * Base URL:  http://bossapi.99synergy.com  (search/book)
+ *            https://api.iabiri.com        (boarding/dropping points)
+ * Auth:      Static API key in `authorization` header
  * ─────────────────────────────────────────────
  */
 
 const axios = require('axios');
 const { logger } = require('../utils/logger');
 
-class TravlerAdapter {
+class IabiriAdapter {
 
   constructor() {
-    this.baseUrl = process.env.TRAVLER_API_URL || 'https://api.travler.africa';
-    this.apiKey = process.env.TRAVLER_API_KEY;
-    this.timeout = 10000;
-    this.supplier = 'travler';
+    this.baseUrl       = process.env.IABIRI_API_URL      || 'http://bossapi.99synergy.com';
+    this.pointsUrl     = process.env.IABIRI_POINTS_URL   || 'https://api.iabiri.com';
+    this.apiKey        = process.env.IABIRI_API_KEY;
+    this.currencyId    = process.env.IABIRI_CURRENCY_ID  || '1';   // 1 = KES
+    this.timeout       = 12000;
+    this.supplier      = 'iabiri';
   }
 
   // ─────────────────────────────────────────────
-  // SEARCH ROUTES
+  // SEARCH BUSES
+  // Resolves city names → IDs then calls filterBuses
   // ─────────────────────────────────────────────
   async search({ origin, destination, date, passengers = 1, timePreference = null }) {
     try {
-      logger.info('Travler: searching routes', { origin, destination, date });
+      logger.info('IABIRI: searching buses', { origin, destination, date });
 
-      // TODO: Update endpoint when Travler sends docs
-      const response = await axios.get(`${this.baseUrl}/routes/search`, {
-        params: { origin, destination, date, passengers },
-        headers: this._headers(),
-        timeout: this.timeout,
-      });
+      // Resolve city names to IABIRI city IDs
+      const [sourceCityId, destCityId] = await Promise.all([
+        this._resolveCityId(origin),
+        this._resolveCityId(destination),
+      ]);
 
-      const routes = this._normalizeRoutes(response.data);
-      return this._filterByTime(routes, timePreference);
+      if (!sourceCityId || !destCityId) {
+        logger.warn('IABIRI: could not resolve city IDs', { origin, destination });
+        return [];
+      }
+
+      const response = await axios.post(
+        `${this.baseUrl}/globalApi/Trips/filterBuses`,
+        {
+          source_city_id:      String(sourceCityId),
+          destination_city_id: String(destCityId),
+          travel_date:         this._formatDate(date),
+          avg_rating:          null,
+          departure_time:      'asc',
+          fare:                null,
+          seat_type:           '',
+          travels:             '',
+          boarding_points:     [],
+          dropping_points:     [],
+          bus_with_amenities:  [],
+          high_rating:         false,
+          bus_with_live_tracking: false,
+          cabs:                false,
+          hot_deals:           false,
+          on_time:             false,
+          bus_type:            [],
+          time_range:          [],
+          record_type:         'data',
+          currencyId:          this.currencyId,
+          company_id:          [],
+          delayBus:            true,
+          sourcetype:          'web',
+        },
+        { headers: this._headers(), timeout: this.timeout }
+      );
+
+      const buses = this._normalizeBuses(response.data, sourceCityId, destCityId, date);
+      return this._filterByTime(buses, timePreference);
 
     } catch (err) {
-      logger.error('Travler search failed', { error: err.message });
+      logger.error('IABIRI search failed', { error: err.message });
       return [];
     }
   }
 
   // ─────────────────────────────────────────────
-  // GET SEAT AVAILABILITY
+  // GET SEAT LAYOUT + PRICING
+  // Call after search to get seat map for a specific bus
   // ─────────────────────────────────────────────
-  async getSeatAvailability({ tripId, date }) {
+  async getSeatAvailability({ busId, sourceCityId, destCityId, date, delayedFlag = 0, delayedDate = null }) {
     try {
-      const response = await axios.get(`${this.baseUrl}/trips/${tripId}/seats`, {
-        params: { date },
-        headers: this._headers(),
-        timeout: this.timeout,
-      });
+      logger.info('IABIRI: fetching seat layout', { busId });
+
+      const travelDate = this._formatDate(date);
+      const response = await axios.post(
+        `${this.baseUrl}/globalApi/trips/getTripSeatsPrice`,
+        {
+          source_city_id:      String(sourceCityId),
+          destination_city_id: String(destCityId),
+          travel_date:         travelDate,
+          bus_id:              String(busId),
+          delayedFlag:         delayedFlag,
+          delayedDate:         delayedDate || this._toUnixTimestamp(date),
+          sourcetype:          'web',
+        },
+        { headers: this._headers(), timeout: this.timeout }
+      );
 
       return this._normalizeSeats(response.data);
+
     } catch (err) {
-      logger.error('Travler seat fetch failed', { error: err.message });
+      logger.error('IABIRI seat fetch failed', { error: err.message });
       return [];
     }
   }
 
   // ─────────────────────────────────────────────
-  // BOOK SEATS
+  // GET BOARDING & DROPPING POINTS
+  // Call before booking to show pickup/dropoff options
   // ─────────────────────────────────────────────
-  async book({ tripId, seatNumbers, passengerDetails, agencyId }) {
+  async getBoardingDroppingPoints({ sourceCityId, destCityId, tripId, date, delayedFlag = 0, delayedDate = null }) {
     try {
-      const response = await axios.post(`${this.baseUrl}/bookings`, {
-        trip_id: tripId,
-        seats: seatNumbers,
-        passengers: passengerDetails,
-        agent_id: agencyId,
-      }, {
-        headers: this._headers(),
-        timeout: this.timeout,
-      });
+      logger.info('IABIRI: fetching boarding/dropping points', { tripId });
+
+      const response = await axios.post(
+        `${this.pointsUrl}/globalApi/trips/getBoardingDroppingPoints`,
+        {
+          source:       String(sourceCityId),
+          destination:  String(destCityId),
+          trip:         String(tripId),
+          booking_date: this._formatDate(date),
+          delayedFlag:  delayedFlag,
+          delayedDate:  delayedDate || this._toUnixTimestamp(date),
+          sourcetype:   'web',
+        },
+        { headers: this._headers(), timeout: this.timeout }
+      );
+
+      return this._normalizeBoardingPoints(response.data);
+
+    } catch (err) {
+      logger.error('IABIRI boarding points fetch failed', { error: err.message });
+      return { boardingPoints: [], droppingPoints: [] };
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // BOOK (One-way)
+  // Creates a reservation — follow up with payment init
+  // ─────────────────────────────────────────────
+  async book({ tripId, routeId, token, pickupId, returnId, sourceCityName, destCityName,
+               bookingDate, seats, passengerDetails, agencyId }) {
+    try {
+      logger.info('IABIRI: creating booking', { tripId, seats });
+
+      const response = await axios.post(
+        `${this.baseUrl}/globalApi/ticket/RoundBooking`,
+        {
+          ticketDetail: {
+            onwardticket: {
+              booking_date: this._formatDate(bookingDate),
+              route_id:     String(routeId),
+              token:        token,
+              pickup_id:    String(pickupId),
+              return_id:    String(returnId),
+              source_city:  sourceCityName.toUpperCase(),
+              dest_city:    destCityName.toUpperCase(),
+              seats:        seats,                   // array of seat numbers
+              passengers:   passengerDetails,        // array of passenger objects
+              sourcetype:   'web',
+            },
+          },
+        },
+        { headers: this._headers(), timeout: this.timeout }
+      );
 
       return this._normalizeBooking(response.data);
+
     } catch (err) {
-      logger.error('Travler booking failed', { error: err.message });
+      logger.error('IABIRI booking failed', { error: err.message });
       throw err;
     }
   }
 
   // ─────────────────────────────────────────────
-  // GET STATUS
+  // INIT PAYMENT
+  // Trigger payment gateway after booking is created
   // ─────────────────────────────────────────────
-  async getStatus(bookingRef) {
+  async initPayment({ bookingRef, phoneNumber, isWalletApply = false }) {
     try {
-      const response = await axios.get(`${this.baseUrl}/bookings/${bookingRef}`, {
-        headers: this._headers(),
-        timeout: this.timeout,
-      });
+      logger.info('IABIRI: initiating payment', { bookingRef });
+
+      const response = await axios.post(
+        `${this.baseUrl}/globalApi/paymentGateway/init`,
+        {
+          bookingRef:    bookingRef,
+          queryoption:   2,                // 2 = phone/MPESA
+          queryvalue:    phoneNumber,      // e.g. "254712345678"
+          requestType:   'ticket',
+          isWalletApply: isWalletApply,
+          sourcetype:    'web',
+        },
+        { headers: this._headers(), timeout: this.timeout }
+      );
+
       return response.data;
+
     } catch (err) {
-      logger.error('Travler status check failed', { error: err.message });
+      logger.error('IABIRI payment init failed', { error: err.message });
       throw err;
     }
   }
 
   // ─────────────────────────────────────────────
-  // CANCEL
+  // GET TICKET DETAILS
   // ─────────────────────────────────────────────
-  async cancel(bookingRef) {
+  async getStatus(ticketId) {
     try {
-      const response = await axios.delete(`${this.baseUrl}/bookings/${bookingRef}`, {
-        headers: this._headers(),
-        timeout: this.timeout,
-      });
+      const response = await axios.post(
+        `${this.baseUrl}/globalApi/ticket/ticketDetails`,
+        { ticketId, sourcetype: 'web' },
+        { headers: this._headers(), timeout: this.timeout }
+      );
       return response.data;
     } catch (err) {
-      logger.error('Travler cancellation failed', { error: err.message });
+      logger.error('IABIRI ticket status check failed', { error: err.message });
       throw err;
     }
+  }
+
+  // ─────────────────────────────────────────────
+  // BOOKING HISTORY (Agency-level)
+  // ─────────────────────────────────────────────
+  async getBookingHistory({ page = 1, perPage = 10, startDate, endDate, status = 'confirmed' }) {
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/globalApi/agency/bookingHistory`,
+        {
+          page,
+          perPage:    String(perPage),
+          search:     '',
+          startDate:  this._formatDate(startDate),
+          endDate:    this._formatDate(endDate),
+          userId:     '',
+          currencyId: this.currencyId,
+          status,
+          sourcetype: 'web',
+        },
+        { headers: this._headers(), timeout: this.timeout }
+      );
+      return response.data;
+    } catch (err) {
+      logger.error('IABIRI booking history fetch failed', { error: err.message });
+      return [];
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // CITY ID RESOLVER
+  // IABIRI uses numeric city IDs — cache them to avoid
+  // repeated lookups. Populate IABIRI_CITY_MAP in your
+  // env or Supabase once you have their city list.
+  // ─────────────────────────────────────────────
+  async _resolveCityId(cityName) {
+    // 1. Check in-memory cache first
+    const cached = this._cityCache()[cityName?.toLowerCase()];
+    if (cached) return cached;
+
+    // 2. Fallback: log and return null so search returns []
+    // rather than calling with wrong IDs
+    logger.warn('IABIRI: unmapped city name', { cityName });
+    return null;
+  }
+
+  // City name → IABIRI city ID map
+  // Expand this as you onboard routes — or load from Supabase
+  _cityCache() {
+    const envMap = process.env.IABIRI_CITY_MAP
+      ? JSON.parse(process.env.IABIRI_CITY_MAP)
+      : {};
+
+    return {
+      // Kenya defaults (add more as needed)
+      'nairobi':   '1',
+      'mombasa':   '114',
+      'kisumu':    '12',
+      'nakuru':    '8',
+      'eldoret':   '15',
+      'thika':     '6',
+      'kampala':   '200',  // Uganda
+      'dar es salaam': '300', // Tanzania
+      ...envMap,
+    };
   }
 
   // ─────────────────────────────────────────────
   // NORMALIZERS
-  // Map Travler response → Bodrless standard format
-  // Update field names when docs arrive
+  // Map IABIRI → Bodrless standard format
   // ─────────────────────────────────────────────
-  _normalizeRoutes(data) {
-    const routes = data?.routes || data?.data || data || [];
-    return routes.map(route => ({
+  _normalizeBuses(data, sourceCityId, destCityId, date) {
+    const buses = data?.data || data?.buses || data?.trips || data || [];
+    if (!Array.isArray(buses)) return [];
+
+    return buses.map(bus => ({
       // Bodrless standard fields
-      supplier: this.supplier,
-      type: 'bus',
-      transportType: 'bus',
+      supplier:       this.supplier,
+      type:           'bus',
+      transportType:  'bus',
+
+      // Trip identifiers (needed for seat/booking calls)
+      tripId:         bus.trip_id || bus.id,
+      busId:          bus.bus_id || bus.id,
+      routeId:        bus.route_id || null,
+      token:          bus.token || null,          // needed for RoundBooking
+      sourceCityId,
+      destCityId,
 
       // Route info
-      tripId: route.id || route.trip_id,
-      route: `${route.origin || route.from}-${route.destination || route.to}`,
-      origin: route.origin || route.from,
-      destination: route.destination || route.to,
+      route:          `${bus.source_city || bus.from}-${bus.destination_city || bus.to}`,
+      origin:         bus.source_city || bus.from,
+      destination:    bus.destination_city || bus.to,
 
       // Times
-      departureTime: route.departure_time || route.departs_at,
-      arrivalTime: route.arrival_time || route.arrives_at,
-      duration: route.duration || null,
+      departureTime:  bus.departure_time || bus.departs_at || bus.start_time,
+      arrivalTime:    bus.arrival_time   || bus.arrives_at  || bus.end_time,
+      duration:       bus.duration || null,
+      travelDate:     this._formatDate(date),
 
       // Provider
-      provider: route.operator || route.company || route.bus_company,
-      busType: route.bus_type || route.vehicle_type || route.coach_type || 'Standard',
+      provider:       bus.travels || bus.operator || bus.company_name || bus.bus_company,
+      busType:        bus.bus_type || bus.coach_type || 'Standard',
+      busNumber:      bus.bus_number || bus.vehicle_no || null,
+
+      // Amenities
+      amenities:      bus.amenities || bus.bus_amenities || [],
+      hasLiveTracking: bus.live_tracking || false,
+      rating:         bus.avg_rating || bus.rating || null,
 
       // Pricing
-      price: Number(route.price || route.fare || route.amount || 0),
-      currency: route.currency || 'KES',
+      price:          Number(bus.fare || bus.price || bus.amount || 0),
+      currency:       'KES',
 
       // Availability
-      availableSeats: route.available_seats || route.seats_available || null,
-      totalSeats: route.total_seats || route.capacity || null,
+      availableSeats: bus.available_seats || bus.seats_available || null,
+      totalSeats:     bus.total_seats || bus.capacity || null,
+
+      // Delay info
+      isDelayed:      bus.is_delayed || false,
+      delayedFlag:    bus.delayedFlag || 0,
+      delayedDate:    bus.delayedDate || null,
 
       // Extras
-      amenities: route.amenities || [],
-      cancellationPolicy: route.cancellation_policy || 'Non-refundable',
-
-      // Supplier reference — needed for booking
-      supplierBookingReference: null, // Set after booking
+      cancellationPolicy: bus.cancellation_policy || 'Non-refundable',
+      supplierBookingReference: null, // set after booking
     }));
   }
 
   _normalizeSeats(data) {
-    const seats = data?.seats || data?.data || data || [];
+    const seats = data?.seats || data?.seat_data || data?.data || data || [];
+    if (!Array.isArray(seats)) return [];
+
     return seats.map(seat => ({
-      supplier: this.supplier,
-      seatNumber: seat.seat_number || seat.number,
-      status: seat.status || (seat.available ? 'available' : 'booked'),
-      type: seat.type || seat.seat_type || 'standard',
-      position: seat.position || null, // window, aisle, middle
-      deck: seat.deck || 'lower',
-      price: Number(seat.price || seat.fare || 0),
+      supplier:     this.supplier,
+      seatNumber:   seat.seat_number || seat.number || seat.seatNo,
+      status:       seat.status || (seat.available ? 'available' : 'booked'),
+      type:         seat.seat_type || seat.type || 'standard',
+      deck:         seat.deck || seat.floor || 'lower',
+      position:     seat.position || null,         // window / aisle
+      price:        Number(seat.price || seat.fare || 0),
+      currency:     'KES',
     }));
   }
 
-  _normalizeBooking(data) {
+  _normalizeBoardingPoints(data) {
+    const bp = data?.boarding_points || data?.boardingPoints || [];
+    const dp = data?.dropping_points || data?.droppingPoints || [];
+
+    const normalize = (points) => points.map(p => ({
+      id:       p.id || p.point_id,
+      name:     p.name || p.point_name,
+      time:     p.time || p.pickup_time || null,
+      address:  p.address || p.location || null,
+      landmark: p.landmark || null,
+    }));
+
     return {
-      supplier: this.supplier,
-      supplierBookingReference: data.booking_ref || data.reference || data.id,
-      bodrlessRef: null, // Set by booking handler
-      status: data.status || 'confirmed',
-      tripId: data.trip_id,
-      seats: data.seats || data.seat_numbers || [],
-      totalAmount: data.total_amount || data.amount,
-      currency: data.currency || 'KES',
-      passengerDetails: data.passengers || [],
-      ticket: data.ticket || data.ticket_url || null,
-      confirmedAt: data.confirmed_at || new Date().toISOString(),
+      boardingPoints: normalize(bp),
+      droppingPoints: normalize(dp),
+    };
+  }
+
+  _normalizeBooking(data) {
+    const ticket = data?.ticket || data?.data || data;
+    return {
+      supplier:                  this.supplier,
+      supplierBookingReference:  ticket?.booking_ref || ticket?.bookingRef || ticket?.reference || ticket?.id,
+      ticketId:                  ticket?.ticket_id   || ticket?.ticketId   || null,
+      bodrlessRef:               null, // set by booking handler
+      status:                    ticket?.status || 'pending',
+      tripId:                    ticket?.trip_id || null,
+      seats:                     ticket?.seats   || ticket?.seat_numbers || [],
+      totalAmount:               Number(ticket?.total_amount || ticket?.amount || ticket?.fare || 0),
+      currency:                  'KES',
+      passengerDetails:          ticket?.passengers || [],
+      ticketUrl:                 ticket?.ticket_url  || ticket?.ticket || null,
+      boardingPoint:             ticket?.boarding_point || null,
+      droppingPoint:             ticket?.dropping_point || null,
+      confirmedAt:               ticket?.confirmed_at || new Date().toISOString(),
     };
   }
 
   // ─────────────────────────────────────────────
-  // FILTER BY TIME PREFERENCE
-  // morning, afternoon, evening, night
+  // HELPERS
   // ─────────────────────────────────────────────
-  _filterByTime(routes, timePreference) {
-    if (!timePreference) return routes;
+  _filterByTime(buses, timePreference) {
+    if (!timePreference) return buses;
 
-    return routes.filter(route => {
-      if (!route.departureTime) return true;
-      const hour = new Date(route.departureTime).getHours();
+    return buses.filter(bus => {
+      if (!bus.departureTime) return true;
+      // Handle both full ISO strings and "HH:MM" strings
+      const raw  = bus.departureTime;
+      const hour = raw.includes('T')
+        ? new Date(raw).getHours()
+        : parseInt(raw.split(':')[0], 10);
 
-      if (timePreference === 'morning') return hour >= 5 && hour < 12;
+      if (timePreference === 'morning')   return hour >= 5  && hour < 12;
       if (timePreference === 'afternoon') return hour >= 12 && hour < 17;
-      if (timePreference === 'evening') return hour >= 17 && hour < 21;
-      if (timePreference === 'night') return hour >= 21 || hour < 5;
+      if (timePreference === 'evening')   return hour >= 17 && hour < 21;
+      if (timePreference === 'night')     return hour >= 21 || hour  < 5;
       return true;
     });
   }
 
+  _formatDate(date) {
+    if (!date) return new Date().toISOString().split('T')[0];
+    if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+    return new Date(date).toISOString().split('T')[0];
+  }
+
+  _toUnixTimestamp(date) {
+    return Math.floor(new Date(this._formatDate(date)).getTime() / 1000);
+  }
+
   _headers() {
     return {
-      'Authorization': `Bearer ${this.apiKey}`,
-      'Content-Type': 'application/json',
-      'x-api-key': this.apiKey,
+      'authorization': this.apiKey,
+      'Content-Type':  'application/json',
     };
   }
 }
 
-module.exports = new TravlerAdapter();
+module.exports = new IabiriAdapter();
