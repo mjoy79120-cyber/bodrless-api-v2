@@ -7,7 +7,6 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const https = require('https');
 const { logger } = require('./utils/logger');
-const { authenticateAgency } = require('./middleware/auth');
 
 const tripRoutes = require('./routes/trips');
 const webhookRoutes = require('./routes/webhooks');
@@ -67,14 +66,15 @@ app.use('/widget.js', widgetRoutes);
 // ── Public API v1 (OTA/partner API) ──────────────────
 app.use('/api/v1', apiV1Routes);
 
-// ── Agency public endpoints (no auth needed) ─────────
-app.use('/api/agencies/signup',   agencyRoutes);  // legacy
-app.use('/api/agencies/register', agencyRoutes);  // new secure registration
+// ── Agency routes (auth handled inside the router) ───
+// /register and /signup are public
+// dashboard, settings etc are protected inside agencies.js
+app.use('/api/agencies', agencyRoutes);
 
-// ── Protected Routes (auth required) ─────────────────
-app.use('/api/trips',    authenticateAgency, tripRoutes);
-app.use('/api/agencies', authenticateAgency, agencyRoutes);
-app.use('/api/uploads',  authenticateAgency, uploadRoutes);
+// ── Other Protected Routes ────────────────────────────
+const { authenticateAgency } = require('./middleware/auth');
+app.use('/api/trips',   authenticateAgency, tripRoutes);
+app.use('/api/uploads', authenticateAgency, uploadRoutes);
 
 // Test page
 app.get('/test-widget.html', (req, res) => {

@@ -2,6 +2,8 @@
  * AGENCY ROUTES
  * ─────────────────────────────────────────────
  * Self-service agency signup and management
+ * Public:    /register, /signup
+ * Protected: everything else (uses x-api-key)
  * ─────────────────────────────────────────────
  */
 
@@ -11,57 +13,51 @@ const Joi = require('joi');
 const crypto = require('crypto');
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
+const { authenticateAgency } = require('../middleware/auth');
 
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
-
-// Generate a cryptographically secure API key
 const generateApiKey = (agencyId) => {
   const random = crypto.randomBytes(32).toString('hex');
   return `bdr_${agencyId}_${random}`;
 };
 
-// Generate agency ID from name
 const generateAgencyId = (name) => {
   return name
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .substring(0, 40); // cap length
+    .substring(0, 40);
 };
 
 // ─────────────────────────────────────────────
-// REGISTER — full agency onboarding
-// Creates agency record + Supabase Auth user + profile
+// PUBLIC — REGISTER
 // POST /api/agencies/register
 // ─────────────────────────────────────────────
 router.post('/register', async (req, res) => {
 
   const schema = Joi.object({
-    name:               Joi.string().min(2).max(100).required(),
-    email:              Joi.string().email().required(),
-    phone:              Joi.string().optional().allow(''),
-    website:            Joi.string().uri().optional().allow(''),
-    contactPerson:      Joi.string().optional().allow(''),
-    markupPercentage:   Joi.number().min(0).max(50).default(0),
-    plan:               Joi.string().valid('starter', 'growth', 'enterprise').default('starter'),
-    password:           Joi.string().min(8).required(),
+    name:             Joi.string().min(2).max(100).required(),
+    email:            Joi.string().email().required(),
+    phone:            Joi.string().optional().allow(''),
+    website:          Joi.string().uri().optional().allow(''),
+    contactPerson:    Joi.string().optional().allow(''),
+    markupPercentage: Joi.number().min(0).max(50).default(0),
+    plan:             Joi.string().valid('starter', 'growth', 'enterprise').default('starter'),
+    password:         Joi.string().min(8).required(),
   });
 
   const { error, value } = schema.validate(req.body);
-
-  if (error) {
-    return res.status(400).json({ success: false, error: error.details[0].message });
-  }
+  if (error) return res.status(400).json({ success: false, error: error.details[0].message });
 
   try {
     const agencyId  = generateAgencyId(value.name);
     const apiKey    = generateApiKey(agencyId);
     const widgetKey = agencyId;
 
-    // ── 1. Check if agency already exists ────────────
+    // Check duplicate
     const { data: existing } = await supabase
       .from('agencies')
       .select('id')
@@ -75,11 +71,11 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    // ── 2. Create Supabase Auth user ─────────────────
+    // Create Supabase Auth user
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email:          value.email,
-      password:       value.password,
-      email_confirm:  true, // auto-confirm for now; set false for email verification
+      email:         value.email,
+      password:      value.password,
+      email_confirm: true,
       user_metadata: {
         agency_id:      agencyId,
         agency_name:    value.name,
@@ -95,35 +91,34 @@ router.post('/register', async (req, res) => {
 
     const authUserId = authData.user.id;
 
-    // ── 3. Create agency record ───────────────────────
+    // Create agency record
     const { data: agency, error: insertError } = await supabase
       .from('agencies')
       .insert({
-        id:                       agencyId,
-        name:                     value.name,
-        email:                    value.email,
-        phone:                    value.phone    || null,
-        website:                  value.website  || null,
-        api_key:                  apiKey,
-        widget_key:               widgetKey,
-        plan:                     value.plan,
-        status:                   'active',
-        markup_percentage:        value.markupPercentage,
-        markup_type:              'percentage',
-        role:                     'agency',
-        created_at:               new Date().toISOString(),
+        id:                agencyId,
+        name:              value.name,
+        email:             value.email,
+        phone:             value.phone   || null,
+        website:           value.website || null,
+        api_key:           apiKey,
+        widget_key:        widgetKey,
+        plan:              value.plan,
+        status:            'active',
+        markup_percentage: value.markupPercentage,
+        markup_type:       'percentage',
+        role:              'agency',
+        created_at:        new Date().toISOString(),
       })
       .select()
       .single();
 
     if (insertError) {
-      // Rollback: delete auth user if agency insert fails
+      // Rollback auth user
       await supabase.auth.admin.deleteUser(authUserId);
-      logger.error('Agency insert failed', { error: insertError.message });
       throw insertError;
     }
 
-    // ── 4. Create profile linking auth user → agency ──
+    // Link auth user to agency via profiles
     const { error: profileError } = await supabase
       .from('profiles')
       .insert({
@@ -135,12 +130,10 @@ router.post('/register', async (req, res) => {
 
     if (profileError) {
       logger.error('Profile insert failed', { error: profileError.message });
-      // Non-fatal — agency and auth user exist, profile can be recreated
     }
 
-    logger.info('New agency registered', { agencyId, name: value.name, plan: value.plan });
+    logger.info('New agency registered', { agencyId, name: value.name });
 
-    // ── 5. Return credentials (shown ONCE) ───────────
     return res.status(201).json({
       success: true,
       message: 'Agency registered successfully',
@@ -153,13 +146,12 @@ router.post('/register', async (req, res) => {
         status:           agency.status,
       },
       credentials: {
-        apiKey,       // shown once — not retrievable after this
+        apiKey,    // shown once only
         widgetKey,
       },
       integration: {
-        widgetCode:     `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${widgetKey}&name=${encodeURIComponent(value.name)}"></script>`,
-        whatsappWebhook: `https://bodrless-api-v2.onrender.com/webhooks/whatsapp?agency_id=${agencyId}`,
-        apiDocsUrl:      `https://bodrless-api-v2.onrender.com/api/docs`,
+        widgetCode:      `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${widgetKey}&name=${encodeURIComponent(value.name)}"></script>`,
+        whatsappWebhook: `https://bodrless-api-v2.onrender.com/api/webhooks/whatsapp?agency_id=${agencyId}`,
       },
     });
 
@@ -170,7 +162,7 @@ router.post('/register', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// SIGNUP (legacy — kept for backwards compat)
+// PUBLIC — SIGNUP (legacy)
 // POST /api/agencies/signup
 // ─────────────────────────────────────────────
 router.post('/signup', async (req, res) => {
@@ -203,15 +195,15 @@ router.post('/signup', async (req, res) => {
     const { data, error: insertError } = await supabase
       .from('agencies')
       .insert({
-        id:         agencyId,
-        name:       value.name,
-        email:      value.email,
-        phone:      value.phone    || null,
-        website:    value.website  || null,
-        api_key:    apiKey,
-        widget_key: widgetKey,
-        plan:       'starter',
-        status:     'active',
+        id:                agencyId,
+        name:              value.name,
+        email:             value.email,
+        phone:             value.phone   || null,
+        website:           value.website || null,
+        api_key:           apiKey,
+        widget_key:        widgetKey,
+        plan:              'starter',
+        status:            'active',
         markup_percentage: 0,
         markup_type:       'percentage',
         role:              'agency',
@@ -243,31 +235,13 @@ router.post('/signup', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// REGENERATE API KEY
+// PROTECTED — REGENERATE API KEY
 // POST /api/agencies/:agencyId/regenerate-key
-// Protected — requires current api_key in header
 // ─────────────────────────────────────────────
-router.post('/:agencyId/regenerate-key', async (req, res) => {
+router.post('/:agencyId/regenerate-key', authenticateAgency, async (req, res) => {
   const { agencyId } = req.params;
-  const incomingKey  = req.headers['x-api-key'];
 
   try {
-    // Verify current key
-    const { data: agency } = await supabase
-      .from('agencies')
-      .select('id, api_key, name')
-      .eq('id', agencyId)
-      .single();
-
-    if (!agency) {
-      return res.status(404).json({ success: false, error: 'Agency not found' });
-    }
-
-    if (agency.api_key !== incomingKey) {
-      return res.status(401).json({ success: false, error: 'Invalid API key' });
-    }
-
-    // Generate new key
     const newApiKey = generateApiKey(agencyId);
 
     await supabase
@@ -290,10 +264,10 @@ router.post('/:agencyId/regenerate-key', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// GET AGENCY DASHBOARD DATA
+// PROTECTED — GET DASHBOARD DATA
 // GET /api/agencies/dashboard/:agencyId
 // ─────────────────────────────────────────────
-router.get('/dashboard/:agencyId', async (req, res) => {
+router.get('/dashboard/:agencyId', authenticateAgency, async (req, res) => {
   const { agencyId } = req.params;
 
   try {
@@ -303,9 +277,7 @@ router.get('/dashboard/:agencyId', async (req, res) => {
       .eq('id', agencyId)
       .single();
 
-    if (!agency) {
-      return res.json({ success: false, error: 'Agency not found' });
-    }
+    if (!agency) return res.json({ success: false, error: 'Agency not found' });
 
     const { data: bookings } = await supabase
       .from('bookings')
@@ -321,18 +293,13 @@ router.get('/dashboard/:agencyId', async (req, res) => {
       .order('created_at', { ascending: false })
       .limit(100);
 
-    // Earnings based on agency markup
-    const markupRate = (agency.markup_percentage || 0) / 100;
-    const totalEarnings = (bookings || []).reduce((sum, b) =>
-      sum + (Number(b.total_price || 0) * markupRate), 0);
+    const markupRate       = (agency.markup_percentage || 0) / 100;
+    const totalEarnings    = (bookings || []).reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
     const thisMonthEarnings = (bookings || [])
       .filter(b => new Date(b.created_at) > new Date(new Date().setDate(1)))
       .reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
 
-    const uniqueGuests = new Set(
-      (bookings || []).map(b => b.guest_phone || b.guest_email || b.guest_name)
-    );
-
+    const uniqueGuests   = new Set((bookings || []).map(b => b.guest_phone || b.guest_email || b.guest_name));
     const recentSearches = (searches || []).filter(s =>
       new Date(s.created_at) > new Date(Date.now() - 24 * 60 * 60 * 1000)
     );
@@ -347,16 +314,16 @@ router.get('/dashboard/:agencyId', async (req, res) => {
         markupPercentage: agency.markup_percentage,
         widgetKey:        agency.widget_key,
         widgetCode:       `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${agency.widget_key}&name=${encodeURIComponent(agency.name)}"></script>`,
-        whatsappWebhook:  `https://bodrless-api-v2.onrender.com/webhooks/whatsapp?agency_id=${agency.id}`,
+        whatsappWebhook:  `https://bodrless-api-v2.onrender.com/api/webhooks/whatsapp?agency_id=${agency.id}`,
       },
       stats: {
-        totalBookings:    (bookings || []).length,
-        totalEarnings:    Math.round(totalEarnings),
+        totalBookings:     (bookings || []).length,
+        totalEarnings:     Math.round(totalEarnings),
         thisMonthEarnings: Math.round(thisMonthEarnings),
-        activeCustomers:  uniqueGuests.size,
-        totalSearches:    (searches || []).length,
-        recentSearches:   recentSearches.length,
-        conversionRate:   searches?.length > 0
+        activeCustomers:   uniqueGuests.size,
+        totalSearches:     (searches || []).length,
+        recentSearches:    recentSearches.length,
+        conversionRate:    searches?.length > 0
           ? Math.round(((bookings?.length || 0) / searches.length) * 100)
           : 0,
       },
@@ -371,12 +338,11 @@ router.get('/dashboard/:agencyId', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// UPDATE AGENCY SETTINGS
+// PROTECTED — UPDATE AGENCY SETTINGS
 // PATCH /api/agencies/:agencyId
 // ─────────────────────────────────────────────
-router.patch('/:agencyId', async (req, res) => {
-  const { agencyId }  = req.params;
-  const incomingKey   = req.headers['x-api-key'];
+router.patch('/:agencyId', authenticateAgency, async (req, res) => {
+  const { agencyId } = req.params;
 
   const schema = Joi.object({
     name:             Joi.string().optional(),
@@ -390,21 +356,11 @@ router.patch('/:agencyId', async (req, res) => {
   if (error) return res.status(400).json({ success: false, error: error.details[0].message });
 
   try {
-    const { data: agency } = await supabase
-      .from('agencies')
-      .select('id, api_key')
-      .eq('id', agencyId)
-      .single();
-
-    if (!agency || agency.api_key !== incomingKey) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
-
     const updates = {};
-    if (value.name)             updates.name               = value.name;
-    if (value.email)            updates.email              = value.email;
-    if (value.phone)            updates.phone              = value.phone;
-    if (value.website)          updates.website            = value.website;
+    if (value.name)                          updates.name              = value.name;
+    if (value.email)                         updates.email             = value.email;
+    if (value.phone)                         updates.phone             = value.phone;
+    if (value.website)                       updates.website           = value.website;
     if (value.markupPercentage !== undefined) updates.markup_percentage = value.markupPercentage;
 
     await supabase.from('agencies').update(updates).eq('id', agencyId);
@@ -419,10 +375,10 @@ router.patch('/:agencyId', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// GET WIDGET CODE
+// PROTECTED — GET WIDGET CODE
 // GET /api/agencies/widget-code/:agencyId
 // ─────────────────────────────────────────────
-router.get('/widget-code/:agencyId', async (req, res) => {
+router.get('/widget-code/:agencyId', authenticateAgency, async (req, res) => {
   const { agencyId } = req.params;
 
   try {
@@ -437,7 +393,6 @@ router.get('/widget-code/:agencyId', async (req, res) => {
     return res.json({
       success:    true,
       widgetCode: `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${agency.widget_key}&name=${encodeURIComponent(agency.name)}"></script>`,
-      apiKey:     agency.api_key,
       widgetKey:  agency.widget_key,
     });
 
@@ -447,11 +402,11 @@ router.get('/widget-code/:agencyId', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// UPDATE WHATSAPP NUMBER
+// PROTECTED — UPDATE WHATSAPP NUMBER
 // POST /api/agencies/whatsapp/:agencyId
 // ─────────────────────────────────────────────
-router.post('/whatsapp/:agencyId', async (req, res) => {
-  const { agencyId }    = req.params;
+router.post('/whatsapp/:agencyId', authenticateAgency, async (req, res) => {
+  const { agencyId }      = req.params;
   const { phoneNumberId } = req.body;
 
   try {
