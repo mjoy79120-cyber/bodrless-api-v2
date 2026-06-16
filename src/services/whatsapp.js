@@ -32,7 +32,7 @@ class WhatsAppService {
    */
   async sendPackages(phoneNumberId, to, packages) {
     await this.sendText(phoneNumberId, to,
-      `✈️ I found *${packages.length} package option(s)* for your trip! Here they are:`
+      `✈️ I found *${packages.length} option(s)* for your trip! Here they are:`
     );
 
     for (let i = 0; i < packages.length; i++) {
@@ -42,50 +42,86 @@ class WhatsAppService {
     }
 
     await this.sendText(phoneNumberId, to,
-      'Reply with the option number you prefer and we\'ll get your booking sorted!'
+      "Reply with the option number you prefer and we'll get your booking sorted!"
     );
   }
 
   /**
-   * Format a single package as a WhatsApp message
+   * Format a single package as a WhatsApp message.
+   * Sections (hotel, transfer) are only shown when data exists.
    */
   async _sendPackageCard(phoneNumberId, to, pkg, index) {
-    const transport = pkg.transport || {};
-    const hotel = pkg.hotel || {};
-    const transfers = pkg.transfers || {};
+    const transport       = pkg.transport       || null;
+    const returnTransport = pkg.returnTransport || null;
+    const hotel           = pkg.hotel           || null;
+    const transfers       = pkg.transfers       || null;
+    const summary         = pkg.summary         || {};
 
-    const stars = hotel.stars ? '⭐'.repeat(Math.min(hotel.stars, 5)) : '';
-    const hasTransfer = transfers.provider || transfers.vehicleType;
+    const currency = transport?.currency || 'KES';
 
     const lines = [
-      `*Option ${index} — $${pkg.summary.pricePerPerson || 0}/person*`,
+      `*Option ${index}*`,
       `━━━━━━━━━━━━━━━━`,
-      `*Route:* ${pkg.summary.route || 'N/A'}`,
-      `*Travelers:* ${pkg.summary.passengers || 1}  |  *Nights:* ${pkg.summary.nights || 1}`,
-      ``,
-      `*Flight*`,
-      `  Airline: ${transport.airline || 'TBC'}`,
-      `  From: ${transport.origin || 'TBC'} to ${transport.destination || 'TBC'}`,
-      `  Departs: ${transport.departureTime || 'TBC'} · Arrives: ${transport.arrivalTime || 'TBC'}`,
-      `  Price: $${transport.price || 0}`,
-      ``,
-      `*Hotel*`,
-      `  ${hotel.name || 'TBC'} ${stars}`,
-      `  Location: ${hotel.location || 'TBC'}`,
-      `  Rating: ${hotel.rating || 'N/A'}/5`,
-      `  $${hotel.pricePerNight || 0}/night x ${pkg.summary.nights || 1} nights`,
+      `*Route:* ${summary.route || 'N/A'}`,
+      `*Travelers:* ${summary.passengers || 1}`,
     ];
 
-    if (hasTransfer) {
-      lines.push(``);
-      lines.push(`*Transfer*`);
-      lines.push(`  Provider: ${transfers.provider || 'TBC'}`);
-      lines.push(`  Vehicle: ${transfers.vehicleType || 'Car'}`);
-      lines.push(`  Price: $${transfers.price || 0}`);
+    if (summary.nights > 0) {
+      lines.push(`*Nights:* ${summary.nights}`);
     }
 
-    lines.push(``);
-    lines.push(`*Total: $${pkg.summary.totalPrice || 0}* for ${pkg.summary.passengers || 1} traveler(s)`);
+    // ── Outbound transport ──────────────────────────
+    if (transport) {
+      const isbus = (transport.transportType || '').toLowerCase() === 'bus';
+      lines.push('');
+      lines.push(isbus ? '*🚌 Outbound Bus*' : '*✈️ Outbound Flight*');
+      lines.push(`  ${isbus ? 'Operator' : 'Airline'}: ${transport.airline || transport.provider || 'TBC'}`);
+      lines.push(`  From: ${transport.origin || 'TBC'} → ${transport.destination || 'TBC'}`);
+      lines.push(`  Departs: ${this._formatTime(transport.departureTime)} · Arrives: ${this._formatTime(transport.arrivalTime)}`);
+      if (transport.stops) lines.push(`  Stops: ${transport.stops}`);
+      if (transport.cabinClass) lines.push(`  Class: ${transport.cabinClass}`);
+      lines.push(`  Price: ${currency} ${(transport.price || 0).toLocaleString()}`);
+    }
+
+    // ── Return transport ────────────────────────────
+    if (returnTransport) {
+      const isbus = (returnTransport.transportType || '').toLowerCase() === 'bus';
+      lines.push('');
+      lines.push(isbus ? '*🚌 Return Bus*' : '*✈️ Return Flight*');
+      lines.push(`  ${isbus ? 'Operator' : 'Airline'}: ${returnTransport.airline || returnTransport.provider || 'TBC'}`);
+      lines.push(`  From: ${returnTransport.origin || 'TBC'} → ${returnTransport.destination || 'TBC'}`);
+      lines.push(`  Departs: ${this._formatTime(returnTransport.departureTime)} · Arrives: ${this._formatTime(returnTransport.arrivalTime)}`);
+      if (returnTransport.stops) lines.push(`  Stops: ${returnTransport.stops}`);
+      lines.push(`  Price: ${currency} ${(returnTransport.price || 0).toLocaleString()}`);
+    }
+
+    // ── Hotel (only if present) ─────────────────────
+    if (hotel) {
+      const stars = hotel.stars ? '⭐'.repeat(Math.min(Number(hotel.stars) || 0, 5)) : '';
+      lines.push('');
+      lines.push('*🏨 Hotel*');
+      lines.push(`  ${hotel.name || 'TBC'} ${stars}`.trim());
+      if (hotel.location) lines.push(`  Location: ${hotel.location}`);
+      if (hotel.rating)   lines.push(`  Rating: ${hotel.rating}/5`);
+      if (hotel.mealPlan) lines.push(`  Meal plan: ${hotel.mealPlan}`);
+      lines.push(`  ${currency} ${(hotel.pricePerNight || 0).toLocaleString()}/night × ${summary.nights || 1} nights`);
+    }
+
+    // ── Transfer (only if present) ──────────────────
+    if (transfers && (transfers.provider || transfers.vehicleType)) {
+      lines.push('');
+      lines.push('*🚗 Transfer*');
+      lines.push(`  Provider: ${transfers.provider || 'TBC'}`);
+      lines.push(`  Vehicle: ${transfers.vehicleType || 'Car'}`);
+      lines.push(`  Price: ${currency} ${(transfers.price || 0).toLocaleString()}`);
+    }
+
+    // ── Total ───────────────────────────────────────
+    lines.push('');
+    lines.push(`*Total: ${currency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
+    if (summary.pricePerPerson) {
+      lines.push(`_(${currency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
+    }
 
     return this._send(phoneNumberId, {
       messaging_product: 'whatsapp',
@@ -109,13 +145,13 @@ class WhatsAppService {
             'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
             'Content-Type': 'application/json',
           },
-          timeout: 10000
+          timeout: 10000,
         }
       );
       return response.data;
     } catch (error) {
       logger.error('WhatsApp send failed', {
-        error: error.response?.data || error.message
+        error: error.response?.data || error.message,
       });
       throw error;
     }

@@ -43,7 +43,6 @@ class OrchestrationEngine {
 
       this._validateTripParams(tripParams);
 
-      // Search all sources in parallel, split by leg for true multi-modal support
       const [
         outboundFlights, outboundBuses,
         returnFlights, returnBuses,
@@ -58,12 +57,12 @@ class OrchestrationEngine {
       ]);
 
       const outboundTransport = [...outboundFlights, ...outboundBuses];
-      const returnTransport = [...returnFlights, ...returnBuses];
+      const returnTransport   = [...returnFlights,   ...returnBuses];
 
       console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length);
-      console.log("FINAL RETURN TRANSPORT:", returnTransport.length);
-      console.log("FINAL HOTELS:", hotels.length);
-      console.log("FINAL TRANSFERS:", transfers.length);
+      console.log("FINAL RETURN TRANSPORT:",   returnTransport.length);
+      console.log("FINAL HOTELS:",             hotels.length);
+      console.log("FINAL TRANSFERS:",          transfers.length);
 
       const packages = this._buildPackages({
         outboundTransport,
@@ -71,7 +70,7 @@ class OrchestrationEngine {
         hotels,
         transfers,
         tripParams,
-        intent
+        intent,
       });
 
       const updatedHistory = [
@@ -81,8 +80,8 @@ class OrchestrationEngine {
           role: 'assistant',
           content: `Found ${packages.length} packages`,
           params: tripParams,
-          packageCount: packages.length
-        }
+          packageCount: packages.length,
+        },
       ].slice(-10);
 
       const rankedPackages = rankPackages(packages, tripParams).slice(0, 4);
@@ -91,7 +90,6 @@ class OrchestrationEngine {
         ? `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.`
         : `Sorry, I couldn't find any matching travel packages for ${tripParams.destination}.`;
 
-      // ── Log search to trip_searches ──────────────────
       this._logSearch({
         sessionId,
         agencyId,
@@ -108,7 +106,7 @@ class OrchestrationEngine {
         tripParams,
         intent,
         conversationHistory: updatedHistory,
-        generatedAt: new Date().toISOString()
+        generatedAt: new Date().toISOString(),
       };
 
     } catch (error) {
@@ -181,9 +179,9 @@ class OrchestrationEngine {
           supplier_status:            'confirmed',
           supplier_booking_reference: supplierBookingReference,
           channel:                    channel,
-          flight_details:             selectedPackage.transport || null,
-          hotel_details:              selectedPackage.hotel     || null,
-          transfer_details:           selectedPackage.transfers || null,
+          flight_details:             selectedPackage.transport  || null,
+          hotel_details:              selectedPackage.hotel      || null,
+          transfer_details:           selectedPackage.transfers  || null,
           trip_params:                tripParams,
           created_at:                 new Date().toISOString(),
         })
@@ -244,7 +242,7 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // DETECT INTENT - Improved
+  // DETECT INTENT
   // ─────────────────────────────
   _detectIntent(prompt, previousParams) {
     const lower = prompt.toLowerCase();
@@ -268,26 +266,24 @@ class OrchestrationEngine {
 
     const adjustments = {};
     const productScope = {
-      needsTransport: true,
-      needsHotel: true,
-      needsTransfers: true
+      needsTransport:  true,
+      needsHotel:      true,
+      needsTransfers:  true,
     };
 
-    // Improved detection for single product requests
     if (lower.match(/\b(only\s+)?flight(s)?\b|fly\s+only|flights?\s+only|search\s+flight|just\s+flight|want a flight/i)) {
-      productScope.needsHotel = false;
-      productScope.needsTransfers = false;
-      adjustments.transportMode = 'flight';
+      productScope.needsHotel      = false;
+      productScope.needsTransfers  = false;
+      adjustments.transportMode    = 'flight';
     } else if (lower.match(/\b(only\s+)?bus(es)?\b|bus\s+only/i)) {
-      productScope.needsHotel = false;
-      productScope.needsTransfers = false;
-      adjustments.transportMode = 'bus';
+      productScope.needsHotel      = false;
+      productScope.needsTransfers  = false;
+      adjustments.transportMode    = 'bus';
     } else if (lower.match(/\b(only\s+)?hotel|just hotel|stay only|accommodation only/i)) {
-      productScope.needsTransport = false;
-      productScope.needsTransfers = false;
+      productScope.needsTransport  = false;
+      productScope.needsTransfers  = false;
     }
 
-    // Budget
     if (lower.match(/cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/)) {
       adjustments.budget = 'low';
     } else if (lower.match(/luxury|high end|premium|most expensive|bei ya juu/)) {
@@ -296,7 +292,6 @@ class OrchestrationEngine {
       adjustments.budget = 'mid';
     }
 
-    // Nights & Passengers
     const nightsMatch = lower.match(/(\d+)\s*nights?/);
     if (nightsMatch) adjustments.nights = parseInt(nightsMatch[1]);
 
@@ -310,10 +305,10 @@ class OrchestrationEngine {
     const adjusted = { ...previousParams };
     const { adjustments } = intent;
 
-    if (adjustments.budget !== undefined)         adjusted.budget         = adjustments.budget;
-    if (adjustments.nights !== undefined)         adjusted.nights         = adjustments.nights;
-    if (adjustments.passengers !== undefined)     adjusted.passengers     = adjustments.passengers;
-    if (adjustments.transportMode !== undefined)  adjusted.transportMode  = adjustments.transportMode;
+    if (adjustments.budget        !== undefined) adjusted.budget        = adjustments.budget;
+    if (adjustments.nights        !== undefined) adjusted.nights        = adjustments.nights;
+    if (adjustments.passengers    !== undefined) adjusted.passengers    = adjustments.passengers;
+    if (adjustments.transportMode !== undefined) adjusted.transportMode = adjustments.transportMode;
 
     return adjusted;
   }
@@ -346,7 +341,7 @@ class OrchestrationEngine {
 
   _matchesFlightDestination(flight, destination) {
     if (!destination) return true;
-    const search = this._normalize(destination);
+    const search   = this._normalize(destination);
     const flightDest = this._normalize(flight.destination || "");
     if (flightDest.includes(search)) return true;
     const words = search.split(" ");
@@ -354,33 +349,28 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // FLIGHTS — With Date Fallback
+  // FLIGHTS
   // ─────────────────────────────
   async _searchFlights(tripParams, leg = 'outbound') {
-    const mode = leg === 'return' 
+    const mode = leg === 'return'
       ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || 'flight')
       : (tripParams.outboundTransportMode || tripParams.transportMode || 'flight');
 
-    if (mode === 'bus' || mode === 'train') {
-      return [];
-    }
+    if (mode === 'bus' || mode === 'train') return [];
 
     const searchOrigin      = leg === 'return' ? tripParams.destination : tripParams.origin;
     const searchDestination = leg === 'return' ? tripParams.origin      : tripParams.destination;
-    
-    let searchDate = leg === 'return' ? tripParams.returnDate : tripParams.departureDate;
 
-    // Date fallback - Critical fix
+    let searchDate = leg === 'return' ? tripParams.returnDate : tripParams.departureDate;
     if (!searchDate) {
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate() + 1);
       searchDate = tomorrow.toISOString().split('T')[0];
-      console.log(`[FLIGHT FALLBACK] No date provided for ${leg} — using ${searchDate}`);
+      console.log(`[FLIGHT FALLBACK] No date for ${leg} — using ${searchDate}`);
     }
 
     const results = [];
 
-    // Supabase static inventory
     const { data, error } = await supabase
       .from("flights")
       .select("*")
@@ -390,9 +380,7 @@ class OrchestrationEngine {
       const matchedFlights = (data || []).filter(flight =>
         this._matchesFlightDestination(flight, searchDestination)
       );
-
       console.log(`SUPABASE FLIGHTS (${leg}):`, matchedFlights.length);
-
       results.push(...matchedFlights.map(flight => ({
         supplier:      'supabase',
         transportType: flight.transport_type || 'flight',
@@ -407,7 +395,6 @@ class OrchestrationEngine {
       })));
     }
 
-    // TravelDuqa live flights
     if (supplierAdapter && searchDate) {
       try {
         const liveFlights = await supplierAdapter.searchTransport({
@@ -418,7 +405,6 @@ class OrchestrationEngine {
           transportMode:  'flight',
           timePreference: tripParams.timePreference,
         });
-
         console.log(`TRAVELDUQA FLIGHTS (${leg}):`, liveFlights.length);
         results.push(...liveFlights);
       } catch (err) {
@@ -431,16 +417,14 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // BUSES — IABIRI via adapter (unchanged)
+  // BUSES
   // ─────────────────────────────
   async _searchBuses(tripParams, leg = 'outbound') {
-    const mode = leg === 'return' 
+    const mode = leg === 'return'
       ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || 'flight')
       : (tripParams.outboundTransportMode || tripParams.transportMode || 'flight');
 
-    if (mode === 'flight' || mode === 'train') {
-      return [];
-    }
+    if (mode === 'flight' || mode === 'train') return [];
 
     const busRoutes = [
       ['nairobi', 'mombasa'], ['nairobi', 'kampala'], ['nairobi', 'dar es salaam'],
@@ -453,7 +437,7 @@ class OrchestrationEngine {
     const searchDestination = leg === 'return' ? tripParams.origin      : tripParams.destination;
     const searchDate        = leg === 'return' ? tripParams.returnDate  : tripParams.departureDate;
 
-    const o = (searchOrigin || '').toLowerCase();
+    const o = (searchOrigin      || '').toLowerCase();
     const d = (searchDestination || '').toLowerCase();
 
     const isBusRoute = busRoutes.some(([a, b]) =>
@@ -461,15 +445,14 @@ class OrchestrationEngine {
     );
 
     if (!isBusRoute && mode !== 'bus') return [];
-
     if (!supplierAdapter || !searchDate) return [];
 
     try {
       const buses = await supplierAdapter.searchTransport({
-        origin: searchOrigin,
-        destination: searchDestination,
-        date: searchDate,
-        passengers: tripParams.passengers,
+        origin:        searchOrigin,
+        destination:   searchDestination,
+        date:          searchDate,
+        passengers:    tripParams.passengers,
         transportMode: 'bus',
         timePreference: tripParams.timePreference,
       });
@@ -477,29 +460,29 @@ class OrchestrationEngine {
       console.log(`IABIRI BUSES (${leg}):`, buses.length);
 
       return buses.map(bus => ({
-        supplier: bus.supplier || 'iabiri',
-        transportType: 'bus',
-        tripId: bus.tripId,
-        busId: bus.busId,
-        routeId: bus.routeId,
-        token: bus.token,
-        sourceCityId: bus.sourceCityId,
-        destCityId: bus.destCityId,
-        airline: bus.provider,
-        provider: bus.provider,
-        busType: bus.busType,
-        departureTime: bus.departureTime,
-        arrivalTime: bus.arrivalTime,
-        duration: bus.duration,
-        origin: bus.origin,
-        destination: bus.destination,
-        price: bus.price,
-        currency: bus.currency || 'KES',
-        availableSeats: bus.availableSeats,
-        totalSeats: bus.totalSeats,
-        amenities: bus.amenities || [],
+        supplier:           bus.supplier           || 'iabiri',
+        transportType:      'bus',
+        tripId:             bus.tripId,
+        busId:              bus.busId,
+        routeId:            bus.routeId,
+        token:              bus.token,
+        sourceCityId:       bus.sourceCityId,
+        destCityId:         bus.destCityId,
+        airline:            bus.provider,
+        provider:           bus.provider,
+        busType:            bus.busType,
+        departureTime:      bus.departureTime,
+        arrivalTime:        bus.arrivalTime,
+        duration:           bus.duration,
+        origin:             bus.origin,
+        destination:        bus.destination,
+        price:              bus.price,
+        currency:           bus.currency           || 'KES',
+        availableSeats:     bus.availableSeats,
+        totalSeats:         bus.totalSeats,
+        amenities:          bus.amenities          || [],
         cancellationPolicy: bus.cancellationPolicy || 'Non-refundable',
-        isDelayed: bus.isDelayed || false,
+        isDelayed:          bus.isDelayed          || false,
       }));
     } catch (err) {
       logger.error(`bus search failed (${leg})`, { error: err.message });
@@ -508,7 +491,7 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // HOTELS — from Supabase (unchanged)
+  // HOTELS
   // ─────────────────────────────
   async _searchHotels(tripParams) {
     const { data, error } = await supabase
@@ -569,7 +552,7 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // TRANSFERS — from Supabase (unchanged)
+  // TRANSFERS
   // ─────────────────────────────
   async _searchTransfers(tripParams) {
     const { data, error } = await supabase
@@ -589,16 +572,21 @@ class OrchestrationEngine {
     console.log("MATCHED TRANSFERS:", matchedTransfers.length);
 
     return matchedTransfers.map(t => ({
-      provider:    t.provider    || t.name || "Transfer",
+      provider:    t.provider     || t.name || "Transfer",
       vehicleType: t.vehicle_type || "Transfer",
-      location:    t.location    || "",
+      location:    t.location     || "",
       price:       Number(t.price || t.amount || 0),
     }));
   }
 
+  // ─────────────────────────────
+  // FORMAT TRANSPORT DISPLAY
+  // FIX: was referencing undefined `bus` variable — now correctly uses `t`
+  // ─────────────────────────────
   _formatTransportDisplay(t, fallbackOrigin, fallbackDest) {
     if (!t) return null;
-    return {
+
+    const base = {
       transportType: t.transportType || 'flight',
       airline:       t.airline       || t.provider || "Transport",
       flightNumber:  t.flightNumber  || null,
@@ -608,112 +596,139 @@ class OrchestrationEngine {
       destination:   t.destination   || fallbackDest,
       price:         t.price         || 0,
       supplier:      t.supplier      || 'supabase',
+    };
 
-      ...(t.transportType === 'bus' && {
-        provider: bus.provider,
-        busType: bus.busType,
-        busId: bus.busId,
-        tripId: bus.tripId,
-        routeId: bus.routeId,
-        token: bus.token,
-        sourceCityId: bus.sourceCityId,
-        destCityId: bus.destCityId,
-        availableSeats: bus.availableSeats,
-        totalSeats: bus.totalSeats,
-        amenities: bus.amenities || [],
-        cancellationPolicy: bus.cancellationPolicy,
-        currency: bus.currency || 'KES',
-        isDelayed: bus.isDelayed || false,
-      }),
+    if (t.transportType === 'bus') {
+      return {
+        ...base,
+        provider:           t.provider,
+        busType:            t.busType,
+        busId:              t.busId,
+        tripId:             t.tripId,
+        routeId:            t.routeId,
+        token:              t.token,
+        sourceCityId:       t.sourceCityId,
+        destCityId:         t.destCityId,
+        availableSeats:     t.availableSeats,
+        totalSeats:         t.totalSeats,
+        amenities:          t.amenities          || [],
+        cancellationPolicy: t.cancellationPolicy,
+        currency:           t.currency           || 'KES',
+        isDelayed:          t.isDelayed          || false,
+      };
+    }
 
-      ...(t.transportType === 'flight' && {
-        seats: t.seats || null,
-        airlineCode: t.airlineCode || null,
-        airlineLogo: t.airlineLogo || null,
-        cabinClass: t.cabinClass || null,
-        checkedBags: t.checkedBags || null,
-        carryOn: t.carryOn || null,
-        stops: t.stops || null,
-        duration: t.duration || null,
-        currency: t.currency || 'KES',
-        offerId: t.offerId || null,
-        resultId: t.resultId || null,
-        expiresAt: t.expiresAt || null,
-        canBook: t.canBook || false,
-        canHold: t.canHold || false,
-        isReturn: t.isReturn || false,
-        returnLeg: t.returnLeg || null,
-        passengerIds: t.passengerIds || [],
-        originIata: t.originIata || null,
-        destIata: t.destIata || null,
-      }),
+    // flight (default)
+    return {
+      ...base,
+      seats:        t.seats        || null,
+      airlineCode:  t.airlineCode  || null,
+      airlineLogo:  t.airlineLogo  || null,
+      cabinClass:   t.cabinClass   || null,
+      checkedBags:  t.checkedBags  || null,
+      carryOn:      t.carryOn      || null,
+      stops:        t.stops        || null,
+      duration:     t.duration     || null,
+      currency:     t.currency     || 'KES',
+      offerId:      t.offerId      || null,
+      resultId:     t.resultId     || null,
+      expiresAt:    t.expiresAt    || null,
+      canBook:      t.canBook      || false,
+      canHold:      t.canHold      || false,
+      isReturn:     t.isReturn     || false,
+      returnLeg:    t.returnLeg    || null,
+      passengerIds: t.passengerIds || [],
+      originIata:   t.originIata   || null,
+      destIata:     t.destIata     || null,
     };
   }
 
   // ─────────────────────────────
-  // BUILD PACKAGES - Fixed for single product
+  // BUILD PACKAGES
   // ─────────────────────────────
   _buildPackages({ outboundTransport, returnTransport, hotels, transfers, tripParams, intent }) {
     const scope = intent?.productScope || { needsTransport: true, needsHotel: true, needsTransfers: true };
 
-    const hasOutbound = outboundTransport.length > 0;
-    const hasReturn   = returnTransport.length > 0;
-    const hasHotels = hotels.length > 0;
-    const hasTransfers = transfers.length > 0;
+    const hasOutbound  = outboundTransport.length > 0;
+    const hasReturn    = returnTransport.length   > 0;
+    const hasHotels    = hotels.length            > 0;
+    const hasTransfers = transfers.length         > 0;
 
     if (!hasOutbound && !hasHotels && !hasTransfers) {
       console.log("NO INVENTORY FOUND");
       return [];
     }
 
-    // === TRANSPORT ONLY (Flight / Bus Only) ===
+    // === TRANSPORT ONLY ===
     if (scope.needsTransport && !scope.needsHotel && !scope.needsTransfers) {
-      const transportList = outboundTransport.length > 0 ? outboundTransport : returnTransport;
+      // Pair outbound + return into a single package per outbound offer
+      if (hasOutbound && hasReturn) {
+        return outboundTransport.map((ob, i) => {
+          const ret = returnTransport[i % returnTransport.length];
+          const totalPrice = (ob.price || 0) + (ret.price || 0);
+          return {
+            packageId: uuidv4(),
+            summary: {
+              route:          `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`,
+              passengers:     tripParams.passengers || 1,
+              nights:         0,
+              totalPrice,
+              pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+              transportType:  ob.transportType || 'flight',
+            },
+            transport:       this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination),
+            returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),
+            hotel:     null,
+            transfers: null,
+            status:    "available",
+          };
+        });
+      }
+
+      // One-way or return-only
+      const transportList = hasOutbound ? outboundTransport : returnTransport;
       return transportList.map(t => ({
         packageId: uuidv4(),
         summary: {
-          route: `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`,
-          passengers: tripParams.passengers || 1,
-          nights: 0,
-          totalPrice: t.price || 0,
+          route:          `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`,
+          passengers:     tripParams.passengers || 1,
+          nights:         0,
+          totalPrice:     t.price || 0,
           pricePerPerson: Math.round((t.price || 0) / (tripParams.passengers || 1)),
-          transportType: t.transportType || 'flight',
+          transportType:  t.transportType || 'flight',
         },
-        transport: this._formatTransportDisplay(t, tripParams.origin, tripParams.destination),
+        transport:       this._formatTransportDisplay(t, tripParams.origin, tripParams.destination),
         returnTransport: null,
-        hotel: null,
+        hotel:     null,
         transfers: null,
-        status: "available"
+        status:    "available",
       }));
     }
 
-    // === FULL PACKAGE LOGIC (original) ===
+    // === FULL PACKAGE LOGIC ===
     const packages = [];
     const maxItems = Math.max(
-      scope.needsTransport ? outboundTransport.length : 0,
-      scope.needsHotel ? hotels.length : 0,
-      scope.needsTransfers ? transfers.length : 0,
+      scope.needsTransport  ? outboundTransport.length : 0,
+      scope.needsHotel      ? hotels.length            : 0,
+      scope.needsTransfers  ? transfers.length         : 0,
       1
     );
 
     const startIndex = tripParams.showAlternatives ? 1 : 0;
 
     for (let i = 0; i < maxItems; i++) {
-      const ob = hasOutbound && scope.needsTransport ? outboundTransport[(i + startIndex) % outboundTransport.length] : null;
-      const ret = hasReturn && scope.needsTransport ? returnTransport[(i + startIndex) % returnTransport.length] : null;
-      const hotel = hasHotels && scope.needsHotel ? hotels[(i + startIndex) % hotels.length] : null;
-      const transfer = hasTransfers && scope.needsTransfers ? transfers[i % transfers.length] : null;
+      const ob       = hasOutbound  && scope.needsTransport  ? outboundTransport[(i + startIndex) % outboundTransport.length] : null;
+      const ret      = hasReturn    && scope.needsTransport  ? returnTransport[(i  + startIndex) % returnTransport.length]    : null;
+      const hotel    = hasHotels    && scope.needsHotel      ? hotels[(i    + startIndex) % hotels.length]                    : null;
+      const transfer = hasTransfers && scope.needsTransfers  ? transfers[i % transfers.length]                                : null;
 
       if (!ob && !hotel && !transfer) continue;
 
       const totalPrice =
-        (ob?.price || 0) +
-        (ret?.price || 0) +
+        (ob?.price       || 0) +
+        (ret?.price      || 0) +
         ((hotel?.pricePerNight || 0) * (tripParams.nights || 1)) +
         (transfer?.price || 0);
-
-      const transportDisplay = this._formatTransportDisplay(ob, tripParams.origin, tripParams.destination);
-      const returnDisplay    = this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin);
 
       packages.push({
         packageId: uuidv4(),
@@ -723,15 +738,15 @@ class OrchestrationEngine {
           nights:         tripParams.nights || 0,
           totalPrice,
           pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
-          mealPlan:       tripParams.mealPlan || hotel?.mealPlan || null,
+          mealPlan:       tripParams.mealPlan  || hotel?.mealPlan || null,
           seatPreference: tripParams.seatPreference || null,
-          transportType:  ob?.transportType || 'none',
+          transportType:  ob?.transportType    || 'none',
         },
-        transport:       transportDisplay,
-        returnTransport: returnDisplay,
-        hotel:           hotel,
-        transfers:       transfer,
-        status:          "available"
+        transport:       this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination),
+        returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),
+        hotel,
+        transfers: transfer,
+        status: "available",
       });
     }
 
