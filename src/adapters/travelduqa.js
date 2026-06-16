@@ -22,11 +22,10 @@ class TravelDuqaAdapter {
     this.baseUrl  = 'https://www.app.travelduqa.africa/connect';
     this.token    = process.env.TRAVELDUQA_ACCESS_TOKEN;
     this.version  = process.env.TRAVELDUQA_API_VERSION || 'v1';
-    this.timeout        = 15000;  // default
-    this.searchTimeout  = 30000;  // search takes longer 
+    this.timeout        = 15000;
+    this.searchTimeout  = 30000;
     this.supplier = 'travelduqa';
 
-    // IATA code cache — populated on first location fetch
     this._iataCache = null;
   }
 
@@ -50,6 +49,18 @@ class TravelDuqaAdapter {
 
       const flightType = returnDate ? 'return' : 'oneway';
 
+      // ── DEBUG: log exact request ──
+      console.log('TRAVELDUQA REQUEST PAYLOAD:', JSON.stringify({
+        token: this.token ? `${this.token.slice(0, 8)}...` : 'MISSING',
+        version: this.version,
+        depIata,
+        arrIata,
+        date,
+        returnDate,
+        flightType,
+        passengers,
+      }, null, 2));
+
       const response = await axios.post(
         `${this.baseUrl}/getOffers`,
         {
@@ -70,6 +81,9 @@ class TravelDuqaAdapter {
         { headers: this._headers(), timeout: this.searchTimeout }
       );
 
+      // ── DEBUG: log raw response ──
+      console.log('TRAVELDUQA RAW RESPONSE:', JSON.stringify(response.data, null, 2));
+
       const offers   = response.data?.data       || [];
       const resultId = response.data?.result_id  || null;
 
@@ -77,6 +91,12 @@ class TravelDuqaAdapter {
       return this._filterByTime(flights, timePreference);
 
     } catch (err) {
+      // ── DEBUG: log full error detail ──
+      console.log('TRAVELDUQA ERROR DETAIL:', JSON.stringify({
+        message: err.message,
+        status:  err.response?.status,
+        data:    err.response?.data,
+      }, null, 2));
       logger.error('TravelDuqa search failed', { error: err.message });
       return [];
     }
@@ -127,7 +147,6 @@ class TravelDuqaAdapter {
               type:        p.type         || 'adult',
             };
 
-            // FIX 4 — dynamic phone handling, not Kenya-hardcoded
             if (index === 0) {
               const { code, number } = this._parsePhone(p.phone || p.phoneNumber, p.phoneCode);
               row.phone_number = number;
@@ -199,7 +218,6 @@ class TravelDuqaAdapter {
 
   // ─────────────────────────────────────────────
   // GET ALL BOOKINGS
-  // FIX 1 — changed to POST since GET with body is unreliable
   // ─────────────────────────────────────────────
   async getBookingHistory({ page = 1, perPage = 10 } = {}) {
     try {
@@ -443,15 +461,13 @@ class TravelDuqaAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // FIX 4 — DYNAMIC PHONE PARSER
-  // Handles +254, +256, +250, +255 and any other code
+  // DYNAMIC PHONE PARSER
   // ─────────────────────────────────────────────
   _parsePhone(rawPhone, explicitCode) {
     if (!rawPhone) return { code: '+254', number: '' };
 
     const cleaned = String(rawPhone).replace(/\s+/g, '');
 
-    // If explicit code provided, strip it from number
     if (explicitCode) {
       const strippedCode = explicitCode.replace(/^\+/, '');
       const number = cleaned.startsWith('+' + strippedCode)
@@ -462,16 +478,15 @@ class TravelDuqaAdapter {
       return { code: explicitCode.startsWith('+') ? explicitCode : '+' + explicitCode, number };
     }
 
-    // Auto-detect country code from number
     const countryCodeMap = [
-      { prefix: '+254', code: '+254' }, // Kenya
-      { prefix: '+256', code: '+256' }, // Uganda
-      { prefix: '+255', code: '+255' }, // Tanzania
-      { prefix: '+250', code: '+250' }, // Rwanda
-      { prefix: '+251', code: '+251' }, // Ethiopia
-      { prefix: '+27',  code: '+27'  }, // South Africa
-      { prefix: '+1',   code: '+1'   }, // USA/Canada
-      { prefix: '+44',  code: '+44'  }, // UK
+      { prefix: '+254', code: '+254' },
+      { prefix: '+256', code: '+256' },
+      { prefix: '+255', code: '+255' },
+      { prefix: '+250', code: '+250' },
+      { prefix: '+251', code: '+251' },
+      { prefix: '+27',  code: '+27'  },
+      { prefix: '+1',   code: '+1'   },
+      { prefix: '+44',  code: '+44'  },
     ];
 
     for (const { prefix, code } of countryCodeMap) {
@@ -480,7 +495,6 @@ class TravelDuqaAdapter {
       }
     }
 
-    // Default: assume Kenya, strip leading 0
     return {
       code:   '+254',
       number: cleaned.startsWith('0') ? cleaned.slice(1) : cleaned,
@@ -497,13 +511,11 @@ class TravelDuqaAdapter {
       const slices  = offer.slices || [];
       const isReturn = slices.length > 1;
 
-      // Outbound (slice 0)
       const outSlice   = slices[0]    || {};
       const outSegment = outSlice.segments?.[0] || {};
       const outCarrier = outSegment.marketing_carrier || outSegment.operating_carrier || {};
       const baggage    = outSegment.passengers?.[0]?.baggages || [];
 
-      // FIX 3 — Return leg (slice 1) properly mapped
       const retSlice   = slices[1]    || null;
       const retSegment = retSlice?.segments?.[0] || null;
       const retCarrier = retSegment?.marketing_carrier || retSegment?.operating_carrier || {};
@@ -513,12 +525,10 @@ class TravelDuqaAdapter {
         type:          'flight',
         transportType: 'flight',
 
-        // Offer identifiers
         offerId:   offer.id,
         resultId:  resultId,
         expiresAt: offer.expires_at,
 
-        // Outbound leg
         origin:        outSlice.origin?.city_name      || outSlice.origin?.iata_code,
         destination:   outSlice.destination?.city_name || outSlice.destination?.iata_code,
         originIata:    outSlice.origin?.iata_code,
@@ -534,7 +544,6 @@ class TravelDuqaAdapter {
         airlineLogo:   outCarrier.logo          || null,
         flightNumber:  outSegment.marketing_carrier_flight_number,
 
-        // FIX 3 — Return leg (null for one-way)
         isReturn,
         returnLeg: retSlice ? {
           origin:        retSlice.origin?.city_name      || retSlice.origin?.iata_code,
@@ -551,25 +560,20 @@ class TravelDuqaAdapter {
           flightNumber:  retSegment?.marketing_carrier_flight_number,
         } : null,
 
-        // Cabin & baggage
         cabinClass:  outSegment.passengers?.[0]?.cabin_class_marketing_name || 'Economy',
         baggage,
         checkedBags: baggage.find(b => b.type === 'checked')?.quantity || 0,
         carryOn:     baggage.find(b => b.type === 'carry_on' || b.type === 'carryon')?.quantity || 0,
 
-        // Pricing
         price:     Number(offer.total_amount || 0),
         currency:  offer.total_currency || 'KES',
         emissions: offer.total_emmissions_kg || null,
 
-        // Booking terms
         canBook: offer.offer_terms?.create_booking === 'true',
         canHold: offer.offer_terms?.hold === 'true',
 
-        // Passenger IDs
         passengerIds: offer.passengers || [],
 
-        // Raw slices — for orchestrator multi-modal support
         slices,
 
         supplierBookingReference: null,
@@ -625,8 +629,7 @@ class TravelDuqaAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // FIX 2 — TIME FILTER USING EAT (UTC+3)
-  // Avoids host server TZ affecting hour comparisons
+  // TIME FILTER USING EAT (UTC+3)
   // ─────────────────────────────────────────────
   _filterByTime(flights, timePreference) {
     if (!timePreference) return flights;
@@ -643,7 +646,6 @@ class TravelDuqaAdapter {
     });
   }
 
-  // Parse hour in EAT (UTC+3) regardless of server TZ
   _eatHour(dateStr) {
     try {
       const utcMs  = new Date(dateStr).getTime();
