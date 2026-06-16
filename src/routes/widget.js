@@ -1,10 +1,11 @@
+cat << 'ENDOFFILE' > /mnt/user-data/outputs/widget.js
 const express = require('express');
 const router = express.Router();
 
 router.get('/', (req, res) => {
-  const agencyKey = req.query.key || 'epic-travels';
+  const agencyKey  = req.query.key  || 'epic-travels';
   const agencyName = req.query.name || 'Epic Travels';
-  const apiBase = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
+  const apiBase    = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
 
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
 
@@ -13,7 +14,6 @@ router.get('/', (req, res) => {
   'if (!document.body) { setTimeout(initWidget, 50); return; }\n' +
   'if (document.getElementById("bodrless-widget-root")) return;\n' +
 
-  // Conversation state
   'var conversationHistory = [];\n' +
   'var previousParams = null;\n' +
   'var sessionId = null;\n' +
@@ -167,6 +167,19 @@ router.get('/', (req, res) => {
   '  if (t) t.remove();\n' +
   '}\n' +
 
+  'function fmtTime(iso) {\n' +
+  '  if (!iso) return "TBC";\n' +
+  '  try {\n' +
+  '    var d = new Date(iso);\n' +
+  '    if (isNaN(d)) return iso;\n' +
+  '    return d.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });\n' +
+  '  } catch(e) { return iso; }\n' +
+  '}\n' +
+
+  'function fmtPrice(n) {\n' +
+  '  return "KES " + (Math.round(Number(n) || 0)).toLocaleString();\n' +
+  '}\n' +
+
   'function makeRow(label, name, sub) {\n' +
   '  var row = document.createElement("div");\n' +
   '  row.className = "pkg-row";\n' +
@@ -216,7 +229,7 @@ router.get('/', (req, res) => {
   '      bookBtn.innerText = "Booked!";\n' +
   '      bookBtn.style.background = "#27ae60";\n' +
   '      bookBtn.disabled = true;\n' +
-  '      addMsg("Booking confirmed for " + guestName + "! Ref: " + data.bookingRef + ". Hotel, flight and transfer have all been notified!", "bot");\n' +
+  '      addMsg("Booking confirmed for " + guestName + "! Ref: " + data.bookingRef + ". You will receive confirmation shortly.", "bot");\n' +
   '      messages.scrollTop = messages.scrollHeight;\n' +
   '    })\n' +
   '    .catch(function() { confirmBtn.innerText = "Failed - Try Again"; confirmBtn.disabled = false; });\n' +
@@ -229,29 +242,23 @@ router.get('/', (req, res) => {
   '  nameInput.focus();\n' +
   '}\n' +
 
+  // ── addPackage: only show sections that exist ──
   'function addPackage(p, i) {\n' +
   '  var div = document.createElement("div");\n' +
   '  div.className = "package";\n' +
   '  div.style.height = "auto";\n' +
-  '  var transport = p.transport || {};\n' +
-  '  var hotel = p.hotel || {};\n' +
-  '  var transfers = p.transfers || {};\n' +
-  '  var summary = p.summary || {};\n' +
-  '  var total = summary.totalPrice ? Math.round(summary.totalPrice) : 0;\n' +
-  '  var ppp = summary.pricePerPerson || 0;\n' +
-  '  var nights = summary.nights || 1;\n' +
+  '  var transport       = p.transport       || null;\n' +
+  '  var returnTransport = p.returnTransport || null;\n' +
+  '  var hotel     = p.hotel     || null;\n' +
+  '  var transfers = p.transfers || null;\n' +
+  '  var summary   = p.summary   || {};\n' +
+  '  var currency  = (transport && transport.currency) || "KES";\n' +
+  '  var total     = Math.round(summary.totalPrice || 0);\n' +
+  '  var ppp       = Math.round(summary.pricePerPerson || 0);\n' +
+  '  var nights    = summary.nights    || 0;\n' +
   '  var passengers = summary.passengers || 1;\n' +
-  '  var route = summary.route || ((transport.origin || "TBC") + " to " + (transport.destination || "TBC"));\n' +
-  '  var airline = transport.airline || transport.provider || "TBC";\n' +
-  '  var origin = transport.origin || "TBC";\n' +
-  '  var dest = transport.destination || "TBC";\n' +
-  '  var dep = transport.departureTime || "TBC";\n' +
-  '  var arr = transport.arrivalTime || "TBC";\n' +
-  '  var hotelName = hotel.name || "TBC";\n' +
-  '  var hotelLoc = hotel.location || "TBC";\n' +
-  '  var hotelPPN = hotel.pricePerNight || 0;\n' +
-  '  var hotelRating = hotel.rating || "N/A";\n' +
-  '  var hasTransfer = transfers && transfers.provider;\n' +
+  '  var route     = summary.route || ((transport && transport.origin ? transport.origin : "TBC") + " to " + (transport && transport.destination ? transport.destination : "TBC"));\n' +
+
   '  var pkgHeader = document.createElement("div");\n' +
   '  pkgHeader.className = "pkg-header";\n' +
   '  var pkgTitle = document.createElement("span");\n' +
@@ -262,22 +269,60 @@ router.get('/', (req, res) => {
   '  pkgRoute.innerText = route;\n' +
   '  pkgHeader.appendChild(pkgTitle);\n' +
   '  pkgHeader.appendChild(pkgRoute);\n' +
+
   '  var pkgBody = document.createElement("div");\n' +
   '  pkgBody.className = "pkg-body";\n' +
   '  pkgBody.style.height = "auto";\n' +
-  '  pkgBody.appendChild(makeRow("Flight", airline, origin + " to " + dest + " | Departs " + dep + " | Arrives " + arr));\n' +
-  '  pkgBody.appendChild(makeRow("Hotel", hotelName, hotelLoc + " | " + nights + " nights | $" + hotelPPN + "/night | Rating: " + hotelRating + "/5"));\n' +
-  '  if (hasTransfer) {\n' +
-  '    pkgBody.appendChild(makeRow("Transfer", transfers.provider, (transfers.vehicleType || "Car") + " | $" + (transfers.price || 0)));\n' +
+
+  // Outbound flight/bus
+  '  if (transport) {\n' +
+  '    var isbus = (transport.transportType || "").toLowerCase() === "bus";\n' +
+  '    var tLabel = isbus ? "Outbound Bus" : "Outbound Flight";\n' +
+  '    var tName  = transport.airline || transport.provider || "TBC";\n' +
+  '    var tSub   = (transport.origin || "TBC") + " \u2192 " + (transport.destination || "TBC") +\n' +
+  '                 " | " + fmtTime(transport.departureTime) + " - " + fmtTime(transport.arrivalTime);\n' +
+  '    if (transport.stops) tSub += " | " + transport.stops;\n' +
+  '    if (transport.cabinClass) tSub += " | " + transport.cabinClass;\n' +
+  '    tSub += " | " + fmtPrice(transport.price);\n' +
+  '    pkgBody.appendChild(makeRow(tLabel, tName, tSub));\n' +
   '  }\n' +
+
+  // Return flight/bus
+  '  if (returnTransport) {\n' +
+  '    var isRetBus = (returnTransport.transportType || "").toLowerCase() === "bus";\n' +
+  '    var rtLabel = isRetBus ? "Return Bus" : "Return Flight";\n' +
+  '    var rtName  = returnTransport.airline || returnTransport.provider || "TBC";\n' +
+  '    var rtSub   = (returnTransport.origin || "TBC") + " \u2192 " + (returnTransport.destination || "TBC") +\n' +
+  '                  " | " + fmtTime(returnTransport.departureTime) + " - " + fmtTime(returnTransport.arrivalTime);\n' +
+  '    if (returnTransport.stops) rtSub += " | " + returnTransport.stops;\n' +
+  '    rtSub += " | " + fmtPrice(returnTransport.price);\n' +
+  '    pkgBody.appendChild(makeRow(rtLabel, rtName, rtSub));\n' +
+  '  }\n' +
+
+  // Hotel — only if present
+  '  if (hotel) {\n' +
+  '    var stars = hotel.stars ? Array(Math.min(Math.round(hotel.stars), 5) + 1).join("\u2605") : "";\n' +
+  '    var hName = (hotel.name || "TBC") + (stars ? " " + stars : "");\n' +
+  '    var hSub  = (hotel.location || "TBC");\n' +
+  '    if (nights > 0) hSub += " | " + nights + " nights | " + fmtPrice(hotel.pricePerNight) + "/night";\n' +
+  '    if (hotel.rating) hSub += " | Rating: " + hotel.rating + "/5";\n' +
+  '    if (hotel.mealPlan) hSub += " | " + hotel.mealPlan;\n' +
+  '    pkgBody.appendChild(makeRow("Hotel", hName, hSub));\n' +
+  '  }\n' +
+
+  // Transfer — only if present
+  '  if (transfers && transfers.provider) {\n' +
+  '    pkgBody.appendChild(makeRow("Transfer", transfers.provider, (transfers.vehicleType || "Car") + " | " + fmtPrice(transfers.price)));\n' +
+  '  }\n' +
+
   '  var pkgFooter = document.createElement("div");\n' +
   '  pkgFooter.className = "pkg-footer";\n' +
   '  pkgFooter.style.height = "auto";\n' +
   '  var pkgPrice = document.createElement("div");\n' +
   '  pkgPrice.className = "pkg-price";\n' +
-  '  pkgPrice.innerText = "$" + total;\n' +
+  '  pkgPrice.innerText = fmtPrice(total);\n' +
   '  var pkgPriceSub = document.createElement("small");\n' +
-  '  pkgPriceSub.innerText = "$" + ppp + "/person | " + passengers + " traveller(s)";\n' +
+  '  pkgPriceSub.innerText = fmtPrice(ppp) + "/person | " + passengers + " traveller(s)";\n' +
   '  pkgPrice.appendChild(pkgPriceSub);\n' +
   '  var bookBtn = document.createElement("button");\n' +
   '  bookBtn.className = "book";\n' +
@@ -292,7 +337,6 @@ router.get('/', (req, res) => {
   '  messages.scrollTop = messages.scrollHeight;\n' +
   '}\n' +
 
-  // KEY FIX — send with conversation history and previousParams
   'function send() {\n' +
   '  var text = input.value.trim();\n' +
   '  if (!text) return;\n' +
@@ -314,19 +358,14 @@ router.get('/', (req, res) => {
   '  .then(function(res) { return res.json(); })\n' +
   '  .then(function(data) {\n' +
   '    hideTyping();\n' +
-
-  // Store conversation state for follow-ups
   '    if (data.sessionId) sessionId = data.sessionId;\n' +
   '    if (data.tripParams) previousParams = data.tripParams;\n' +
   '    if (data.conversationHistory) conversationHistory = data.conversationHistory;\n' +
-
   '    var packages = data && data.packages ? data.packages : [];\n' +
   '    if (!packages.length) {\n' +
   '      addMsg("No packages found. Try specifying destination, number of people and nights.", "bot");\n' +
   '      return;\n' +
   '    }\n' +
-
-  // Context-aware response message
   '    var intent = data.intent || {};\n' +
   '    var responseMsg = "I found " + packages.length + " option(s) for you:";\n' +
   '    if (intent.isFollowUp) {\n' +
@@ -339,7 +378,6 @@ router.get('/', (req, res) => {
   '      else if (adj.mealPlan === "bed_and_breakfast") responseMsg = "Here are options with breakfast included:";\n' +
   '      else if (adj.mealPlan === "full_board") responseMsg = "Here are full board options:";\n' +
   '      else if (adj.seatPreference) responseMsg = "Here are options with " + adj.seatPreference + " seat:";\n' +
-  '      else if (adj.showAlternatives) responseMsg = "Here are some different options:";\n' +
   '      else if (adj.passengers) responseMsg = "Here are options for " + adj.passengers + " traveller(s):";\n' +
   '      else responseMsg = "Here are the updated options:";\n' +
   '    }\n' +
