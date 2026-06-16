@@ -54,10 +54,10 @@ class OrchestrationEngine {
       // Merge flights and buses into transport options
       const allTransport = [...flights, ...buses];
 
-      console.log("FINAL FLIGHTS:", flights);
-      console.log("FINAL BUSES:", buses);
-      console.log("FINAL HOTELS:", hotels);
-      console.log("FINAL TRANSFERS:", transfers);
+      console.log("FINAL FLIGHTS:", flights.length);
+      console.log("FINAL BUSES:", buses.length);
+      console.log("FINAL HOTELS:", hotels.length);
+      console.log("FINAL TRANSFERS:", transfers.length);
 
       const packages = this._buildPackages({
         transport: allTransport,
@@ -123,8 +123,8 @@ class OrchestrationEngine {
         destination:       tripParams.destination || null,
         origin:            tripParams.origin      || null,
         passengers:        tripParams.passengers  || 1,
-        budget:            tripParams.budget       || null,
-        nights:            tripParams.nights       || null,
+        budget:            tripParams.budget      || null,
+        nights:            tripParams.nights      || null,
         packages_returned: packagesReturned,
         channel:           channel,
         converted:         false,
@@ -167,8 +167,8 @@ class OrchestrationEngine {
           guest_email:                  guestEmail,
           destination:                  tripParams.destination,
           origin:                       tripParams.origin,
-          nights:                       tripParams.nights       || null,
-          passengers:                   tripParams.passengers   || 1,
+          nights:                       tripParams.nights     || null,
+          passengers:                   tripParams.passengers || 1,
           total_price:                  selectedPackage.summary?.totalPrice || 0,
           currency:                     selectedPackage.transport?.currency || 'KES',
           status:                       'confirmed',
@@ -177,9 +177,9 @@ class OrchestrationEngine {
           supplier_status:              'confirmed',
           supplier_booking_reference:   supplierBookingReference,
           channel:                      channel,
-          flight_details:               selectedPackage.transport  || null,
-          hotel_details:                selectedPackage.hotel      || null,
-          transfer_details:             selectedPackage.transfers  || null,
+          flight_details:               selectedPackage.transport || null,
+          hotel_details:                selectedPackage.hotel     || null,
+          transfer_details:             selectedPackage.transfers || null,
           trip_params:                  tripParams,
           created_at:                   new Date().toISOString(),
         })
@@ -191,28 +191,28 @@ class OrchestrationEngine {
         throw bookingError;
       }
 
-      // 2. Insert passenger manifest records (one per passenger)
+      // 2. Insert passenger manifest records
       if (passengers.length > 0) {
         const manifestRows = passengers.map(p => ({
-          id:                    uuidv4(),
-          booking_id:            booking.id,
-          booking_ref:           bookingRef,
-          agency_id:             agencyId,
-          first_name:            p.firstName    || p.first_name,
-          last_name:             p.lastName     || p.last_name,
-          date_of_birth:         p.dateOfBirth  || p.date_of_birth  || null,
-          nationality:           p.nationality  || null,
-          passport_number:       p.passportNumber || p.passport_number || null,
-          passport_expiry:       p.passportExpiry || p.passport_expiry || null,
-          national_id_number:    p.nationalId   || p.national_id_number || null,
-          gender:                p.gender       || null,
-          passenger_type:        p.type         || 'adult',
-          phone:                 p.phone        || guestPhone,
-          email:                 p.email        || guestEmail,
-          seat_number:           p.seatNumber   || p.seat_number || null,
-          special_requests:      p.specialRequests || null,
-          supplier:              supplierName   || 'iabiri',
-          created_at:            new Date().toISOString(),
+          id:                 uuidv4(),
+          booking_id:         booking.id,
+          booking_ref:        bookingRef,
+          agency_id:          agencyId,
+          first_name:         p.firstName       || p.first_name,
+          last_name:          p.lastName        || p.last_name,
+          date_of_birth:      p.dateOfBirth     || p.date_of_birth   || null,
+          nationality:        p.nationality     || null,
+          passport_number:    p.passportNumber  || p.passport_number || null,
+          passport_expiry:    p.passportExpiry  || p.passport_expiry || null,
+          national_id_number: p.nationalId      || p.national_id_number || null,
+          gender:             p.gender          || null,
+          passenger_type:     p.type            || 'adult',
+          phone:              p.phone           || guestPhone,
+          email:              p.email           || guestEmail,
+          seat_number:        p.seatNumber      || p.seat_number || null,
+          special_requests:   p.specialRequests || null,
+          supplier:           supplierName      || 'travelduqa',
+          created_at:         new Date().toISOString(),
         }));
 
         const { error: manifestError } = await supabase
@@ -221,11 +221,10 @@ class OrchestrationEngine {
 
         if (manifestError) {
           logger.error('Passenger manifest insert failed', { error: manifestError.message });
-          // Don't throw — booking is confirmed, manifest is secondary
         }
       }
 
-      // 3. Mark search as converted if session is available
+      // 3. Mark search as converted
       if (tripParams.sessionId) {
         await supabase
           .from('trip_searches')
@@ -234,7 +233,6 @@ class OrchestrationEngine {
       }
 
       logger.info('Booking saved', { bookingRef, agencyId });
-
       return { bookingRef, bookingId: booking.id };
 
     } catch (err) {
@@ -311,7 +309,7 @@ class OrchestrationEngine {
     if (lower.match(/evening|jioni/)) adjustments.timePreference = 'evening';
     if (lower.match(/night|usiku/)) adjustments.timePreference = 'night';
 
-    // Transport mode switch
+    // Transport mode
     if (lower.match(/\bbus\b|by bus|take bus/)) adjustments.transportMode = 'bus';
     if (lower.match(/\bflight\b|\bfly\b|by plane/)) adjustments.transportMode = 'flight';
     if (lower.match(/\btrain\b|by train|sgr/)) adjustments.transportMode = 'train';
@@ -331,14 +329,14 @@ class OrchestrationEngine {
     const adjusted = { ...previousParams };
     const { adjustments } = intent;
 
-    if (adjustments.budget !== undefined) adjusted.budget = adjustments.budget;
-    if (adjustments.nights !== undefined) adjusted.nights = adjustments.nights;
-    if (adjustments.passengers !== undefined) adjusted.passengers = adjustments.passengers;
+    if (adjustments.budget !== undefined)         adjusted.budget         = adjustments.budget;
+    if (adjustments.nights !== undefined)         adjusted.nights         = adjustments.nights;
+    if (adjustments.passengers !== undefined)     adjusted.passengers     = adjustments.passengers;
     if (adjustments.seatPreference !== undefined) adjusted.seatPreference = adjustments.seatPreference;
-    if (adjustments.mealPlan !== undefined) adjusted.mealPlan = adjustments.mealPlan;
+    if (adjustments.mealPlan !== undefined)       adjusted.mealPlan       = adjustments.mealPlan;
     if (adjustments.timePreference !== undefined) adjusted.timePreference = adjustments.timePreference;
-    if (adjustments.transportMode !== undefined) adjusted.transportMode = adjustments.transportMode;
-    if (adjustments.showAlternatives) adjusted.showAlternatives = true;
+    if (adjustments.transportMode !== undefined)  adjusted.transportMode  = adjustments.transportMode;
+    if (adjustments.showAlternatives)             adjusted.showAlternatives = true;
 
     if (adjustments.nights && adjusted.departureDate) {
       const date = new Date(adjusted.departureDate);
@@ -368,14 +366,14 @@ class OrchestrationEngine {
     const search = this._normalize(destination);
     const combined = this._normalize(`
       ${item.destination || ""}
-      ${item.location || ""}
-      ${item.city || ""}
-      ${item.country || ""}
-      ${item.name || ""}
-      ${item.hotel_name || ""}
-      ${item.provider || ""}
-      ${item.route || ""}
-      ${item.notes || ""}
+      ${item.location    || ""}
+      ${item.city        || ""}
+      ${item.country     || ""}
+      ${item.name        || ""}
+      ${item.hotel_name  || ""}
+      ${item.provider    || ""}
+      ${item.route       || ""}
+      ${item.notes       || ""}
     `);
 
     if (combined.includes(search)) return true;
@@ -389,7 +387,7 @@ class OrchestrationEngine {
   _matchesFlightDestination(flight, destination) {
     if (!destination) return true;
 
-    const search = this._normalize(destination);
+    const search    = this._normalize(destination);
     const flightDest = this._normalize(flight.destination || "");
 
     if (flightDest.includes(search)) return true;
@@ -398,47 +396,99 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // FLIGHTS — from Supabase
+  // FLIGHTS — Supabase + TravelDuqa live
   // ─────────────────────────────
   async _searchFlights(tripParams) {
     if (tripParams.transportMode === 'bus' || tripParams.transportMode === 'train') {
       return [];
     }
 
+    const results = [];
+
+    // ── 1. Supabase static inventory ─────────────
     const { data, error } = await supabase
       .from("flights")
       .select("*")
       .eq("agency_id", tripParams.agencyId);
 
-    if (error) {
-      console.error("FLIGHT ERROR:", error);
-      return [];
+    if (!error) {
+      const matchedFlights = (data || []).filter(flight =>
+        this._matchesFlightDestination(flight, tripParams.destination)
+      );
+
+      console.log("SUPABASE FLIGHTS:", matchedFlights.length);
+
+      results.push(...matchedFlights.map(flight => ({
+        supplier:      'supabase',
+        transportType: flight.transport_type || 'flight',
+        airline:       flight.airline        || flight.provider || "Flight",
+        flightNumber:  flight.flight_number  || "AUTO",
+        departureTime: flight.departure_time || "08:00",
+        arrivalTime:   flight.arrival_time   || "12:00",
+        origin:        flight.origin         || "",
+        destination:   flight.destination    || "",
+        price:         Number(flight.price   || flight.amount || 0),
+        seats:         flight.seats          || null,
+      })));
+    } else {
+      console.error("SUPABASE FLIGHT ERROR:", error);
     }
 
-    console.log("SUPABASE FLIGHTS:", data);
+    // ── 2. TravelDuqa live flights ────────────────
+    if (supplierAdapter) {
+      try {
+        const liveFlights = await supplierAdapter.searchTransport({
+          origin:         tripParams.origin,
+          destination:    tripParams.destination,
+          date:           tripParams.departureDate,
+          passengers:     tripParams.passengers  || 1,
+          transportMode:  'flight',
+          timePreference: tripParams.timePreference,
+        });
 
-    const matchedFlights = (data || []).filter(flight =>
-      this._matchesFlightDestination(flight, tripParams.destination)
-    );
+        console.log("TRAVELDUQA FLIGHTS:", liveFlights.length);
 
-    console.log("MATCHED FLIGHTS:", matchedFlights);
+        results.push(...liveFlights.map(f => ({
+          supplier:      f.supplier     || 'travelduqa',
+          transportType: 'flight',
+          airline:       f.airline,
+          airlineCode:   f.airlineCode,
+          airlineLogo:   f.airlineLogo,
+          flightNumber:  f.flightNumber,
+          departureTime: f.departureTime,
+          arrivalTime:   f.arrivalTime,
+          duration:      f.duration,
+          origin:        f.origin,
+          destination:   f.destination,
+          originIata:    f.originIata,
+          destIata:      f.destIata,
+          price:         f.price,
+          currency:      f.currency    || 'KES',
+          cabinClass:    f.cabinClass,
+          checkedBags:   f.checkedBags,
+          carryOn:       f.carryOn,
+          stops:         f.stops,
+          offerId:       f.offerId,
+          resultId:      f.resultId,
+          expiresAt:     f.expiresAt,
+          canBook:       f.canBook,
+          canHold:       f.canHold,
+          isReturn:      f.isReturn,
+          returnLeg:     f.returnLeg,
+          passengerIds:  f.passengerIds,
+        })));
 
-    return matchedFlights.map(flight => ({
-      supplier: 'supabase',
-      transportType: flight.transport_type || 'flight',
-      airline: flight.airline || flight.provider || "Flight",
-      flightNumber: flight.flight_number || "AUTO",
-      departureTime: flight.departure_time || "08:00",
-      arrivalTime: flight.arrival_time || "12:00",
-      origin: flight.origin || "",
-      destination: flight.destination || "",
-      price: Number(flight.price || flight.amount || 0),
-      seats: flight.seats || null,
-    }));
+      } catch (err) {
+        logger.error('TravelDuqa flight search failed', { error: err.message });
+      }
+    }
+
+    console.log("ALL FLIGHTS:", results.length);
+    return results;
   }
 
   // ─────────────────────────────
-  // BUSES — from IABIRI via adapter
+  // BUSES — IABIRI via adapter
   // ─────────────────────────────
   async _searchBuses(tripParams) {
     if (tripParams.transportMode === 'flight' || tripParams.transportMode === 'train') {
@@ -457,11 +507,11 @@ class OrchestrationEngine {
       ['nairobi', 'eldoret'],
       ['nairobi', 'thika'],
       ['mombasa', 'nairobi'],
-      ['kisumu', 'nairobi'],
-      ['nakuru', 'nairobi'],
+      ['kisumu',  'nairobi'],
+      ['nakuru',  'nairobi'],
     ];
 
-    const origin = (tripParams.origin || '').toLowerCase();
+    const origin      = (tripParams.origin      || '').toLowerCase();
     const destination = (tripParams.destination || '').toLowerCase();
 
     const isBusRoute = busRoutes.some(([a, b]) =>
@@ -480,41 +530,41 @@ class OrchestrationEngine {
 
     try {
       const buses = await supplierAdapter.searchTransport({
-        origin: tripParams.origin,
-        destination: tripParams.destination,
-        date: tripParams.departureDate,
-        passengers: tripParams.passengers,
-        transportMode: 'bus',
+        origin:         tripParams.origin,
+        destination:    tripParams.destination,
+        date:           tripParams.departureDate,
+        passengers:     tripParams.passengers,
+        transportMode:  'bus',
         timePreference: tripParams.timePreference,
       });
 
-      console.log("IABIRI BUSES:", buses);
+      console.log("IABIRI BUSES:", buses.length);
 
       return buses.map(bus => ({
-        supplier:          bus.supplier || 'iabiri',
-        transportType:     'bus',
-        tripId:            bus.tripId,
-        busId:             bus.busId,
-        routeId:           bus.routeId,
-        token:             bus.token,
-        sourceCityId:      bus.sourceCityId,
-        destCityId:        bus.destCityId,
-        airline:           bus.provider,
-        provider:          bus.provider,
-        busType:           bus.busType,
-        flightNumber:      null,
-        departureTime:     bus.departureTime,
-        arrivalTime:       bus.arrivalTime,
-        duration:          bus.duration,
-        origin:            bus.origin,
-        destination:       bus.destination,
-        price:             bus.price,
-        currency:          bus.currency || 'KES',
-        availableSeats:    bus.availableSeats,
-        totalSeats:        bus.totalSeats,
-        amenities:         bus.amenities || [],
+        supplier:           bus.supplier || 'iabiri',
+        transportType:      'bus',
+        tripId:             bus.tripId,
+        busId:              bus.busId,
+        routeId:            bus.routeId,
+        token:              bus.token,
+        sourceCityId:       bus.sourceCityId,
+        destCityId:         bus.destCityId,
+        airline:            bus.provider,
+        provider:           bus.provider,
+        busType:            bus.busType,
+        flightNumber:       null,
+        departureTime:      bus.departureTime,
+        arrivalTime:        bus.arrivalTime,
+        duration:           bus.duration,
+        origin:             bus.origin,
+        destination:        bus.destination,
+        price:              bus.price,
+        currency:           bus.currency || 'KES',
+        availableSeats:     bus.availableSeats,
+        totalSeats:         bus.totalSeats,
+        amenities:          bus.amenities || [],
         cancellationPolicy: bus.cancellationPolicy || 'Non-refundable',
-        isDelayed:         bus.isDelayed || false,
+        isDelayed:          bus.isDelayed || false,
       }));
 
     } catch (err) {
@@ -537,7 +587,7 @@ class OrchestrationEngine {
       return [];
     }
 
-    console.log("SUPABASE HOTELS:", data);
+    console.log("SUPABASE HOTELS:", data?.length);
 
     let matchedHotels = (data || []).filter(hotel =>
       this._matchesDestination(hotel, tripParams.destination)
@@ -554,17 +604,17 @@ class OrchestrationEngine {
       if (withMealPlan.length > 0) matchedHotels = withMealPlan;
     }
 
-    console.log("MATCHED HOTELS:", matchedHotels);
+    console.log("MATCHED HOTELS:", matchedHotels.length);
 
     return matchedHotels.map(hotel => ({
-      name: hotel.name || hotel.hotel_name || "Hotel",
-      stars: Number(hotel.stars || 4),
-      rating: Number(hotel.rating || 4.5),
-      category: hotel.category || "",
-      location: hotel.location || hotel.city || "",
+      name:          hotel.name          || hotel.hotel_name || "Hotel",
+      stars:         Number(hotel.stars  || 4),
+      rating:        Number(hotel.rating || 4.5),
+      category:      hotel.category      || "",
+      location:      hotel.location      || hotel.city || "",
       pricePerNight: Number(hotel.price_per_night || hotel.price || hotel.rate || 0),
-      mealPlan: hotel.meal_plan || null,
-      reviews: hotel.reviews || [],
+      mealPlan:      hotel.meal_plan     || null,
+      reviews:       hotel.reviews       || [],
     }));
   }
 
@@ -604,19 +654,19 @@ class OrchestrationEngine {
       return [];
     }
 
-    console.log("SUPABASE TRANSFERS:", data);
+    console.log("SUPABASE TRANSFERS:", data?.length);
 
     const matchedTransfers = (data || []).filter(t =>
       this._matchesDestination(t, tripParams.destination)
     );
 
-    console.log("MATCHED TRANSFERS:", matchedTransfers);
+    console.log("MATCHED TRANSFERS:", matchedTransfers.length);
 
     return matchedTransfers.map(t => ({
-      provider: t.provider || t.name || "Transfer",
+      provider:    t.provider    || t.name || "Transfer",
       vehicleType: t.vehicle_type || "Transfer",
-      location: t.location || "",
-      price: Number(t.price || t.amount || 0),
+      location:    t.location    || "",
+      price:       Number(t.price || t.amount || 0),
     }));
   }
 
@@ -629,11 +679,10 @@ class OrchestrationEngine {
       return [];
     }
 
-    const packages = [];
-
+    const packages  = [];
     const maxLength = Math.max(
       transport.length || 1,
-      hotels.length || 1,
+      hotels.length    || 1,
       transfers.length || 1
     );
 
@@ -642,7 +691,7 @@ class OrchestrationEngine {
     for (let i = 0; i < maxLength; i++) {
       const transportIndex = (i + startIndex) % (transport.length || 1);
       const hotelIndex     = (i + startIndex) % (hotels.length    || 1);
-      const transferIndex  = i % (transfers.length || 1);
+      const transferIndex  = i               % (transfers.length  || 1);
 
       const t        = transport[transportIndex] || {};
       const hotel    = hotels[hotelIndex]        || {};
@@ -654,16 +703,17 @@ class OrchestrationEngine {
         (transfer.price || 0);
 
       const transportDisplay = {
-        transportType:  t.transportType || 'flight',
-        airline:        t.airline || t.provider || "Transport",
-        flightNumber:   t.flightNumber || null,
-        departureTime:  t.departureTime || "08:00",
-        arrivalTime:    t.arrivalTime   || "12:00",
-        origin:         t.origin        || tripParams.origin,
-        destination:    t.destination   || tripParams.destination,
-        price:          t.price         || 0,
-        supplier:       t.supplier      || 'supabase',
+        transportType: t.transportType || 'flight',
+        airline:       t.airline       || t.provider || "Transport",
+        flightNumber:  t.flightNumber  || null,
+        departureTime: t.departureTime || "08:00",
+        arrivalTime:   t.arrivalTime   || "12:00",
+        origin:        t.origin        || tripParams.origin,
+        destination:   t.destination   || tripParams.destination,
+        price:         t.price         || 0,
+        supplier:      t.supplier      || 'supabase',
 
+        // Bus-specific fields
         ...(t.transportType === 'bus' && {
           provider:           t.provider,
           busType:            t.busType,
@@ -681,17 +731,36 @@ class OrchestrationEngine {
           isDelayed:          t.isDelayed || false,
         }),
 
+        // Flight-specific fields
         ...(t.transportType === 'flight' && {
-          seats: t.seats || null,
+          seats:        t.seats        || null,
+          airlineCode:  t.airlineCode  || null,
+          airlineLogo:  t.airlineLogo  || null,
+          cabinClass:   t.cabinClass   || null,
+          checkedBags:  t.checkedBags  || null,
+          carryOn:      t.carryOn      || null,
+          stops:        t.stops        || null,
+          duration:     t.duration     || null,
+          currency:     t.currency     || 'KES',
+          offerId:      t.offerId      || null,
+          resultId:     t.resultId     || null,
+          expiresAt:    t.expiresAt    || null,
+          canBook:      t.canBook      || false,
+          canHold:      t.canHold      || false,
+          isReturn:     t.isReturn     || false,
+          returnLeg:    t.returnLeg    || null,
+          passengerIds: t.passengerIds || [],
+          originIata:   t.originIata   || null,
+          destIata:     t.destIata     || null,
         }),
       };
 
       packages.push({
         packageId: uuidv4(),
         summary: {
-          route:         `${tripParams.origin} to ${tripParams.destination}`,
-          passengers:    tripParams.passengers,
-          nights:        tripParams.nights,
+          route:          `${tripParams.origin} to ${tripParams.destination}`,
+          passengers:     tripParams.passengers,
+          nights:         tripParams.nights,
           totalPrice,
           pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
           mealPlan:       tripParams.mealPlan || hotel.mealPlan || null,
