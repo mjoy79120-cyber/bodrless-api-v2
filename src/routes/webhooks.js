@@ -99,7 +99,7 @@ async function _resolveAgency(phoneNumberId) {
   }
 
   // Fallback for test number
-  return process.env.DEFAULT_AGENCY_ID || 'accessible-travel';
+  return process.env.DEFAULT_AGENCY_ID || 'azaki-adventures';
 }
 
 module.exports = router;
