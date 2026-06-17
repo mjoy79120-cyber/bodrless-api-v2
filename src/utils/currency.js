@@ -7,8 +7,8 @@
  *
  * Canonical currency: KES
  *
- * Rates are fetched from Frankfurter (api.frankfurter.dev) — free,
- * no API key, backed by ECB reference data — and cached in-memory
+ * Rates are fetched from Open ER-API (open.er-api.com) — free,
+ * no API key required, supports KES — and cached in-memory
  * for 6 hours to avoid hammering the API on every search.
  *
  * A hardcoded fallback rate is used if the API is unreachable,
@@ -38,7 +38,7 @@ let _cache = {
 };
 
 /**
- * Refresh the rates cache from Frankfurter if stale.
+ * Refresh the rates cache from Open ER-API if stale.
  * Fails silently to the existing cache (or fallback) on error.
  */
 async function _refreshRatesIfStale() {
@@ -46,23 +46,28 @@ async function _refreshRatesIfStale() {
   if (!isStale) return;
 
   try {
-    // Base = KES, so response gives "1 KES = X currency" — we invert below
-    const response = await axios.get('https://api.frankfurter.dev/v2/latest', {
-      params: { base: 'KES', symbols: 'EUR,USD,GBP' },
+    // Base = KES. Swapped from Frankfurter because Frankfurter doesn't support KES.
+    const response = await axios.get('https://open.er-api.com/v6/latest/KES', {
       timeout: 5000,
     });
 
+    if (response.data?.result !== 'success') {
+      throw new Error('Exchange rate provider returned an unsuccessful status');
+    }
+
     const rates = response.data?.rates || {};
     const updated = { KES: 1 };
+    const targetCurrencies = ['EUR', 'USD', 'GBP'];
 
-    for (const [currency, kesToCurrency] of Object.entries(rates)) {
+    for (const currency of targetCurrencies) {
+      const kesToCurrency = rates[currency];
       if (kesToCurrency > 0) {
         updated[currency] = 1 / kesToCurrency; // invert to "1 unit currency = X KES"
       }
     }
 
     _cache = { rates: updated, fetchedAt: Date.now() };
-    logger.info('Currency rates refreshed', { rates: updated });
+    logger.info('Currency rates refreshed successfully', { rates: updated });
 
   } catch (err) {
     logger.warn('Currency rate refresh failed — using cached/fallback rates', { error: err.message });

@@ -91,13 +91,21 @@ class TravelDuqaAdapter {
       return this._filterByTime(flights, timePreference);
 
     } catch (err) {
+      const isTimeout = err.code === 'ECONNABORTED' || err.message?.includes('timeout');
+
       // ── DEBUG: log full error detail ──
       console.log('TRAVELDUQA ERROR DETAIL:', JSON.stringify({
         message: err.message,
+        isTimeout,
         status:  err.response?.status,
         data:    err.response?.data,
       }, null, 2));
-      logger.error('TravelDuqa search failed', { error: err.message });
+
+      if (isTimeout) {
+        logger.error(`TravelDuqa search timed out after ${this.searchTimeout}ms`);
+      } else {
+        logger.error('TravelDuqa search failed', { error: err.message });
+      }
       return [];
     }
   }
@@ -118,7 +126,11 @@ class TravelDuqaAdapter {
       return this._normalizeSingleOffer(response.data);
 
     } catch (err) {
-      logger.error('TravelDuqa selectOffer failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa selectOffer timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa selectOffer failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -128,7 +140,7 @@ class TravelDuqaAdapter {
   // paymentType: 'balance' (instant) | 'hold'
   // ─────────────────────────────────────────────
   async book({ resultId, offerId, passengers, totalAmount, currency = 'KES',
-               paymentType = 'balance', sendEticket = true }) {
+                paymentType = 'balance', sendEticket = true }) {
     try {
       logger.info('TravelDuqa: creating booking', { offerId, passengers: passengers.length });
 
@@ -169,7 +181,11 @@ class TravelDuqaAdapter {
       return this._normalizeBooking(response.data?.booking_data);
 
     } catch (err) {
-      logger.error('TravelDuqa booking failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa booking timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa booking failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -192,7 +208,11 @@ class TravelDuqaAdapter {
       return this._normalizeBooking(response.data?.booking_data);
 
     } catch (err) {
-      logger.error('TravelDuqa completeHold failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa completeHold timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa completeHold failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -211,7 +231,11 @@ class TravelDuqaAdapter {
       return this._normalizeBooking(response.data);
 
     } catch (err) {
-      logger.error('TravelDuqa getStatus failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa getStatus timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa getStatus failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -230,7 +254,11 @@ class TravelDuqaAdapter {
       return response.data?.bookings || [];
 
     } catch (err) {
-      logger.error('TravelDuqa getBookingHistory failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa getBookingHistory timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa getBookingHistory failed', { error: err.message });
+      }
       return [];
     }
   }
@@ -252,7 +280,11 @@ class TravelDuqaAdapter {
       };
 
     } catch (err) {
-      logger.error('TravelDuqa cancel failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa cancel timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa cancel failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -271,7 +303,11 @@ class TravelDuqaAdapter {
       return response.data;
 
     } catch (err) {
-      logger.error('TravelDuqa getCancellationStatus failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa getCancellationStatus timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa getCancellationStatus failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -293,7 +329,11 @@ class TravelDuqaAdapter {
       return response.data;
 
     } catch (err) {
-      logger.error('TravelDuqa confirmCancellation failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa confirmCancellation timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa confirmCancellation failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -318,7 +358,11 @@ class TravelDuqaAdapter {
       };
 
     } catch (err) {
-      logger.error('TravelDuqa requestChange failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa requestChange timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa requestChange failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -340,7 +384,11 @@ class TravelDuqaAdapter {
       return response.data;
 
     } catch (err) {
-      logger.error('TravelDuqa payChangeFee failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa payChangeFee timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa payChangeFee failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -359,7 +407,11 @@ class TravelDuqaAdapter {
       return response.data;
 
     } catch (err) {
-      logger.error('TravelDuqa getChangeStatus failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa getChangeStatus timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa getChangeStatus failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -378,7 +430,11 @@ class TravelDuqaAdapter {
       return response.data || [];
 
     } catch (err) {
-      logger.error('TravelDuqa getLocations failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa getLocations timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa getLocations failed', { error: err.message });
+      }
       return [];
     }
   }
@@ -394,10 +450,14 @@ class TravelDuqaAdapter {
         { headers: this._headers(), timeout: this.timeout }
       );
 
-      return response.data?.data || [];
+          return response.data?.data || [];
 
     } catch (err) {
-      logger.error('TravelDuqa getAirlines failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa getAirlines timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa getAirlines failed', { error: err.message });
+      }
       return [];
     }
   }
@@ -415,7 +475,11 @@ class TravelDuqaAdapter {
       return response.data;
 
     } catch (err) {
-      logger.error('TravelDuqa getWalletStatus failed', { error: err.message });
+      if (err.code === 'ECONNABORTED') {
+        logger.error(`TravelDuqa getWalletStatus timed out after ${this.timeout}ms`);
+      } else {
+        logger.error('TravelDuqa getWalletStatus failed', { error: err.message });
+      }
       throw err;
     }
   }
@@ -508,7 +572,7 @@ class TravelDuqaAdapter {
     if (!Array.isArray(offers)) return [];
 
     return offers.map(offer => {
-      const slices  = offer.slices || [];
+      const slices   = offer.slices || [];
       const isReturn = slices.length > 1;
 
       const outSlice   = slices[0]    || {};
