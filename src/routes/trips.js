@@ -154,15 +154,17 @@ router.post('/book', async (req, res) => {
   const currency         = summary.currency || 'KES';
   const agencyId         = value.agencyId || 'epic-travels';
 
-  logger.info('Booking initiated', { bookingRef, agencyId, supplier: transport.supplier });
+  logger.info('Booking initiated', { bookingRef, agencyId, flightSupplier: transport.supplier, hotelSupplier: hotel.supplier });
 
-  // ── Flight bookings (TravelDuqa) go through the real supplier API ──
   const isFlightBooking = transport && transport.supplier === 'travelduqa';
+  const isHotelBooking  = hotel && hotel.supplier === 'hotelbeds';
 
-  let supplierResult = null;
-  let bookingStatus   = 'confirmed'; // default for non-flight / Supabase-only packages
+  let flightResult = null;
+  let hotelResult  = null;
+  let bookingStatus = 'confirmed';
 
-  if (isFlightBooking) {
+  // ── Validate prerequisites before touching any supplier ──
+  if (isFlightBooking || isHotelBooking) {
     if (!supplierAdapter) {
       logger.error('Booking failed — supplier adapter unavailable', { bookingRef });
       return res.status(503).json({
@@ -170,56 +172,50 @@ router.post('/book', async (req, res) => {
         error: 'Booking system is temporarily unavailable. Please try again shortly.',
       });
     }
-
     if (!passengerDetails || passengerDetails.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Passenger details (name, date of birth, gender) are required to book a flight.',
+        error: 'Passenger details are required to complete this booking.',
+      });
+    }
+    if (!value.guestPhone) {
+      return res.status(400).json({ success: false, error: 'Phone number is required.' });
+    }
+  }
+
+  if (isFlightBooking && !value.guestEmail) {
+    return res.status(400).json({ success: false, error: 'Email is required for flight bookings.' });
+  }
+
+  // ── Step 1: Flight booking (TravelDuqa) ──
+  if (isFlightBooking) {
+    if (transport.expiresAt && Date.now() > new Date(transport.expiresAt).getTime()) {
+      logger.warn('Booking attempted on expired flight offer', { bookingRef, expiresAt: transport.expiresAt });
+      return res.status(410).json({
+        success: false,
+        error: 'This flight offer has expired. Please search again for current prices.',
+        code: 'OFFER_EXPIRED',
       });
     }
 
-    // Validate offer hasn't expired
-    if (transport.expiresAt) {
-      const expiresAt = new Date(transport.expiresAt).getTime();
-      if (Date.now() > expiresAt) {
-        logger.warn('Booking attempted on expired offer', { bookingRef, expiresAt: transport.expiresAt });
-        return res.status(410).json({
-          success: false,
-          error: 'This flight offer has expired. Please search again for current prices.',
-          code: 'OFFER_EXPIRED',
-        });
-      }
-    }
-
-    if (!value.guestPhone) {
-      return res.status(400).json({ success: false, error: 'Phone number is required to book a flight.' });
-    }
-    if (!value.guestEmail) {
-      return res.status(400).json({ success: false, error: 'Email is required to book a flight.' });
-    }
-
     try {
-      // Step 1 — lock in the offer and confirm current fare rules
       await supplierAdapter.selectOffer({
         supplier: 'travelduqa',
         resultId: transport.resultId,
         offerId:  transport.offerId,
       });
 
-      // Step 2 — create the actual reservation with TravelDuqa.
-      // paymentType 'hold' reserves the seat without taking payment yet,
-      // giving time to collect payment (e.g. M-Pesa) before it's confirmed.
       const passengersForBooking = passengerDetails.map((p, idx) => ({
         ...p,
         phone: idx === 0 ? value.guestPhone : undefined,
         email: idx === 0 ? value.guestEmail : undefined,
       }));
 
-      supplierResult = await supplierAdapter.book({
-        supplier:         'travelduqa',
-        resultId:         transport.resultId,
-        offerId:          transport.offerId,
-        passengerDetails: passengersForBooking,
+      flightResult = await supplierAdapter.book({
+        supplier:          'travelduqa',
+        resultId:          transport.resultId,
+        offerId:           transport.offerId,
+        passengerDetails:  passengersForBooking,
         totalAmount:       transport.price,
         currency:          transport.currency || 'KES',
         paymentType:       'hold',
@@ -227,17 +223,94 @@ router.post('/book', async (req, res) => {
       });
 
       bookingStatus = 'hold';
-      logger.info('TravelDuqa booking created', { bookingRef, supplierRef: supplierResult?.supplierBookingReference });
+      logger.info('TravelDuqa booking created', { bookingRef, supplierRef: flightResult?.supplierBookingReference });
 
     } catch (err) {
       const supplierMessage = err.response?.data?.message || err.message;
       logger.error('TravelDuqa booking failed', { bookingRef, error: supplierMessage });
       return res.status(502).json({
         success: false,
-        error: `We couldn't confirm this flight with the airline (${supplierMessage}). No payment has been taken — please search again.`,
+        error: `We couldn't confirm the flight with the airline (${supplierMessage}). No payment has been taken — please search again.`,
         code: 'SUPPLIER_BOOKING_FAILED',
       });
     }
+  }
+
+  // ── Step 2: Hotel booking (HotelBeds) ──
+  // Only attempted after the flight succeeds (if both are present), so we
+  // never end up with a paid/held hotel but a failed flight.
+  if (isHotelBooking) {
+    try {
+      const leadGuest = { firstName: passengerDetails[0].firstName, lastName: passengerDetails[0].lastName };
+      const guestsForHotel = passengerDetails.map((p, idx) => ({
+        firstName: p.firstName,
+        lastName:  p.lastName,
+        type:      p.type === 'child' ? 'child' : 'adult',
+        roomId:    1,
+      }));
+
+      hotelResult = await supplierAdapter.book({
+        supplier:        'hotelbeds',
+        rateKey:         hotel.rateKey,
+        holder:          leadGuest,
+        guests:          guestsForHotel,
+        clientReference: bookingRef,
+        remark:          `Booked via Bodrless for ${agencyId}`,
+      });
+
+      logger.info('HotelBeds booking created', { bookingRef, supplierRef: hotelResult?.supplierBookingReference });
+
+    } catch (err) {
+      const supplierMessage = err.response?.data?.message || err.message;
+      logger.error('HotelBeds booking failed', { bookingRef, error: supplierMessage });
+
+      // If the flight already succeeded, we have a real held seat that
+      // exists with the airline — don't silently lose that. Surface a
+      // partial-success response so the traveler and agency both know
+      // the flight is secured but the hotel needs manual follow-up.
+      if (flightResult) {
+        try {
+          await _saveBooking({
+            bookingRef, agencyId, guestName,
+            guestPhone: value.guestPhone || null,
+            guestEmail: value.guestEmail || null,
+            passengers: passengerCount, passengerDetails, nights, totalPrice, currency,
+            destination: transport.destination || summary.destination || null,
+            origin: transport.origin || summary.origin || null,
+            channel: value.channel || 'widget',
+            transport, hotel, transfers, summary,
+            status: 'partial_flight_only',
+            supplierBookingReference: flightResult?.supplierBookingReference || null,
+            supplierOrderId: flightResult?.orderId || null,
+          });
+        } catch (saveErr) {
+          logger.error('CRITICAL: flight booked, hotel failed, AND Supabase save failed', { bookingRef, error: saveErr.message });
+        }
+
+        return res.status(207).json({
+          success: true,
+          bookingRef,
+          status: 'partial_flight_only',
+          warning: `Your flight is held with the airline, but we couldn't confirm the hotel (${supplierMessage}). Our team will follow up to sort out accommodation.`,
+        });
+      }
+
+      return res.status(502).json({
+        success: false,
+        error: `We couldn't confirm the hotel booking (${supplierMessage}). No payment has been taken — please search again.`,
+        code: 'SUPPLIER_BOOKING_FAILED',
+      });
+    }
+  }
+
+  if (isFlightBooking && bookingStatus === 'confirmed') {
+    bookingStatus = 'hold'; // flight legs always go through hold first in this version
+  }
+  if (isHotelBooking && hotelResult?.status === 'CONFIRMED' && !isFlightBooking) {
+    bookingStatus = 'confirmed';
+  }
+  if (isFlightBooking && isHotelBooking) {
+    bookingStatus = 'hold_flight_confirmed_hotel'; // flight held, hotel confirmed — distinct from pure hold
   }
 
   // ── Only persist to Supabase once we know the real outcome ──
@@ -261,15 +334,16 @@ router.post('/book', async (req, res) => {
       transfers,
       summary,
       status: bookingStatus,
-      supplierBookingReference: supplierResult?.supplierBookingReference || null,
-      supplierOrderId: supplierResult?.orderId || null,
+      supplierBookingReference: flightResult?.supplierBookingReference || hotelResult?.supplierBookingReference || null,
+      supplierOrderId: flightResult?.orderId || null,
+      hotelSupplierReference: hotelResult?.supplierBookingReference || null,
     });
   } catch (err) {
-    // The supplier booking succeeded but our own DB write failed — this is
-    // a real seat hold that exists with the airline even though we couldn't
-    // record it. Surface this loudly rather than silently losing it.
+    // A supplier booking succeeded but our own DB write failed — this is a
+    // real seat hold / hotel confirmation that exists with the supplier even
+    // though we couldn't record it. Surface this loudly rather than losing it.
     logger.error('CRITICAL: supplier booking succeeded but Supabase save failed', {
-      bookingRef, error: err.message, supplierResult,
+      bookingRef, error: err.message, flightResult, hotelResult,
     });
     return res.status(207).json({
       success: true,
@@ -294,13 +368,17 @@ router.post('/book', async (req, res) => {
     status: bookingStatus,
   }).catch(err => logger.error('Notification error', { error: err.message }));
 
+  const statusMessages = {
+    confirmed:                       'Booking confirmed! All parties have been notified.',
+    hold:                             'Your seat has been held with the airline. We will be in touch to complete payment.',
+    hold_flight_confirmed_hotel:      'Your flight seat is held with the airline and your hotel is confirmed. We will be in touch to complete flight payment.',
+  };
+
   return res.json({
     success: true,
     bookingRef,
     status: bookingStatus,
-    message: bookingStatus === 'hold'
-      ? 'Your seat has been held with the airline. We will be in touch to complete payment.'
-      : 'Booking confirmed! All parties have been notified.',
+    message: statusMessages[bookingStatus] || 'Booking received.',
   });
 });
 
@@ -331,7 +409,7 @@ async function _saveSearch({ agencyId, sessionId, prompt, tripParams, packagesRe
 async function _saveBooking({
   bookingRef, agencyId, guestName, guestPhone, guestEmail, passengers, passengerDetails,
   nights, totalPrice, currency, destination, origin, channel, transport, hotel, transfers,
-  summary, status, supplierBookingReference, supplierOrderId,
+  summary, status, supplierBookingReference, supplierOrderId, hotelSupplierReference,
 }) {
   await supabase.from('bookings').insert({
     booking_ref: bookingRef,
@@ -347,10 +425,11 @@ async function _saveBooking({
     currency: currency || 'KES',
     status: status || 'confirmed',
     booking_status: status || 'confirmed',
-    payment_status: status === 'hold' ? 'pending' : 'pending',
+    payment_status: 'pending',
     supplier_status: status || 'confirmed',
     supplier_booking_reference: supplierBookingReference,
     supplier_order_id: supplierOrderId,
+    hotel_supplier_reference: hotelSupplierReference,
     channel,
     flight_details: transport || null,
     hotel_details: hotel || null,

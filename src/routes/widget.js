@@ -200,45 +200,152 @@ router.get('/', (req, res) => {
   'function showNameForm(p, bookBtn) {\n' +
   '  var existing = document.getElementById("et-name-form");\n' +
   '  if (existing) existing.remove();\n' +
+  '  var passengerCount = (p.summary && p.summary.passengers) ? p.summary.passengers : 1;\n' +
+  '  var needsFlightDetails = !!(p.transport && (p.transport.transportType || "flight") === "flight");\n' +
+
   '  var form = document.createElement("div");\n' +
   '  form.className = "name-form";\n' +
   '  form.id = "et-name-form";\n' +
   '  var formP = document.createElement("p");\n' +
-  '  formP.innerText = "Please enter your name to confirm booking:";\n' +
-  '  var nameInput = document.createElement("input");\n' +
-  '  nameInput.className = "name-input";\n' +
-  '  nameInput.placeholder = "Your full name";\n' +
-  '  nameInput.type = "text";\n' +
+  '  formP.innerText = needsFlightDetails\n' +
+  '    ? "Enter passenger details to confirm booking:"\n' +
+  '    : "Enter your details to confirm booking:";\n' +
+  '  form.appendChild(formP);\n' +
+
+  '  var passengerInputs = [];\n' +
+  '  for (var pi = 0; pi < passengerCount; pi++) {\n' +
+  '    var pBlock = document.createElement("div");\n' +
+  '    pBlock.style.marginBottom = "10px";\n' +
+  '    pBlock.style.paddingBottom = "8px";\n' +
+  '    if (passengerCount > 1) {\n' +
+  '      var pLabel = document.createElement("div");\n' +
+  '      pLabel.style.fontSize = "11px";\n' +
+  '      pLabel.style.fontWeight = "700";\n' +
+  '      pLabel.style.color = "#1E2A5E";\n' +
+  '      pLabel.style.marginBottom = "6px";\n' +
+  '      pLabel.innerText = "Traveler " + (pi + 1);\n' +
+  '      pBlock.appendChild(pLabel);\n' +
+  '    }\n' +
+  '    var firstNameInput = document.createElement("input");\n' +
+  '    firstNameInput.className = "name-input";\n' +
+  '    firstNameInput.placeholder = "First name";\n' +
+  '    firstNameInput.type = "text";\n' +
+  '    pBlock.appendChild(firstNameInput);\n' +
+  '    var lastNameInput = document.createElement("input");\n' +
+  '    lastNameInput.className = "name-input";\n' +
+  '    lastNameInput.placeholder = "Last name";\n' +
+  '    lastNameInput.type = "text";\n' +
+  '    pBlock.appendChild(lastNameInput);\n' +
+  '    var dobInput = null, genderSelect = null;\n' +
+  '    if (needsFlightDetails) {\n' +
+  '      dobInput = document.createElement("input");\n' +
+  '      dobInput.className = "name-input";\n' +
+  '      dobInput.placeholder = "Date of birth (YYYY-MM-DD)";\n' +
+  '      dobInput.type = "text";\n' +
+  '      pBlock.appendChild(dobInput);\n' +
+  '      genderSelect = document.createElement("select");\n' +
+  '      genderSelect.className = "name-input";\n' +
+  '      genderSelect.innerHTML = "<option value=\\"male\\">Male</option><option value=\\"female\\">Female</option>";\n' +
+  '      pBlock.appendChild(genderSelect);\n' +
+  '    }\n' +
+  '    passengerInputs.push({ firstNameInput: firstNameInput, lastNameInput: lastNameInput, dobInput: dobInput, genderSelect: genderSelect });\n' +
+  '    form.appendChild(pBlock);\n' +
+  '  }\n' +
+
+  '  var contactLabel = document.createElement("div");\n' +
+  '  contactLabel.style.fontSize = "11px";\n' +
+  '  contactLabel.style.fontWeight = "700";\n' +
+  '  contactLabel.style.color = "#1E2A5E";\n' +
+  '  contactLabel.style.marginBottom = "6px";\n' +
+  '  contactLabel.innerText = "Contact details";\n' +
+  '  form.appendChild(contactLabel);\n' +
+
+  '  var phoneInput = document.createElement("input");\n' +
+  '  phoneInput.className = "name-input";\n' +
+  '  phoneInput.placeholder = "Phone (e.g. 0712345678)";\n' +
+  '  phoneInput.type = "tel";\n' +
+  '  form.appendChild(phoneInput);\n' +
+
+  '  var emailInput = document.createElement("input");\n' +
+  '  emailInput.className = "name-input";\n' +
+  '  emailInput.placeholder = "Email";\n' +
+  '  emailInput.type = "email";\n' +
+  '  form.appendChild(emailInput);\n' +
+
+  '  var errorMsg = document.createElement("div");\n' +
+  '  errorMsg.style.color = "#C0392B";\n' +
+  '  errorMsg.style.fontSize = "11px";\n' +
+  '  errorMsg.style.marginBottom = "8px";\n' +
+  '  errorMsg.style.display = "none";\n' +
+  '  form.appendChild(errorMsg);\n' +
+
   '  var confirmBtn = document.createElement("button");\n' +
   '  confirmBtn.className = "confirm-btn";\n' +
   '  confirmBtn.innerText = "Confirm Booking";\n' +
   '  confirmBtn.onclick = function() {\n' +
-  '    var guestName = nameInput.value.trim();\n' +
-  '    if (!guestName) { nameInput.style.borderColor = "#C0392B"; return; }\n' +
+  '    errorMsg.style.display = "none";\n' +
+  '    var passengers = [];\n' +
+  '    for (var k = 0; k < passengerInputs.length; k++) {\n' +
+  '      var pin = passengerInputs[k];\n' +
+  '      var fn = pin.firstNameInput.value.trim();\n' +
+  '      var ln = pin.lastNameInput.value.trim();\n' +
+  '      if (!fn || !ln) { errorMsg.innerText = "Please fill in all traveler names."; errorMsg.style.display = "block"; return; }\n' +
+  '      if (needsFlightDetails) {\n' +
+  '        var dob = pin.dobInput.value.trim();\n' +
+  '        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(dob)) { errorMsg.innerText = "Date of birth must be in YYYY-MM-DD format."; errorMsg.style.display = "block"; return; }\n' +
+  '        passengers.push({ firstName: fn, lastName: ln, dateOfBirth: dob, gender: pin.genderSelect.value, type: "adult" });\n' +
+  '      } else {\n' +
+  '        passengers.push({ firstName: fn, lastName: ln, type: "adult" });\n' +
+  '      }\n' +
+  '    }\n' +
+  '    var phone = phoneInput.value.trim();\n' +
+  '    var email = emailInput.value.trim();\n' +
+  '    if (!phone) { errorMsg.innerText = "Phone number is required."; errorMsg.style.display = "block"; return; }\n' +
+  '    if (needsFlightDetails && !email) { errorMsg.innerText = "Email is required for flight bookings."; errorMsg.style.display = "block"; return; }\n' +
+
+  '    var guestName = passengers[0].firstName + " " + passengers[0].lastName;\n' +
   '    confirmBtn.innerText = "Processing...";\n' +
   '    confirmBtn.disabled = true;\n' +
   '    fetch("' + apiBase + '/api/trips/book", {\n' +
   '      method: "POST",\n' +
   '      headers: { "Content-Type": "application/json" },\n' +
-  '      body: JSON.stringify({ agencyId: "' + agencyKey + '", guestName: guestName, passengers: p.summary && p.summary.passengers ? p.summary.passengers : 1, package: p })\n' +
+  '      body: JSON.stringify({\n' +
+  '        agencyId: "' + agencyKey + '",\n' +
+  '        guestName: guestName,\n' +
+  '        guestPhone: phone,\n' +
+  '        guestEmail: email,\n' +
+  '        passengers: passengers,\n' +
+  '        package: p\n' +
+  '      })\n' +
   '    })\n' +
-  '    .then(function(r) { return r.json(); })\n' +
-  '    .then(function(data) {\n' +
+  '    .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })\n' +
+  '    .then(function(result) {\n' +
+  '      if (!result.ok) {\n' +
+  '        var msg = (result.data && result.data.error) ? result.data.error : "Booking failed. Please try again.";\n' +
+  '        errorMsg.innerText = msg;\n' +
+  '        errorMsg.style.display = "block";\n' +
+  '        confirmBtn.innerText = "Confirm Booking";\n' +
+  '        confirmBtn.disabled = false;\n' +
+  '        return;\n' +
+  '      }\n' +
   '      form.remove();\n' +
   '      bookBtn.innerText = "Booked!";\n' +
   '      bookBtn.style.background = "#27ae60";\n' +
   '      bookBtn.disabled = true;\n' +
-  '      addMsg("Booking confirmed for " + guestName + "! Ref: " + data.bookingRef + ". You will receive confirmation shortly.", "bot");\n' +
+  '      var statusNote = result.data.status === "hold" ? " Your seat is held \u2014 we will contact you to complete payment." : " You will receive confirmation shortly.";\n' +
+  '      addMsg("Booking confirmed for " + guestName + "! Ref: " + result.data.bookingRef + "." + statusNote, "bot");\n' +
   '      messages.scrollTop = messages.scrollHeight;\n' +
   '    })\n' +
-  '    .catch(function() { confirmBtn.innerText = "Failed - Try Again"; confirmBtn.disabled = false; });\n' +
+  '    .catch(function() {\n' +
+  '      errorMsg.innerText = "Network error. Please try again.";\n' +
+  '      errorMsg.style.display = "block";\n' +
+  '      confirmBtn.innerText = "Confirm Booking";\n' +
+  '      confirmBtn.disabled = false;\n' +
+  '    });\n' +
   '  };\n' +
-  '  form.appendChild(formP);\n' +
-  '  form.appendChild(nameInput);\n' +
   '  form.appendChild(confirmBtn);\n' +
   '  messages.appendChild(form);\n' +
   '  messages.scrollTop = messages.scrollHeight;\n' +
-  '  nameInput.focus();\n' +
   '}\n' +
 
   // ── addPackage: only show sections that exist ──

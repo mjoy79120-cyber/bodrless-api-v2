@@ -127,6 +127,16 @@ class SupplierAdapterLayer {
       });
     }
 
+    if (supplier === 'hotelbeds') {
+      return adapter.book({
+        rateKey:         params.rateKey,
+        holder:          params.holder,
+        guests:          params.guests || params.passengerDetails,
+        clientReference: params.clientReference,
+        remark:          params.remark,
+      });
+    }
+
     return adapter.book({
       tripId:           params.tripId,
       routeId:          params.routeId,
@@ -140,6 +150,17 @@ class SupplierAdapterLayer {
       passengerDetails: params.passengerDetails,
       agencyId:         params.agencyId,
     });
+  }
+
+  // ─────────────────────────────────────────────
+  // CHECK RATE (hotels — HotelBeds)
+  // Only needed when rateType === 'RECHECK'; safe to call
+  // before any HotelBeds booking to confirm price hasn't drifted.
+  // ─────────────────────────────────────────────
+  async checkRate({ supplier, rateKey }) {
+    const adapter = this.adapters[supplier || 'hotelbeds'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.checkRate(rateKey);
   }
 
   // ─────────────────────────────────────────────
@@ -167,6 +188,7 @@ class SupplierAdapterLayer {
     const adapter = this.adapters[supplier];
     if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
     if (supplier === 'travelduqa') return adapter.cancel(orderId || bookingRef);
+    if (supplier === 'hotelbeds')  return adapter.cancel(bookingRef);
     return adapter.cancel(bookingRef);
   }
 

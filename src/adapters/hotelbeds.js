@@ -104,6 +104,139 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
+  // CHECK RATE
+  // Only required when rateType === 'RECHECK' (dynamic/cached rates
+  // that need a live refresh before booking). Most BOOKABLE rates
+  // from search() can skip straight to book(). Call this first if
+  // unsure, since booking a stale RECHECK rate directly will fail.
+  // ─────────────────────────────────────────────
+  async checkRate(rateKey) {
+    try {
+      logger.info('HotelBeds: checking rate', { rateKey: rateKey?.slice(0, 30) + '...' });
+
+      const response = await axios.post(
+        `${this.baseUrl}/hotel-api/1.0/checkrates`,
+        { rooms: [{ rateKey }] },
+        { headers: this._headers(), timeout: 20000 }
+      );
+
+      const hotel = response.data?.hotel;
+      if (!hotel) return null;
+
+      const room = hotel.rooms?.[0];
+      const rate = room?.rates?.[0];
+
+      return {
+        rateKey:  rate?.rateKey || rateKey,
+        net:      Number(rate?.net || 0),
+        currency: response.data?.currency || 'EUR',
+        rateClass: rate?.rateClass,
+        cancellationPolicies: rate?.cancellationPolicies || [],
+      };
+
+    } catch (err) {
+      console.log('HOTELBEDS CHECKRATE ERROR:', JSON.stringify({
+        message: err.message,
+        status:  err.response?.status,
+        data:    err.response?.data,
+      }, null, 2));
+      logger.error('HotelBeds checkRate failed', { error: err.message });
+      throw err;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // BOOK
+  // Confirms a real reservation against a rateKey from search().
+  // guests: array of { firstName, lastName, type: 'adult'|'child', roomId }
+  // holder: { firstName, lastName, email, phone } — the lead/contact guest,
+  // must also appear as a pax in room 1 per HotelBeds requirements.
+  // ─────────────────────────────────────────────
+  async book({ rateKey, holder, guests, clientReference, remark }) {
+    try {
+      logger.info('HotelBeds: creating booking', { guestCount: guests?.length });
+
+      const paxes = (guests || []).map(g => ({
+        roomId:  g.roomId || 1,
+        type:    g.type === 'child' ? 'CH' : 'AD',
+        name:    g.firstName,
+        surname: g.lastName,
+        ...(g.type === 'child' && g.age ? { age: g.age } : {}),
+      }));
+
+      const payload = {
+        holder: {
+          name:    holder.firstName,
+          surname: holder.lastName,
+        },
+        rooms: [
+          {
+            rateKey,
+            paxes,
+          },
+        ],
+        clientReference: clientReference || `BDR-${Date.now()}`,
+        remark: remark || '',
+        tolerance: 2.0, // allow up to 2 currency units of price drift between search and booking
+      };
+
+      console.log('HOTELBEDS BOOK REQUEST:', JSON.stringify(payload, null, 2));
+
+      const response = await axios.post(
+        `${this.baseUrl}/hotel-api/1.0/bookings`,
+        payload,
+        { headers: this._headers(), timeout: 30000 }
+      );
+
+      console.log('HOTELBEDS BOOK RESPONSE:', JSON.stringify(response.data, null, 2));
+
+      const booking = response.data?.booking;
+      if (!booking) {
+        throw new Error('HotelBeds booking response missing booking object');
+      }
+
+      return {
+        supplier:                 this.supplier,
+        supplierBookingReference: booking.reference,
+        status:                   booking.status, // CONFIRMED | PENDING_TARIFF_ERROR | etc.
+        hotelName:                booking.hotel?.name,
+        checkIn:                  booking.hotel?.checkIn,
+        checkOut:                 booking.hotel?.checkOut,
+        totalAmount:              Number(booking.totalNet || 0),
+        currency:                 booking.currency || 'EUR',
+        holder:                   booking.holder,
+        rooms:                    booking.hotel?.rooms || [],
+        confirmedAt:              new Date().toISOString(),
+      };
+
+    } catch (err) {
+      console.log('HOTELBEDS BOOK ERROR:', JSON.stringify({
+        message: err.message,
+        status:  err.response?.status,
+        data:    err.response?.data,
+      }, null, 2));
+      logger.error('HotelBeds book failed', { error: err.message });
+      throw err;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // CANCEL BOOKING
+  // ─────────────────────────────────────────────
+  async cancel(bookingReference) {
+    try {
+      const response = await axios.delete(
+        `${this.baseUrl}/hotel-api/1.0/bookings/${bookingReference}`,
+        { headers: this._headers(), timeout: 20000 }
+      );
+      return response.data;
+    } catch (err) {
+      logger.error('HotelBeds cancel failed', { error: err.message });
+      throw err;
+    }
+  }
+
+  // ─────────────────────────────────────────────
   // RESOLVE DESTINATION CODE
   // Uses HotelBeds Locations API to get dest code
   // Falls back to hardcoded map for common cities
