@@ -7,6 +7,7 @@
  * Current suppliers:
  * - IABIRI/99Synergy (buses)  via travler.js
  * - TravelDuqa (flights)      via travelduqa.js
+ * - HotelBeds (hotels)        via hotelbeds.js
  *
  * Future suppliers (just add adapter):
  * - Amadeus (flights)
@@ -18,6 +19,7 @@
 
 const travlerAdapter    = require('./travler');
 const travelduqaAdapter = require('./travelduqa');
+const hotelbedsAdapter  = require('./hotelbeds');
 
 class SupplierAdapterLayer {
 
@@ -26,28 +28,21 @@ class SupplierAdapterLayer {
       travler:    travlerAdapter,
       iabiri:     travlerAdapter,    // alias — same adapter
       travelduqa: travelduqaAdapter,
-      // amadeus:    amadeusAdapter,
-      // ratehawk:   ratehawkAdapter,
-      // transferz:  transferzAdapter,
+      hotelbeds:  hotelbedsAdapter,
     };
   }
 
   // ─────────────────────────────────────────────
-  // SEARCH ALL RELEVANT SUPPLIERS
+  // SEARCH TRANSPORT
   // Buses → IABIRI | Flights → TravelDuqa
   // ─────────────────────────────────────────────
   async searchTransport({ origin, destination, date, passengers, transportMode, timePreference }) {
     const results = [];
 
-    // ── Buses via IABIRI ─────────────────────────
     if (!transportMode || transportMode === 'bus') {
       try {
         const busResults = await this.adapters.travler.search({
-          origin,
-          destination,
-          date,
-          passengers,
-          timePreference,
+          origin, destination, date, passengers, timePreference,
         });
         results.push(...busResults);
       } catch (err) {
@@ -55,15 +50,10 @@ class SupplierAdapterLayer {
       }
     }
 
-    // ── Flights via TravelDuqa ───────────────────
     if (!transportMode || transportMode === 'flight') {
       try {
         const flightResults = await this.adapters.travelduqa.search({
-          origin,
-          destination,
-          date,
-          passengers,
-          timePreference,
+          origin, destination, date, passengers, timePreference,
         });
         results.push(...flightResults);
       } catch (err) {
@@ -72,6 +62,23 @@ class SupplierAdapterLayer {
     }
 
     return results;
+  }
+
+  // ─────────────────────────────────────────────
+  // SEARCH HOTELS
+  // Hotels → HotelBeds
+  // ─────────────────────────────────────────────
+  async searchHotels({ destination, checkIn, checkOut, passengers, nights, budget, rooms }) {
+    try {
+      const results = await this.adapters.hotelbeds.search({
+        destination, checkIn, checkOut, passengers, nights, budget, rooms,
+      });
+      console.log('HOTELBEDS HOTELS:', results.length);
+      return results;
+    } catch (err) {
+      console.error('HotelBeds adapter error:', err.message);
+      return [];
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -94,7 +101,6 @@ class SupplierAdapterLayer {
 
   // ─────────────────────────────────────────────
   // SELECT OFFER (flights — TravelDuqa)
-  // Call before booking to get full offer details
   // ─────────────────────────────────────────────
   async selectOffer({ supplier, resultId, offerId }) {
     const adapter = this.adapters[supplier || 'travelduqa'];
@@ -104,13 +110,11 @@ class SupplierAdapterLayer {
 
   // ─────────────────────────────────────────────
   // BOOK
-  // Routes to correct adapter based on supplier
   // ─────────────────────────────────────────────
   async book({ supplier, ...params }) {
     const adapter = this.adapters[supplier];
     if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
 
-    // TravelDuqa flight booking
     if (supplier === 'travelduqa') {
       return adapter.book({
         resultId:    params.resultId,
@@ -123,19 +127,18 @@ class SupplierAdapterLayer {
       });
     }
 
-    // IABIRI bus booking
     return adapter.book({
-      tripId:         params.tripId,
-      routeId:        params.routeId,
-      token:          params.token,
-      pickupId:       params.pickupId,
-      returnId:       params.returnId,
-      sourceCityName: params.sourceCityName,
-      destCityName:   params.destCityName,
-      bookingDate:    params.bookingDate,
-      seats:          params.seats,
+      tripId:           params.tripId,
+      routeId:          params.routeId,
+      token:            params.token,
+      pickupId:         params.pickupId,
+      returnId:         params.returnId,
+      sourceCityName:   params.sourceCityName,
+      destCityName:     params.destCityName,
+      bookingDate:      params.bookingDate,
+      seats:            params.seats,
       passengerDetails: params.passengerDetails,
-      agencyId:       params.agencyId,
+      agencyId:         params.agencyId,
     });
   }
 
@@ -163,7 +166,6 @@ class SupplierAdapterLayer {
   async cancel({ supplier, bookingRef, orderId }) {
     const adapter = this.adapters[supplier];
     if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
-
     if (supplier === 'travelduqa') return adapter.cancel(orderId || bookingRef);
     return adapter.cancel(bookingRef);
   }
@@ -174,7 +176,6 @@ class SupplierAdapterLayer {
   async getStatus({ supplier, bookingRef, orderId }) {
     const adapter = this.adapters[supplier];
     if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
-
     if (supplier === 'travelduqa') return adapter.getStatus(orderId || bookingRef);
     return adapter.getStatus(bookingRef);
   }

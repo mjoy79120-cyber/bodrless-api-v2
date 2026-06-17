@@ -271,17 +271,40 @@ class OrchestrationEngine {
       needsTransfers:  true,
     };
 
-    if (lower.match(/\b(only\s+)?flight(s)?\b|fly\s+only|flights?\s+only|search\s+flight|just\s+flight|want a flight/i)) {
+    // Only narrow scope to a single product when the prompt signals EXCLUSIVITY
+    // (e.g. "only flights", "just a flight", "flight only") — a bare mention of
+    // "flight" in a general trip request ("flight to Mombasa") should still
+    // return the full package (flight + hotel + transfer), since that's the
+    // default expectation when someone names a route without qualifying it.
+    const flightExclusive = lower.match(
+      /\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only/i
+    );
+    const busExclusive = lower.match(
+      /\bonly\s+(a\s+)?bus(es)?\b|bus(es)?\s+only|just\s+(a\s+)?bus(es)?\b/i
+    );
+    const hotelExclusive = lower.match(
+      /\bonly\s+(a\s+)?hotel\b|hotel\s+only|just\s+(a\s+)?hotel\b|stay\s+only|accommodation\s+only/i
+    );
+
+    if (flightExclusive) {
       productScope.needsHotel      = false;
       productScope.needsTransfers  = false;
       adjustments.transportMode    = 'flight';
-    } else if (lower.match(/\b(only\s+)?bus(es)?\b|bus\s+only/i)) {
+    } else if (busExclusive) {
       productScope.needsHotel      = false;
       productScope.needsTransfers  = false;
       adjustments.transportMode    = 'bus';
-    } else if (lower.match(/\b(only\s+)?hotel|just hotel|stay only|accommodation only/i)) {
+    } else if (hotelExclusive) {
       productScope.needsTransport  = false;
       productScope.needsTransfers  = false;
+    } else {
+      // No exclusivity language — still capture transport mode preference
+      // (e.g. "fly to Mombasa" vs "bus to Mombasa") without narrowing scope
+      if (lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)) {
+        adjustments.transportMode = 'flight';
+      } else if (lower.match(/\bbus(es)?\b/i)) {
+        adjustments.transportMode = 'bus';
+      }
     }
 
     if (lower.match(/cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/)) {
@@ -491,9 +514,12 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // HOTELS
+  // HOTELS — Supabase static inventory + HotelBeds live
   // ─────────────────────────────
   async _searchHotels(tripParams) {
+    const results = [];
+
+    // ── Supabase static inventory ────────────────
     const { data, error } = await supabase
       .from("hotels")
       .select("*")
@@ -501,36 +527,66 @@ class OrchestrationEngine {
 
     if (error) {
       console.error("HOTEL ERROR:", error);
-      return [];
-    }
-
-    let matchedHotels = (data || []).filter(hotel =>
-      this._matchesDestination(hotel, tripParams.destination)
-    );
-
-    if (tripParams.budget) {
-      matchedHotels = this._filterHotelsByBudget(matchedHotels, tripParams.budget);
-    }
-
-    if (tripParams.mealPlan) {
-      const withMealPlan = matchedHotels.filter(h =>
-        (h.meal_plan || '').toLowerCase().includes(tripParams.mealPlan.replace('_', ' '))
+    } else {
+      let matchedHotels = (data || []).filter(hotel =>
+        this._matchesDestination(hotel, tripParams.destination)
       );
-      if (withMealPlan.length > 0) matchedHotels = withMealPlan;
+
+      if (tripParams.mealPlan) {
+        const withMealPlan = matchedHotels.filter(h =>
+          (h.meal_plan || '').toLowerCase().includes(tripParams.mealPlan.replace('_', ' '))
+        );
+        if (withMealPlan.length > 0) matchedHotels = withMealPlan;
+      }
+
+      console.log("SUPABASE HOTELS:", matchedHotels.length);
+
+      results.push(...matchedHotels.map(hotel => ({
+        name:          hotel.name          || hotel.hotel_name || "Hotel",
+        stars:         Number(hotel.stars  || 4),
+        rating:        Number(hotel.rating || 4.5),
+        category:      hotel.category      || "",
+        location:      hotel.location      || hotel.city || "",
+        pricePerNight: Number(hotel.price_per_night || hotel.price || hotel.rate || 0),
+        mealPlan:      hotel.meal_plan     || null,
+        reviews:       hotel.reviews       || [],
+        currency:      hotel.currency      || 'KES',
+        supplier:      'supabase',
+      })));
     }
 
-    console.log("MATCHED HOTELS:", matchedHotels.length);
+    // ── HotelBeds live inventory ──────────────────
+    if (supplierAdapter && tripParams.departureDate) {
+      try {
+        const checkIn  = tripParams.departureDate;
+        const checkOut = tripParams.returnDate || null;
+        const nights   = tripParams.nights || 1;
 
-    return matchedHotels.map(hotel => ({
-      name:          hotel.name          || hotel.hotel_name || "Hotel",
-      stars:         Number(hotel.stars  || 4),
-      rating:        Number(hotel.rating || 4.5),
-      category:      hotel.category      || "",
-      location:      hotel.location      || hotel.city || "",
-      pricePerNight: Number(hotel.price_per_night || hotel.price || hotel.rate || 0),
-      mealPlan:      hotel.meal_plan     || null,
-      reviews:       hotel.reviews       || [],
-    }));
+        const liveHotels = await supplierAdapter.searchHotels({
+          destination: tripParams.destination,
+          checkIn,
+          checkOut,
+          passengers:  tripParams.passengers || 1,
+          nights,
+          budget:      tripParams.budget,
+          rooms:       1,
+        });
+
+        console.log("HOTELBEDS HOTELS (engine):", liveHotels.length);
+        results.push(...liveHotels);
+      } catch (err) {
+        logger.error('HotelBeds hotel search failed', { error: err.message });
+      }
+    }
+
+    let finalHotels = results;
+    if (tripParams.budget) {
+      finalHotels = this._filterHotelsByBudget(finalHotels, tripParams.budget);
+    }
+
+    console.log("MATCHED HOTELS:", finalHotels.length);
+
+    return finalHotels;
   }
 
   _filterHotelsByBudget(hotels, budget) {
@@ -544,7 +600,7 @@ class OrchestrationEngine {
     if (!range) return hotels;
 
     const filtered = hotels.filter(h => {
-      const price = Number(h.price_per_night || h.price || 0);
+      const price = Number(h.pricePerNight ?? h.price_per_night ?? h.price ?? 0);
       return price >= range.min && price <= range.max;
     });
 
