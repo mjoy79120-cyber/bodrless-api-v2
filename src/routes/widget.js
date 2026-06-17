@@ -175,8 +175,8 @@ router.get('/', (req, res) => {
   '  } catch(e) { return iso; }\n' +
   '}\n' +
 
-  'function fmtPrice(n) {\n' +
-  '  return "KES " + (Math.round(Number(n) || 0)).toLocaleString();\n' +
+  'function fmtPrice(n, cur) {\n' +
+  '  return (cur || "KES") + " " + (Math.round(Number(n) || 0)).toLocaleString();\n' +
   '}\n' +
 
   'function makeRow(label, name, sub) {\n' +
@@ -251,7 +251,7 @@ router.get('/', (req, res) => {
   '  var hotel     = p.hotel     || null;\n' +
   '  var transfers = p.transfers || null;\n' +
   '  var summary   = p.summary   || {};\n' +
-  '  var currency  = (transport && transport.currency) || "KES";\n' +
+  '  var totalCurrency = summary.currency || "KES";\n' +
   '  var total     = Math.round(summary.totalPrice || 0);\n' +
   '  var ppp       = Math.round(summary.pricePerPerson || 0);\n' +
   '  var nights    = summary.nights    || 0;\n' +
@@ -282,7 +282,7 @@ router.get('/', (req, res) => {
   '                 " | " + fmtTime(transport.departureTime) + " - " + fmtTime(transport.arrivalTime);\n' +
   '    if (transport.stops) tSub += " | " + transport.stops;\n' +
   '    if (transport.cabinClass) tSub += " | " + transport.cabinClass;\n' +
-  '    tSub += " | " + fmtPrice(transport.price);\n' +
+  '    tSub += " | " + fmtPrice(transport.price, transport.currency);\n' +
   '    pkgBody.appendChild(makeRow(tLabel, tName, tSub));\n' +
   '  }\n' +
 
@@ -294,7 +294,7 @@ router.get('/', (req, res) => {
   '    var rtSub   = (returnTransport.origin || "TBC") + " \u2192 " + (returnTransport.destination || "TBC") +\n' +
   '                  " | " + fmtTime(returnTransport.departureTime) + " - " + fmtTime(returnTransport.arrivalTime);\n' +
   '    if (returnTransport.stops) rtSub += " | " + returnTransport.stops;\n' +
-  '    rtSub += " | " + fmtPrice(returnTransport.price);\n' +
+  '    rtSub += " | " + fmtPrice(returnTransport.price, returnTransport.currency);\n' +
   '    pkgBody.appendChild(makeRow(rtLabel, rtName, rtSub));\n' +
   '  }\n' +
 
@@ -303,15 +303,16 @@ router.get('/', (req, res) => {
   '    var stars = hotel.stars ? Array(Math.min(Math.round(hotel.stars), 5) + 1).join("\u2605") : "";\n' +
   '    var hName = (hotel.name || "TBC") + (stars ? " " + stars : "");\n' +
   '    var hSub  = (hotel.location || "TBC");\n' +
-  '    if (nights > 0) hSub += " | " + nights + " nights | " + fmtPrice(hotel.pricePerNight) + "/night";\n' +
+  '    if (nights > 0) hSub += " | " + nights + " nights | " + fmtPrice(hotel.pricePerNight, hotel.currency) + "/night";\n' +
   '    if (hotel.rating) hSub += " | Rating: " + hotel.rating + "/5";\n' +
   '    if (hotel.mealPlan) hSub += " | " + hotel.mealPlan;\n' +
+  '    if (hotel.isRefundable === false) hSub += " | \u26a0\ufe0f Non-refundable";\n' +
   '    pkgBody.appendChild(makeRow("Hotel", hName, hSub));\n' +
   '  }\n' +
 
   // Transfer — only if present
   '  if (transfers && transfers.provider) {\n' +
-  '    pkgBody.appendChild(makeRow("Transfer", transfers.provider, (transfers.vehicleType || "Car") + " | " + fmtPrice(transfers.price)));\n' +
+  '    pkgBody.appendChild(makeRow("Transfer", transfers.provider, (transfers.vehicleType || "Car") + " | " + fmtPrice(transfers.price, transfers.currency)));\n' +
   '  }\n' +
 
   '  var pkgFooter = document.createElement("div");\n' +
@@ -319,9 +320,9 @@ router.get('/', (req, res) => {
   '  pkgFooter.style.height = "auto";\n' +
   '  var pkgPrice = document.createElement("div");\n' +
   '  pkgPrice.className = "pkg-price";\n' +
-  '  pkgPrice.innerText = fmtPrice(total);\n' +
+  '  pkgPrice.innerText = fmtPrice(total, totalCurrency);\n' +
   '  var pkgPriceSub = document.createElement("small");\n' +
-  '  pkgPriceSub.innerText = fmtPrice(ppp) + "/person | " + passengers + " traveller(s)";\n' +
+  '  pkgPriceSub.innerText = fmtPrice(ppp, totalCurrency) + "/person | " + passengers + " traveller(s)";\n' +
   '  pkgPrice.appendChild(pkgPriceSub);\n' +
   '  var bookBtn = document.createElement("button");\n' +
   '  bookBtn.className = "book";\n' +

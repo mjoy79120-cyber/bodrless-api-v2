@@ -3,6 +3,7 @@ const supabase = require("../utils/supabase");
 const { logger } = require("../utils/logger");
 const { parsePrompt } = require("./promptParser");
 const { rankPackages } = require("./packageRanker");
+const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
 
 // Supplier adapter layer — all external suppliers go through here
 let supplierAdapter = null;
@@ -66,7 +67,7 @@ class OrchestrationEngine {
       console.log("FINAL HOTELS:",             hotels.length);
       console.log("FINAL TRANSFERS:",          transfers.length);
 
-      const packages = this._buildPackages({
+      const packages = await this._buildPackages({
         outboundTransport,
         returnTransport,
         hotels,
@@ -583,7 +584,7 @@ class OrchestrationEngine {
 
     let finalHotels = results;
     if (tripParams.budget) {
-      finalHotels = this._filterHotelsByBudget(finalHotels, tripParams.budget);
+      finalHotels = await this._filterHotelsByBudget(finalHotels, tripParams.budget);
     }
 
     console.log("MATCHED HOTELS:", finalHotels.length);
@@ -591,20 +592,28 @@ class OrchestrationEngine {
     return finalHotels;
   }
 
-  _filterHotelsByBudget(hotels, budget) {
+  async _filterHotelsByBudget(hotels, budget) {
+    // Per-night price ranges in KES
     const ranges = {
-      low:    { min: 0,   max: 100 },
-      mid:    { min: 100, max: 300 },
-      high:   { min: 300, max: 600 },
-      luxury: { min: 600, max: Infinity },
+      low:    { min: 0,     max: 8000   },
+      mid:    { min: 5000,  max: 20000  },
+      high:   { min: 15000, max: 50000  },
+      luxury: { min: 40000, max: 9999999 },
     };
     const range = ranges[budget];
     if (!range) return hotels;
 
-    const filtered = hotels.filter(h => {
-      const price = Number(h.pricePerNight ?? h.price_per_night ?? h.price ?? 0);
-      return price >= range.min && price <= range.max;
-    });
+    // Convert each hotel's price to KES before comparing, since
+    // Supabase hotels are already KES but HotelBeds returns EUR
+    const withKESPrice = await Promise.all(hotels.map(async h => {
+      const rawPrice = Number(h.pricePerNight ?? h.price_per_night ?? h.price ?? 0);
+      const kesPrice = await toKES(rawPrice, h.currency || 'KES');
+      return { hotel: h, kesPrice };
+    }));
+
+    const filtered = withKESPrice
+      .filter(({ kesPrice }) => kesPrice >= range.min && kesPrice <= range.max)
+      .map(({ hotel }) => hotel);
 
     return filtered.length > 0 ? filtered : hotels;
   }
@@ -703,8 +712,13 @@ class OrchestrationEngine {
 
   // ─────────────────────────────
   // BUILD PACKAGES
+  // All cross-supplier prices are converted to KES (canonical
+  // currency) before being summed, since TravelDuqa/Supabase
+  // return KES but HotelBeds returns EUR. Each line item also
+  // keeps its original price + currency for transparent display
+  // ("flight: KES 5,900 | hotel: €450 → KES 67,950").
   // ─────────────────────────────
-  _buildPackages({ outboundTransport, returnTransport, hotels, transfers, tripParams, intent }) {
+  async _buildPackages({ outboundTransport, returnTransport, hotels, transfers, tripParams, intent }) {
     const scope = intent?.productScope || { needsTransport: true, needsHotel: true, needsTransfers: true };
 
     const hasOutbound  = outboundTransport.length > 0;
@@ -719,11 +733,12 @@ class OrchestrationEngine {
 
     // === TRANSPORT ONLY ===
     if (scope.needsTransport && !scope.needsHotel && !scope.needsTransfers) {
-      // Pair outbound + return into a single package per outbound offer
       if (hasOutbound && hasReturn) {
-        return outboundTransport.map((ob, i) => {
+        return Promise.all(outboundTransport.map(async (ob, i) => {
           const ret = returnTransport[i % returnTransport.length];
-          const totalPrice = (ob.price || 0) + (ret.price || 0);
+          const obKES  = await toKES(ob.price,  ob.currency  || 'KES');
+          const retKES = await toKES(ret.price, ret.currency || 'KES');
+          const totalPrice = obKES + retKES;
           return {
             packageId: uuidv4(),
             summary: {
@@ -732,6 +747,7 @@ class OrchestrationEngine {
               nights:         0,
               totalPrice,
               pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+              currency:       CANONICAL_CURRENCY,
               transportType:  ob.transportType || 'flight',
             },
             transport:       this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination),
@@ -740,26 +756,29 @@ class OrchestrationEngine {
             transfers: null,
             status:    "available",
           };
-        });
+        }));
       }
 
-      // One-way or return-only
       const transportList = hasOutbound ? outboundTransport : returnTransport;
-      return transportList.map(t => ({
-        packageId: uuidv4(),
-        summary: {
-          route:          `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`,
-          passengers:     tripParams.passengers || 1,
-          nights:         0,
-          totalPrice:     t.price || 0,
-          pricePerPerson: Math.round((t.price || 0) / (tripParams.passengers || 1)),
-          transportType:  t.transportType || 'flight',
-        },
-        transport:       this._formatTransportDisplay(t, tripParams.origin, tripParams.destination),
-        returnTransport: null,
-        hotel:     null,
-        transfers: null,
-        status:    "available",
+      return Promise.all(transportList.map(async t => {
+        const totalPrice = await toKES(t.price, t.currency || 'KES');
+        return {
+          packageId: uuidv4(),
+          summary: {
+            route:          `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`,
+            passengers:     tripParams.passengers || 1,
+            nights:         0,
+            totalPrice,
+            pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+            currency:       CANONICAL_CURRENCY,
+            transportType:  t.transportType || 'flight',
+          },
+          transport:       this._formatTransportDisplay(t, tripParams.origin, tripParams.destination),
+          returnTransport: null,
+          hotel:     null,
+          transfers: null,
+          status:    "available",
+        };
       }));
     }
 
@@ -782,11 +801,14 @@ class OrchestrationEngine {
 
       if (!ob && !hotel && !transfer) continue;
 
-      const totalPrice =
-        (ob?.price       || 0) +
-        (ret?.price      || 0) +
-        ((hotel?.pricePerNight || 0) * (tripParams.nights || 1)) +
-        (transfer?.price || 0);
+      const nights = tripParams.nights || 1;
+
+      const totalPrice = await sumToKES([
+        { amount: ob?.price,                              currency: ob?.currency       || 'KES' },
+        { amount: ret?.price,                             currency: ret?.currency      || 'KES' },
+        { amount: (hotel?.pricePerNight || 0) * nights,    currency: hotel?.currency    || 'KES' },
+        { amount: transfer?.price,                         currency: transfer?.currency || 'KES' },
+      ]);
 
       packages.push({
         packageId: uuidv4(),
@@ -796,6 +818,7 @@ class OrchestrationEngine {
           nights:         tripParams.nights || 0,
           totalPrice,
           pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+          currency:       CANONICAL_CURRENCY,
           mealPlan:       tripParams.mealPlan  || hotel?.mealPlan || null,
           seatPreference: tripParams.seatPreference || null,
           transportType:  ob?.transportType    || 'none',

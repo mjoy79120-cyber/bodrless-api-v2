@@ -57,7 +57,7 @@ class WhatsAppService {
     const transfers       = pkg.transfers       || null;
     const summary         = pkg.summary         || {};
 
-    const currency = transport?.currency || 'KES';
+    const totalCurrency = summary.currency || 'KES';
 
     const lines = [
       `*Option ${index}*`,
@@ -73,6 +73,7 @@ class WhatsAppService {
     // ── Outbound transport ──────────────────────────
     if (transport) {
       const isbus = (transport.transportType || '').toLowerCase() === 'bus';
+      const tCurrency = transport.currency || 'KES';
       lines.push('');
       lines.push(isbus ? '*🚌 Outbound Bus*' : '*✈️ Outbound Flight*');
       lines.push(`  ${isbus ? 'Operator' : 'Airline'}: ${transport.airline || transport.provider || 'TBC'}`);
@@ -80,47 +81,51 @@ class WhatsAppService {
       lines.push(`  Departs: ${this._formatTime(transport.departureTime)} · Arrives: ${this._formatTime(transport.arrivalTime)}`);
       if (transport.stops) lines.push(`  Stops: ${transport.stops}`);
       if (transport.cabinClass) lines.push(`  Class: ${transport.cabinClass}`);
-      lines.push(`  Price: ${currency} ${(transport.price || 0).toLocaleString()}`);
+      lines.push(`  Price: ${tCurrency} ${(transport.price || 0).toLocaleString()}`);
     }
 
     // ── Return transport ────────────────────────────
     if (returnTransport) {
       const isbus = (returnTransport.transportType || '').toLowerCase() === 'bus';
+      const rtCurrency = returnTransport.currency || 'KES';
       lines.push('');
       lines.push(isbus ? '*🚌 Return Bus*' : '*✈️ Return Flight*');
       lines.push(`  ${isbus ? 'Operator' : 'Airline'}: ${returnTransport.airline || returnTransport.provider || 'TBC'}`);
       lines.push(`  From: ${returnTransport.origin || 'TBC'} → ${returnTransport.destination || 'TBC'}`);
       lines.push(`  Departs: ${this._formatTime(returnTransport.departureTime)} · Arrives: ${this._formatTime(returnTransport.arrivalTime)}`);
       if (returnTransport.stops) lines.push(`  Stops: ${returnTransport.stops}`);
-      lines.push(`  Price: ${currency} ${(returnTransport.price || 0).toLocaleString()}`);
+      lines.push(`  Price: ${rtCurrency} ${(returnTransport.price || 0).toLocaleString()}`);
     }
 
     // ── Hotel (only if present) ─────────────────────
     if (hotel) {
       const stars = hotel.stars ? '⭐'.repeat(Math.min(Number(hotel.stars) || 0, 5)) : '';
+      const hCurrency = hotel.currency || 'KES';
       lines.push('');
       lines.push('*🏨 Hotel*');
       lines.push(`  ${hotel.name || 'TBC'} ${stars}`.trim());
       if (hotel.location) lines.push(`  Location: ${hotel.location}`);
       if (hotel.rating)   lines.push(`  Rating: ${hotel.rating}/5`);
       if (hotel.mealPlan) lines.push(`  Meal plan: ${hotel.mealPlan}`);
-      lines.push(`  ${currency} ${(hotel.pricePerNight || 0).toLocaleString()}/night × ${summary.nights || 1} nights`);
+      if (hotel.isRefundable === false) lines.push(`  ⚠️ Non-refundable rate`);
+      lines.push(`  ${hCurrency} ${(hotel.pricePerNight || 0).toLocaleString()}/night × ${summary.nights || 1} nights`);
     }
 
     // ── Transfer (only if present) ──────────────────
     if (transfers && (transfers.provider || transfers.vehicleType)) {
+      const trCurrency = transfers.currency || 'KES';
       lines.push('');
       lines.push('*🚗 Transfer*');
       lines.push(`  Provider: ${transfers.provider || 'TBC'}`);
       lines.push(`  Vehicle: ${transfers.vehicleType || 'Car'}`);
-      lines.push(`  Price: ${currency} ${(transfers.price || 0).toLocaleString()}`);
+      lines.push(`  Price: ${trCurrency} ${(transfers.price || 0).toLocaleString()}`);
     }
 
-    // ── Total ───────────────────────────────────────
+    // ── Total (always canonical currency — KES) ──────
     lines.push('');
-    lines.push(`*Total: ${currency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
+    lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
     if (summary.pricePerPerson) {
-      lines.push(`_(${currency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
+      lines.push(`_(${totalCurrency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
     }
 
     return this._send(phoneNumberId, {

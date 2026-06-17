@@ -7,11 +7,13 @@
  * ─────────────────────────────────────────────────────────────
  */
 
+// Per-person price ranges in KES (canonical currency after conversion).
+// Tuned for realistic East Africa flight + hotel package costs.
 const BUDGET_RANGES = {
-  low:    { min: 0,    max: 500   },
-  mid:    { min: 300,  max: 1000  },
-  high:   { min: 800,  max: 2500  },
-  luxury: { min: 2000, max: 99999 },
+  low:    { min: 0,      max: 15000  },
+  mid:    { min: 10000,  max: 40000  },
+  high:   { min: 30000,  max: 100000 },
+  luxury: { min: 80000,  max: 9999999 },
 };
 
 function rankPackages(packages, tripParams) {
