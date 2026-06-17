@@ -9,7 +9,9 @@ let supplierAdapter = null;
 try {
   supplierAdapter = require("../adapters");
 } catch (e) {
-  logger.warn("Supplier adapter not loaded — bus/live inventory unavailable");
+  console.log("ADAPTER LOAD ERROR:", e.message);
+  console.log("ADAPTER LOAD STACK:", e.stack);
+  logger.warn("Supplier adapter not loaded — bus/live inventory unavailable", { error: e.message });
 }
 
 class OrchestrationEngine {
