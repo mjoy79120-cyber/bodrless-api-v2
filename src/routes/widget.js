@@ -67,6 +67,9 @@ router.get('/', (req, res) => {
   '".name-form{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:14px;margin-top:8px;}",\n' +
   '".name-form p{font-size:12px;color:var(--et-navy);margin:0 0 10px 0;font-weight:500;}",\n' +
   '".name-input{width:100%;padding:9px 12px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:var(--et-navy);box-sizing:border-box;margin-bottom:10px;}",\n' +
+  '".dob-row{display:flex;gap:6px;margin-bottom:10px;}",\n' +
+  '".dob-row select{flex:1;padding:9px 4px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:var(--et-navy);box-sizing:border-box;background:white;}",\n' +
+  '".field-label{font-size:10px;color:var(--et-muted);margin-bottom:4px;font-weight:600;}",\n' +
   '".confirm-btn{background:var(--et-navy);color:white;border:none;padding:9px 18px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;width:100%;}"\n' +
   '].join("");\n' +
   'document.head.appendChild(style);\n' +
@@ -213,10 +216,28 @@ router.get('/', (req, res) => {
   '  form.appendChild(formP);\n' +
 
   '  var passengerInputs = [];\n' +
+  '  var currentYear = new Date().getFullYear();\n' +
+  '  function buildDobRow() {\n' +
+  '    var row = document.createElement("div");\n' +
+  '    row.className = "dob-row";\n' +
+  '    var daySel = document.createElement("select");\n' +
+  '    daySel.innerHTML = "<option value=\\"\\">Day</option>" + Array.from({length:31}, function(_, i) { return "<option value=\\"" + (i+1) + "\\">" + (i+1) + "</option>"; }).join("");\n' +
+  '    var monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];\n' +
+  '    var monthSel = document.createElement("select");\n' +
+  '    monthSel.innerHTML = "<option value=\\"\\">Month</option>" + monthNames.map(function(m, i) { return "<option value=\\"" + (i+1) + "\\">" + m + "</option>"; }).join("");\n' +
+  '    var yearSel = document.createElement("select");\n' +
+  '    yearSel.innerHTML = "<option value=\\"\\">Year</option>" + Array.from({length:100}, function(_, i) { return currentYear - i; }).map(function(y) { return "<option value=\\"" + y + "\\">" + y + "</option>"; }).join("");\n' +
+  '    row.appendChild(daySel);\n' +
+  '    row.appendChild(monthSel);\n' +
+  '    row.appendChild(yearSel);\n' +
+  '    return { row: row, daySel: daySel, monthSel: monthSel, yearSel: yearSel };\n' +
+  '  }\n' +
+
   '  for (var pi = 0; pi < passengerCount; pi++) {\n' +
   '    var pBlock = document.createElement("div");\n' +
-  '    pBlock.style.marginBottom = "10px";\n' +
-  '    pBlock.style.paddingBottom = "8px";\n' +
+  '    pBlock.style.marginBottom = "12px";\n' +
+  '    pBlock.style.paddingBottom = "10px";\n' +
+  '    pBlock.style.borderBottom = (pi < passengerCount - 1) ? "1px dashed #E4E8F0" : "none";\n' +
   '    if (passengerCount > 1) {\n' +
   '      var pLabel = document.createElement("div");\n' +
   '      pLabel.style.fontSize = "11px";\n' +
@@ -236,19 +257,51 @@ router.get('/', (req, res) => {
   '    lastNameInput.placeholder = "Last name";\n' +
   '    lastNameInput.type = "text";\n' +
   '    pBlock.appendChild(lastNameInput);\n' +
-  '    var dobInput = null, genderSelect = null;\n' +
-  '    if (needsFlightDetails) {\n' +
-  '      dobInput = document.createElement("input");\n' +
-  '      dobInput.className = "name-input";\n' +
-  '      dobInput.placeholder = "Date of birth (YYYY-MM-DD)";\n' +
-  '      dobInput.type = "text";\n' +
-  '      pBlock.appendChild(dobInput);\n' +
-  '      genderSelect = document.createElement("select");\n' +
-  '      genderSelect.className = "name-input";\n' +
-  '      genderSelect.innerHTML = "<option value=\\"male\\">Male</option><option value=\\"female\\">Female</option>";\n' +
-  '      pBlock.appendChild(genderSelect);\n' +
-  '    }\n' +
-  '    passengerInputs.push({ firstNameInput: firstNameInput, lastNameInput: lastNameInput, dobInput: dobInput, genderSelect: genderSelect });\n' +
+
+  '    var dobLabel = document.createElement("div");\n' +
+  '    dobLabel.className = "field-label";\n' +
+  '    dobLabel.innerText = "Date of birth";\n' +
+  '    pBlock.appendChild(dobLabel);\n' +
+  '    var dob = buildDobRow();\n' +
+  '    pBlock.appendChild(dob.row);\n' +
+
+  '    var genderSelect = document.createElement("select");\n' +
+  '    genderSelect.className = "name-input";\n' +
+  '    genderSelect.innerHTML = "<option value=\\"male\\">Male</option><option value=\\"female\\">Female</option>";\n' +
+  '    pBlock.appendChild(genderSelect);\n' +
+
+  '    var childRow = document.createElement("label");\n' +
+  '    childRow.style.display = "flex";\n' +
+  '    childRow.style.alignItems = "center";\n' +
+  '    childRow.style.gap = "6px";\n' +
+  '    childRow.style.fontSize = "11px";\n' +
+  '    childRow.style.color = "#1E2A5E";\n' +
+  '    childRow.style.marginBottom = "8px";\n' +
+  '    var childCheckbox = document.createElement("input");\n' +
+  '    childCheckbox.type = "checkbox";\n' +
+  '    childRow.appendChild(childCheckbox);\n' +
+  '    childRow.appendChild(document.createTextNode("This traveler is a child"));\n' +
+  '    pBlock.appendChild(childRow);\n' +
+
+  '    var idLabel = document.createElement("div");\n' +
+  '    idLabel.className = "field-label";\n' +
+  '    idLabel.innerText = "Passport or National ID number";\n' +
+  '    pBlock.appendChild(idLabel);\n' +
+  '    var idInput = document.createElement("input");\n' +
+  '    idInput.className = "name-input";\n' +
+  '    idInput.placeholder = "Passport / ID number";\n' +
+  '    idInput.type = "text";\n' +
+  '    pBlock.appendChild(idInput);\n' +
+  '    childCheckbox.onchange = function(inp) { return function() { inp.placeholder = inp.parentNode.parentNode.querySelector("input[type=checkbox]").checked ? "Passport / ID number (optional for children)" : "Passport / ID number"; }; }(idInput);\n' +
+
+  '    passengerInputs.push({\n' +
+  '      firstNameInput: firstNameInput,\n' +
+  '      lastNameInput: lastNameInput,\n' +
+  '      daySel: dob.daySel, monthSel: dob.monthSel, yearSel: dob.yearSel,\n' +
+  '      genderSelect: genderSelect,\n' +
+  '      childCheckbox: childCheckbox,\n' +
+  '      idInput: idInput\n' +
+  '    });\n' +
   '    form.appendChild(pBlock);\n' +
   '  }\n' +
 
@@ -290,13 +343,18 @@ router.get('/', (req, res) => {
   '      var fn = pin.firstNameInput.value.trim();\n' +
   '      var ln = pin.lastNameInput.value.trim();\n' +
   '      if (!fn || !ln) { errorMsg.innerText = "Please fill in all traveler names."; errorMsg.style.display = "block"; return; }\n' +
-  '      if (needsFlightDetails) {\n' +
-  '        var dob = pin.dobInput.value.trim();\n' +
-  '        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(dob)) { errorMsg.innerText = "Date of birth must be in YYYY-MM-DD format."; errorMsg.style.display = "block"; return; }\n' +
-  '        passengers.push({ firstName: fn, lastName: ln, dateOfBirth: dob, gender: pin.genderSelect.value, type: "adult" });\n' +
-  '      } else {\n' +
-  '        passengers.push({ firstName: fn, lastName: ln, type: "adult" });\n' +
-  '      }\n' +
+  '      var day = pin.daySel.value, month = pin.monthSel.value, year = pin.yearSel.value;\n' +
+  '      if (!day || !month || !year) { errorMsg.innerText = "Please select a complete date of birth for traveler " + (k+1) + "."; errorMsg.style.display = "block"; return; }\n' +
+  '      var dob = year + "-" + String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");\n' +
+  '      var isChild = pin.childCheckbox.checked;\n' +
+  '      var idNum = pin.idInput.value.trim();\n' +
+  '      if (!isChild && !idNum) { errorMsg.innerText = "Passport/ID number is required for traveler " + (k+1) + " (unless marked as a child)."; errorMsg.style.display = "block"; return; }\n' +
+  '      passengers.push({\n' +
+  '        firstName: fn, lastName: ln, dateOfBirth: dob,\n' +
+  '        gender: pin.genderSelect.value,\n' +
+  '        type: isChild ? "child" : "adult",\n' +
+  '        idNumber: idNum || null\n' +
+  '      });\n' +
   '    }\n' +
   '    var phone = phoneInput.value.trim();\n' +
   '    var email = emailInput.value.trim();\n' +
@@ -306,7 +364,7 @@ router.get('/', (req, res) => {
   '    var guestName = passengers[0].firstName + " " + passengers[0].lastName;\n' +
   '    confirmBtn.innerText = "Processing...";\n' +
   '    confirmBtn.disabled = true;\n' +
-  '    fetch("' + apiBase + '/api/trips/book", {\n' +
+  '    fetch("' + apiBase + '/api/trips/book-init", {\n' +
   '      method: "POST",\n' +
   '      headers: { "Content-Type": "application/json" },\n' +
   '      body: JSON.stringify({\n' +
@@ -320,7 +378,7 @@ router.get('/', (req, res) => {
   '    })\n' +
   '    .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })\n' +
   '    .then(function(result) {\n' +
-  '      if (!result.ok) {\n' +
+  '      if (!result.ok || !result.data.success) {\n' +
   '        var msg = (result.data && result.data.error) ? result.data.error : "Booking failed. Please try again.";\n' +
   '        errorMsg.innerText = msg;\n' +
   '        errorMsg.style.display = "block";\n' +
@@ -329,11 +387,10 @@ router.get('/', (req, res) => {
   '        return;\n' +
   '      }\n' +
   '      form.remove();\n' +
-  '      bookBtn.innerText = "Booked!";\n' +
+  '      bookBtn.innerText = "Held!";\n' +
   '      bookBtn.style.background = "#27ae60";\n' +
   '      bookBtn.disabled = true;\n' +
-  '      var statusNote = result.data.status === "hold" ? " Your seat is held \u2014 we will contact you to complete payment." : " You will receive confirmation shortly.";\n' +
-  '      addMsg("Booking confirmed for " + guestName + "! Ref: " + result.data.bookingRef + "." + statusNote, "bot");\n' +
+  '      addMsg("Your flight is held and hotel confirmed! Ref: " + result.data.bookingRef + ". Total due: " + result.data.currency + " " + result.data.totalPrice.toLocaleString() + ". Payment is coming soon \u2014 we will be in touch to complete this booking.", "bot");\n' +
   '      messages.scrollTop = messages.scrollHeight;\n' +
   '    })\n' +
   '    .catch(function() {\n' +

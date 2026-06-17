@@ -104,7 +104,14 @@ router.post('/book-init', async (req, res) => {
     dateOfBirth: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
     gender:      Joi.string().valid('male', 'female').optional(),
     type:        Joi.string().valid('adult', 'child', 'infant').default('adult'),
-  });
+    idNumber:    Joi.string().allow(null, '').optional(),
+  }).custom((value, helpers) => {
+    // Passport/ID required for all adult travelers, optional for children/infants
+    if (value.type === 'adult' && !value.idNumber) {
+      return helpers.error('any.required', { label: 'idNumber' });
+    }
+    return value;
+  }, 'idNumber required for adults');
 
   const schema = Joi.object({
     agencyId:   Joi.string().optional(),
