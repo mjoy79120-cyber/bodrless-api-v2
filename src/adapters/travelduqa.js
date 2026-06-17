@@ -35,6 +35,9 @@ class TravelDuqaAdapter {
   async search({ origin, destination, date, returnDate = null, passengers = 1,
                  cabinClass = 'economy', timePreference = null, children = 0, infants = 0 }) {
     try {
+      // ── CRITICAL DEBUG: Check if the orchestrator is even triggering this ──
+      console.log('CRITICAL: TravelDuqa search invoked with:', { origin, destination, date });
+
       logger.info('TravelDuqa: searching flights', { origin, destination, date });
 
       const [depIata, arrIata] = await Promise.all([
@@ -42,7 +45,11 @@ class TravelDuqaAdapter {
         this._resolveIata(destination),
       ]);
 
+      // ── CRITICAL DEBUG: Verify if IATA codes successfully resolved ──
+      console.log('CRITICAL: Resolved IATA codes:', { depIata, arrIata });
+
       if (!depIata || !arrIata) {
+        console.log(`CRITICAL: Bailing out because IATA failed for ${origin} -> ${destination}`);
         logger.warn('TravelDuqa: could not resolve IATA codes', { origin, destination });
         return [];
       }
@@ -450,7 +457,7 @@ class TravelDuqaAdapter {
         { headers: this._headers(), timeout: this.timeout }
       );
 
-          return response.data?.data || [];
+      return response.data?.data || [];
 
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
