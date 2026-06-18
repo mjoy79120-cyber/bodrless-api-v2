@@ -8,10 +8,11 @@
  *   1. initBooking()   — hold flight (TravelDuqa), then confirm hotel
  *                         (HotelBeds, refundable rate only) and transfer
  *                         if present. No payment yet.
- *   2. triggerPayment() — STUBBED. Will trigger M-Pesa STK push for the
- *                         combined total once Daraja credentials exist.
- *   3. confirmPayment() — called by the M-Pesa callback/webhook (or, for
- *                         now, manually) once payment succeeds. Converts
+ *   2. triggerPayment() — real IntaSend M-Pesa STK push for the combined
+ *                         total. Sets a payment_deadline used by the
+ *                         sweeper job to auto-cancel if payment stalls.
+ *   3. confirmPayment() — called by the IntaSend webhook (or the sweeper,
+ *                         via status poll) once payment succeeds. Converts
  *                         the TravelDuqa hold into a ticketed booking.
  *   4. failPayment()    — called if payment fails/times out. Cancels the
  *                         HotelBeds booking (refundable rate => free) and
@@ -26,6 +27,7 @@
 
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
+const paymentService = require('./paymentService');
 
 let supplierAdapter = null;
 try {
@@ -195,24 +197,39 @@ class BookingService {
   }
 
   // ─────────────────────────────────────────────
-  // STEP 2 — TRIGGER PAYMENT (STUBBED)
-  // Wire this up to M-Pesa Daraja STK push once credentials are ready.
-  // For now, returns a stub response so the flow can be tested end-to-end
-  // by manually calling confirmPayment() to simulate a successful charge.
+  // STEP 2 — TRIGGER PAYMENT (real IntaSend STK push)
+  // Sets payment_deadline so the sweeper job knows when to auto-cancel
+  // if payment never lands — this is the actual safety net, since
+  // HotelBeds bookings are immediate confirmations with no true hold.
   // ─────────────────────────────────────────────
-  async triggerPayment({ bookingRef, phone, amount, currency }) {
-    logger.info('STUB: would trigger M-Pesa STK push here', { bookingRef, phone, amount, currency });
+  async triggerPayment({ bookingRef, phone, amount, currency, email, firstName, lastName }) {
+    try {
+      const result = await paymentService.triggerStkPush({
+        bookingRef, phone, amount, email, firstName, lastName,
+      });
 
-    await supabase
-      .from('bookings')
-      .update({ booking_stage: 'awaiting_payment' })
-      .eq('booking_ref', bookingRef);
+      await supabase
+        .from('bookings')
+        .update({
+          booking_stage: 'awaiting_payment',
+          payment_invoice_id: result.invoiceId,
+          payment_deadline: result.paymentDeadline,
+        })
+        .eq('booking_ref', bookingRef);
 
-    return {
-      success: true,
-      stubbed: true,
-      message: 'Payment step is not yet live — M-Pesa integration pending. Call confirmPayment() manually to simulate success in testing.',
-    };
+      logger.info('Payment triggered', { bookingRef, invoiceId: result.invoiceId });
+
+      return {
+        success: true,
+        invoiceId: result.invoiceId,
+        message: 'M-Pesa prompt sent to your phone. Please enter your PIN to complete payment.',
+        paymentDeadline: result.paymentDeadline,
+      };
+
+    } catch (err) {
+      logger.error('Failed to trigger payment', { bookingRef, error: err.message });
+      return { success: false, error: `Could not initiate payment: ${err.message}` };
+    }
   }
 
   // ─────────────────────────────────────────────
