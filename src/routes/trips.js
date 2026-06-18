@@ -154,7 +154,7 @@ router.post('/book-init', async (req, res) => {
 
 
 // ─────────────────────────────────────────────
-// BOOK — STEP 2: TRIGGER PAYMENT (stubbed)
+// BOOK — STEP 2: TRIGGER PAYMENT (real IntaSend M-Pesa STK push)
 // ─────────────────────────────────────────────
 router.post('/book-pay', async (req, res) => {
   const schema = Joi.object({
@@ -162,6 +162,9 @@ router.post('/book-pay', async (req, res) => {
     phone:      Joi.string().required(),
     amount:     Joi.number().required(),
     currency:   Joi.string().default('KES'),
+    email:      Joi.string().allow('', null).optional(),
+    firstName:  Joi.string().allow('', null).optional(),
+    lastName:   Joi.string().allow('', null).optional(),
   });
 
   const { error, value } = schema.validate(req.body);
@@ -170,6 +173,9 @@ router.post('/book-pay', async (req, res) => {
   }
 
   const result = await bookingService.triggerPayment(value);
+  if (!result.success) {
+    return res.status(502).json(result);
+  }
   return res.json(result);
 });
 
