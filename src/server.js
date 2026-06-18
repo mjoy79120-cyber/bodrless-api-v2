@@ -10,7 +10,7 @@ const { logger } = require('./utils/logger');
 
 const tripRoutes = require('./routes/trips');
 const webhookRoutes = require('./routes/webhooks');
-const intasendWebhookRoutes = require('./routes/webhooks-intasend');
+const intasendWebhookRoutes = require('./routes/intasend');
 const agencyRoutes = require('./routes/agencies');
 const healthRoutes = require('./routes/health');
 const uploadRoutes = require('./routes/uploads');
