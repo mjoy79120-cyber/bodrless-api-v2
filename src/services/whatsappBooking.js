@@ -231,13 +231,35 @@ class WhatsAppBookingFlow {
     }
 
     await whatsappService.sendText(phoneNumberId, from,
-      `Your flight is held and hotel is confirmed!\n\n` +
+      `Flight held and hotel confirmed!\n\n` +
       `*Booking ref:* ${result.bookingRef}\n` +
       `*Total due:* ${result.currency} ${result.totalPrice.toLocaleString()}\n\n` +
-      `Payment via M-Pesa is coming soon — our team will reach out shortly to complete this booking. Reply *cancel* if you'd like to cancel this hold instead.`
+      `Sending an M-Pesa payment prompt to ${parsed.guestPhone} now...`
     );
 
-    logger.info('WhatsApp booking init complete', { bookingRef: result.bookingRef, from });
+    const paymentResult = await bookingService.triggerPayment({
+      bookingRef: result.bookingRef,
+      phone: parsed.guestPhone,
+      amount: result.totalPrice,
+      currency: result.currency,
+      email: parsed.guestEmail,
+      firstName: parsed.passengers[0].firstName,
+      lastName: parsed.passengers[0].lastName,
+    });
+
+    if (!paymentResult.success) {
+      await whatsappService.sendText(phoneNumberId, from,
+        `Your flight and hotel are held, but we couldn't send the payment prompt (${paymentResult.error}). Please contact support with booking ref ${result.bookingRef}.`
+      );
+      logger.error('WhatsApp payment trigger failed after successful booking init', { bookingRef: result.bookingRef, error: paymentResult.error });
+      return true;
+    }
+
+    await whatsappService.sendText(phoneNumberId, from,
+      `Check your phone and enter your *M-Pesa PIN* to complete payment.\n\nThis booking will be held for 30 minutes. We'll message you once payment is confirmed.`
+    );
+
+    logger.info('WhatsApp booking init + payment trigger complete', { bookingRef: result.bookingRef, from });
     return true;
   }
 }

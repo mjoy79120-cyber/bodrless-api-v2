@@ -10,11 +10,13 @@ const { logger } = require('./utils/logger');
 
 const tripRoutes = require('./routes/trips');
 const webhookRoutes = require('./routes/webhooks');
+const intasendWebhookRoutes = require('./routes/webhooks-intasend');
 const agencyRoutes = require('./routes/agencies');
 const healthRoutes = require('./routes/health');
 const uploadRoutes = require('./routes/uploads');
 const widgetRoutes = require('./routes/widget');
 const apiV1Routes = require('./routes/api');
+const { startSweeper } = require('./services/paymentSweeper');
 
 const app = express();
 
@@ -60,6 +62,7 @@ app.use('/widget.js', (req, res, next) => {
 
 // ── Public Routes (no auth) ──────────────────────────
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/webhooks', intasendWebhookRoutes); // adds POST /api/webhooks/intasend
 app.use('/health', healthRoutes);
 app.use('/widget.js', widgetRoutes);
 
@@ -67,8 +70,6 @@ app.use('/widget.js', widgetRoutes);
 app.use('/api/v1', apiV1Routes);
 
 // ── Agency routes (auth handled inside the router) ───
-// /register and /signup are public
-// dashboard, settings etc are protected inside agencies.js
 app.use('/api/agencies', agencyRoutes);
 
 // ── Other Protected Routes ────────────────────────────
@@ -92,6 +93,7 @@ app.get('/', (req, res) => {
       public_api:  '/api/v1',
       widget:      '/widget.js?key=YOUR_AGENCY_ID',
       webhooks:    '/api/webhooks/whatsapp',
+      intasend_webhook: '/api/webhooks/intasend',
       health:      '/health',
       signup:      'POST /api/agencies/signup',
       register:    'POST /api/agencies/register',
@@ -113,6 +115,10 @@ app.use((err, req, res, next) => {
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Bodrless API running on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV}`);
+
+  // Start the payment sweeper — auto-cancels stale unpaid HotelBeds
+  // bookings past their payment deadline (the Option C safety net).
+  startSweeper();
 });
 
 // Keep alive — production only

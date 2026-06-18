@@ -70,7 +70,9 @@ router.get('/', (req, res) => {
   '".dob-row{display:flex;gap:6px;margin-bottom:10px;}",\n' +
   '".dob-row select{flex:1;padding:9px 4px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:var(--et-navy);box-sizing:border-box;background:white;}",\n' +
   '".field-label{font-size:10px;color:var(--et-muted);margin-bottom:4px;font-weight:600;}",\n' +
-  '".confirm-btn{background:var(--et-navy);color:white;border:none;padding:9px 18px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;width:100%;}"\n' +
+  '".confirm-btn{background:var(--et-navy);color:white;border:none;padding:9px 18px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;width:100%;}",\n' +
+  '".trust-badge{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;font-size:10px;color:var(--et-muted);}",\n' +
+  '".trust-badge svg{width:13px;height:13px;flex-shrink:0;}"\n' +
   '].join("");\n' +
   'document.head.appendChild(style);\n' +
 
@@ -198,6 +200,36 @@ router.get('/', (req, res) => {
   '  row.appendChild(nameEl);\n' +
   '  row.appendChild(subEl);\n' +
   '  return row;\n' +
+  '}\n' +
+
+  'function pollBookingStatus(bookingRef, bookBtn) {\n' +
+  '  var attempts = 0;\n' +
+  '  var maxAttempts = 40; // ~ 40 * 5s = ~3.3 minutes of active polling in-browser\n' +
+  '  var interval = setInterval(function() {\n' +
+  '    attempts++;\n' +
+  '    fetch("' + apiBase + '/api/trips/booking/" + bookingRef)\n' +
+  '      .then(function(r) { return r.json(); })\n' +
+  '      .then(function(data) {\n' +
+  '        if (data.bookingStage === "paid") {\n' +
+  '          clearInterval(interval);\n' +
+  '          bookBtn.innerText = "Paid & Confirmed!";\n' +
+  '          bookBtn.style.background = "#27ae60";\n' +
+  '          addMsg("Payment received! Your booking " + bookingRef + " is fully confirmed. You will receive your e-ticket and hotel confirmation shortly.", "bot");\n' +
+  '          messages.scrollTop = messages.scrollHeight;\n' +
+  '        } else if (data.bookingStage === "failed" || data.status === "cancelled") {\n' +
+  '          clearInterval(interval);\n' +
+  '          bookBtn.innerText = "Payment not received";\n' +
+  '          bookBtn.style.background = "#C0392B";\n' +
+  '          addMsg("We did not receive payment in time for booking " + bookingRef + ", so the hold was released. Feel free to search again if you would still like to book.", "bot");\n' +
+  '          messages.scrollTop = messages.scrollHeight;\n' +
+  '        } else if (attempts >= maxAttempts) {\n' +
+  '          clearInterval(interval);\n' +
+  '          addMsg("Still waiting on payment for booking " + bookingRef + ". If you have already paid, this will update shortly \u2014 otherwise you have a bit more time before the hold expires.", "bot");\n' +
+  '          messages.scrollTop = messages.scrollHeight;\n' +
+  '        }\n' +
+  '      })\n' +
+  '      .catch(function() { /* silent retry on next interval tick */ });\n' +
+  '  }, 5000);\n' +
   '}\n' +
 
   'function showNameForm(p, bookBtn) {\n' +
@@ -386,12 +418,42 @@ router.get('/', (req, res) => {
   '        confirmBtn.disabled = false;\n' +
   '        return;\n' +
   '      }\n' +
-  '      form.remove();\n' +
-  '      bookBtn.innerText = "Held!";\n' +
-  '      bookBtn.style.background = "#27ae60";\n' +
-  '      bookBtn.disabled = true;\n' +
-  '      addMsg("Your flight is held and hotel confirmed! Ref: " + result.data.bookingRef + ". Total due: " + result.data.currency + " " + result.data.totalPrice.toLocaleString() + ". Payment is coming soon \u2014 we will be in touch to complete this booking.", "bot");\n' +
+  '      var bookingRef = result.data.bookingRef;\n' +
+  '      var totalPrice = result.data.totalPrice;\n' +
+  '      var currency = result.data.currency;\n' +
+  '      confirmBtn.innerText = "Sending M-Pesa prompt...";\n' +
+  '      addMsg("Flight held and hotel confirmed! Ref: " + bookingRef + ". Total due: " + currency + " " + totalPrice.toLocaleString() + ". Sending an M-Pesa payment prompt to " + phone + " now...", "bot");\n' +
   '      messages.scrollTop = messages.scrollHeight;\n' +
+
+  '      return fetch("' + apiBase + '/api/trips/book-pay", {\n' +
+  '        method: "POST",\n' +
+  '        headers: { "Content-Type": "application/json" },\n' +
+  '        body: JSON.stringify({\n' +
+  '          bookingRef: bookingRef,\n' +
+  '          phone: phone,\n' +
+  '          amount: totalPrice,\n' +
+  '          currency: currency,\n' +
+  '          email: email,\n' +
+  '          firstName: passengers[0].firstName,\n' +
+  '          lastName: passengers[0].lastName\n' +
+  '        })\n' +
+  '      })\n' +
+  '      .then(function(pr) { return pr.json().then(function(pdata) { return { ok: pr.ok, data: pdata }; }); })\n' +
+  '      .then(function(payResult) {\n' +
+  '        form.remove();\n' +
+  '        if (!payResult.ok || !payResult.data.success) {\n' +
+  '          bookBtn.innerText = "Payment failed to send";\n' +
+  '          bookBtn.style.background = "#C0392B";\n' +
+  '          addMsg("Your flight and hotel are held, but we could not send the payment prompt (" + (payResult.data.error || "unknown error") + "). Please contact support with booking ref " + bookingRef + ".", "bot");\n' +
+  '          return;\n' +
+  '        }\n' +
+  '        bookBtn.innerText = "Awaiting payment...";\n' +
+  '        bookBtn.style.background = "#f0ad4e";\n' +
+  '        bookBtn.disabled = true;\n' +
+  '        addMsg("Check your phone and enter your M-Pesa PIN to complete payment for booking " + bookingRef + ". This booking will be held for 30 minutes.", "bot");\n' +
+  '        messages.scrollTop = messages.scrollHeight;\n' +
+  '        pollBookingStatus(bookingRef, bookBtn);\n' +
+  '      });\n' +
   '    })\n' +
   '    .catch(function() {\n' +
   '      errorMsg.innerText = "Network error. Please try again.";\n' +
@@ -401,6 +463,10 @@ router.get('/', (req, res) => {
   '    });\n' +
   '  };\n' +
   '  form.appendChild(confirmBtn);\n' +
+  '  var trustBadge = document.createElement("div");\n' +
+  '  trustBadge.className = "trust-badge";\n' +
+  '  trustBadge.innerHTML = "<svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\\"/><path d=\\"M9 12l2 2 4-4\\"/></svg> Secure payment via M-Pesa";\n' +
+  '  form.appendChild(trustBadge);\n' +
   '  messages.appendChild(form);\n' +
   '  messages.scrollTop = messages.scrollHeight;\n' +
   '}\n' +
