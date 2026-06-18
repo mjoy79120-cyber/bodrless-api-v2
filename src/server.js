@@ -16,7 +16,7 @@ const healthRoutes = require('./routes/health');
 const uploadRoutes = require('./routes/uploads');
 const widgetRoutes = require('./routes/widget');
 const apiV1Routes = require('./routes/api');
-const { startSweeper } = require('./services/paymentService');
+const { startSweeper } = require('./services/paymentSweeper');
 
 const app = express();
 

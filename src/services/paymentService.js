@@ -1,111 +1,95 @@
 /**
- * PAYMENT SWEEPER
+ * PAYMENT SERVICE — IntaSend (M-Pesa STK Push)
  * ─────────────────────────────────────────────────────────────
- * Background safety net for the flight-first, single-payment booking
- * flow. Runs on an interval and finds any booking stuck in
- * 'awaiting_payment' past its payment_deadline, then:
+ * Wraps the official intasend-node SDK to trigger STK push for a
+ * combined booking total, and exposes a webhook-signature-safe way
+ * to look up which booking an IntaSend event belongs to.
  *
- *   1. Polls IntaSend directly for the real payment status (in case the
- *      webhook was missed or delayed) — if it actually completed, we
- *      finalize the booking instead of wrongly cancelling it.
- *   2. If payment genuinely did not complete, cancels the HotelBeds
- *      booking (always a refundable rate in this flow, so this costs
- *      nothing) and lets the TravelDuqa flight hold expire on its own.
- *
- * This exists because HotelBeds bookings are immediate confirmations
- * with no true "hold" — the sweeper is what guarantees Bodrless is
- * never left holding a confirmed, unpaid hotel booking indefinitely.
- *
- * Call startSweeper() once at server boot (e.g. from server.js).
+ * SAFETY NET: HotelBeds has no real "hold" — book() = immediate
+ * confirmation. We only ever book refundable (NOR) rates so that if
+ * payment doesn't land in time, we can cancel for free. The actual
+ * enforcement of that time limit lives in the sweeper job
+ * (paymentSweeper.js), not here — this file only triggers payment
+ * and exposes lookup/verification helpers.
  * ─────────────────────────────────────────────────────────────
  */
 
-const supabase = require('../utils/supabase');
-const bookingService = require('./bookingService');
-const paymentService = require('./paymentService');
-const whatsappService = require('./whatsapp');
+const IntaSend = require('intasend-node');
 const { logger } = require('../utils/logger');
 
-const SWEEP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
+const PAYMENT_WINDOW_MINUTES = 30;
 
-async function sweepOnce() {
-  try {
-    const { data: staleBookings, error } = await supabase
-      .from('bookings')
-      .select('booking_ref, payment_invoice_id, payment_deadline')
-      .eq('booking_stage', 'awaiting_payment')
-      .lt('payment_deadline', new Date().toISOString());
+class PaymentService {
 
-    if (error) {
-      logger.error('Payment sweeper query failed', { error: error.message });
-      return;
-    }
+  constructor() {
+    this.publishableKey = process.env.INTASEND_PUBLISHABLE_KEY;
+    this.secretKey       = process.env.INTASEND_SECRET_KEY;
+    this.testMode        = process.env.INTASEND_TEST_MODE !== 'false'; // default true (sandbox)
 
-    if (!staleBookings || staleBookings.length === 0) {
-      return; // nothing to do, the common case
-    }
-
-    logger.info('Payment sweeper found stale bookings', { count: staleBookings.length });
-
-    for (const booking of staleBookings) {
-      await _resolveStaleBooking(booking);
-    }
-
-  } catch (err) {
-    logger.error('Payment sweeper run failed', { error: err.message });
-  }
-}
-
-async function _resolveStaleBooking(booking) {
-  const { booking_ref: bookingRef, payment_invoice_id: invoiceId } = booking;
-
-  // Double-check with IntaSend directly before cancelling — the webhook
-  // may have been missed even though payment actually succeeded.
-  if (invoiceId) {
-    try {
-      const status = await paymentService.checkStatus(invoiceId);
-      const state = status?.invoice?.state || status?.state;
-
-      if (state === 'COMPLETE') {
-        logger.info('Sweeper found payment actually completed — finalizing instead of cancelling', { bookingRef });
-        await bookingService.confirmPayment({ bookingRef });
-        return;
-      }
-    } catch (err) {
-      logger.warn('Sweeper could not verify payment status with IntaSend — proceeding to cancel', { bookingRef, error: err.message });
+    this.client = null;
+    if (this.publishableKey && this.secretKey) {
+      this.client = new IntaSend(this.publishableKey, this.secretKey, this.testMode);
+    } else {
+      logger.warn('IntaSend credentials not set — payment triggering will fail until INTASEND_PUBLISHABLE_KEY / INTASEND_SECRET_KEY are configured');
     }
   }
 
-  logger.info('Sweeper cancelling stale unpaid booking', { bookingRef });
-  await bookingService.failPayment({ bookingRef });
-  await _notifyIfWhatsApp(bookingRef);
-}
+  // ─────────────────────────────────────────────
+  // TRIGGER STK PUSH
+  // bookingRef is passed as api_ref so the webhook can correlate
+  // the IntaSend event back to our booking.
+  // ─────────────────────────────────────────────
+  async triggerStkPush({ bookingRef, phone, amount, email, firstName, lastName }) {
+    if (!this.client) {
+      throw new Error('IntaSend is not configured (missing API credentials).');
+    }
 
-async function _notifyIfWhatsApp(bookingRef) {
-  try {
-    const { data: booking } = await supabase
-      .from('bookings')
-      .select('channel, guest_phone')
-      .eq('booking_ref', bookingRef)
-      .single();
+    // IntaSend phone format: 2547XXXXXXXX (no leading +, no leading 0)
+    const formattedPhone = this._formatPhone(phone);
 
-    if (!booking || booking.channel !== 'whatsapp' || !booking.guest_phone) return;
+    logger.info('Triggering IntaSend STK push', { bookingRef, amount, phone: formattedPhone });
 
-    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-    if (!phoneNumberId) return;
+    const collection = this.client.collection();
 
-    const to = booking.guest_phone.replace(/^\+/, '').replace(/^0/, '254');
-    await whatsappService.sendText(phoneNumberId, to,
-      `We did not receive payment for booking ${bookingRef} in time, so the hold has been released. Feel free to search again if you would still like to book.`
-    );
-  } catch (err) {
-    logger.error('Sweeper WhatsApp notification failed', { bookingRef, error: err.message });
+    const response = await collection.mpesaStkPush({
+      first_name: firstName || 'Valued',
+      last_name:  lastName  || 'Customer',
+      email:      email || 'noreply@bodrless.app',
+      host:       process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com',
+      amount,
+      phone_number: formattedPhone,
+      api_ref:      bookingRef,
+    });
+
+    logger.info('IntaSend STK push triggered', { bookingRef, invoiceId: response?.invoice?.invoice_id });
+
+    return {
+      invoiceId: response?.invoice?.invoice_id || response?.id || null,
+      state:     response?.invoice?.state || 'PENDING',
+      raw:       response,
+      paymentDeadline: new Date(Date.now() + PAYMENT_WINDOW_MINUTES * 60 * 1000).toISOString(),
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // CHECK PAYMENT STATUS (poll fallback if webhook is delayed/missed)
+  // ─────────────────────────────────────────────
+  async checkStatus(invoiceId) {
+    if (!this.client) {
+      throw new Error('IntaSend is not configured.');
+    }
+    const collection = this.client.collection();
+    const response = await collection.status({ invoice_id: invoiceId });
+    return response;
+  }
+
+  _formatPhone(raw) {
+    if (!raw) return raw;
+    let cleaned = String(raw).replace(/\s+/g, '').replace(/^\+/, '');
+    if (cleaned.startsWith('0')) cleaned = '254' + cleaned.slice(1);
+    if (!cleaned.startsWith('254')) cleaned = '254' + cleaned;
+    return cleaned;
   }
 }
 
-function startSweeper() {
-  logger.info('Payment sweeper started', { intervalMinutes: SWEEP_INTERVAL_MS / 60000 });
-  setInterval(sweepOnce, SWEEP_INTERVAL_MS);
-}
-
-module.exports = { startSweeper, sweepOnce };
+module.exports = new PaymentService();
