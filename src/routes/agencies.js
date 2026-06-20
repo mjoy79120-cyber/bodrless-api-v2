@@ -4,7 +4,7 @@
  * Self-service agency signup and management
  *
  * Public:             /register, /signup, /login, /forgot-password
- * Session-protected:  /me, /logout, /dashboard, /settings
+ * Session-protected:  /me, /logout, /dashboard, /settings, /ask
  *                      (uses Supabase session JWT — for the Lovable
  *                      dashboard, logged-in agency users)
  * API-key-protected:  /:agencyId/regenerate-key, /whatsapp/:agencyId
@@ -20,6 +20,7 @@ const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 const { authenticateAgency } = require('../middleware/auth');
 const { authenticateSession } = require('../middleware/authSession');
+const dataQueryService = require('../services/dataQueryService');
 
 // ─────────────────────────────────────────────
 // HELPERS
@@ -166,8 +167,6 @@ router.post('/register', async (req, res) => {
 // ─────────────────────────────────────────────
 // PUBLIC — LOGIN
 // POST /api/agencies/login
-// Returns a Supabase session for the Lovable dashboard to use as
-// "Authorization: Bearer <accessToken>" on session-protected routes.
 // ─────────────────────────────────────────────
 router.post('/login', async (req, res) => {
   const schema = Joi.object({
@@ -319,10 +318,42 @@ router.post('/logout', authenticateSession, async (req, res) => {
 
 
 // ─────────────────────────────────────────────
+// SESSION-PROTECTED — TALK TO MY DATA
+// POST /api/agencies/ask
+// Body: { question: "How much did I earn last month?" }
+// Answers grounded strictly in the agency's real Supabase data —
+// see services/dataQueryService.js for how the answer is generated.
+// ─────────────────────────────────────────────
+router.post('/ask', authenticateSession, async (req, res) => {
+  const schema = Joi.object({
+    question: Joi.string().min(3).max(500).required(),
+  });
+
+  const { error, value } = schema.validate(req.body);
+  if (error) return res.status(400).json({ success: false, error: error.details[0].message });
+
+  try {
+    const result = await dataQueryService.answerQuestion({
+      agencyId: req.agencyId,
+      question: value.question,
+    });
+
+    if (!result.success) {
+      return res.status(502).json(result);
+    }
+
+    return res.json(result);
+
+  } catch (err) {
+    logger.error('Ask endpoint error', { agencyId: req.agencyId, error: err.message });
+    return res.status(500).json({ success: false, error: 'Something went wrong answering that question.' });
+  }
+});
+
+
+// ─────────────────────────────────────────────
 // SESSION-PROTECTED — DASHBOARD (for Lovable)
 // GET /api/agencies/dashboard
-// Resolves the agency from the session token — no agencyId needed
-// in the URL, unlike the legacy /dashboard/:agencyId below.
 // ─────────────────────────────────────────────
 router.get('/dashboard', authenticateSession, async (req, res) => {
   req.params.agencyId = req.agencyId;
@@ -333,9 +364,6 @@ router.get('/dashboard', authenticateSession, async (req, res) => {
 // ─────────────────────────────────────────────
 // LEGACY — GET DASHBOARD DATA (api-key protected)
 // GET /api/agencies/dashboard/:agencyId
-// Kept for backward compatibility with any existing integrations
-// using the api_key. New Lovable dashboard should use GET /dashboard
-// (session-protected, above) instead.
 // ─────────────────────────────────────────────
 router.get('/dashboard/:agencyId', authenticateAgency, _getDashboardData);
 
@@ -356,25 +384,62 @@ async function _getDashboardData(req, res) {
       .select('*')
       .eq('agency_id', agencyId)
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(200);
 
     const { data: searches } = await supabase
       .from('trip_searches')
       .select('*')
       .eq('agency_id', agencyId)
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(200);
 
-    const markupRate       = (agency.markup_percentage || 0) / 100;
-    const totalEarnings    = (bookings || []).reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
+    const markupRate        = (agency.markup_percentage || 0) / 100;
+    const totalEarnings     = (bookings || []).reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
     const thisMonthEarnings = (bookings || [])
       .filter(b => new Date(b.created_at) > new Date(new Date().setDate(1)))
       .reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
 
-    const uniqueGuests   = new Set((bookings || []).map(b => b.guest_phone || b.guest_email || b.guest_name));
     const recentSearches = (searches || []).filter(s =>
       new Date(s.created_at) > new Date(Date.now() - 24 * 60 * 60 * 1000)
     );
+
+    // ── Per-customer breakdown ──────────────────────
+    // Groups bookings by guest (phone, falling back to email/name) so
+    // an agency can see each customer's total spend and trip history.
+    const customerMap = new Map();
+    (bookings || []).forEach(b => {
+      const key = b.guest_phone || b.guest_email || b.guest_name || 'unknown';
+      if (!customerMap.has(key)) {
+        customerMap.set(key, {
+          name: b.guest_name,
+          phone: b.guest_phone,
+          email: b.guest_email,
+          totalBookings: 0,
+          totalSpent: 0,
+          lastTripDate: null,
+          trips: [],
+        });
+      }
+      const customer = customerMap.get(key);
+      customer.totalBookings += 1;
+      customer.totalSpent += Number(b.total_price || 0);
+      if (!customer.lastTripDate || new Date(b.created_at) > new Date(customer.lastTripDate)) {
+        customer.lastTripDate = b.created_at;
+      }
+      customer.trips.push({
+        bookingRef:    b.booking_ref,
+        route:         `${b.origin || '?'} to ${b.destination || '?'}`,
+        nights:        b.nights,
+        totalPrice:    b.total_price,
+        currency:      b.currency || 'KES',
+        status:        b.status,
+        bookingStage:  b.booking_stage,
+        date:          b.created_at,
+      });
+    });
+
+    const customers = Array.from(customerMap.values())
+      .sort((a, b) => b.totalSpent - a.totalSpent);
 
     return res.json({
       success: true,
@@ -392,14 +457,30 @@ async function _getDashboardData(req, res) {
         totalBookings:     (bookings || []).length,
         totalEarnings:     Math.round(totalEarnings),
         thisMonthEarnings: Math.round(thisMonthEarnings),
-        activeCustomers:   uniqueGuests.size,
+        activeCustomers:   customers.length,
         totalSearches:     (searches || []).length,
         recentSearches:    recentSearches.length,
         conversionRate:    searches?.length > 0
           ? Math.round(((bookings?.length || 0) / searches.length) * 100)
           : 0,
       },
-      bookings:       bookings || [],
+      bookings: (bookings || []).map(b => ({
+        bookingRef:   b.booking_ref,
+        guestName:    b.guest_name,
+        guestPhone:   b.guest_phone,
+        guestEmail:   b.guest_email,
+        destination:  b.destination,
+        origin:       b.origin,
+        nights:       b.nights,
+        passengers:   b.passengers,
+        totalPrice:   b.total_price,
+        currency:     b.currency || 'KES',
+        status:       b.status,
+        bookingStage: b.booking_stage,
+        channel:      b.channel,
+        createdAt:    b.created_at,
+      })),
+      customers,
       recentActivity: recentSearches.slice(0, 20),
     });
 
