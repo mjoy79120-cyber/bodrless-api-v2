@@ -75,8 +75,13 @@ const authenticateAgency = async (req, res, next) => {
     next();
 
   } catch (err) {
+    // FAIL CLOSED: an unexpected error (e.g. Supabase outage, malformed
+    // request) must never grant access. Previously this called next()
+    // unconditionally, which let requests through with no agency context
+    // whenever something broke — a real security gap now that this
+    // protects live bookings and payments.
     logger.error('Auth middleware error', { error: err.message });
-    next(); // Fail open for now — change to res.status(500) when stable
+    return res.status(500).json({ error: 'Authentication failed. Please try again.' });
   }
 };
 

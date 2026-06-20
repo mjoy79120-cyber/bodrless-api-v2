@@ -2,8 +2,13 @@
  * AGENCY ROUTES
  * ─────────────────────────────────────────────
  * Self-service agency signup and management
- * Public:    /register, /signup
- * Protected: everything else (uses x-api-key)
+ *
+ * Public:             /register, /signup, /login, /forgot-password
+ * Session-protected:  /me, /logout, /dashboard, /settings
+ *                      (uses Supabase session JWT — for the Lovable
+ *                      dashboard, logged-in agency users)
+ * API-key-protected:  /:agencyId/regenerate-key, /whatsapp/:agencyId
+ *                      (uses x-api-key — for server-side/widget use)
  * ─────────────────────────────────────────────
  */
 
@@ -14,6 +19,7 @@ const crypto = require('crypto');
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 const { authenticateAgency } = require('../middleware/auth');
+const { authenticateSession } = require('../middleware/authSession');
 
 // ─────────────────────────────────────────────
 // HELPERS
@@ -57,7 +63,6 @@ router.post('/register', async (req, res) => {
     const apiKey    = generateApiKey(agencyId);
     const widgetKey = agencyId;
 
-    // Check duplicate
     const { data: existing } = await supabase
       .from('agencies')
       .select('id')
@@ -71,7 +76,6 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    // Create Supabase Auth user
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email:         value.email,
       password:      value.password,
@@ -91,7 +95,6 @@ router.post('/register', async (req, res) => {
 
     const authUserId = authData.user.id;
 
-    // Create agency record
     const { data: agency, error: insertError } = await supabase
       .from('agencies')
       .insert({
@@ -113,12 +116,10 @@ router.post('/register', async (req, res) => {
       .single();
 
     if (insertError) {
-      // Rollback auth user
       await supabase.auth.admin.deleteUser(authUserId);
       throw insertError;
     }
 
-    // Link auth user to agency via profiles
     const { error: profileError } = await supabase
       .from('profiles')
       .insert({
@@ -146,7 +147,7 @@ router.post('/register', async (req, res) => {
         status:           agency.status,
       },
       credentials: {
-        apiKey,    // shown once only
+        apiKey,    // shown once only — for server-side widget/API use, NOT for dashboard login
         widgetKey,
       },
       integration: {
@@ -160,6 +161,300 @@ router.post('/register', async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
+
+
+// ─────────────────────────────────────────────
+// PUBLIC — LOGIN
+// POST /api/agencies/login
+// Returns a Supabase session for the Lovable dashboard to use as
+// "Authorization: Bearer <accessToken>" on session-protected routes.
+// ─────────────────────────────────────────────
+router.post('/login', async (req, res) => {
+  const schema = Joi.object({
+    email:    Joi.string().email().required(),
+    password: Joi.string().required(),
+  });
+
+  const { error, value } = schema.validate(req.body);
+  if (error) return res.status(400).json({ success: false, error: error.details[0].message });
+
+  try {
+    const { data, error: authError } = await supabase.auth.signInWithPassword({
+      email: value.email,
+      password: value.password,
+    });
+
+    if (authError) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('agency_id, role')
+      .eq('id', data.user.id)
+      .single();
+
+    if (!profile) {
+      return res.status(403).json({ success: false, error: 'No agency linked to this account' });
+    }
+
+    const { data: agency } = await supabase
+      .from('agencies')
+      .select('id, name, email, plan, status, markup_percentage, widget_key')
+      .eq('id', profile.agency_id)
+      .single();
+
+    if (agency?.status !== 'active') {
+      return res.status(403).json({ success: false, error: 'This agency account is not active' });
+    }
+
+    logger.info('Agency login', { agencyId: agency.id });
+
+    return res.json({
+      success: true,
+      session: {
+        accessToken:  data.session.access_token,
+        refreshToken: data.session.refresh_token,
+        expiresAt:    data.session.expires_at,
+      },
+      agency: {
+        id:               agency.id,
+        name:             agency.name,
+        email:            agency.email,
+        plan:             agency.plan,
+        markupPercentage: agency.markup_percentage,
+        widgetKey:        agency.widget_key,
+      },
+    });
+
+  } catch (err) {
+    logger.error('Agency login error', { error: err.message });
+    return res.status(500).json({ success: false, error: 'Login failed. Please try again.' });
+  }
+});
+
+
+// ─────────────────────────────────────────────
+// PUBLIC — REQUEST PASSWORD RESET
+// POST /api/agencies/forgot-password
+// ─────────────────────────────────────────────
+router.post('/forgot-password', async (req, res) => {
+  const schema = Joi.object({ email: Joi.string().email().required() });
+  const { error, value } = schema.validate(req.body);
+  if (error) return res.status(400).json({ success: false, error: error.details[0].message });
+
+  try {
+    await supabase.auth.resetPasswordForEmail(value.email, {
+      redirectTo: process.env.PASSWORD_RESET_REDIRECT_URL || 'https://your-lovable-app.com/reset-password',
+    });
+
+    return res.json({
+      success: true,
+      message: 'If an account exists with that email, a password reset link has been sent.',
+    });
+
+  } catch (err) {
+    logger.error('Password reset request error', { error: err.message });
+    return res.json({
+      success: true,
+      message: 'If an account exists with that email, a password reset link has been sent.',
+    });
+  }
+});
+
+
+// ─────────────────────────────────────────────
+// SESSION-PROTECTED — WHO AM I
+// GET /api/agencies/me
+// ─────────────────────────────────────────────
+router.get('/me', authenticateSession, async (req, res) => {
+  try {
+    const { data: agency } = await supabase
+      .from('agencies')
+      .select('id, name, email, phone, website, plan, status, markup_percentage, widget_key, whatsapp_phone_number_id')
+      .eq('id', req.agencyId)
+      .single();
+
+    if (!agency) return res.status(404).json({ success: false, error: 'Agency not found' });
+
+    return res.json({
+      success: true,
+      agency: {
+        id:               agency.id,
+        name:             agency.name,
+        email:            agency.email,
+        phone:            agency.phone,
+        website:          agency.website,
+        plan:             agency.plan,
+        status:           agency.status,
+        markupPercentage: agency.markup_percentage,
+        widgetKey:        agency.widget_key,
+        widgetCode:       `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${agency.widget_key}&name=${encodeURIComponent(agency.name)}"></script>`,
+        whatsappConfigured: !!agency.whatsapp_phone_number_id,
+      },
+    });
+
+  } catch (err) {
+    logger.error('Get current agency error', { error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+// ─────────────────────────────────────────────
+// SESSION-PROTECTED — LOGOUT
+// POST /api/agencies/logout
+// ─────────────────────────────────────────────
+router.post('/logout', authenticateSession, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (token) {
+      await supabase.auth.admin.signOut(token);
+    }
+    return res.json({ success: true, message: 'Logged out' });
+  } catch (err) {
+    return res.json({ success: true, message: 'Logged out' });
+  }
+});
+
+
+// ─────────────────────────────────────────────
+// SESSION-PROTECTED — DASHBOARD (for Lovable)
+// GET /api/agencies/dashboard
+// Resolves the agency from the session token — no agencyId needed
+// in the URL, unlike the legacy /dashboard/:agencyId below.
+// ─────────────────────────────────────────────
+router.get('/dashboard', authenticateSession, async (req, res) => {
+  req.params.agencyId = req.agencyId;
+  return _getDashboardData(req, res);
+});
+
+
+// ─────────────────────────────────────────────
+// LEGACY — GET DASHBOARD DATA (api-key protected)
+// GET /api/agencies/dashboard/:agencyId
+// Kept for backward compatibility with any existing integrations
+// using the api_key. New Lovable dashboard should use GET /dashboard
+// (session-protected, above) instead.
+// ─────────────────────────────────────────────
+router.get('/dashboard/:agencyId', authenticateAgency, _getDashboardData);
+
+async function _getDashboardData(req, res) {
+  const { agencyId } = req.params;
+
+  try {
+    const { data: agency } = await supabase
+      .from('agencies')
+      .select('*')
+      .eq('id', agencyId)
+      .single();
+
+    if (!agency) return res.json({ success: false, error: 'Agency not found' });
+
+    const { data: bookings } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('agency_id', agencyId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    const { data: searches } = await supabase
+      .from('trip_searches')
+      .select('*')
+      .eq('agency_id', agencyId)
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    const markupRate       = (agency.markup_percentage || 0) / 100;
+    const totalEarnings    = (bookings || []).reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
+    const thisMonthEarnings = (bookings || [])
+      .filter(b => new Date(b.created_at) > new Date(new Date().setDate(1)))
+      .reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
+
+    const uniqueGuests   = new Set((bookings || []).map(b => b.guest_phone || b.guest_email || b.guest_name));
+    const recentSearches = (searches || []).filter(s =>
+      new Date(s.created_at) > new Date(Date.now() - 24 * 60 * 60 * 1000)
+    );
+
+    return res.json({
+      success: true,
+      agency: {
+        id:               agency.id,
+        name:             agency.name,
+        email:            agency.email,
+        plan:             agency.plan,
+        markupPercentage: agency.markup_percentage,
+        widgetKey:        agency.widget_key,
+        widgetCode:       `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${agency.widget_key}&name=${encodeURIComponent(agency.name)}"></script>`,
+        whatsappWebhook:  `https://bodrless-api-v2.onrender.com/api/webhooks/whatsapp?agency_id=${agency.id}`,
+      },
+      stats: {
+        totalBookings:     (bookings || []).length,
+        totalEarnings:     Math.round(totalEarnings),
+        thisMonthEarnings: Math.round(thisMonthEarnings),
+        activeCustomers:   uniqueGuests.size,
+        totalSearches:     (searches || []).length,
+        recentSearches:    recentSearches.length,
+        conversionRate:    searches?.length > 0
+          ? Math.round(((bookings?.length || 0) / searches.length) * 100)
+          : 0,
+      },
+      bookings:       bookings || [],
+      recentActivity: recentSearches.slice(0, 20),
+    });
+
+  } catch (err) {
+    logger.error('Dashboard error', { error: err.message });
+    return res.json({ success: false, error: err.message });
+  }
+}
+
+
+// ─────────────────────────────────────────────
+// SESSION-PROTECTED — UPDATE SETTINGS (for Lovable)
+// PATCH /api/agencies/settings
+// ─────────────────────────────────────────────
+router.patch('/settings', authenticateSession, async (req, res) => {
+  req.params.agencyId = req.agencyId;
+  return _updateAgencySettings(req, res);
+});
+
+// LEGACY — api-key protected version
+router.patch('/:agencyId', authenticateAgency, _updateAgencySettings);
+
+async function _updateAgencySettings(req, res) {
+  const { agencyId } = req.params;
+
+  const schema = Joi.object({
+    name:             Joi.string().optional(),
+    email:            Joi.string().email().optional(),
+    phone:            Joi.string().optional().allow(''),
+    website:          Joi.string().uri().optional().allow(''),
+    markupPercentage: Joi.number().min(0).max(50).optional(),
+  });
+
+  const { error, value } = schema.validate(req.body);
+  if (error) return res.status(400).json({ success: false, error: error.details[0].message });
+
+  try {
+    const updates = {};
+    if (value.name)                          updates.name              = value.name;
+    if (value.email)                         updates.email             = value.email;
+    if (value.phone)                         updates.phone             = value.phone;
+    if (value.website)                       updates.website           = value.website;
+    if (value.markupPercentage !== undefined) updates.markup_percentage = value.markupPercentage;
+
+    await supabase.from('agencies').update(updates).eq('id', agencyId);
+
+    logger.info('Agency settings updated', { agencyId });
+    return res.json({ success: true, message: 'Settings updated' });
+
+  } catch (err) {
+    logger.error('Agency update error', { error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 
 // ─────────────────────────────────────────────
 // PUBLIC — SIGNUP (legacy)
@@ -234,8 +529,9 @@ router.post('/signup', async (req, res) => {
   }
 });
 
+
 // ─────────────────────────────────────────────
-// PROTECTED — REGENERATE API KEY
+// PROTECTED — REGENERATE API KEY (api-key protected — sensitive)
 // POST /api/agencies/:agencyId/regenerate-key
 // ─────────────────────────────────────────────
 router.post('/:agencyId/regenerate-key', authenticateAgency, async (req, res) => {
@@ -263,116 +559,6 @@ router.post('/:agencyId/regenerate-key', authenticateAgency, async (req, res) =>
   }
 });
 
-// ─────────────────────────────────────────────
-// PROTECTED — GET DASHBOARD DATA
-// GET /api/agencies/dashboard/:agencyId
-// ─────────────────────────────────────────────
-router.get('/dashboard/:agencyId', authenticateAgency, async (req, res) => {
-  const { agencyId } = req.params;
-
-  try {
-    const { data: agency } = await supabase
-      .from('agencies')
-      .select('*')
-      .eq('id', agencyId)
-      .single();
-
-    if (!agency) return res.json({ success: false, error: 'Agency not found' });
-
-    const { data: bookings } = await supabase
-      .from('bookings')
-      .select('*')
-      .eq('agency_id', agencyId)
-      .order('created_at', { ascending: false })
-      .limit(50);
-
-    const { data: searches } = await supabase
-      .from('trip_searches')
-      .select('*')
-      .eq('agency_id', agencyId)
-      .order('created_at', { ascending: false })
-      .limit(100);
-
-    const markupRate       = (agency.markup_percentage || 0) / 100;
-    const totalEarnings    = (bookings || []).reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
-    const thisMonthEarnings = (bookings || [])
-      .filter(b => new Date(b.created_at) > new Date(new Date().setDate(1)))
-      .reduce((sum, b) => sum + (Number(b.total_price || 0) * markupRate), 0);
-
-    const uniqueGuests   = new Set((bookings || []).map(b => b.guest_phone || b.guest_email || b.guest_name));
-    const recentSearches = (searches || []).filter(s =>
-      new Date(s.created_at) > new Date(Date.now() - 24 * 60 * 60 * 1000)
-    );
-
-    return res.json({
-      success: true,
-      agency: {
-        id:               agency.id,
-        name:             agency.name,
-        email:            agency.email,
-        plan:             agency.plan,
-        markupPercentage: agency.markup_percentage,
-        widgetKey:        agency.widget_key,
-        widgetCode:       `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${agency.widget_key}&name=${encodeURIComponent(agency.name)}"></script>`,
-        whatsappWebhook:  `https://bodrless-api-v2.onrender.com/api/webhooks/whatsapp?agency_id=${agency.id}`,
-      },
-      stats: {
-        totalBookings:     (bookings || []).length,
-        totalEarnings:     Math.round(totalEarnings),
-        thisMonthEarnings: Math.round(thisMonthEarnings),
-        activeCustomers:   uniqueGuests.size,
-        totalSearches:     (searches || []).length,
-        recentSearches:    recentSearches.length,
-        conversionRate:    searches?.length > 0
-          ? Math.round(((bookings?.length || 0) / searches.length) * 100)
-          : 0,
-      },
-      bookings:       bookings || [],
-      recentActivity: recentSearches.slice(0, 20),
-    });
-
-  } catch (err) {
-    logger.error('Dashboard error', { error: err.message });
-    return res.json({ success: false, error: err.message });
-  }
-});
-
-// ─────────────────────────────────────────────
-// PROTECTED — UPDATE AGENCY SETTINGS
-// PATCH /api/agencies/:agencyId
-// ─────────────────────────────────────────────
-router.patch('/:agencyId', authenticateAgency, async (req, res) => {
-  const { agencyId } = req.params;
-
-  const schema = Joi.object({
-    name:             Joi.string().optional(),
-    email:            Joi.string().email().optional(),
-    phone:            Joi.string().optional().allow(''),
-    website:          Joi.string().uri().optional().allow(''),
-    markupPercentage: Joi.number().min(0).max(50).optional(),
-  });
-
-  const { error, value } = schema.validate(req.body);
-  if (error) return res.status(400).json({ success: false, error: error.details[0].message });
-
-  try {
-    const updates = {};
-    if (value.name)                          updates.name              = value.name;
-    if (value.email)                         updates.email             = value.email;
-    if (value.phone)                         updates.phone             = value.phone;
-    if (value.website)                       updates.website           = value.website;
-    if (value.markupPercentage !== undefined) updates.markup_percentage = value.markupPercentage;
-
-    await supabase.from('agencies').update(updates).eq('id', agencyId);
-
-    logger.info('Agency settings updated', { agencyId });
-    return res.json({ success: true, message: 'Settings updated' });
-
-  } catch (err) {
-    logger.error('Agency update error', { error: err.message });
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 // ─────────────────────────────────────────────
 // PROTECTED — GET WIDGET CODE
@@ -400,6 +586,7 @@ router.get('/widget-code/:agencyId', authenticateAgency, async (req, res) => {
     return res.json({ success: false, error: err.message });
   }
 });
+
 
 // ─────────────────────────────────────────────
 // PROTECTED — UPDATE WHATSAPP NUMBER
