@@ -32,6 +32,12 @@ const { logger } = require('../utils/logger');
 const MOCK_NOTIFY_NUMBER = '254716098296';
 const MOCK_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 
+// Demo/public-facing agency IDs that should be able to SEARCH (orchestrate)
+// but never actually book — these API keys are visible in public-facing
+// frontend code (e.g. the landing page playground), so booking must be
+// blocked at the route level regardless of what the client sends.
+const DEMO_ONLY_AGENCY_IDS = new Set(['bodrless-demo']);
+
 // ─────────────────────────────────────────────
 // ORCHESTRATE
 // ─────────────────────────────────────────────
@@ -126,6 +132,17 @@ router.post('/book-init', async (req, res) => {
   const { error, value } = schema.validate(req.body);
   if (error) {
     return res.status(400).json({ success: false, error: error.details[0].message });
+  }
+
+  // Block booking for demo/public-facing agency keys — these are visible
+  // in published frontend code (e.g. the landing page playground) and
+  // must only ever be able to search, never book.
+  if (value.agencyId && DEMO_ONLY_AGENCY_IDS.has(value.agencyId)) {
+    return res.status(403).json({
+      success: false,
+      error: 'This is a demo account for search only. Sign up for a real agency account to make bookings.',
+      code: 'DEMO_ACCOUNT_BOOKING_BLOCKED',
+    });
   }
 
   const bookingRef = `BDR-${Date.now()}`;
