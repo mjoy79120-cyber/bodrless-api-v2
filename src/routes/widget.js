@@ -512,6 +512,9 @@ router.get('/', (req, res) => {
   '                 " | " + fmtTime(transport.departureTime) + " - " + fmtTime(transport.arrivalTime);\n' +
   '    if (transport.stops) tSub += " | " + transport.stops;\n' +
   '    if (transport.cabinClass) tSub += " | " + transport.cabinClass;\n' +
+  '    if (!isbus && transport.baggageSummary) tSub += " | " + transport.baggageSummary;\n' +
+  '    if (transport.policySummary) tSub += " | " + transport.policySummary;\n' +
+  '    else if (isbus && transport.cancellationPolicy) tSub += " | " + transport.cancellationPolicy;\n' +
   '    tSub += " | " + fmtPrice(transport.price, transport.currency);\n' +
   '    pkgBody.appendChild(makeRow(tLabel, tName, tSub));\n' +
   '  }\n' +
@@ -524,6 +527,9 @@ router.get('/', (req, res) => {
   '    var rtSub   = (returnTransport.origin || "TBC") + " \u2192 " + (returnTransport.destination || "TBC") +\n' +
   '                  " | " + fmtTime(returnTransport.departureTime) + " - " + fmtTime(returnTransport.arrivalTime);\n' +
   '    if (returnTransport.stops) rtSub += " | " + returnTransport.stops;\n' +
+  '    if (!isRetBus && returnTransport.baggageSummary) rtSub += " | " + returnTransport.baggageSummary;\n' +
+  '    if (returnTransport.policySummary) rtSub += " | " + returnTransport.policySummary;\n' +
+  '    else if (isRetBus && returnTransport.cancellationPolicy) rtSub += " | " + returnTransport.cancellationPolicy;\n' +
   '    rtSub += " | " + fmtPrice(returnTransport.price, returnTransport.currency);\n' +
   '    pkgBody.appendChild(makeRow(rtLabel, rtName, rtSub));\n' +
   '  }\n' +
@@ -536,13 +542,18 @@ router.get('/', (req, res) => {
   '    if (nights > 0) hSub += " | " + nights + " nights | " + fmtPrice(hotel.pricePerNight, hotel.currency) + "/night";\n' +
   '    if (hotel.rating) hSub += " | Rating: " + hotel.rating + "/5";\n' +
   '    if (hotel.mealPlan) hSub += " | " + hotel.mealPlan;\n' +
-  '    if (hotel.isRefundable === false) hSub += " | \u26a0\ufe0f Non-refundable";\n' +
+  '    hSub += " | " + (hotel.policySummary || (hotel.isRefundable === false ? "\u26a0\ufe0f Non-refundable" : "Refund terms confirmed at booking"));\n' +
   '    pkgBody.appendChild(makeRow("Hotel", hName, hSub));\n' +
   '  }\n' +
 
-  // Transfer — only if present
-  '  if (transfers && transfers.provider) {\n' +
-  '    pkgBody.appendChild(makeRow("Transfer", transfers.provider, (transfers.vehicleType || "Car") + " | " + fmtPrice(transfers.price, transfers.currency)));\n' +
+  // Transfers — now an array of legs (departure + arrival)
+  '  var transferList = Array.isArray(transfers) ? transfers : (transfers ? [transfers] : []);\n' +
+  '  if (transferList.length > 0) {\n' +
+  '    var transferSub = transferList.map(function(t) {\n' +
+  '      var legLabel = t.legType === "departure" ? "Departure" : t.legType === "arrival" ? "Arrival" : (t.provider || "Transfer");\n' +
+  '      return legLabel + ": " + (t.description || t.location || "TBC") + " (" + fmtPrice(t.price, t.currency) + ")";\n' +
+  '    }).join(" | ");\n' +
+  '    pkgBody.appendChild(makeRow("Transfer", transferList[0].provider || "Bodrless Standard Transfer", transferSub));\n' +
   '  }\n' +
 
   '  var pkgFooter = document.createElement("div");\n' +

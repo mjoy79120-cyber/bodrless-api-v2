@@ -81,6 +81,10 @@ class WhatsAppService {
       lines.push(`  Departs: ${this._formatTime(transport.departureTime)} · Arrives: ${this._formatTime(transport.arrivalTime)}`);
       if (transport.stops) lines.push(`  Stops: ${transport.stops}`);
       if (transport.cabinClass) lines.push(`  Class: ${transport.cabinClass}`);
+      if (!isbus && transport.baggageSummary) lines.push(`  Baggage: ${transport.baggageSummary}`);
+      if (transport.policySummary || transport.cancellationPolicy) {
+        lines.push(`  Cancellation: ${transport.policySummary || (isbus ? transport.cancellationPolicy : null) || 'Confirmed at booking'}`);
+      }
       lines.push(`  Price: ${tCurrency} ${(transport.price || 0).toLocaleString()}`);
     }
 
@@ -94,6 +98,10 @@ class WhatsAppService {
       lines.push(`  From: ${returnTransport.origin || 'TBC'} → ${returnTransport.destination || 'TBC'}`);
       lines.push(`  Departs: ${this._formatTime(returnTransport.departureTime)} · Arrives: ${this._formatTime(returnTransport.arrivalTime)}`);
       if (returnTransport.stops) lines.push(`  Stops: ${returnTransport.stops}`);
+      if (!isbus && returnTransport.baggageSummary) lines.push(`  Baggage: ${returnTransport.baggageSummary}`);
+      if (returnTransport.policySummary || returnTransport.cancellationPolicy) {
+        lines.push(`  Cancellation: ${returnTransport.policySummary || (isbus ? returnTransport.cancellationPolicy : null) || 'Confirmed at booking'}`);
+      }
       lines.push(`  Price: ${rtCurrency} ${(returnTransport.price || 0).toLocaleString()}`);
     }
 
@@ -107,18 +115,20 @@ class WhatsAppService {
       if (hotel.location) lines.push(`  Location: ${hotel.location}`);
       if (hotel.rating)   lines.push(`  Rating: ${hotel.rating}/5`);
       if (hotel.mealPlan) lines.push(`  Meal plan: ${hotel.mealPlan}`);
-      if (hotel.isRefundable === false) lines.push(`  ⚠️ Non-refundable rate`);
+      lines.push(`  Cancellation: ${hotel.policySummary || (hotel.isRefundable === false ? 'Non-refundable rate' : 'Confirmed at booking')}`);
       lines.push(`  ${hCurrency} ${(hotel.pricePerNight || 0).toLocaleString()}/night × ${summary.nights || 1} nights`);
     }
 
-    // ── Transfer (only if present) ──────────────────
-    if (transfers && (transfers.provider || transfers.vehicleType)) {
-      const trCurrency = transfers.currency || 'KES';
+    // ── Transfers (now an array of legs — departure + arrival) ──
+    const transferList = Array.isArray(transfers) ? transfers : (transfers ? [transfers] : []);
+    if (transferList.length > 0) {
       lines.push('');
       lines.push('*🚗 Transfer*');
-      lines.push(`  Provider: ${transfers.provider || 'TBC'}`);
-      lines.push(`  Vehicle: ${transfers.vehicleType || 'Car'}`);
-      lines.push(`  Price: ${trCurrency} ${(transfers.price || 0).toLocaleString()}`);
+      transferList.forEach(t => {
+        const trCurrency = t.currency || 'KES';
+        const legLabel = t.legType === 'departure' ? 'Departure' : t.legType === 'arrival' ? 'Arrival' : (t.provider || 'TBC');
+        lines.push(`  ${legLabel}: ${t.description || t.location || 'TBC'} — ${trCurrency} ${(t.price || 0).toLocaleString()}`);
+      });
     }
 
     // ── Total (always canonical currency — KES) ──────
