@@ -6,7 +6,9 @@
  *
  * Supports: Multi-modal legs (e.g., bus going, flight returning),
  * English, Swahili, shorthand, vague requests,
- * accessibility needs, meal plans, seat preferences.
+ * accessibility needs, meal plans, seat preferences, fuzzy/typo
+ * tolerant city matching, and explicit origin-clarification when
+ * the traveler doesn't state where they're departing from.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -154,12 +156,12 @@ async function parsePrompt(prompt) {
     parsed.mealPlan = parsed.mealPlan || _detectMealPlan(prompt);
     parsed.trainClass = parsed.trainClass || _detectTrainClass(prompt);
     parsed.timePreference = parsed.timePreference || _detectTimePreference(prompt);
-    
+
     // Multi-modal fallback overlay
     const { outbound, returnLeg } = _detectMultiModalTransport(prompt);
     parsed.outboundTransportMode = parsed.outboundTransportMode || outbound;
     parsed.returnTransportMode = parsed.returnTransportMode || returnLeg;
-    
+
     // Legacy mapping for generic searches
     if (!parsed.outboundTransportMode && parsed.transportMode) {
         parsed.outboundTransportMode = parsed.transportMode;
@@ -248,14 +250,12 @@ function _detectMultiModalTransport(prompt) {
   let outbound = null;
   let returnLeg = null;
 
-  // Look for splitting keywords
   const returnMatch = lower.match(/(return|back|kurudi|coming back).{0,30}(flight|fly|bus|train|drive|ndege|basi|treni)/);
   const outMatch = lower.match(/(go|going|kwenda|departing).{0,30}(flight|fly|bus|train|drive|ndege|basi|treni)/);
 
   if (returnMatch) returnLeg = _detectTransportMode(returnMatch[2]);
   if (outMatch) outbound = _detectTransportMode(outMatch[2]);
 
-  // If we only caught generic transport keywords without directions
   if (!outbound && !returnLeg) {
     const general = _detectTransportMode(lower);
     outbound = general;
@@ -268,6 +268,60 @@ function _detectMultiModalTransport(prompt) {
 function _resolveBusSeatPosition(seatPreference) {
   if (!seatPreference) return null;
   return BUS_SEAT_POSITIONS[seatPreference] || null;
+}
+
+// ─────────────────────────────────────────────
+// FUZZY CITY MATCHING
+// Tolerates typos ("zanibar" -> "zanzibar", "mombsa" -> "mombasa")
+// using Levenshtein distance, so a small spelling mistake doesn't
+// silently fail a search the way an unrecognized city name would.
+// ─────────────────────────────────────────────
+function _levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+function _fuzzyMatchCity(input, candidates) {
+  let best = null;
+  let bestDistance = Infinity;
+
+  for (const candidate of candidates) {
+    const distance = _levenshtein(input, candidate);
+    const maxAllowed = candidate.length <= 5 ? 1 : candidate.length <= 9 ? 2 : 3;
+    if (distance <= maxAllowed && distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+function _resolveCityFuzzy(rawToken, sortedCities) {
+  if (!rawToken) return null;
+  const cleaned = rawToken.trim();
+
+  for (const city of sortedCities) {
+    if (cleaned.includes(city)) return city;
+  }
+
+  const words = cleaned.split(/\s+/).filter(w => w.length > 2);
+  for (const word of words) {
+    const match = _fuzzyMatchCity(word, sortedCities);
+    if (match) return match;
+  }
+
+  return _fuzzyMatchCity(cleaned, sortedCities);
 }
 
 // ─────────────────────────────────────────────
@@ -285,7 +339,7 @@ Prompt: "${prompt}"
 
 Return JSON:
 {
-  "origin": "full city name in lowercase",
+  "origin": "full city name in lowercase, or null if not stated",
   "destination": "full city name in lowercase",
   "departureDate": "YYYY-MM-DD or null",
   "returnDate": "YYYY-MM-DD or null",
@@ -306,8 +360,9 @@ Return JSON:
 RULES:
 - CRITICAL: Pay attention to directional transport. If a user says "bus going and flight coming back", set outboundTransportMode="bus" and returnTransportMode="flight".
 - If only one transport mode is mentioned (e.g. "fly to Mombasa"), apply it to both outbound and return.
-- origin = where they are coming FROM (default nairobi for Kenya context).
+- origin = where they are coming FROM. If the prompt does NOT clearly state where the traveler is departing from, set origin to null — do NOT guess or default to any city. We will ask the traveler to clarify separately.
 - destination = where they want to GO.
+- If a city name appears to be a misspelling of a real city (e.g. "zanibar", "mombsa", "nairobii"), correct it to the real city name in your response rather than treating it as unrecognized.
 - Today: ${new Date().toISOString().split('T')[0]}
 - "next week" = ${_addDaysStr(7)}
 - "next month" = ${_addDaysStr(30)}
@@ -331,7 +386,10 @@ RULES:
   const cleaned = content.replace(/```json|```/g, '').trim();
   const parsed = JSON.parse(cleaned);
 
-  if (!parsed.origin) parsed.origin = 'nairobi';
+  // NOTE: no longer defaulting origin to 'nairobi' here — a missing
+  // origin is now a real signal (needsOriginClarification, set in
+  // _enrichParams) rather than a silently guessed value. A traveler
+  // could genuinely be coming from Kigali, London, or anywhere else.
 
   return parsed;
 }
@@ -378,30 +436,32 @@ function _parseWithRules(prompt) {
   if (fromToMatch) {
     const fromCity = fromToMatch[1].trim();
     const toCity = fromToMatch[2].trim();
-    for (const city of sortedCities) {
-      if (fromCity.includes(city) && !origin) origin = city;
-      if (toCity.includes(city) && !destination) destination = city;
-    }
+    // Use fuzzy matching so a typo in either city doesn't silently fail
+    origin = _resolveCityFuzzy(fromCity, sortedCities) || origin;
+    destination = _resolveCityFuzzy(toCity, sortedCities) || destination;
   }
 
   if (kwendaMatch && !destination) {
     const toCity = kwendaMatch[1].trim();
-    for (const city of sortedCities) {
-      if (toCity.includes(city)) { destination = city; break; }
-    }
+    destination = _resolveCityFuzzy(toCity, sortedCities) || destination;
   }
 
   if (!destination) {
-    for (const city of sortedCities) {
-      if (lower.includes(city)) {
-        if (!origin) origin = city;
-        else if (city !== origin) { destination = city; break; }
+    const words = lower.split(/\s+/).filter(w => w.length > 2);
+    for (const word of words) {
+      const match = _fuzzyMatchCity(word, sortedCities) ||
+        sortedCities.find(city => word.includes(city) || city.includes(word));
+      if (match) {
+        if (!origin) origin = match;
+        else if (match !== origin) { destination = match; break; }
       }
     }
     if (origin && !destination) { destination = origin; origin = null; }
   }
 
-  if (!origin) origin = 'nairobi';
+  // CHANGED: no longer silently defaulting origin to 'nairobi'. A missing
+  // origin is now left as null and surfaced as a clarification need in
+  // _enrichParams, since the traveler could be coming from anywhere.
 
   const preferences = [];
   if (lower.match(/beach|coast|ocean|bahari|pwani/)) preferences.push('beach');
@@ -415,7 +475,7 @@ function _parseWithRules(prompt) {
   const mealPlan = _detectMealPlan(lower);
   const trainClass = _detectTrainClass(lower);
   const timePreference = _detectTimePreference(lower);
-  
+
   const { outbound, returnLeg } = _detectMultiModalTransport(lower);
   const busSeatPosition = _resolveBusSeatPosition(seatPreference);
 
@@ -510,6 +570,11 @@ function _resolveRelativeDate(prompt) {
 // ENRICH PARAMS
 // ─────────────────────────────────────────────
 function _enrichParams(parsed) {
+  // Origin is now allowed to be genuinely unknown — surfaced as a flag
+  // the engine checks before running any supplier search, so it can
+  // ask "Where are you traveling from?" instead of silently guessing.
+  const needsOriginClarification = !parsed.origin;
+
   const originCode = _resolveToCode(parsed.origin);
   const destinationCode = _resolveToCode(parsed.destination);
 
@@ -525,12 +590,13 @@ function _enrichParams(parsed) {
     ...parsed,
     originCode,
     destinationCode,
-    origin: parsed.origin,
+    origin: parsed.origin || null,
     destination: parsed.destination,
     nights,
     returnDate,
     requiresFlight,
     requiresBus,
+    needsOriginClarification,
     passengers: parsed.passengers || 1,
     budget: parsed.budget || 'mid',
     accessibility: parsed.accessibility || false,
