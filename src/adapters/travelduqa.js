@@ -35,7 +35,6 @@ class TravelDuqaAdapter {
   async search({ origin, destination, date, returnDate = null, passengers = 1,
                  cabinClass = 'economy', timePreference = null, children = 0, infants = 0 }) {
     try {
-      // ── CRITICAL DEBUG: Check if the orchestrator is even triggering this ──
       console.log('CRITICAL: TravelDuqa search invoked with:', { origin, destination, date });
 
       logger.info('TravelDuqa: searching flights', { origin, destination, date });
@@ -45,7 +44,6 @@ class TravelDuqaAdapter {
         this._resolveIata(destination),
       ]);
 
-      // ── CRITICAL DEBUG: Verify if IATA codes successfully resolved ──
       console.log('CRITICAL: Resolved IATA codes:', { depIata, arrIata });
 
       if (!depIata || !arrIata) {
@@ -56,7 +54,6 @@ class TravelDuqaAdapter {
 
       const flightType = returnDate ? 'return' : 'oneway';
 
-      // ── DEBUG: log exact request ──
       console.log('TRAVELDUQA REQUEST PAYLOAD:', JSON.stringify({
         token: this.token ? `${this.token.slice(0, 8)}...` : 'MISSING',
         version: this.version,
@@ -88,7 +85,6 @@ class TravelDuqaAdapter {
         { headers: this._headers(), timeout: this.searchTimeout }
       );
 
-      // ── DEBUG: log raw response ──
       console.log('TRAVELDUQA RAW RESPONSE:', JSON.stringify(response.data, null, 2));
 
       const offers   = response.data?.data       || [];
@@ -100,7 +96,6 @@ class TravelDuqaAdapter {
     } catch (err) {
       const isTimeout = err.code === 'ECONNABORTED' || err.message?.includes('timeout');
 
-      // ── DEBUG: log full error detail ──
       console.log('TRAVELDUQA ERROR DETAIL:', JSON.stringify({
         message: err.message,
         isTimeout,
@@ -129,6 +124,8 @@ class TravelDuqaAdapter {
         { result_id: resultId, offer_id: offerId },
         { headers: this._headers(), timeout: this.timeout }
       );
+
+      console.log('TRAVELDUQA SELECTOFFER RAW RESPONSE:', JSON.stringify(response.data, null, 2));
 
       return this._normalizeSingleOffer(response.data);
 
@@ -493,11 +490,18 @@ class TravelDuqaAdapter {
 
   // ─────────────────────────────────────────────
   // IATA RESOLVER
+  // Now with fuzzy/typo-tolerant matching: if an exact match isn't
+  // found in the hardcoded map or the live location cache, falls back
+  // to a small edit-distance check against known city names so minor
+  // typos ("zanibar", "mombsa") still resolve correctly instead of
+  // silently failing the whole search.
   // ─────────────────────────────────────────────
   async _resolveIata(cityName) {
     if (!cityName) return null;
 
-    const hardcoded = this._iataMap()[cityName.toLowerCase().trim()];
+    const normalized = cityName.toLowerCase().trim();
+
+    const hardcoded = this._iataMap()[normalized];
     if (hardcoded) return hardcoded;
 
     try {
@@ -511,17 +515,75 @@ class TravelDuqaAdapter {
         }
       }
 
-      return this._iataCache[cityName.toLowerCase().trim()] || null;
+      const exact = this._iataCache[normalized];
+      if (exact) return exact;
+
+      // Fuzzy fallback — try the hardcoded map first (cheap, no API
+      // dependency), then the live cache, using small edit-distance
+      // tolerance so a typo like "zanibar" still matches "zanzibar".
+      const fuzzyFromMap = this._fuzzyMatch(normalized, Object.keys(this._iataMap()));
+      if (fuzzyFromMap) {
+        logger.info('TravelDuqa: fuzzy-matched city name', { input: cityName, matched: fuzzyFromMap });
+        return this._iataMap()[fuzzyFromMap];
+      }
+
+      const fuzzyFromCache = this._fuzzyMatch(normalized, Object.keys(this._iataCache));
+      if (fuzzyFromCache) {
+        logger.info('TravelDuqa: fuzzy-matched city name (live cache)', { input: cityName, matched: fuzzyFromCache });
+        return this._iataCache[fuzzyFromCache];
+      }
+
+      return null;
 
     } catch {
-      return null;
+      // Even if the live location lookup fails entirely, still try a
+      // fuzzy match against the hardcoded map before giving up.
+      const fuzzyFromMap = this._fuzzyMatch(normalized, Object.keys(this._iataMap()));
+      return fuzzyFromMap ? this._iataMap()[fuzzyFromMap] : null;
     }
+  }
+
+  // Simple Levenshtein distance — small, dependency-free, good enough
+  // for catching single-letter typos in short city names.
+  _levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  // Finds the closest candidate within an allowed distance that scales
+  // with word length, so short names need a near-exact match while
+  // longer names tolerate a couple of typo'd characters.
+  _fuzzyMatch(input, candidates) {
+    let best = null;
+    let bestDistance = Infinity;
+
+    for (const candidate of candidates) {
+      const distance = this._levenshtein(input, candidate);
+      const maxAllowed = candidate.length <= 5 ? 1 : candidate.length <= 9 ? 2 : 3;
+      if (distance <= maxAllowed && distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+
+    return best;
   }
 
   _iataMap() {
     return {
       'nairobi': 'NBO', 'jkia': 'NBO', 'mombasa': 'MBA', 'kisumu': 'KIS',
-      'eldoret': 'EDL', 'lamu': 'LAU', 'malindi': 'MYD', 'ukunda': 'UKA',
+      'eldoret': 'EDL', 'lamu': 'LAU', 'malindi': 'MYD',
+      'ukunda': 'UKA', 'diani': 'UKA', 'diani beach': 'UKA',
       'lodwar': 'LOK', 'wajir': 'WJR', 'kitale': 'KTL', 'kakamega': 'GGM',
       'wilson': 'WIL', 'dar es salaam': 'DAR', 'zanzibar': 'ZNZ',
       'kilimanjaro': 'JRO', 'arusha': 'ARK', 'mwanza': 'MWZ',
