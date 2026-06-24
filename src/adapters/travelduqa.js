@@ -53,21 +53,24 @@ class TravelDuqaAdapter {
 
       const flightType = returnDate ? 'return' : 'oneway';
 
-      const payload = {
-        journey: {
-          flight_type:    flightType,
-          cabin_class:    cabinClass,
-          depature:      depIata,                // FIXED: spelling
-          arrival:        arrIata,
-          depature_date: this._formatDate(date), // FIXED: spelling
-          arrival_date:   returnDate ? this._formatDate(returnDate) : "", // FIXED: Removed hyphen
-          adult_count:    passengers,
-          child_count:    children,
-          infant_count:   infants,
-          currency:       'KES',
-          page:           { length: 10 },         // FIXED: Passed as integer
-        },
-      };
+      const journey = {
+  flight_type: flightType,
+  cabin_class: cabinClass,
+  depature: depIata,
+  arrival: arrIata,
+  depature_date: this._formatDate(date),
+  adult_count: passengers,
+  child_count: children,
+  infant_count: infants,
+  currency: 'KES',
+  page: { length: 10 }
+};
+
+if (returnDate) {
+  journey.arrival_date = this._formatDate(returnDate);
+}
+
+const payload = { journey };
 
       console.log('TRAVELDUQA REQUEST PAYLOAD:', JSON.stringify({
         token: this.token ? `${this.token.slice(0, 8)}...` : 'MISSING',
@@ -215,7 +218,7 @@ class TravelDuqaAdapter {
       }
       throw err;
     }
-  }
+  } yu7654312qA\
 
   // ─────────────────────────────────────────────
   // GET BOOKING STATUS
