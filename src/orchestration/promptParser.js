@@ -1,25 +1,30 @@
-/** * PROMPT PARSER 
- * ───────────────────────────────────────────────────────────── 
- * Converts natural language traveler prompts into structured 
- * trip parameters the orchestration engine can work with. 
- * * Supports: Multi-modal legs (e.g., bus going, flight returning), 
- * English, Swahili, shorthand, vague requests, 
- * accessibility needs, meal plans, seat preferences, fuzzy/typo 
- * tolerant city matching, explicit origin-clarification when 
- * the traveler doesn't state where they're departing from, and 
- * multi-destination itineraries (e.g. "5 days Maasai Mara then 
- * 4 days Mombasa"). 
- * * NOTE on CITY_CODES: this map is only for places that ARE 
- * themselves airports/cities (Nairobi, Mombasa, Zanzibar, London, 
- * Dubai, etc.) — used purely to detect bus-route eligibility and 
- * give a quick code hint. Destinations that are NOT airports 
- * (Maasai Mara, Amboseli, Kilifi, Watamu, Diani, Naivasha, etc.) 
- * are intentionally NOT in this map. Those are resolved via 
- * destinationIntel.js, which knows the real per-mode access 
- * pattern (e.g. Maasai Mara requires a charter/airstrip, Kilifi 
- * is reached via Mombasa + transfer) — conflating "destination" 
- * with "airport" for those was the original architectural bug. 
- * ───────────────────────────────────────────────────────────── */
+/**
+ * PROMPT PARSER
+ * ─────────────────────────────────────────────────────────────
+ * Converts natural language traveler prompts into structured
+ * trip parameters the orchestration engine can work with.
+ *
+ * Supports: Multi-modal legs (e.g., bus going, flight returning),
+ * English, Swahili, shorthand, vague requests,
+ * accessibility needs, meal plans, seat preferences, fuzzy/typo
+ * tolerant city matching, explicit origin-clarification when
+ * the traveler doesn't state where they're departing from, and
+ * multi-destination itineraries (e.g. "5 days Maasai Mara then
+ * 4 days Mombasa").
+ *
+ * NOTE on CITY_CODES: this map is only for places that ARE
+ * themselves airports/cities (Nairobi, Mombasa, Zanzibar, London,
+ * Dubai, etc.) — used purely to detect bus-route eligibility and
+ * give a quick code hint. Destinations that are NOT airports
+ * (Maasai Mara, Amboseli, Kilifi, Watamu, Diani, Naivasha, etc.)
+ * are intentionally NOT in this map. Those are resolved via
+ * destinationIntel.js, which knows the real per-mode access
+ * pattern (e.g. Maasai Mara requires a charter/airstrip, Kilifi
+ * is reached via Mombasa + transfer) — conflating "destination"
+ * with "airport" for those was the original architectural bug.
+ * ─────────────────────────────────────────────────────────────
+ */
+
 const axios = require('axios');
 const { logger } = require('../utils/logger');
 
@@ -33,12 +38,14 @@ const CITY_CODES = {
   'kampala': 'EBB', 'entebbe': 'EBB',
   'addis ababa': 'ADD', 'addis': 'ADD', 'add': 'ADD',
   'arusha': 'ARK',
+
   // WEST AFRICA
   'lagos': 'LOS', 'los': 'LOS',
   'accra': 'ACC', 'acc': 'ACC',
   'dakar': 'DKR',
   'abidjan': 'ABJ',
   'douala': 'DLA',
+
   // SOUTHERN AFRICA
   'johannesburg': 'JNB', 'jnb': 'JNB', 'joburg': 'JNB', 'jozi': 'JNB', 'jhb': 'JNB',
   'cape town': 'CPT', 'cpt': 'CPT', 'capetown': 'CPT', 'cape': 'CPT',
@@ -47,6 +54,7 @@ const CITY_CODES = {
   'lusaka': 'LUN',
   'harare': 'HRE',
   'durban': 'DUR',
+
   // NORTH AFRICA
   'cairo': 'CAI', 'cai': 'CAI',
   'casablanca': 'CMN', 'cmn': 'CMN', 'casa': 'CMN',
@@ -54,6 +62,7 @@ const CITY_CODES = {
   'tunis': 'TUN',
   'sharm el sheikh': 'SSH', 'sharm': 'SSH',
   'hurghada': 'HRG',
+
   // MIDDLE EAST
   'dubai': 'DXB', 'dxb': 'DXB',
   'abu dhabi': 'AUH',
@@ -61,6 +70,7 @@ const CITY_CODES = {
   'riyadh': 'RUH',
   'muscat': 'MCT',
   'istanbul': 'IST',
+
   // ASIA
   'bangkok': 'BKK', 'bkk': 'BKK',
   'bali': 'DPS', 'denpasar': 'DPS',
@@ -75,6 +85,7 @@ const CITY_CODES = {
   'hong kong': 'HKG',
   'chiang mai': 'CNX',
   'phuket': 'HKT',
+
   // EUROPE
   'london': 'LHR', 'lhr': 'LHR',
   'paris': 'CDG', 'cdg': 'CDG',
@@ -90,6 +101,7 @@ const CITY_CODES = {
   'lisbon': 'LIS',
   'athens': 'ATH',
   'prague': 'PRG',
+
   // AMERICAS
   'new york': 'JFK', 'nyc': 'JFK', 'jfk': 'JFK',
   'miami': 'MIA', 'mia': 'MIA',
@@ -102,6 +114,10 @@ const CITY_CODES = {
   'bogota': 'BOG',
 };
 
+// Destinations that are NOT airports themselves — used only by the
+// rules-based multi-destination fallback to recognize leg names
+// when Gemini is unavailable. Resolution of HOW to actually reach
+// them is destinationIntel.js's job, not this list's.
 const KNOWN_NON_AIRPORT_DESTINATIONS = [
   'maasai mara', 'masai mara', 'mara',
   'amboseli', 'ol pejeta', 'samburu', 'tsavo', 'lake nakuru',
@@ -148,7 +164,15 @@ const BUS_SEAT_POSITIONS = {
 async function parsePrompt(prompt) {
   try {
     const parsed = await _parseWithGemini(prompt);
-    
+
+    // ─────────────────────────────────────────────
+    // MULTI-DESTINATION BRANCH
+    // Gemini returns isMultiDestination + legs[] in the same
+    // call as the normal single-destination shape. If it set
+    // this flag, return early with the multi-destination shape
+    // — none of the single-destination detection below applies
+    // to a multi-leg itinerary.
+    // ─────────────────────────────────────────────
     if (parsed.isMultiDestination && Array.isArray(parsed.legs) && parsed.legs.length >= 2) {
       return _enrichMultiDestinationParams(parsed);
     }
@@ -183,7 +207,11 @@ async function parsePrompt(prompt) {
     return _enrichParams(parsed);
   } catch (error) {
     logger.warn('Gemini parsing failed, falling back to rule-based parser', { error: error.message });
-    
+
+    // Rule-based multi-destination check runs first — if Gemini is
+    // down, a multi-destination prompt should still be recognized
+    // as one, not silently collapsed into a broken single-destination
+    // parse.
     const multiDest = _detectMultiDestinationRules(prompt);
     if (multiDest) {
       return _enrichMultiDestinationParams(multiDest);
@@ -197,6 +225,7 @@ async function parsePrompt(prompt) {
 // ─────────────────────────────────────────────
 // DETECTION FUNCTIONS
 // ─────────────────────────────────────────────
+
 function _detectAccessibility(prompt) {
   const lower = prompt.toLowerCase();
   return ACCESSIBILITY_KEYWORDS.some(keyword => lower.includes(keyword));
@@ -240,7 +269,11 @@ function _detectTimePreference(prompt) {
   if (lower.match(/morning|early|asubuhi|alfajiri|6am|7am|8am|9am|10am|11am/)) return 'morning';
   if (lower.match(/afternoon|mchana|alasiri|12pm|1pm|2pm|3pm|4pm/)) return 'afternoon';
   if (lower.match(/evening|jioni|5pm|6pm|7pm|8pm/)) return 'evening';
-  if (lower.match(/night|usiku|late|9pm|10pm|11pm|midnight/)) return 'night';
+  // FIX: word boundary on "night" — without it, "3 nights" (a duration)
+  // was matching as a "night" time-of-day preference, which then made
+  // _filterByTime() in travelduqa.js silently reject every flight that
+  // didn't depart between 21:00-05:00 EAT, even normal daytime flights.
+  if (lower.match(/\bnight\b|usiku|late|9pm|10pm|11pm|midnight/)) return 'night';
   return null;
 }
 
@@ -257,15 +290,19 @@ function _detectMultiModalTransport(prompt) {
   const lower = prompt.toLowerCase();
   let outbound = null;
   let returnLeg = null;
+
   const returnMatch = lower.match(/(return|back|kurudi|coming back).{0,30}(flight|fly|bus|train|drive|ndege|basi|treni)/);
   const outMatch = lower.match(/(go|going|kwenda|departing).{0,30}(flight|fly|bus|train|drive|ndege|basi|treni)/);
+
   if (returnMatch) returnLeg = _detectTransportMode(returnMatch[2]);
   if (outMatch) outbound = _detectTransportMode(outMatch[2]);
+
   if (!outbound && !returnLeg) {
     const general = _detectTransportMode(lower);
     outbound = general;
     returnLeg = general;
   }
+
   return { outbound, returnLeg };
 }
 
@@ -276,6 +313,9 @@ function _resolveBusSeatPosition(seatPreference) {
 
 // ─────────────────────────────────────────────
 // FUZZY CITY MATCHING
+// Tolerates typos ("zanibar" -> "zanzibar", "mombsa" -> "mombasa")
+// using Levenshtein distance, so a small spelling mistake doesn't
+// silently fail a search the way an unrecognized city name would.
 // ─────────────────────────────────────────────
 function _levenshtein(a, b) {
   const m = a.length, n = b.length;
@@ -295,6 +335,7 @@ function _levenshtein(a, b) {
 function _fuzzyMatchCity(input, candidates) {
   let best = null;
   let bestDistance = Infinity;
+
   for (const candidate of candidates) {
     const distance = _levenshtein(input, candidate);
     const maxAllowed = candidate.length <= 5 ? 1 : candidate.length <= 9 ? 2 : 3;
@@ -303,20 +344,24 @@ function _fuzzyMatchCity(input, candidates) {
       bestDistance = distance;
     }
   }
+
   return best;
 }
 
 function _resolveCityFuzzy(rawToken, sortedCities) {
   if (!rawToken) return null;
   const cleaned = rawToken.trim();
+
   for (const city of sortedCities) {
     if (cleaned.includes(city)) return city;
   }
+
   const words = cleaned.split(/\s+/).filter(w => w.length > 2);
   for (const word of words) {
     const match = _fuzzyMatchCity(word, sortedCities);
     if (match) return match;
   }
+
   return _fuzzyMatchCity(cleaned, sortedCities);
 }
 
@@ -329,7 +374,13 @@ async function _parseWithGemini(prompt) {
     {
       contents: [{
         parts: [{
-          text: `You are a travel booking assistant for East Africa. Extract trip details from this prompt and return ONLY valid JSON with no explanation, no markdown, no code blocks.Prompt: "${prompt}"FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or more distinct places they want to visit in sequence, e.g. "5 days in Maasai Mara then 4 days in Mombasa", "3 nights Zanzibar and 2 nights Diani")? If yes, return ONLY this shape:{
+          text: `You are a travel booking assistant for East Africa. Extract trip details from this prompt and return ONLY valid JSON with no explanation, no markdown, no code blocks.
+
+Prompt: "${prompt}"
+
+FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or more distinct places they want to visit in sequence, e.g. "5 days in Maasai Mara then 4 days in Mombasa", "3 nights Zanzibar and 2 nights Diani")? If yes, return ONLY this shape:
+
+{
   "isMultiDestination": true,
   "origin": "full city name in lowercase, or null if not stated",
   "legs": [
@@ -340,7 +391,12 @@ async function _parseWithGemini(prompt) {
   "passengers": number (default 1),
   "budget": "low|mid|high|luxury",
   "accessibility": true or false,
-  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"]}OTHERWISE (single destination), return ONLY this shape:{
+  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"]
+}
+
+OTHERWISE (single destination), return ONLY this shape:
+
+{
   "isMultiDestination": false,
   "origin": "full city name in lowercase, or null if not stated",
   "destination": "full city name in lowercase",
@@ -357,13 +413,27 @@ async function _parseWithGemini(prompt) {
   "trainClass": "first_class|economy|premium|sgr|null",
   "timePreference": "morning|afternoon|evening|night|null",
   "accessibility": true or false,
-  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"]}RULES:- CRITICAL: Pay attention to directional transport. If a user says "bus going and flight coming back", set outboundTransportMode="bus" and returnTransportMode="flight".- If only one transport mode is mentioned (e.g. "fly to Mombasa"), apply it to both outbound and return.- origin = where they are coming FROM. If the prompt does NOT clearly state where the traveler is departing from, set origin to null — do NOT guess or default to any city. We will ask the traveler to clarify separately.- destination (single) / each leg's destination (multi) = where they want to GO. Use the place name as stated (e.g. "maasai mara", "kilifi", "watamu") — do NOT convert it to a nearby airport or city name. Place name resolution happens in a separate step.- If a city name appears to be a misspelling of a real city (e.g. "zanibar", "mombsa", "nairobii"), correct it to the real city name in your response rather than treating it as unrecognized.- For multi-destination prompts, preserve the ORDER the traveler stated the destinations in — legs[0] is visited first.- Today: ${new Date().toISOString().split('T')[0]}- "next week" = ${_addDaysStr(7)}- "next month" = ${_addDaysStr(30)}- "christmas" = ${new Date().getFullYear()}-12-25- "new year" = ${new Date().getFullYear() + 1}-01-01- For "weekend" use nights: 2, for "week" use nights: 7`
+  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"]
+}
+
+RULES:
+- CRITICAL: Pay attention to directional transport. If a user says "bus going and flight coming back", set outboundTransportMode="bus" and returnTransportMode="flight".
+- If only one transport mode is mentioned (e.g. "fly to Mombasa"), apply it to both outbound and return.
+- origin = where they are coming FROM. If the prompt does NOT clearly state where the traveler is departing from, set origin to null — do NOT guess or default to any city. We will ask the traveler to clarify separately.
+- destination (single) / each leg's destination (multi) = where they want to GO. Use the place name as stated (e.g. "maasai mara", "kilifi", "watamu") — do NOT convert it to a nearby airport or city name. Place name resolution happens in a separate step.
+- If a city name appears to be a misspelling of a real city (e.g. "zanibar", "mombsa", "nairobii"), correct it to the real city name in your response rather than treating it as unrecognized.
+- For multi-destination prompts, preserve the ORDER the traveler stated the destinations in — legs[0] is visited first.
+- Today: ${new Date().toISOString().split('T')[0]}
+- "next week" = ${_addDaysStr(7)}
+- "next month" = ${_addDaysStr(30)}
+- "christmas" = ${new Date().getFullYear()}-12-25
+- "new year" = ${new Date().getFullYear() + 1}-01-01
+- For "weekend" use nights: 2, for "week" use nights: 7`
         }]
       }],
       generationConfig: {
         temperature: 0.1,
         maxOutputTokens: 800,
-        responseMimeType: "application/json" // FIX 1: Guarantees native JSON structure output from Gemini
       }
     },
     {
@@ -371,23 +441,40 @@ async function _parseWithGemini(prompt) {
       timeout: 10000
     }
   );
-  
+
   const content = response.data.candidates[0].content.parts[0].text;
-  const parsed = JSON.parse(content.trim()); // FIX 2: No fragile regex cleanup string modifications needed anymore
+  const cleaned = content.replace(/```json|```/g, '').trim();
+  const parsed = JSON.parse(cleaned);
+
+  // NOTE: no longer defaulting origin to 'nairobi' here — a missing
+  // origin is now a real signal (needsOriginClarification, set in
+  // _enrichParams) rather than a silently guessed value. A traveler
+  // could genuinely be coming from Kigali, London, or anywhere else.
+
   return parsed;
 }
 
 // ─────────────────────────────────────────────
 // RULE-BASED MULTI-DESTINATION FALLBACK
+// Only used if the Gemini call fails entirely. Recognizes simple
+// "<N> days/nights in <place> then/and <N> days/nights in <place>"
+// patterns using the known-place list, so a Gemini outage doesn't
+// silently downgrade a multi-destination prompt into a broken
+// single-destination parse.
 // ─────────────────────────────────────────────
 function _detectMultiDestinationRules(prompt) {
   const lower = prompt.toLowerCase().trim();
+
+  // Needs at least two "<N> nights/days ... <place>" fragments,
+  // joined by then/and/followed by, to count as multi-destination.
   const fragmentPattern = /(\d+)\s*(?:days?|nights?)\s*(?:in|at|to)?\s*([a-z\s]+?)(?=\s*(?:,|\.|then|and|followed by|after that|next|$))/g;
   const fragments = [...lower.matchAll(fragmentPattern)];
+
   if (fragments.length < 2) return null;
-  
+
   const sortedPlaces = [...KNOWN_NON_AIRPORT_DESTINATIONS, ...Object.keys(CITY_CODES)]
     .sort((a, b) => b.length - a.length);
+
   const legs = [];
   for (const match of fragments) {
     const nights = parseInt(match[1]);
@@ -395,13 +482,19 @@ function _detectMultiDestinationRules(prompt) {
     const resolvedPlace = _resolveCityFuzzy(rawPlace, sortedPlaces) || rawPlace;
     if (resolvedPlace) legs.push({ destination: resolvedPlace, nights });
   }
+
   if (legs.length < 2) return null;
 
+  // Origin: look for "from <city>" anywhere in the prompt; otherwise
+  // leave null so the engine can ask for clarification, same as the
+  // single-destination rules path does.
   const fromMatch = lower.match(/from\s+([a-z\s]+?)(?:\s|,|$)/);
   const sortedCities = Object.keys(CITY_CODES).sort((a, b) => b.length - a.length);
   const origin = fromMatch ? _resolveCityFuzzy(fromMatch[1], sortedCities) : null;
+
   const passengerMatch = lower.match(/(\d+)\s*(people|persons|passengers|adults|pax|travelers?)/);
   const passengers = passengerMatch ? parseInt(passengerMatch[1]) : 1;
+
   let budget = 'mid';
   if (lower.match(/luxury|5[\s-]?star|five[\s-]?star|premium/)) budget = 'luxury';
   else if (lower.match(/cheap|budget|affordable|bei[\s-]?nafuu/)) budget = 'low';
@@ -423,15 +516,18 @@ function _detectMultiDestinationRules(prompt) {
 // ─────────────────────────────────────────────
 function _parseWithRules(prompt) {
   let lower = prompt.toLowerCase().trim();
+
   for (const [swahili, english] of Object.entries(SWAHILI_DESTINATIONS)) {
     lower = lower.replace(swahili, english);
   }
+
   const passengerMatch = lower.match(/(\d+)\s*(watu|wenza|watu\s*wawili|people|persons|passengers|adults|pax|travelers?)/);
   const passengers = passengerMatch
       ? parseInt(passengerMatch[1])
       : lower.includes('wawili') || lower.includes('sisi wawili') ? 2
       : lower.includes('familia') || lower.includes('family') ? 4
       : 1;
+
   let budget = 'mid';
   if (lower.match(/luxury|5[\s-]?star|five[\s-]?star|premium|first[\s-]?class/)) budget = 'luxury';
   else if (lower.match(/high[\s-]?budget|business[\s-]?class|expensive/)) budget = 'high';
@@ -447,23 +543,35 @@ function _parseWithRules(prompt) {
       : lower.includes('week') && !lower.includes('next week') ? 7
       : 3;
 
+  // Places (airport cities + known non-airport destinations) used
+  // for fuzzy matching in the single-destination rules path. Using
+  // the combined list here (not just CITY_CODES) so a prompt like
+  // "kilifi" or "watamu" with no Gemini available still resolves
+  // to the right destination NAME — _resolveToCode() below is what
+  // decides whether that name maps to a real airport code or needs
+  // destinationIntel resolution downstream in the engine.
   const sortedCities = [...KNOWN_NON_AIRPORT_DESTINATIONS, ...Object.keys(CITY_CODES)]
     .sort((a, b) => b.length - a.length);
+
   let origin = null;
   let destination = null;
+
   const fromToMatch = lower.match(/(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
   const kwendaMatch = lower.match(/(?:nataka\s+kwenda|kwenda|going\s+to|travel\s+to|trip\s+to|visit)\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
 
   if (fromToMatch) {
     const fromCity = fromToMatch[1].trim();
     const toCity = fromToMatch[2].trim();
+    // Use fuzzy matching so a typo in either city doesn't silently fail
     origin = _resolveCityFuzzy(fromCity, sortedCities) || origin;
     destination = _resolveCityFuzzy(toCity, sortedCities) || destination;
   }
+
   if (kwendaMatch && !destination) {
     const toCity = kwendaMatch[1].trim();
     destination = _resolveCityFuzzy(toCity, sortedCities) || destination;
   }
+
   if (!destination) {
     const words = lower.split(/\s+/).filter(w => w.length > 2);
     for (const word of words) {
@@ -477,10 +585,15 @@ function _parseWithRules(prompt) {
     if (origin && !destination) { destination = origin; origin = null; }
   }
 
+  // CHANGED: no longer silently defaulting origin to 'nairobi'. A missing
+  // origin is now left as null and surfaced as a clarification need in
+  // _enrichParams, since the traveler could be coming from anywhere.
+
   const preferences = [];
   if (lower.match(/beach|coast|ocean|bahari|pwani/)) preferences.push('beach');
   if (lower.match(/safari|game|wildlife|mara|serengeti/)) preferences.push('safari');
   if (lower.match(/business|conference/)) preferences.push('business');
+
   const accessibility = _detectAccessibility(lower);
   if (accessibility) preferences.push('accessible');
 
@@ -488,8 +601,10 @@ function _parseWithRules(prompt) {
   const mealPlan = _detectMealPlan(lower);
   const trainClass = _detectTrainClass(lower);
   const timePreference = _detectTimePreference(lower);
+
   const { outbound, returnLeg } = _detectMultiModalTransport(lower);
   const busSeatPosition = _resolveBusSeatPosition(seatPreference);
+
   const departureDate = _extractDate(lower) || _resolveRelativeDate(lower) || _defaultDepartureDate();
 
   return {
@@ -530,8 +645,10 @@ function _extractDate(prompt) {
     jan: '01', feb: '02', mar: '03', apr: '04',
     jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
   };
+
   const longMatch = prompt.match(/(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})/i)
     || prompt.match(/(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})\s+(\d{4})/i);
+
   if (longMatch) {
     const day = longMatch[1].length <= 2 && !isNaN(longMatch[1])
       ? longMatch[1].padStart(2, '0')
@@ -541,8 +658,10 @@ function _extractDate(prompt) {
     const month = months[monthName];
     if (month) return `${year}-${month}-${day}`;
   }
+
   const isoMatch = prompt.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return isoMatch[0];
+
   return null;
 }
 
@@ -554,6 +673,7 @@ function _defaultDepartureDate() {
 
 function _resolveRelativeDate(prompt) {
   const now = new Date();
+
   if (prompt.match(/next\s+week|wiki\s+ijayo/)) {
     now.setDate(now.getDate() + 7);
     return now.toISOString().split('T')[0];
@@ -568,6 +688,7 @@ function _resolveRelativeDate(prompt) {
     now.setDate(now.getDate() + daysUntilSat);
     return now.toISOString().split('T')[0];
   }
+
   return null;
 }
 
@@ -575,17 +696,19 @@ function _resolveRelativeDate(prompt) {
 // ENRICH PARAMS — SINGLE DESTINATION
 // ─────────────────────────────────────────────
 function _enrichParams(parsed) {
+  // Origin is now allowed to be genuinely unknown — surfaced as a flag
+  // the engine checks before running any supplier search, so it can
+  // ask "Where are you traveling from?" instead of silently guessing.
   const needsOriginClarification = !parsed.origin;
+
   const originCode = _resolveToCode(parsed.origin);
   const destinationCode = _resolveToCode(parsed.destination);
+
   const requiresBus = _isBusRoute(originCode, destinationCode);
-  
-  // FIX 3: Evaluates conditionally instead of forcing true. Prevents flight processing for exclusive ground routes.
-  const requiresFlight = parsed.outboundTransportMode === 'flight' || 
-                         parsed.returnTransportMode === 'flight' || 
-                         (!parsed.outboundTransportMode && !requiresBus);
+  const requiresFlight = true;
 
   const nights = parsed.nights || _defaultNights(parsed.departureDate, parsed.returnDate);
+
   const returnDate = parsed.returnDate ||
     (parsed.departureDate ? _addDays(parsed.departureDate, nights) : null);
 
@@ -616,9 +739,15 @@ function _enrichParams(parsed) {
 
 // ─────────────────────────────────────────────
 // ENRICH PARAMS — MULTI-DESTINATION
+// Mirrors _enrichParams's defaulting/clarification behavior, but
+// for the legs[] shape. Per-leg destination-to-airport resolution
+// is intentionally NOT done here — that's destinationIntel.js's
+// job inside engine.js, since it needs the validated, per-mode
+// access data (charter vs flight vs transfer), not just a code.
 // ─────────────────────────────────────────────
 function _enrichMultiDestinationParams(parsed) {
   const needsOriginClarification = !parsed.origin;
+
   const legs = (parsed.legs || []).map(leg => ({
     destination: leg.destination,
     nights: leg.nights || 1,
@@ -634,6 +763,8 @@ function _enrichMultiDestinationParams(parsed) {
     accessibility: parsed.accessibility || false,
     preferences: parsed.preferences || [],
     needsOriginClarification,
+    // Destination, for logging/display purposes only — engine.js
+    // builds the real route label from resolved leg data.
     destination: legs.map(l => l.destination).join(' + '),
   };
 }
