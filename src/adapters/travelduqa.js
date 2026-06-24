@@ -57,9 +57,9 @@ class TravelDuqaAdapter {
         journey: {
           flight_type:    flightType,
           cabin_class:    cabinClass,
-          departure:      depIata,                // FIXED: spelling
+          depature:      depIata,                // FIXED: spelling
           arrival:        arrIata,
-          departure_date: this._formatDate(date), // FIXED: spelling
+          depature_date: this._formatDate(date), // FIXED: spelling
           arrival_date:   returnDate ? this._formatDate(returnDate) : "", // FIXED: Removed hyphen
           adult_count:    passengers,
           child_count:    children,
