@@ -13,7 +13,6 @@
 const axios = require('axios');
 const { logger } = require('../utils/logger');
 
-// EAT = UTC+3 — used for all time parsing to avoid host TZ issues
 const EAT_OFFSET_HOURS = 3;
 
 class TravelDuqaAdapter {
@@ -25,13 +24,9 @@ class TravelDuqaAdapter {
     this.timeout        = 15000;
     this.searchTimeout  = 30000;
     this.supplier = 'travelduqa';
-
     this._iataCache = null;
   }
 
-  // ─────────────────────────────────────────────
-  // SEARCH FLIGHTS
-  // ─────────────────────────────────────────────
   async search({ origin, destination, date, returnDate = null, passengers = 1,
                  cabinClass = 'economy', timePreference = null, children = 0, infants = 0 }) {
     try {
@@ -53,24 +48,26 @@ class TravelDuqaAdapter {
 
       const flightType = returnDate ? 'return' : 'oneway';
 
+      // FIX: arrival_date is REQUIRED by TravelDuqa on every call,
+      // not just return trips — omitting it on one-way searches
+      // causes error 108 ("The Journey arrival date must be
+      // defined") and silently returns zero flights. '-' is the
+      // documented placeholder for one-way trips.
       const journey = {
-  flight_type: flightType,
-  cabin_class: cabinClass,
-  depature: depIata,
-  arrival: arrIata,
-  depature_date: this._formatDate(date),
-  adult_count: passengers,
-  child_count: children,
-  infant_count: infants,
-  currency: 'KES',
-  page: { length: 10 }
-};
+        flight_type:   flightType,
+        cabin_class:   cabinClass,
+        depature:      depIata,
+        arrival:       arrIata,
+        depature_date: this._formatDate(date),
+        arrival_date:  returnDate ? this._formatDate(returnDate) : '-',
+        adult_count:   passengers,
+        child_count:   children,
+        infant_count:  infants,
+        currency:      'KES',
+        page:          { length: 10 },
+      };
 
-if (returnDate) {
-  journey.arrival_date = this._formatDate(returnDate);
-}
-
-const payload = { journey };
+      const payload = { journey };
 
       console.log('TRAVELDUQA REQUEST PAYLOAD:', JSON.stringify({
         token: this.token ? `${this.token.slice(0, 8)}...` : 'MISSING',
@@ -111,23 +108,16 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // SELECT OFFER
-  // ─────────────────────────────────────────────
   async selectOffer({ resultId, offerId }) {
     try {
       logger.info('TravelDuqa: selecting offer', { offerId });
-
       const response = await axios.post(
         `${this.baseUrl}/selectOffer`,
         { result_id: resultId, offer_id: offerId },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       console.log('TRAVELDUQA SELECTOFFER RAW RESPONSE:', JSON.stringify(response.data, null, 2));
-
       return this._normalizeSingleOffer(response.data);
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa selectOffer timed out after ${this.timeout}ms`);
@@ -138,15 +128,10 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // BOOK FLIGHT
-  // paymentType: 'balance' (instant) | 'hold'
-  // ─────────────────────────────────────────────
   async book({ resultId, offerId, passengers, totalAmount, currency = 'KES',
                 paymentType = 'balance', sendEticket = true }) {
     try {
       logger.info('TravelDuqa: creating booking', { offerId, passengers: passengers.length });
-
       const response = await axios.post(
         `${this.baseUrl}/createBooking`,
         {
@@ -161,14 +146,12 @@ const payload = { journey };
               given_name:  p.firstName    || p.given_name,
               type:        p.type         || 'adult',
             };
-
             if (index === 0) {
               const { code, number } = this._parsePhone(p.phone || p.phoneNumber, p.phoneCode);
               row.phone_number = number;
               row.phone_code   = code;
               row.email        = p.email;
             }
-
             return row;
           }),
           payments: {
@@ -180,9 +163,7 @@ const payload = { journey };
         },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return this._normalizeBooking(response.data?.booking_data);
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa booking timed out after ${this.timeout}ms`);
@@ -193,23 +174,14 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // COMPLETE HELD BOOKING
-  // ─────────────────────────────────────────────
   async completeHoldBooking({ orderId, sendEticket = false }) {
     try {
       const response = await axios.put(
         `${this.baseUrl}/updateBookingState`,
-        {
-          id:       orderId,
-          payments: { type: 'balance' },
-          eticket:  sendEticket,
-        },
+        { id: orderId, payments: { type: 'balance' }, eticket: sendEticket },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return this._normalizeBooking(response.data?.booking_data);
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa completeHold timed out after ${this.timeout}ms`);
@@ -220,9 +192,6 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // GET BOOKING STATUS
-  // ─────────────────────────────────────────────
   async getStatus(orderId) {
     try {
       const response = await axios.post(
@@ -230,9 +199,7 @@ const payload = { journey };
         { id: orderId },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return this._normalizeBooking(response.data);
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa getStatus timed out after ${this.timeout}ms`);
@@ -243,9 +210,6 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // GET ALL BOOKINGS
-  // ─────────────────────────────────────────────
   async getBookingHistory({ page = 1, perPage = 10 } = {}) {
     try {
       const response = await axios.post(
@@ -253,9 +217,7 @@ const payload = { journey };
         { page: { length: perPage, page_level: page } },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return response.data?.bookings || [];
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa getBookingHistory timed out after ${this.timeout}ms`);
@@ -266,9 +228,6 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // CANCEL BOOKING
-  // ─────────────────────────────────────────────
   async cancel(orderId) {
     try {
       const response = await axios.post(
@@ -276,12 +235,7 @@ const payload = { journey };
         { order_id: orderId },
         { headers: this._headers(), timeout: this.timeout }
       );
-
-      return {
-        cancellationId: response.data?.cancellation_id,
-        message:        response.data?.message,
-      };
-
+      return { cancellationId: response.data?.cancellation_id, message: response.data?.message };
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa cancel timed out after ${this.timeout}ms`);
@@ -292,9 +246,6 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // GET CANCELLATION STATUS
-  // ─────────────────────────────────────────────
   async getCancellationStatus(cancellationId) {
     try {
       const response = await axios.post(
@@ -302,9 +253,7 @@ const payload = { journey };
         { cancellation_id: cancellationId },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return response.data;
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa getCancellationStatus timed out after ${this.timeout}ms`);
@@ -315,22 +264,14 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // CONFIRM CANCELLATION (refund)
-  // ─────────────────────────────────────────────
   async confirmCancellation({ cancellationId, amount, currency = 'KES' }) {
     try {
       const response = await axios.put(
         `${this.baseUrl}/confirmCancellation`,
-        {
-          cancellation_id: cancellationId,
-          payments: { type: 'refund', currency, amount },
-        },
+        { cancellation_id: cancellationId, payments: { type: 'refund', currency, amount } },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return response.data;
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa confirmCancellation timed out after ${this.timeout}ms`);
@@ -341,25 +282,14 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // BOOKING CHANGE REQUESTS
-  // ─────────────────────────────────────────────
   async requestChange({ orderId, changeType, changeData }) {
     try {
       const response = await axios.post(
         `${this.baseUrl}/bookingChange`,
-        {
-          order_id:       orderId,
-          change_request: [{ type_of_change: changeType, change_data: changeData }],
-        },
+        { order_id: orderId, change_request: [{ type_of_change: changeType, change_data: changeData }] },
         { headers: this._headers(), timeout: this.timeout }
       );
-
-      return {
-        changeId: response.data?.order_change_request_id,
-        message:  response.data?.message,
-      };
-
+      return { changeId: response.data?.order_change_request_id, message: response.data?.message };
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa requestChange timed out after ${this.timeout}ms`);
@@ -370,22 +300,14 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // PAY CHANGE FEE
-  // ─────────────────────────────────────────────
   async payChangeFee({ changeId, amount, currency = 'KES' }) {
     try {
       const response = await axios.put(
         `${this.baseUrl}/payChangeFees`,
-        {
-          change_id: changeId,
-          payments:  { type: 'balance', currency, amount },
-        },
+        { change_id: changeId, payments: { type: 'balance', currency, amount } },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return response.data;
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa payChangeFee timed out after ${this.timeout}ms`);
@@ -396,9 +318,6 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // GET CHANGE STATUS
-  // ─────────────────────────────────────────────
   async getChangeStatus(changeId) {
     try {
       const response = await axios.post(
@@ -406,9 +325,7 @@ const payload = { journey };
         { change_id: changeId },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return response.data;
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa getChangeStatus timed out after ${this.timeout}ms`);
@@ -419,9 +336,6 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // GET LOCATIONS
-  // ─────────────────────────────────────────────
   async getLocations({ filter = 'none', value = 'all' } = {}) {
     try {
       const response = await axios.post(
@@ -429,9 +343,7 @@ const payload = { journey };
         { filter, value },
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return response.data || [];
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa getLocations timed out after ${this.timeout}ms`);
@@ -442,9 +354,6 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // GET AIRLINES
-  // ─────────────────────────────────────────────
   async getAirlines() {
     try {
       const response = await axios.post(
@@ -452,9 +361,7 @@ const payload = { journey };
         {},
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return response.data?.data || [];
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa getAirlines timed out after ${this.timeout}ms`);
@@ -465,18 +372,13 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // GET WALLET STATUS
-  // ─────────────────────────────────────────────
   async getWalletStatus() {
     try {
       const response = await axios.get(
         `${this.baseUrl}/getWalletStatus`,
         { headers: this._headers(), timeout: this.timeout }
       );
-
       return response.data;
-
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
         logger.error(`TravelDuqa getWalletStatus timed out after ${this.timeout}ms`);
@@ -487,14 +389,9 @@ const payload = { journey };
     }
   }
 
-  // ─────────────────────────────────────────────
-  // IATA RESOLVER
-  // ─────────────────────────────────────────────
   async _resolveIata(cityName) {
     if (!cityName) return null;
-
     const normalized = cityName.toLowerCase().trim();
-
     const hardcoded = this._iataMap()[normalized];
     if (hardcoded) return hardcoded;
 
@@ -508,7 +405,6 @@ const payload = { journey };
           if (loc.iata) this._iataCache[loc.iata.toLowerCase()]    = loc.iata;
         }
       }
-
       const exact = this._iataCache[normalized];
       if (exact) return exact;
 
@@ -517,28 +413,21 @@ const payload = { journey };
         logger.info('TravelDuqa: fuzzy-matched city name', { input: cityName, matched: fuzzyFromMap });
         return this._iataMap()[fuzzyFromMap];
       }
-
       const fuzzyFromCache = this._fuzzyMatch(normalized, Object.keys(this._iataCache));
       if (fuzzyFromCache) {
         logger.info('TravelDuqa: fuzzy-matched city name (live cache)', { input: cityName, matched: fuzzyFromCache });
         return this._iataCache[fuzzyFromCache];
       }
-
       return null;
-
     } catch {
       const fuzzyFromMap = this._fuzzyMatch(normalized, Object.keys(this._iataMap()));
       return fuzzyFromMap ? this._iataMap()[fuzzyFromMap] : null;
     }
   }
 
-  // ─────────────────────────────────────────────
-  // CHECK IF AN AIRPORT IS IN TRAVELDUQA'S NETWORK
-  // ─────────────────────────────────────────────
   async isAirportSupported(iataCode) {
     if (!iataCode) return false;
     const normalized = iataCode.toLowerCase();
-
     try {
       if (!this._iataCache) {
         const locations = await this.getLocations({ filter: 'none', value: 'all' });
@@ -552,7 +441,7 @@ const payload = { journey };
       return Object.values(this._iataCache).some(code => code?.toLowerCase() === normalized);
     } catch (err) {
       logger.error('TravelDuqa isAirportSupported check failed', { error: err.message });
-      return false; 
+      return false;
     }
   }
 
@@ -574,7 +463,6 @@ const payload = { journey };
   _fuzzyMatch(input, candidates) {
     let best = null;
     let bestDistance = Infinity;
-
     for (const candidate of candidates) {
       const distance = this._levenshtein(input, candidate);
       const maxAllowed = candidate.length <= 5 ? 1 : candidate.length <= 9 ? 2 : 3;
@@ -583,7 +471,6 @@ const payload = { journey };
         bestDistance = distance;
       }
     }
-
     return best;
   }
 
@@ -601,14 +488,9 @@ const payload = { journey };
     };
   }
 
-  // ─────────────────────────────────────────────
-  // DYNAMIC PHONE PARSER
-  // ─────────────────────────────────────────────
   _parsePhone(rawPhone, explicitCode) {
     if (!rawPhone) return { code: '+254', number: '' };
-
     const cleaned = String(rawPhone).replace(/\s+/g, '');
-
     if (explicitCode) {
       const strippedCode = explicitCode.replace(/^\+/, '');
       const number = cleaned.startsWith('+' + strippedCode)
@@ -618,45 +500,27 @@ const payload = { journey };
           : cleaned;
       return { code: explicitCode.startsWith('+') ? explicitCode : '+' + explicitCode, number };
     }
-
     const countryCodeMap = [
-      { prefix: '+254', code: '+254' },
-      { prefix: '+256', code: '+256' },
-      { prefix: '+255', code: '+255' },
-      { prefix: '+250', code: '+250' },
-      { prefix: '+251', code: '+251' },
-      { prefix: '+27',  code: '+27'  },
-      { prefix: '+1',   code: '+1'   },
-      { prefix: '+44',  code: '+44'  },
+      { prefix: '+254', code: '+254' }, { prefix: '+256', code: '+256' },
+      { prefix: '+255', code: '+255' }, { prefix: '+250', code: '+250' },
+      { prefix: '+251', code: '+251' }, { prefix: '+27',  code: '+27'  },
+      { prefix: '+1',   code: '+1'   }, { prefix: '+44',  code: '+44'  },
     ];
-
     for (const { prefix, code } of countryCodeMap) {
-      if (cleaned.startsWith(prefix)) {
-        return { code, number: cleaned.slice(prefix.length) };
-      }
+      if (cleaned.startsWith(prefix)) return { code, number: cleaned.slice(prefix.length) };
     }
-
-    return {
-      code:   '+254',
-      number: cleaned.startsWith('0') ? cleaned.slice(1) : cleaned,
-    };
+    return { code: '+254', number: cleaned.startsWith('0') ? cleaned.slice(1) : cleaned };
   }
 
-  // ─────────────────────────────────────────────
-  // NORMALIZERS
-  // ─────────────────────────────────────────────
   _normalizeOffers(offers, resultId) {
     if (!Array.isArray(offers)) return [];
-
     return offers.map(offer => {
       const slices   = offer.slices || [];
       const isReturn = slices.length > 1;
-
       const outSlice   = slices[0]    || {};
       const outSegment = outSlice.segments?.[0] || {};
       const outCarrier = outSegment.marketing_carrier || outSegment.operating_carrier || {};
       const baggage    = outSegment.passengers?.[0]?.baggages || [];
-
       const retSlice   = slices[1]    || null;
       const retSegment = retSlice?.segments?.[0] || null;
       const retCarrier = retSegment?.marketing_carrier || retSegment?.operating_carrier || {};
@@ -665,11 +529,9 @@ const payload = { journey };
         supplier:      this.supplier,
         type:          'flight',
         transportType: 'flight',
-
         offerId:   offer.id,
         resultId:  resultId,
         expiresAt: offer.expires_at,
-
         origin:        outSlice.origin?.city_name      || outSlice.origin?.iata_code,
         destination:   outSlice.destination?.city_name || outSlice.destination?.iata_code,
         originIata:    outSlice.origin?.iata_code,
@@ -684,7 +546,6 @@ const payload = { journey };
         airlineCode:   outCarrier.iata_code,
         airlineLogo:   outCarrier.logo          || null,
         flightNumber:  outSegment.marketing_carrier_flight_number,
-
         isReturn,
         returnLeg: retSlice ? {
           origin:        retSlice.origin?.city_name      || retSlice.origin?.iata_code,
@@ -700,23 +561,17 @@ const payload = { journey };
           airlineLogo:   retCarrier.logo          || null,
           flightNumber:  retSegment?.marketing_carrier_flight_number,
         } : null,
-
         cabinClass:  outSegment.passengers?.[0]?.cabin_class_marketing_name || 'Economy',
         baggage,
         checkedBags: baggage.find(b => b.type === 'checked')?.quantity || 0,
         carryOn:     baggage.find(b => b.type === 'carry_on' || b.type === 'carryon')?.quantity || 0,
-
         price:     Number(offer.total_amount || 0),
         currency:  offer.total_currency || 'KES',
         emissions: offer.total_emmissions_kg || null,
-
         canBook: offer.offer_terms?.create_booking === 'true',
         canHold: offer.offer_terms?.hold === 'true',
-
         passengerIds: offer.passengers || [],
-
         slices,
-
         supplierBookingReference: null,
       };
     });
@@ -733,10 +588,8 @@ const payload = { journey };
 
   _normalizeBooking(data) {
     if (!data) return null;
-
     const slice   = data.slices?.[0]    || {};
     const segment = slice.segments?.[0] || {};
-
     return {
       supplier:                 this.supplier,
       supplierBookingReference: data.BookingReference || data.reference_id,
@@ -744,41 +597,30 @@ const payload = { journey };
       bodrlessRef:              null,
       status:                   data.status    || 'success',
       holdPeriod:               data.hold_period || null,
-
       origin:        slice.origin?.city_name,
       destination:   slice.destination?.city_name,
       departureTime: slice.departing_day  || segment.departing_at,
       arrivalTime:   slice.arriving_day   || segment.arriving_at,
       airline:       segment.operating_carrier?.name || segment.marketing_carrier?.name,
       flightNumber:  segment.marketing_carrier_flight_number,
-
       ticketReference: data.TicketReference || [],
       ticketNumber:    data.TicketReference?.[0]?.number || null,
-
       totalAmount:   Number(data.TotalPrice?.amount || 0),
       currency:      data.TotalPrice?.currency || 'KES',
-
       walletBalance: data.receipt?.wallet_balance || null,
       bookingAmount: data.receipt?.booking_amount || null,
       feeAmount:     data.receipt?.fee_amount     || null,
-
       passengerDetails: data.passengers || [],
       slices:           data.slices     || [],
-
       confirmedAt: new Date().toISOString(),
     };
   }
 
-  // ─────────────────────────────────────────────
-  // TIME FILTER USING EAT (UTC+3)
-  // ─────────────────────────────────────────────
   _filterByTime(flights, timePreference) {
     if (!timePreference) return flights;
-
     return flights.filter(f => {
       if (!f.departureTime) return true;
       const hour = this._eatHour(f.departureTime);
-
       if (timePreference === 'morning')   return hour >= 5  && hour < 12;
       if (timePreference === 'afternoon') return hour >= 12 && hour < 17;
       if (timePreference === 'evening')   return hour >= 17 && hour < 21;
