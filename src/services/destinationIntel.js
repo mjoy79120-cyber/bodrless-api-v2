@@ -2,23 +2,7 @@
  * DESTINATION INTELLIGENCE LAYER
  * ─────────────────────────────────────────────
  * Resolves a free-text destination (e.g. "Watamu", "Diani",
- * "Maasai Mara") into structured per-mode access data:
- * nearest hub for air/train/bus, whether a transfer is
- * required, and whether that mode is actually bookable
- * in Bodrless today.
- *
- * Flow: Supabase cache (exact + alias + fuzzy) → Gemini
- * resolution (direct REST call, same pattern as
- * promptParser.js — NOT the @google/generative-ai SDK,
- * which hit a separate/zero quota bucket despite using
- * the same API key) → validation (TravelDuqa network,
- * then static IATA list, unless it's an airstrip
- * destination) → cache write.
- *
- * Bad Gemini answers that fail validation are NEVER cached
- * as trustworthy — they're returned as needs_clarification
- * so callers can ask the user rather than silently booking
- * the wrong route.
+ * "Maasai Mara") into structured per-mode access data.
  * ─────────────────────────────────────────────
  */
 
@@ -29,6 +13,21 @@ const { logger } = require('../utils/logger');
 const STATIC_IATA_CODES = require('../data/staticIataList');
 
 class DestinationIntel {
+
+  // ─────────────────────────────────────────────
+  // NEW UTILITY: Get strictly the Validated IATA Code
+  // Use this in your flight search engine!
+  // ─────────────────────────────────────────────
+  async getValidAirHub(destinationName) {
+    if (!destinationName) return null;
+    const intel = await this.resolve(destinationName);
+    
+    // Only return the code if Gemini found it AND TravelDuqa validated it as bookable
+    if (intel?.accessByMode?.air?.bookable && intel?.accessByMode?.air?.hubCode) {
+      return intel.accessByMode.air.hubCode;
+    }
+    return null;
+  }
 
   // ─────────────────────────────────────────────
   // PUBLIC: resolve a destination name
@@ -90,11 +89,7 @@ class DestinationIntel {
   }
 
   // ─────────────────────────────────────────────
-  // GEMINI RESOLUTION — direct REST call, strict JSON,
-  // per-mode shape. Uses the same axios + endpoint pattern
-  // as promptParser.js's _parseWithGemini, since the
-  // @google/generative-ai SDK hit a zero-quota bucket on
-  // this project despite the key working fine via REST.
+  // GEMINI RESOLUTION
   // ─────────────────────────────────────────────
   async _resolveViaGemini(destinationName) {
     const prompt = `You are a travel logistics expert for East Africa. For the destination "${destinationName}", return ONLY a JSON object, no markdown fences, no preamble, in exactly this shape:
@@ -145,16 +140,13 @@ Rules:
 
   // ─────────────────────────────────────────────
   // VALIDATION CASCADE
-  // Airstrip destinations skip IATA validation entirely.
-  // Standard air hubs: TravelDuqa network first, then
-  // static IATA list as a softer fallback.
   // ─────────────────────────────────────────────
   async _validate(geminiResult) {
     const result = { ...geminiResult, validationStatus: 'validated', validationSource: null };
 
     if (geminiResult.isAirstripDestination) {
       result.requiresCharter = true;
-      result.validationSource = 'manual'; // airstrips trusted as their own category, not IATA-checked
+      result.validationSource = 'manual'; 
       return result;
     }
 
@@ -170,24 +162,20 @@ Rules:
 
       const inStaticList = STATIC_IATA_CODES.has(airHub.hubCode.toUpperCase());
       if (inStaticList) {
-        result.accessByMode.air.bookable = false; // real airport, just not bookable via Bodrless yet
+        result.accessByMode.air.bookable = false; 
         result.validationSource = 'iata_list';
         return result;
       }
 
-      // Gemini gave a hub code that's neither in TravelDuqa nor a real IATA list — don't trust it
       result.validationStatus = 'needs_clarification';
       return result;
     }
 
-    // No air hub claimed at all (pure train/bus destination) — nothing to validate against IATA
     return result;
   }
 
   // ─────────────────────────────────────────────
-  // CACHE WRITE — only validated/needs_clarification rows,
-  // never silently overwrite a previously validated row
-  // with a worse result.
+  // CACHE WRITE 
   // ─────────────────────────────────────────────
   async _cacheResult(normalized, result) {
     const { error } = await supabase

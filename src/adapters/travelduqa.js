@@ -19,9 +19,9 @@ const EAT_OFFSET_HOURS = 3;
 class TravelDuqaAdapter {
 
   constructor() {
-    this.baseUrl  = 'https://www.app.travelduqa.africa/connect';
-    this.token    = process.env.TRAVELDUQA_ACCESS_TOKEN;
-    this.version  = process.env.TRAVELDUQA_API_VERSION || 'v1';
+    this.baseUrl      = 'https://www.app.travelduqa.africa/connect';
+    this.token        = process.env.TRAVELDUQA_ACCESS_TOKEN;
+    this.version      = process.env.TRAVELDUQA_API_VERSION || 'v1';
     this.timeout        = 15000;
     this.searchTimeout  = 30000;
     this.supplier = 'travelduqa';
@@ -36,7 +36,6 @@ class TravelDuqaAdapter {
                  cabinClass = 'economy', timePreference = null, children = 0, infants = 0 }) {
     try {
       console.log('CRITICAL: TravelDuqa search invoked with:', { origin, destination, date });
-
       logger.info('TravelDuqa: searching flights', { origin, destination, date });
 
       const [depIata, arrIata] = await Promise.all([
@@ -54,34 +53,31 @@ class TravelDuqaAdapter {
 
       const flightType = returnDate ? 'return' : 'oneway';
 
+      const payload = {
+        journey: {
+          flight_type:    flightType,
+          cabin_class:    cabinClass,
+          departure:      depIata,                // FIXED: spelling
+          arrival:        arrIata,
+          departure_date: this._formatDate(date), // FIXED: spelling
+          arrival_date:   returnDate ? this._formatDate(returnDate) : "", // FIXED: Removed hyphen
+          adult_count:    passengers,
+          child_count:    children,
+          infant_count:   infants,
+          currency:       'KES',
+          page:           { length: 10 },         // FIXED: Passed as integer
+        },
+      };
+
       console.log('TRAVELDUQA REQUEST PAYLOAD:', JSON.stringify({
         token: this.token ? `${this.token.slice(0, 8)}...` : 'MISSING',
         version: this.version,
-        depIata,
-        arrIata,
-        date,
-        returnDate,
-        flightType,
-        passengers,
+        ...payload.journey
       }, null, 2));
 
       const response = await axios.post(
         `${this.baseUrl}/getOffers`,
-        {
-          journey: {
-            flight_type:   flightType,
-            cabin_class:   cabinClass,
-            depature:      depIata,
-            arrival:       arrIata,
-            depature_date: this._formatDate(date),
-            arrival_date:  returnDate ? this._formatDate(returnDate) : '-',
-            adult_count:   passengers,
-            child_count:   children,
-            infant_count:  infants,
-            currency:      'KES',
-            page:          { length: '10' },
-          },
-        },
+        payload,
         { headers: this._headers(), timeout: this.searchTimeout }
       );
 
@@ -490,11 +486,6 @@ class TravelDuqaAdapter {
 
   // ─────────────────────────────────────────────
   // IATA RESOLVER
-  // Now with fuzzy/typo-tolerant matching: if an exact match isn't
-  // found in the hardcoded map or the live location cache, falls back
-  // to a small edit-distance check against known city names so minor
-  // typos ("zanibar", "mombsa") still resolve correctly instead of
-  // silently failing the whole search.
   // ─────────────────────────────────────────────
   async _resolveIata(cityName) {
     if (!cityName) return null;
@@ -518,9 +509,6 @@ class TravelDuqaAdapter {
       const exact = this._iataCache[normalized];
       if (exact) return exact;
 
-      // Fuzzy fallback — try the hardcoded map first (cheap, no API
-      // dependency), then the live cache, using small edit-distance
-      // tolerance so a typo like "zanibar" still matches "zanzibar".
       const fuzzyFromMap = this._fuzzyMatch(normalized, Object.keys(this._iataMap()));
       if (fuzzyFromMap) {
         logger.info('TravelDuqa: fuzzy-matched city name', { input: cityName, matched: fuzzyFromMap });
@@ -536,8 +524,6 @@ class TravelDuqaAdapter {
       return null;
 
     } catch {
-      // Even if the live location lookup fails entirely, still try a
-      // fuzzy match against the hardcoded map before giving up.
       const fuzzyFromMap = this._fuzzyMatch(normalized, Object.keys(this._iataMap()));
       return fuzzyFromMap ? this._iataMap()[fuzzyFromMap] : null;
     }
@@ -545,12 +531,6 @@ class TravelDuqaAdapter {
 
   // ─────────────────────────────────────────────
   // CHECK IF AN AIRPORT IS IN TRAVELDUQA'S NETWORK
-  // Reuses the same location cache _resolveIata() builds,
-  // so this is free if a search has already run, and only
-  // costs one getLocations() call on a cold start. Used by
-  // destinationIntel.js as the first tier of its validation
-  // cascade — "is this airport code actually bookable via
-  // Bodrless today," not just "is this a real airport."
   // ─────────────────────────────────────────────
   async isAirportSupported(iataCode) {
     if (!iataCode) return false;
@@ -569,12 +549,10 @@ class TravelDuqaAdapter {
       return Object.values(this._iataCache).some(code => code?.toLowerCase() === normalized);
     } catch (err) {
       logger.error('TravelDuqa isAirportSupported check failed', { error: err.message });
-      return false; // fail closed — don't trust an unverified code
+      return false; 
     }
   }
 
-  // Simple Levenshtein distance — small, dependency-free, good enough
-  // for catching single-letter typos in short city names.
   _levenshtein(a, b) {
     const m = a.length, n = b.length;
     const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
@@ -590,9 +568,6 @@ class TravelDuqaAdapter {
     return dp[m][n];
   }
 
-  // Finds the closest candidate within an allowed distance that scales
-  // with word length, so short names need a near-exact match while
-  // longer names tolerate a couple of typo'd characters.
   _fuzzyMatch(input, candidates) {
     let best = null;
     let bestDistance = Infinity;
