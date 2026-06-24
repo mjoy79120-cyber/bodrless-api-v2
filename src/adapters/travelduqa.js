@@ -218,7 +218,7 @@ const payload = { journey };
       }
       throw err;
     }
-  } yu7654312qA\
+  }
 
   // ─────────────────────────────────────────────
   // GET BOOKING STATUS
