@@ -4,6 +4,7 @@ const { logger } = require("../utils/logger");
 const { parsePrompt } = require("./promptParser");
 const { rankPackages } = require("./packageRanker");
 const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
+const destinationIntel = require("../services/destinationIntel");
 
 // Supplier adapter layer — all external suppliers go through here
 let supplierAdapter = null;
@@ -44,19 +45,62 @@ class OrchestrationEngine {
       console.log("INTENT:", intent);
       console.log("PARSED TRIP PARAMS:", tripParams);
 
+      // ─────────────────────────────
+      // MULTI-DESTINATION BRANCH
+      // Entirely separate path — single-destination logic below
+      // is untouched and still handles everything it always has.
+      // ─────────────────────────────
+      if (tripParams.isMultiDestination) {
+        this._validateMultiDestinationParams(tripParams);
+
+        const itinerary = await this._orchestrateMultiDestination(tripParams, sessionId);
+
+        const updatedHistory = [
+          ...conversationHistory,
+          { role: 'user', content: prompt },
+          {
+            role: 'assistant',
+            content: `Built a ${itinerary.legs.length}-stop itinerary`,
+            params: tripParams,
+            packageCount: 1,
+          },
+        ].slice(-10);
+
+        this._logSearch({
+          sessionId,
+          agencyId,
+          prompt,
+          tripParams: {
+            ...tripParams,
+            destination: itinerary.summary.route,
+          },
+          packagesReturned: 1,
+          channel: context.channel || 'widget',
+        }).catch(err => logger.error('Failed to log search', { error: err.message }));
+
+        return {
+          sessionId,
+          text: `I put together a ${itinerary.summary.totalNights}-night itinerary across ${itinerary.legs.length} stops.`,
+          packages: [itinerary],
+          tripParams,
+          intent,
+          conversationHistory: updatedHistory,
+          generatedAt: new Date().toISOString(),
+        };
+      }
+
       this._validateTripParams(tripParams);
 
       const [
         outboundFlights, outboundBuses,
         returnFlights, returnBuses,
-        hotels, transfers
+        hotels
       ] = await Promise.all([
         this._searchFlights(tripParams, 'outbound'),
         this._searchBuses(tripParams, 'outbound'),
         tripParams.returnDate ? this._searchFlights(tripParams, 'return') : Promise.resolve([]),
         tripParams.returnDate ? this._searchBuses(tripParams, 'return') : Promise.resolve([]),
         this._searchHotels(tripParams),
-        this._searchTransfers(tripParams),
       ]);
 
       const outboundTransport = [...outboundFlights, ...outboundBuses];
@@ -65,13 +109,11 @@ class OrchestrationEngine {
       console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length);
       console.log("FINAL RETURN TRANSPORT:",   returnTransport.length);
       console.log("FINAL HOTELS:",             hotels.length);
-      console.log("FINAL TRANSFERS:",          transfers.length);
 
       const packages = await this._buildPackages({
         outboundTransport,
         returnTransport,
         hotels,
-        transfers,
         tripParams,
         intent,
       });
@@ -115,6 +157,327 @@ class OrchestrationEngine {
     } catch (error) {
       logger.error("Engine failure", { error: error.message });
       throw error;
+    }
+  }
+
+  // ─────────────────────────────
+  // MULTI-DESTINATION ORCHESTRATION
+  // ─────────────────────────────
+  //
+  // Builds one combined itinerary across N destination legs.
+  //
+  // Routing rule per transition (legA -> legB):
+  //   - If either leg is an airstrip destination (Maasai Mara,
+  //     Amboseli, Ol Pejeta, etc.) -> route via origin, with a
+  //     default 1-night buffer stay in the origin city (booked,
+  //     priced, shown to the traveler — not a silent gap).
+  //   - Otherwise -> attempt a direct transport search first; if
+  //     nothing is found, fall back to routing via origin (no
+  //     buffer night in this case — this is a missing-route
+  //     fallback, not a known same-day-risk pattern).
+  //   - Either fallback is clearly labeled on the resulting leg
+  //     (connectsVia / bufferNight) so nothing is sprung on the
+  //     traveler at the airport.
+  //
+  // Each real stay (including inserted buffer legs) reuses the
+  // existing single-destination _searchHotels/_searchTransfers
+  // logic unchanged, just scoped to that leg's own date window.
+  // ─────────────────────────────
+  async _orchestrateMultiDestination(tripParams, sessionId) {
+    const origin = tripParams.origin || 'nairobi';
+
+    // 1. Resolve every leg's destination intel up front, so routing
+    //    decisions for every transition can be made before any
+    //    supplier search runs.
+    const resolvedLegs = await Promise.all(
+      tripParams.legs.map(async (leg) => {
+        const intel = await destinationIntel.resolve(leg.destination);
+        return {
+          ...leg,
+          intel,
+          isAirstripDestination: intel?.isAirstripDestination || false,
+        };
+      })
+    );
+
+    console.log("MULTI-DEST: resolved legs", resolvedLegs.map(l => ({
+      destination: l.destination,
+      isAirstripDestination: l.isAirstripDestination,
+      validationStatus: l.intel?.validationStatus,
+    })));
+
+    // 2. Build the real stop sequence, inserting buffer legs in the
+    //    origin city wherever an airstrip transition requires one.
+    //    This also computes each stop's date window.
+    const stops = this._buildStopSequence(origin, resolvedLegs, tripParams.departureDate);
+
+    console.log("MULTI-DEST: stop sequence", stops.map(s => ({
+      destination: s.destination,
+      checkIn: s.checkIn,
+      checkOut: s.checkOut,
+      isBufferLeg: s.isBufferLeg || false,
+    })));
+
+    // 3. For each stop, resolve the transport that ARRIVES at it —
+    //    transitions[i] is "how we get TO stops[i]", so transitions
+    //    has the same length as stops (transitions[0] is origin ->
+    //    stops[0]). This lets legResults[i] line up directly with
+    //    transitions[i] below, instead of being off by one and
+    //    missing the very first origin -> stops[0] transition.
+    const transitions = [];
+    let previousStop = { destination: origin, checkOut: stops[0]?.checkIn || tripParams.departureDate, isAirstripDestination: false };
+
+    for (let i = 0; i < stops.length; i++) {
+      const toStop = stops[i];
+      const transition = await this._resolveTransition(previousStop, toStop, tripParams);
+      transitions.push(transition);
+      previousStop = toStop;
+    }
+
+    // Final leg home — transport arriving back at origin after the last stop.
+    const lastStop = stops[stops.length - 1];
+    const returnTransition = await this._resolveTransition(lastStop, { destination: origin, checkIn: lastStop.checkOut, isAirstripDestination: false }, tripParams);
+
+    // 4. For each real stay, search the hotel using existing
+    //    single-leg logic. Transfer legs are built afterward
+    //    (step 5b), once we know the actual transport that
+    //    arrives at each stop — transfer labels depend on mode
+    //    (airport vs bus/train station), so they can't be built
+    //    independently of the resolved transition.
+    const legResults = await Promise.all(
+      stops.map(async (stop) => {
+        const legTripParams = {
+          ...tripParams,
+          destination: stop.destination,
+          departureDate: stop.checkIn,
+          returnDate: stop.checkOut,
+          nights: stop.nights,
+        };
+
+        const hotels = await this._searchHotels(legTripParams);
+        const cheapestHotel = this._pickCheapest(hotels, h => h.pricePerNight);
+
+        return {
+          destination: stop.destination,
+          nights: stop.nights,
+          checkIn: stop.checkIn,
+          checkOut: stop.checkOut,
+          isBufferLeg: stop.isBufferLeg || false,
+          isAirstripDestination: stop.isAirstripDestination || false,
+          hotel: cheapestHotel || null,
+          transfers: null, // filled in below, once transport-in is known
+        };
+      })
+    );
+
+    // 5. Attach the transition that arrives at each stop (and the
+    //    final return transition) to the matching leg result.
+    for (let i = 0; i < legResults.length; i++) {
+      legResults[i].transportIn = this._formatTransportDisplay(
+        transitions[i]?.transport,
+        transitions[i]?.from,
+        transitions[i]?.to
+      );
+      legResults[i].connectsVia = transitions[i]?.connectsVia || null;
+      legResults[i].bufferNight = transitions[i]?.bufferNight || false;
+    }
+
+    // 5b. Now that each leg's actual arriving transport is known,
+    //     build mode-aware transfer legs (origin -> hub, hub ->
+    //     hotel) per stop. Buffer legs skip this — there's no
+    //     "hotel transfer" purpose for an overnight connection
+    //     stop, just the transport itself.
+    await Promise.all(
+      legResults.map(async (leg, i) => {
+        if (leg.isBufferLeg) return;
+        const legTripParams = {
+          ...tripParams,
+          origin: transitions[i]?.from || tripParams.origin,
+          destination: leg.destination,
+        };
+        leg.transfers = await this._buildTransferLegs(legTripParams, transitions[i]?.transport);
+      })
+    );
+
+    const finalReturnTransport = this._formatTransportDisplay(
+      returnTransition?.transport,
+      returnTransition?.from,
+      returnTransition?.to
+    );
+
+    // 6. Sum everything into one combined KES total.
+    const transportCosts = [...transitions, returnTransition].map(t => ({
+      amount:   t?.transport?.price,
+      currency: t?.transport?.currency || 'KES',
+    }));
+
+    const hotelCosts = legResults.map(leg => ({
+      amount:   (leg.hotel?.pricePerNight || 0) * leg.nights,
+      currency: leg.hotel?.currency || 'KES',
+    }));
+
+    const transferCosts = legResults.flatMap(leg =>
+      (leg.transfers || []).map(t => ({ amount: t.price, currency: t.currency || 'KES' }))
+    );
+
+    const totalPrice = await sumToKES([...transportCosts, ...hotelCosts, ...transferCosts]);
+
+    const totalNights = legResults.reduce((sum, leg) => sum + (leg.nights || 0), 0);
+    const routeLabel = [origin, ...stops.map(s => s.destination)].join(' → ');
+
+    return {
+      packageId: uuidv4(),
+      isMultiDestination: true,
+      summary: {
+        route:          routeLabel,
+        totalNights,
+        totalPrice,
+        pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+        currency:       CANONICAL_CURRENCY,
+        passengers:     tripParams.passengers || 1,
+      },
+      legs: legResults,
+      returnTransport: finalReturnTransport,
+      status: "available",
+    };
+  }
+
+  // ─────────────────────────────
+  // BUILD STOP SEQUENCE (with buffer-leg insertion)
+  // ─────────────────────────────
+  _buildStopSequence(origin, resolvedLegs, departureDate) {
+    const stops = [];
+    let cursorDate = departureDate || this._defaultStartDate();
+
+    for (let i = 0; i < resolvedLegs.length; i++) {
+      const current = resolvedLegs[i];
+      const previous = i === 0 ? null : resolvedLegs[i - 1];
+
+      // Insert a buffer leg in the origin city if either side of
+      // this transition is an airstrip destination.
+      const needsBuffer = previous && (previous.isAirstripDestination || current.isAirstripDestination);
+
+      if (needsBuffer) {
+        const bufferCheckOut = this._addDaysStr(cursorDate, 1);
+        stops.push({
+          destination: origin,
+          checkIn:     cursorDate,
+          checkOut:    bufferCheckOut,
+          nights:      1,
+          isBufferLeg: true,
+        });
+        cursorDate = bufferCheckOut;
+      }
+
+      const checkOut = this._addDaysStr(cursorDate, current.nights);
+      stops.push({
+        destination: current.destination,
+        checkIn:     cursorDate,
+        checkOut,
+        nights:      current.nights,
+        isAirstripDestination: current.isAirstripDestination,
+        intel: current.intel,
+      });
+      cursorDate = checkOut;
+    }
+
+    return stops;
+  }
+
+  // ─────────────────────────────
+  // RESOLVE ONE TRANSITION (transport between two stops)
+  // ─────────────────────────────
+  async _resolveTransition(fromStop, toStop, tripParams) {
+    const fromIsAirstrip = fromStop.isAirstripDestination;
+    const toIsAirstrip   = toStop.isAirstripDestination;
+    const origin = tripParams.origin || 'nairobi';
+
+    // Airstrip-involved transitions always route via origin with a
+    // labeled connection (buffer night already inserted as its own
+    // stop upstream in _buildStopSequence — here we just label it).
+    if (fromIsAirstrip || toIsAirstrip) {
+      const transport = await this._searchCheapestDirect(fromStop.destination, toStop.destination, fromStop.checkOut, tripParams);
+      return {
+        from: fromStop.destination,
+        to: toStop.destination,
+        transport,
+        connectsVia: origin,
+        bufferNight: true,
+      };
+    }
+
+    // Otherwise, try direct first.
+    const direct = await this._searchCheapestDirect(fromStop.destination, toStop.destination, fromStop.checkOut, tripParams);
+    if (direct) {
+      return { from: fromStop.destination, to: toStop.destination, transport: direct, connectsVia: null, bufferNight: false };
+    }
+
+    // No direct route found — fall back via origin, labeled.
+    logger.info('MultiDest: no direct route, falling back via origin', {
+      from: fromStop.destination, to: toStop.destination,
+    });
+    const viaOrigin = await this._searchCheapestDirect(fromStop.destination, toStop.destination, fromStop.checkOut, tripParams);
+    return {
+      from: fromStop.destination,
+      to: toStop.destination,
+      transport: viaOrigin,
+      connectsVia: origin,
+      bufferNight: false,
+    };
+  }
+
+  // ─────────────────────────────
+  // SEARCH + PICK CHEAPEST TRANSPORT FOR ONE TRANSITION
+  // Reuses the existing supplierAdapter path used by
+  // _searchFlights, just scoped to a single origin/destination
+  // pair and date rather than a full leg search.
+  // ─────────────────────────────
+  async _searchCheapestDirect(fromCity, toCity, date, tripParams) {
+    if (!supplierAdapter || !date) return null;
+
+    try {
+      const results = await supplierAdapter.searchTransport({
+        origin:         fromCity,
+        destination:    toCity,
+        date,
+        passengers:     tripParams.passengers || 1,
+        transportMode:  'flight',
+        timePreference: tripParams.timePreference,
+      });
+
+      return this._pickCheapest(results, r => r.price);
+    } catch (err) {
+      logger.error('MultiDest: transition search failed', { from: fromCity, to: toCity, error: err.message });
+      return null;
+    }
+  }
+
+  _pickCheapest(items, priceFn) {
+    if (!items || items.length === 0) return null;
+    return items.reduce((cheapest, item) => {
+      if (!cheapest) return item;
+      return (priceFn(item) || Infinity) < (priceFn(cheapest) || Infinity) ? item : cheapest;
+    }, null);
+  }
+
+  _addDaysStr(dateStr, days) {
+    const date = new Date(dateStr);
+    date.setDate(date.getDate() + days);
+    return date.toISOString().split('T')[0];
+  }
+
+  _defaultStartDate() {
+    const date = new Date();
+    date.setDate(date.getDate() + 14);
+    return date.toISOString().split('T')[0];
+  }
+
+  _validateMultiDestinationParams(params) {
+    if (!Array.isArray(params.legs) || params.legs.length < 2) {
+      throw new Error("Multi-destination trip requires at least 2 legs");
+    }
+    for (const leg of params.legs) {
+      if (!leg.destination) throw new Error("Each leg requires a destination");
     }
   }
 
@@ -495,7 +858,7 @@ class OrchestrationEngine {
         sourceCityId:       bus.sourceCityId,
         destCityId:         bus.destCityId,
         airline:            bus.provider,
-        provider:           bus.provider,
+        provider:            bus.provider,
         busType:            bus.busType,
         departureTime:      bus.departureTime,
         arrivalTime:        bus.arrivalTime,
@@ -619,31 +982,110 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
-  // TRANSFERS
+  // TRANSFER LEGS — mode-aware, directional
+  // Builds two transfer legs based on the ACTUAL transport mode
+  // selected for this package:
+  //   - departure: origin city -> transport hub (airport name
+  //     from the flight result if available; generic "Bus
+  //     Station"/"Train Station" label for bus/train, since we
+  //     don't have verified real terminal names for those yet)
+  //   - arrival: transport hub -> hotel at the destination
+  //
+  // Pricing still comes from the transfers table (agency-specific
+  // rows first, falling back to shared/default rows with
+  // agency_id IS NULL — see _getTransferRate below) — only the
+  // pickup/dropoff LABELS are derived from the transport mode.
   // ─────────────────────────────
-  async _searchTransfers(tripParams) {
+  async _buildTransferLegs(tripParams, transport) {
+    if (!transport) return [];
+
+    const mode = (transport.transportType || 'flight').toLowerCase();
+    const originCity = tripParams.origin || 'Nairobi';
+    const destCity    = tripParams.destination || transport.destination || 'your destination';
+
+    let originHub, destHub;
+
+    if (mode === 'bus') {
+      originHub = `${this._titleCase(originCity)} Bus Station`;
+      destHub   = `${this._titleCase(destCity)} Bus Station`;
+    } else if (mode === 'train') {
+      originHub = `${this._titleCase(originCity)} Train Station`;
+      destHub   = `${this._titleCase(destCity)} Train Station`;
+    } else {
+      // flight — use the real airport name from the search result when available
+      originHub = transport.originAirport || `${this._titleCase(originCity)} Airport`;
+      destHub   = transport.destAirport   || `${this._titleCase(destCity)} Airport`;
+    }
+
+    const rate = await this._getTransferRate(tripParams);
+
+    return [
+      {
+        legType:     'departure',
+        provider:    rate?.provider || 'Bodrless Standard Transfer',
+        description: `${this._titleCase(originCity)} → ${originHub}`,
+        pickup:      this._titleCase(originCity),
+        dropoff:     originHub,
+        price:       rate?.price ?? 1500,
+        currency:    rate?.currency || 'KES',
+      },
+      {
+        legType:     'arrival',
+        provider:    rate?.provider || 'Bodrless Standard Transfer',
+        description: `${destHub} → Hotel`,
+        pickup:      destHub,
+        dropoff:     'Hotel',
+        price:       rate?.price ?? 1500,
+        currency:    rate?.currency || 'KES',
+      },
+    ];
+  }
+
+  _titleCase(str) {
+    if (!str) return '';
+    return String(str).replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  // ─────────────────────────────
+  // TRANSFER RATE LOOKUP
+  // Agency-specific rows first; falls back to shared/default
+  // rows (agency_id IS NULL) when the agency has none of its
+  // own — see earlier fix, same reasoning applies here.
+  // ─────────────────────────────
+  async _getTransferRate(tripParams) {
     const { data, error } = await supabase
       .from("transfers")
       .select("*")
       .eq("agency_id", tripParams.agencyId);
 
     if (error) {
-      console.error("TRANSFER ERROR:", error);
-      return [];
+      console.error("TRANSFER RATE ERROR:", error);
+      return null;
     }
 
-    const matchedTransfers = (data || []).filter(t =>
-      this._matchesDestination(t, tripParams.destination)
-    );
+    let rows = data || [];
 
-    console.log("MATCHED TRANSFERS:", matchedTransfers.length);
+    if (rows.length === 0) {
+      const { data: defaultRows, error: defaultError } = await supabase
+        .from("transfers")
+        .select("*")
+        .is("agency_id", null);
 
-    return matchedTransfers.map(t => ({
-      provider:    t.provider     || t.name || "Transfer",
-      vehicleType: t.vehicle_type || "Transfer",
-      location:    t.location     || "",
-      price:       Number(t.price || t.amount || 0),
-    }));
+      if (defaultError) {
+        console.error("DEFAULT TRANSFER RATE ERROR:", defaultError);
+      } else {
+        rows = defaultRows || [];
+      }
+    }
+
+    const matched = rows.find(t => this._matchesDestination(t, tripParams.destination)) || rows[0];
+    if (!matched) return null;
+
+    return {
+      provider: matched.provider || matched.name || null,
+      price:    Number(matched.price || matched.amount || 1500),
+      currency: matched.currency || 'KES',
+    };
   }
 
   // ─────────────────────────────
@@ -718,15 +1160,14 @@ class OrchestrationEngine {
   // keeps its original price + currency for transparent display
   // ("flight: KES 5,900 | hotel: €450 → KES 67,950").
   // ─────────────────────────────
-  async _buildPackages({ outboundTransport, returnTransport, hotels, transfers, tripParams, intent }) {
+  async _buildPackages({ outboundTransport, returnTransport, hotels, tripParams, intent }) {
     const scope = intent?.productScope || { needsTransport: true, needsHotel: true, needsTransfers: true };
 
     const hasOutbound  = outboundTransport.length > 0;
     const hasReturn    = returnTransport.length   > 0;
     const hasHotels    = hotels.length            > 0;
-    const hasTransfers = transfers.length         > 0;
 
-    if (!hasOutbound && !hasHotels && !hasTransfers) {
+    if (!hasOutbound && !hasHotels) {
       console.log("NO INVENTORY FOUND");
       return [];
     }
@@ -787,7 +1228,6 @@ class OrchestrationEngine {
     const maxItems = Math.max(
       scope.needsTransport  ? outboundTransport.length : 0,
       scope.needsHotel      ? hotels.length            : 0,
-      scope.needsTransfers  ? transfers.length         : 0,
       1
     );
 
@@ -797,17 +1237,25 @@ class OrchestrationEngine {
       const ob       = hasOutbound  && scope.needsTransport  ? outboundTransport[(i + startIndex) % outboundTransport.length] : null;
       const ret      = hasReturn    && scope.needsTransport  ? returnTransport[(i  + startIndex) % returnTransport.length]    : null;
       const hotel    = hasHotels    && scope.needsHotel      ? hotels[(i    + startIndex) % hotels.length]                    : null;
-      const transfer = hasTransfers && scope.needsTransfers  ? transfers[i % transfers.length]                                : null;
 
-      if (!ob && !hotel && !transfer) continue;
+      if (!ob && !hotel) continue;
 
       const nights = tripParams.nights || 1;
+
+      // Transfer legs depend on which transport mode was actually
+      // selected for THIS package (ob), so they're built per-package
+      // rather than pre-fetched once for the whole search.
+      const transferLegs = scope.needsTransfers
+        ? await this._buildTransferLegs(tripParams, ob)
+        : [];
+      const transferTotal = transferLegs.reduce((sum, leg) => sum + (leg.price || 0), 0);
+      const transferCurrency = transferLegs[0]?.currency || 'KES';
 
       const totalPrice = await sumToKES([
         { amount: ob?.price,                              currency: ob?.currency       || 'KES' },
         { amount: ret?.price,                             currency: ret?.currency      || 'KES' },
         { amount: (hotel?.pricePerNight || 0) * nights,    currency: hotel?.currency    || 'KES' },
-        { amount: transfer?.price,                         currency: transfer?.currency || 'KES' },
+        { amount: transferTotal,                           currency: transferCurrency },
       ]);
 
       packages.push({
@@ -826,7 +1274,7 @@ class OrchestrationEngine {
         transport:       this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination),
         returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),
         hotel,
-        transfers: transfer,
+        transfers: transferLegs,
         status: "available",
       });
     }

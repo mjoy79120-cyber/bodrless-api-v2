@@ -3,6 +3,12 @@
  * ─────────────────────────────────────────────────────────────
  * Sends messages back to travelers via WhatsApp Business API.
  * Formats trip packages as interactive WhatsApp messages.
+ *
+ * Handles two distinct package shapes:
+ *   - Single-destination packages (pkg.transport/hotel/transfers
+ *     as flat fields) -> _sendPackageCard (unchanged)
+ *   - Multi-destination itineraries (pkg.isMultiDestination,
+ *     pkg.legs[], pkg.returnTransport) -> _sendItineraryCard
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -28,21 +34,38 @@ class WhatsAppService {
 
   /**
    * Send trip packages as formatted WhatsApp messages
-   * Each package is sent as a separate message
+   * Each package is sent as a separate message.
+   *
+   * Multi-destination itineraries (pkg.isMultiDestination) are
+   * routed to _sendItineraryCard instead of _sendPackageCard,
+   * since they have a fundamentally different shape (legs[]
+   * instead of flat transport/hotel/transfers fields) and there
+   * is normally only one combined itinerary per search, not
+   * several alternatives.
    */
   async sendPackages(phoneNumberId, to, packages) {
+    const isItinerary = packages.length === 1 && packages[0]?.isMultiDestination;
+
     await this.sendText(phoneNumberId, to,
-      `✈️ I found *${packages.length} option(s)* for your trip! Here they are:`
+      isItinerary
+        ? `🗺️ I've put together your multi-stop itinerary:`
+        : `✈️ I found *${packages.length} option(s)* for your trip! Here they are:`
     );
 
     for (let i = 0; i < packages.length; i++) {
       const pkg = packages[i];
-      await this._sendPackageCard(phoneNumberId, to, pkg, i + 1);
+      if (pkg.isMultiDestination) {
+        await this._sendItineraryCard(phoneNumberId, to, pkg);
+      } else {
+        await this._sendPackageCard(phoneNumberId, to, pkg, i + 1);
+      }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     await this.sendText(phoneNumberId, to,
-      "Reply with the option number you prefer and we'll get your booking sorted!"
+      isItinerary
+        ? "Let me know if you'd like to book this, or adjust any part of it!"
+        : "Reply with the option number you prefer and we'll get your booking sorted!"
     );
   }
 
@@ -148,6 +171,104 @@ class WhatsAppService {
   }
 
   /**
+   * Format a multi-destination itinerary as a WhatsApp message.
+   *
+   * Shows each stop in order — transport arriving there, the
+   * stay itself, then moves to the next stop. Buffer nights
+   * (inserted automatically when a leg involves an airstrip
+   * destination, e.g. Maasai Mara) are clearly labeled as
+   * connections, not presented as a stop the traveler asked for.
+   * Ends with one combined total across the whole itinerary.
+   */
+  async _sendItineraryCard(phoneNumberId, to, pkg) {
+    const summary = pkg.summary || {};
+    const legs    = pkg.legs    || [];
+    const totalCurrency = summary.currency || 'KES';
+
+    const lines = [
+      `*🗺️ ${summary.route || 'Your Itinerary'}*`,
+      `━━━━━━━━━━━━━━━━`,
+      `*Travelers:* ${summary.passengers || 1}`,
+      `*Total nights:* ${summary.totalNights || 0}`,
+    ];
+
+    legs.forEach((leg, i) => {
+      const stopNumber = i + 1;
+      const isBuffer = leg.isBufferLeg;
+
+      lines.push('');
+
+      if (isBuffer) {
+        lines.push(`*— Connection: overnight in ${this._titleCase(leg.destination)} —*`);
+        lines.push(`  Connecting between destinations · 1 night`);
+      } else {
+        lines.push(`*Stop ${stopNumber}: ${this._titleCase(leg.destination)}* (${leg.nights} night${leg.nights === 1 ? '' : 's'})`);
+      }
+
+      // ── Transport arriving at this stop ────────────
+      const t = leg.transportIn;
+      if (t) {
+        const isbus = (t.transportType || '').toLowerCase() === 'bus';
+        const tCurrency = t.currency || 'KES';
+        lines.push(`  ${isbus ? '🚌' : '✈️'} ${t.origin || 'TBC'} → ${t.destination || 'TBC'}`);
+        lines.push(`    ${isbus ? 'Operator' : 'Airline'}: ${t.airline || t.provider || 'TBC'} · ${this._formatTime(t.departureTime)}–${this._formatTime(t.arrivalTime)}`);
+        if (leg.connectsVia && !isBuffer) {
+          lines.push(`    _Connects via ${this._titleCase(leg.connectsVia)}_`);
+        }
+        lines.push(`    Price: ${tCurrency} ${(t.price || 0).toLocaleString()}`);
+      } else if (!isBuffer) {
+        lines.push(`  ⚠️ Transport for this leg still to be confirmed`);
+      }
+
+      // ── Hotel for this stop ─────────────────────────
+      if (leg.hotel) {
+        const h = leg.hotel;
+        const stars = h.stars ? '⭐'.repeat(Math.min(Number(h.stars) || 0, 5)) : '';
+        const hCurrency = h.currency || 'KES';
+        const hotelLine = `  🏨 ${h.name || 'TBC'} ${stars}`.replace(/\s+$/, '');
+        lines.push(hotelLine);
+        if (h.location) lines.push(`    ${h.location}`);
+        lines.push(`    ${hCurrency} ${(h.pricePerNight || 0).toLocaleString()}/night × ${leg.nights} night${leg.nights === 1 ? '' : 's'}`);
+      } else if (!isBuffer) {
+        lines.push(`  ⚠️ Hotel for this stop still to be confirmed`);
+      }
+
+      // ── Transfer for this stop ──────────────────────
+      if (leg.transfers) {
+        const tr = leg.transfers;
+        const trCurrency = tr.currency || 'KES';
+        lines.push(`  🚗 ${tr.provider || 'Transfer'}: ${trCurrency} ${(tr.price || 0).toLocaleString()}`);
+      }
+    });
+
+    // ── Final return-to-origin transport ──────────────
+    if (pkg.returnTransport) {
+      const rt = pkg.returnTransport;
+      const isbus = (rt.transportType || '').toLowerCase() === 'bus';
+      const rtCurrency = rt.currency || 'KES';
+      lines.push('');
+      lines.push(`*Return*`);
+      lines.push(`  ${isbus ? '🚌' : '✈️'} ${rt.origin || 'TBC'} → ${rt.destination || 'TBC'}`);
+      lines.push(`    ${this._formatTime(rt.departureTime)}–${this._formatTime(rt.arrivalTime)} · ${rtCurrency} ${(rt.price || 0).toLocaleString()}`);
+    }
+
+    // ── Combined total ─────────────────────────────────
+    lines.push('');
+    lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
+    if (summary.pricePerPerson) {
+      lines.push(`_(${totalCurrency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
+    }
+
+    return this._send(phoneNumberId, {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'text',
+      text: { body: lines.join('\n') },
+    });
+  }
+
+  /**
    * Core send function
    */
   async _send(phoneNumberId, payload) {
@@ -177,6 +298,11 @@ class WhatsAppService {
     const date = new Date(isoString);
     if (isNaN(date)) return isoString;
     return date.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  _titleCase(str) {
+    if (!str) return '';
+    return str.replace(/\b\w/g, c => c.toUpperCase());
   }
 }
 

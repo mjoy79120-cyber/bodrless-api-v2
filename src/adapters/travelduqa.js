@@ -543,6 +543,36 @@ class TravelDuqaAdapter {
     }
   }
 
+  // ─────────────────────────────────────────────
+  // CHECK IF AN AIRPORT IS IN TRAVELDUQA'S NETWORK
+  // Reuses the same location cache _resolveIata() builds,
+  // so this is free if a search has already run, and only
+  // costs one getLocations() call on a cold start. Used by
+  // destinationIntel.js as the first tier of its validation
+  // cascade — "is this airport code actually bookable via
+  // Bodrless today," not just "is this a real airport."
+  // ─────────────────────────────────────────────
+  async isAirportSupported(iataCode) {
+    if (!iataCode) return false;
+    const normalized = iataCode.toLowerCase();
+
+    try {
+      if (!this._iataCache) {
+        const locations = await this.getLocations({ filter: 'none', value: 'all' });
+        this._iataCache = {};
+        for (const loc of locations) {
+          if (loc.city) this._iataCache[loc.city.toLowerCase()] = loc.iata;
+          if (loc.name) this._iataCache[loc.name.toLowerCase()] = loc.iata;
+          if (loc.iata) this._iataCache[loc.iata.toLowerCase()] = loc.iata;
+        }
+      }
+      return Object.values(this._iataCache).some(code => code?.toLowerCase() === normalized);
+    } catch (err) {
+      logger.error('TravelDuqa isAirportSupported check failed', { error: err.message });
+      return false; // fail closed — don't trust an unverified code
+    }
+  }
+
   // Simple Levenshtein distance — small, dependency-free, good enough
   // for catching single-letter typos in short city names.
   _levenshtein(a, b) {
