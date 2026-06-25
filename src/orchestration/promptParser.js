@@ -366,15 +366,26 @@ function _resolveCityFuzzy(rawToken, sortedCities) {
 }
 
 // ─────────────────────────────────────────────
-// GEMINI PARSER
+// GROQ PARSER (llama-3.1-8b-instant)
+// Switched from Gemini due to persistent billing/quota issues
+// on Gemini's free tier that blocked production use entirely.
+// Same prompt and JSON schema as before — only the transport
+// layer (endpoint, auth, response shape) changed. Groq's
+// response_format: json_object guarantees valid JSON back, so
+// there's no need to strip markdown fences the way the Gemini
+// REST call required.
 // ─────────────────────────────────────────────
 async function _parseWithGemini(prompt) {
   const response = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    `https://api.groq.com/openai/v1/chat/completions`,
     {
-      contents: [{
-        parts: [{
-          text: `You are a travel booking assistant for East Africa. Extract trip details from this prompt and return ONLY valid JSON with no explanation, no markdown, no code blocks.
+      model: 'llama-3.1-8b-instant',
+      response_format: { type: 'json_object' },
+      temperature: 0.1,
+      max_completion_tokens: 800,
+      messages: [{
+        role: 'user',
+        content: `You are a travel booking assistant for East Africa. Extract trip details from this prompt and return ONLY valid JSON with no explanation, no markdown, no code blocks.
 
 Prompt: "${prompt}"
 
@@ -429,22 +440,19 @@ RULES:
 - "christmas" = ${new Date().getFullYear()}-12-25
 - "new year" = ${new Date().getFullYear() + 1}-01-01
 - For "weekend" use nights: 2, for "week" use nights: 7`
-        }]
-      }],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 800,
-      }
+      }]
     },
     {
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+      },
       timeout: 10000
     }
   );
 
-  const content = response.data.candidates[0].content.parts[0].text;
-  const cleaned = content.replace(/```json|```/g, '').trim();
-  const parsed = JSON.parse(cleaned);
+  const content = response.data.choices[0].message.content;
+  const parsed = JSON.parse(content);
 
   // NOTE: no longer defaulting origin to 'nairobi' here — a missing
   // origin is now a real signal (needsOriginClarification, set in
