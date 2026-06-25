@@ -465,58 +465,32 @@ RULES:
 function _detectMultiDestinationRules(prompt) {
   const lower = prompt.toLowerCase().trim();
 
-  // Two phrasing styles need to be supported:
-  //   "5 days in maasai mara then 4 days in mombasa"  (number BEFORE place)
-  //   "nairobi to mombasa 3 days then to zanzibar 4 days" (place BEFORE number)
-  // The original pattern only matched the first style — "place N days"
-  // phrasing (very common: "X to Y N days") produced garbage captures
-  // (e.g. a lone space or trailing "s") because the place name sits
-  // before the number, not after it.
-  const numberFirstPattern = /(\d+)\s*(?:days?|nights?)\s*(?:in|at)\s+([a-z\s]+?)(?=\s*(?:,|\.|then|and|followed by|after that|next|$))/g;
-  const placeFirstPattern  = /(?:to|in|at)\s+([a-z\s]+?)\s+(\d+)\s*(?:days?|nights?)/g;
+  // Needs at least two "<N> nights/days ... <place>" fragments,
+  // joined by then/and/followed by, to count as multi-destination.
+  const fragmentPattern = /(\d+)\s*(?:days?|nights?)\s*(?:in|at|to)?\s*([a-z\s]+?)(?=\s*(?:,|\.|then|and|followed by|after that|next|$))/g;
+  const fragments = [...lower.matchAll(fragmentPattern)];
+
+  if (fragments.length < 2) return null;
 
   const sortedPlaces = [...KNOWN_NON_AIRPORT_DESTINATIONS, ...Object.keys(CITY_CODES)]
     .sort((a, b) => b.length - a.length);
 
-  // Try number-first phrasing ("5 days in Mara") first. Only fall
-  // back to place-first phrasing ("Mara 5 days") if the first
-  // pattern didn't find enough legs — running both unconditionally
-  // on the same prompt let the second pattern re-match fragments
-  // already captured by the first, producing phantom duplicate legs.
-  let legs = [];
-  for (const match of lower.matchAll(numberFirstPattern)) {
+  const legs = [];
+  for (const match of fragments) {
     const nights = parseInt(match[1]);
     const rawPlace = match[2].trim();
-    const resolvedPlace = _resolveCityFuzzy(rawPlace, sortedPlaces) || (rawPlace.length > 2 ? rawPlace : null);
-    if (resolvedPlace && nights) legs.push({ destination: resolvedPlace, nights });
-  }
-
-  if (legs.length < 2) {
-    legs = [];
-    for (const match of lower.matchAll(placeFirstPattern)) {
-      const rawPlace = match[1].trim();
-      const nights = parseInt(match[2]);
-      const resolvedPlace = _resolveCityFuzzy(rawPlace, sortedPlaces) || (rawPlace.length > 2 ? rawPlace : null);
-      if (resolvedPlace && nights) legs.push({ destination: resolvedPlace, nights });
-    }
+    const resolvedPlace = _resolveCityFuzzy(rawPlace, sortedPlaces) || rawPlace;
+    if (resolvedPlace) legs.push({ destination: resolvedPlace, nights });
   }
 
   if (legs.length < 2) return null;
 
-  // Origin: look for "from <city>" anywhere in the prompt, OR the
-  // first city mentioned before "to" in "X to Y" phrasing (e.g.
-  // "nairobi to mombasa..." -> origin is nairobi). Otherwise leave
-  // null so the engine can ask for clarification.
+  // Origin: look for "from <city>" anywhere in the prompt; otherwise
+  // leave null so the engine can ask for clarification, same as the
+  // single-destination rules path does.
   const fromMatch = lower.match(/from\s+([a-z\s]+?)(?:\s|,|$)/);
   const sortedCities = Object.keys(CITY_CODES).sort((a, b) => b.length - a.length);
-  let origin = fromMatch ? _resolveCityFuzzy(fromMatch[1], sortedCities) : null;
-
-  if (!origin) {
-    const xToYMatch = lower.match(/([a-z\s]+?)\s+to\s+([a-z\s]+?)(?=\s+\d+\s*(?:days?|nights?))/);
-    if (xToYMatch) {
-      origin = _resolveCityFuzzy(xToYMatch[1].trim(), sortedCities);
-    }
-  }
+  const origin = fromMatch ? _resolveCityFuzzy(fromMatch[1], sortedCities) : null;
 
   const passengerMatch = lower.match(/(\d+)\s*(people|persons|passengers|adults|pax|travelers?)/);
   const passengers = passengerMatch ? parseInt(passengerMatch[1]) : 1;
@@ -588,14 +562,21 @@ function _parseWithRules(prompt) {
   if (fromToMatch) {
     const fromCity = fromToMatch[1].trim();
     const toCity = fromToMatch[2].trim();
-    // Use fuzzy matching so a typo in either city doesn't silently fail
-    origin = _resolveCityFuzzy(fromCity, sortedCities) || origin;
-    destination = _resolveCityFuzzy(toCity, sortedCities) || destination;
+    // Use fuzzy matching against known airport-cities first (catches
+    // typos like "mombsa" -> "mombasa"), but if a place genuinely
+    // isn't a known airport-city (e.g. "meru", "watamu", "kilifi"),
+    // keep the raw extracted text rather than discarding it to null.
+    // Those non-hub places still need to flow through as real
+    // strings so destinationIntel / the hub-connecting fallback in
+    // engine.js can resolve them later — silently dropping them here
+    // broke "Meru to Mombasa" entirely (origin stayed null).
+    origin = _resolveCityFuzzy(fromCity, sortedCities) || fromCity || origin;
+    destination = _resolveCityFuzzy(toCity, sortedCities) || toCity || destination;
   }
 
   if (kwendaMatch && !destination) {
     const toCity = kwendaMatch[1].trim();
-    destination = _resolveCityFuzzy(toCity, sortedCities) || destination;
+    destination = _resolveCityFuzzy(toCity, sortedCities) || toCity || destination;
   }
 
   if (!destination) {
