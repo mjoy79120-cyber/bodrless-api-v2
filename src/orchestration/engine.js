@@ -92,22 +92,22 @@ class OrchestrationEngine {
       this._validateTripParams(tripParams);
 
       const [
-        outboundFlights, outboundBuses,
-        returnFlights, returnBuses,
+        outboundResult, outboundBuses,
+        returnResult, returnBuses,
         hotels
       ] = await Promise.all([
-        this._searchFlights(tripParams, 'outbound'),
+        this._searchFlightsWithHubFallback(tripParams, 'outbound'),
         this._searchBuses(tripParams, 'outbound'),
-        tripParams.returnDate ? this._searchFlights(tripParams, 'return') : Promise.resolve([]),
+        tripParams.returnDate ? this._searchFlightsWithHubFallback(tripParams, 'return') : Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true }),
         tripParams.returnDate ? this._searchBuses(tripParams, 'return') : Promise.resolve([]),
         this._searchHotels(tripParams),
       ]);
 
-      const outboundTransport = [...outboundFlights, ...outboundBuses];
-      const returnTransport   = [...returnFlights,   ...returnBuses];
+      const outboundTransport = [...outboundResult.results, ...outboundBuses];
+      const returnTransport   = [...returnResult.results,   ...returnBuses];
 
-      console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length);
-      console.log("FINAL RETURN TRANSPORT:",   returnTransport.length);
+      console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length, outboundResult.connectsVia ? `(via ${outboundResult.connectsVia})` : '');
+      console.log("FINAL RETURN TRANSPORT:",   returnTransport.length, returnResult.connectsVia ? `(via ${returnResult.connectsVia})` : '');
       console.log("FINAL HOTELS:",             hotels.length);
 
       const packages = await this._buildPackages({
@@ -116,6 +116,10 @@ class OrchestrationEngine {
         hotels,
         tripParams,
         intent,
+        connectionInfo: {
+          outbound: { connectsVia: outboundResult.connectsVia, connectingLegBookable: outboundResult.connectingLegBookable },
+          return:   { connectsVia: returnResult.connectsVia,   connectingLegBookable: returnResult.connectingLegBookable },
+        },
       });
 
       const updatedHistory = [
@@ -738,6 +742,77 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
+  // KNOWN REGIONAL HUBS
+  // Used only as a fallback when a direct origin->destination
+  // search returns nothing — e.g. "Meru to Diani" has no direct
+  // flight/bus, but Nairobi->Diani does. This is a small, stable
+  // list of real East African transport hubs, not something we
+  // ask an LLM to guess at — hub geography doesn't change day to
+  // day, so a maintained list is more reliable than a fresh
+  // model call each time, and avoids the same hallucination risk we
+  // guard against elsewhere (destinationIntel's IATA validation).
+  // ─────────────────────────────
+  static REGIONAL_HUBS = ['nairobi', 'mombasa', 'kampala', 'dar es salaam', 'addis ababa', 'kigali'];
+
+  // ─────────────────────────────
+  // SEARCH FLIGHTS WITH HUB-CONNECTING FALLBACK
+  // Tries the direct origin->destination search first (unchanged
+  // _searchFlights, untouched). Only if that returns nothing does
+  // it attempt connecting via a known regional hub — trying each
+  // hub in turn until one has real bookable legs on BOTH sides
+  // (origin->hub AND hub->destination).
+  //
+  // If only the hub->destination leg is bookable (e.g. Meru->
+  // Nairobi has no real flight/bus supplier — that's a matatu
+  // route with nothing to book), this still returns the bookable
+  // leg, but flags connectingLegBookable: false so callers (and
+  // ultimately the traveler, via whatsapp.js/widget.js) are told
+  // honestly that they need to arrange that first leg themselves
+  // — never silently treated as if Bodrless arranged it.
+  // ─────────────────────────────
+  async _searchFlightsWithHubFallback(tripParams, leg = 'outbound') {
+    const direct = await this._searchFlights(tripParams, leg);
+    if (direct.length > 0) {
+      return { results: direct, connectsVia: null, connectingLegBookable: true };
+    }
+
+    const origin = (leg === 'return' ? tripParams.destination : tripParams.origin || '').toLowerCase();
+    const destination = (leg === 'return' ? tripParams.origin : tripParams.destination || '').toLowerCase();
+
+    for (const hub of OrchestrationEngine.REGIONAL_HUBS) {
+      if (hub === origin || hub === destination) continue;
+
+      const hubToDestParams = leg === 'return'
+        ? { ...tripParams, destination: hub, origin: tripParams.destination }
+        : { ...tripParams, origin: hub };
+
+      const legFromHub = await this._searchFlights(hubToDestParams, leg);
+      if (legFromHub.length === 0) continue; // this hub doesn't even reach the destination — try the next one
+
+      const originToHubParams = leg === 'return'
+        ? { ...tripParams, origin: tripParams.destination, destination: hub }
+        : { ...tripParams, destination: hub };
+
+      const legToHub = await this._searchFlights(originToHubParams, leg);
+
+      console.log(`HUB FALLBACK (${leg}): trying ${origin} -> ${hub} -> ${destination} | toHub: ${legToHub.length}, fromHub: ${legFromHub.length}`);
+
+      // The bookable leg is always hub->destination (that's the
+      // real flight/bus we can sell). origin->hub is only included
+      // if it's ALSO genuinely bookable — otherwise it's flagged
+      // as the traveler's own responsibility (e.g. matatu).
+      return {
+        results: legFromHub,
+        connectsVia: hub,
+        connectingLegBookable: legToHub.length > 0,
+      };
+    }
+
+    // No direct route AND no hub got us there either.
+    return { results: [], connectsVia: null, connectingLegBookable: true };
+  }
+
+  // ─────────────────────────────
   // FLIGHTS
   // ─────────────────────────────
   async _searchFlights(tripParams, leg = 'outbound') {
@@ -1160,7 +1235,7 @@ class OrchestrationEngine {
   // keeps its original price + currency for transparent display
   // ("flight: KES 5,900 | hotel: €450 → KES 67,950").
   // ─────────────────────────────
-  async _buildPackages({ outboundTransport, returnTransport, hotels, tripParams, intent }) {
+  async _buildPackages({ outboundTransport, returnTransport, hotels, tripParams, intent, connectionInfo }) {
     const scope = intent?.productScope || { needsTransport: true, needsHotel: true, needsTransfers: true };
 
     const hasOutbound  = outboundTransport.length > 0;
@@ -1275,11 +1350,35 @@ class OrchestrationEngine {
         returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),
         hotel,
         transfers: transferLegs,
+        // Connection advisory — only present when the outbound/return
+        // leg required connecting via a regional hub AND that
+        // connecting leg (origin -> hub) has no real supplier
+        // behind it (e.g. Meru -> Nairobi is matatu-only). Never
+        // silently implies Bodrless arranged a leg it didn't.
+        connectionAdvisory: this._buildConnectionAdvisory(tripParams, connectionInfo),
         status: "available",
       });
     }
 
     return packages;
+  }
+
+  // ─────────────────────────────
+  // BUILD CONNECTION ADVISORY TEXT
+  // ─────────────────────────────
+  _buildConnectionAdvisory(tripParams, connectionInfo) {
+    if (!connectionInfo) return null;
+
+    const outboundNote = (connectionInfo.outbound?.connectsVia && !connectionInfo.outbound?.connectingLegBookable)
+      ? `You'll need to arrange your own way from ${this._titleCase(tripParams.origin)} to ${this._titleCase(connectionInfo.outbound.connectsVia)} first (no direct flight/bus available) — then the booked leg below covers ${this._titleCase(connectionInfo.outbound.connectsVia)} to ${this._titleCase(tripParams.destination)}.`
+      : null;
+
+    const returnNote = (connectionInfo.return?.connectsVia && !connectionInfo.return?.connectingLegBookable)
+      ? `On your return, you'll need to arrange your own way from ${this._titleCase(connectionInfo.return.connectsVia)} back to ${this._titleCase(tripParams.origin)} after your booked flight lands.`
+      : null;
+
+    if (!outboundNote && !returnNote) return null;
+    return [outboundNote, returnNote].filter(Boolean).join(' ');
   }
 
   _validateTripParams(params) {

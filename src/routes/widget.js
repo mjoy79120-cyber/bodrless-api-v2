@@ -569,6 +569,20 @@ router.get('/', (req, res) => {
   '    pkgBody.appendChild(makeRow("Transfer", transferList[0].provider || "Bodrless Standard Transfer", transferSub));\n' +
   '  }\n' +
 
+  '  if (p.connectionAdvisory) {\n' +
+  '    var advisoryRow = document.createElement("div");\n' +
+  '    advisoryRow.className = "pkg-row";\n' +
+  '    var advisoryLabel = document.createElement("div");\n' +
+  '    advisoryLabel.className = "pkg-label";\n' +
+  '    advisoryLabel.innerText = "\u26a0\ufe0f Before you book";\n' +
+  '    var advisoryText = document.createElement("div");\n' +
+  '    advisoryText.className = "pkg-sub";\n' +
+  '    advisoryText.innerText = p.connectionAdvisory;\n' +
+  '    advisoryRow.appendChild(advisoryLabel);\n' +
+  '    advisoryRow.appendChild(advisoryText);\n' +
+  '    pkgBody.appendChild(advisoryRow);\n' +
+  '  }\n' +
+
   '  var pkgFooter = document.createElement("div");\n' +
   '  pkgFooter.className = "pkg-footer";\n' +
   '  pkgFooter.style.height = "auto";\n' +

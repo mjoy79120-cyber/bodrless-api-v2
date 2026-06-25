@@ -154,6 +154,12 @@ class WhatsAppService {
       });
     }
 
+    // ── Connection advisory (e.g. "Meru -> Nairobi" not bookable) ──
+    if (pkg.connectionAdvisory) {
+      lines.push('');
+      lines.push(`⚠️ ${pkg.connectionAdvisory}`);
+    }
+
     // ── Total (always canonical currency — KES) ──────
     lines.push('');
     lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
