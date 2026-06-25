@@ -997,11 +997,25 @@ class OrchestrationEngine {
     }
 
     // ── HotelBeds live inventory ──────────────────
-    if (supplierAdapter && tripParams.departureDate) {
+    // FIX: previously gated on tripParams.departureDate being
+    // truthy — if a traveler said "4 nights" with no explicit
+    // date, departureDate stayed null and the entire HotelBeds
+    // branch was silently skipped (no log, no error, just zero
+    // hotels). Mirrors the [FLIGHT FALLBACK] pattern already
+    // used in _searchFlights: default to tomorrow if no date
+    // was given, rather than giving up on hotel search entirely.
+    let checkIn = tripParams.departureDate;
+    if (!checkIn) {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      checkIn = tomorrow.toISOString().split('T')[0];
+      console.log(`[HOTEL FALLBACK] No departureDate — using ${checkIn}`);
+    }
+
+    if (supplierAdapter) {
       try {
-        const checkIn  = tripParams.departureDate;
-        const checkOut = tripParams.returnDate || null;
         const nights   = tripParams.nights || 1;
+        const checkOut = tripParams.returnDate || this._addDaysStr(checkIn, nights);
 
         const liveHotels = await supplierAdapter.searchHotels({
           destination: tripParams.destination,
