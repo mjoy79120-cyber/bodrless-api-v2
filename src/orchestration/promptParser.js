@@ -400,9 +400,9 @@ FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or mo
   ],
   "departureDate": "YYYY-MM-DD or null",
   "passengers": number (default 1),
-  "budget": "low|mid|high|luxury",
+  "budget": choose exactly ONE: "low" or "mid" or "high" or "luxury" (default "mid" if not stated),
   "accessibility": true or false,
-  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"]
+  "preferences": an array containing ONLY the categories that genuinely apply, chosen from: "beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible" — return an EMPTY array [] if none are clearly implied by the prompt
 }
 
 OTHERWISE (single destination), return ONLY this shape:
@@ -414,23 +414,25 @@ OTHERWISE (single destination), return ONLY this shape:
   "departureDate": "YYYY-MM-DD or null",
   "returnDate": "YYYY-MM-DD or null",
   "passengers": number (default 1),
-  "budget": "low|mid|high|luxury",
+  "budget": choose exactly ONE: "low" or "mid" or "high" or "luxury" (default "mid" if not stated),
   "nights": number (default 3),
-  "tripType": "round_trip|one_way",
-  "outboundTransportMode": "flight|bus|train|drive|null",
-  "returnTransportMode": "flight|bus|train|drive|null",
-  "seatPreference": "window|aisle|middle|extra_legroom|front|back|upper_deck|lower_deck|null",
-  "mealPlan": "all_inclusive|full_board|half_board|bed_and_breakfast|room_only|null",
-  "trainClass": "first_class|economy|premium|sgr|null",
-  "timePreference": "morning|afternoon|evening|night|null",
+  "tripType": choose exactly ONE: "round_trip" or "one_way" (default "round_trip" unless the traveler explicitly says one-way),
+  "outboundTransportMode": choose exactly ONE: "flight" or "bus" or "train" or "drive", or null if not stated,
+  "returnTransportMode": choose exactly ONE: "flight" or "bus" or "train" or "drive", or null if not stated,
+  "seatPreference": choose exactly ONE: "window" or "aisle" or "middle" or "extra_legroom" or "front" or "back" or "upper_deck" or "lower_deck", or null if not stated,
+  "mealPlan": choose exactly ONE: "all_inclusive" or "full_board" or "half_board" or "bed_and_breakfast" or "room_only", or null if not stated,
+  "trainClass": choose exactly ONE: "first_class" or "economy" or "premium" or "sgr", or null if not stated,
+  "timePreference": choose exactly ONE: "morning" or "afternoon" or "evening" or "night", or null if not stated,
   "accessibility": true or false,
-  "preferences": ["beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible"]
+  "preferences": an array containing ONLY the categories that genuinely apply, chosen from: "beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible" — return an EMPTY array [] if none are clearly implied by the prompt
 }
+
+CRITICAL OUTPUT RULE: every field above describing a choice between options (e.g. "choose exactly ONE: A or B or C") means you must output ONE of those literal values (e.g. just "mid", not the word "or" or any list). NEVER output a field's full list of possible values joined together — that is always wrong. If genuinely unsure which single value applies, use the stated default or null, never the full option list.
 
 RULES:
 - CRITICAL: Pay attention to directional transport. If a user says "bus going and flight coming back", set outboundTransportMode="bus" and returnTransportMode="flight".
 - If only one transport mode is mentioned (e.g. "fly to Mombasa"), apply it to both outbound and return.
-- origin = where they are coming FROM. If the prompt does NOT clearly state where the traveler is departing from, set origin to null — do NOT guess or default to any city. We will ask the traveler to clarify separately.
+- origin = where they are coming FROM. A simple "X to Y" phrasing (e.g. "Nairobi to Mombasa") means X is the origin — extract it. Only set origin to null if the prompt truly gives no departure location at all (e.g. "I want to go to Mombasa" with no "from" stated). Do NOT guess a city if none is given, but DO extract one that is clearly stated, including in plain "X to Y" form.
 - destination (single) / each leg's destination (multi) = where they want to GO. Use the place name as stated (e.g. "maasai mara", "kilifi", "watamu") — do NOT convert it to a nearby airport or city name. Place name resolution happens in a separate step.
 - If a city name appears to be a misspelling of a real city (e.g. "zanibar", "mombsa", "nairobii"), correct it to the real city name in your response rather than treating it as unrecognized.
 - For multi-destination prompts, preserve the ORDER the traveler stated the destinations in — legs[0] is visited first.
@@ -740,16 +742,64 @@ function _enrichParams(parsed) {
     requiresBus,
     needsOriginClarification,
     passengers: parsed.passengers || 1,
-    budget: parsed.budget || 'mid',
+    budget: _sanitizeEnum(parsed.budget, ['low', 'mid', 'high', 'luxury'], 'mid'),
+    tripType: _sanitizeEnum(parsed.tripType, ['round_trip', 'one_way'], 'round_trip'),
     accessibility: parsed.accessibility || false,
-    seatPreference: parsed.seatPreference || null,
-    mealPlan: parsed.mealPlan || null,
-    trainClass: parsed.trainClass || null,
-    timePreference: parsed.timePreference || null,
-    outboundTransportMode: parsed.outboundTransportMode || null,
-    returnTransportMode: parsed.returnTransportMode || null,
+    seatPreference: _sanitizeEnum(parsed.seatPreference, ['window', 'aisle', 'middle', 'extra_legroom', 'front', 'back', 'upper_deck', 'lower_deck'], null),
+    mealPlan: _sanitizeEnum(parsed.mealPlan, ['all_inclusive', 'full_board', 'half_board', 'bed_and_breakfast', 'room_only'], null),
+    trainClass: _sanitizeEnum(parsed.trainClass, ['first_class', 'economy', 'premium', 'sgr'], null),
+    timePreference: _sanitizeEnum(parsed.timePreference, ['morning', 'afternoon', 'evening', 'night'], null),
+    outboundTransportMode: _sanitizeEnum(parsed.outboundTransportMode, ['flight', 'bus', 'train', 'drive'], null),
+    returnTransportMode: _sanitizeEnum(parsed.returnTransportMode, ['flight', 'bus', 'train', 'drive'], null),
+    preferences: _sanitizePreferences(parsed.preferences),
     busSeatPosition: parsed.busSeatPosition || null,
   };
+}
+
+// ─────────────────────────────────────────────
+// SANITIZE ENUM VALUE
+// Defensive guard against any LLM provider returning something
+// other than a single valid value for a constrained field — e.g.
+// echoing the schema's option list back literally ("low|mid|high
+// |luxury" or "low, mid, high, luxury") instead of picking one.
+// Falls back to the given default rather than letting a malformed
+// value flow downstream into supplier searches/pricing logic.
+// ─────────────────────────────────────────────
+function _sanitizeEnum(value, allowed, fallback) {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim().toLowerCase();
+  return allowed.includes(normalized) ? normalized : fallback;
+}
+
+// ─────────────────────────────────────────────
+// SANITIZE PREFERENCES ARRAY
+// Same defensive intent as _sanitizeEnum, but for the preferences
+// array — keeps only values that are actually in the allowed set,
+// so a malformed response (e.g. the full option list returned
+// regardless of relevance) doesn't silently bias ranking/recommendations.
+// ─────────────────────────────────────────────
+function _sanitizePreferences(value) {
+  const allowed = ['beach', 'safari', 'culture', 'adventure', 'family', 'honeymoon', 'business', 'accessible'];
+  if (!Array.isArray(value)) return [];
+
+  const cleaned = value
+    .filter(v => typeof v === 'string')
+    .map(v => v.trim().toLowerCase())
+    .filter(v => allowed.includes(v));
+
+  // If every single allowed value is present, that's the same
+  // failure pattern as the enum-echo bug — a model returning the
+  // whole option list rather than genuinely selecting relevant
+  // ones (it is extremely unlikely a real prompt implies beach
+  // AND safari AND culture AND business AND honeymoon all at
+  // once). Treat this as malformed and reset to empty rather
+  // than letting it silently bias ranking toward every category.
+  const uniqueValues = new Set(cleaned);
+  if (allowed.every(a => uniqueValues.has(a))) {
+    return [];
+  }
+
+  return cleaned;
 }
 
 // ─────────────────────────────────────────────
@@ -774,9 +824,9 @@ function _enrichMultiDestinationParams(parsed) {
     legs,
     departureDate: parsed.departureDate || _defaultDepartureDate(),
     passengers: parsed.passengers || 1,
-    budget: parsed.budget || 'mid',
+    budget: _sanitizeEnum(parsed.budget, ['low', 'mid', 'high', 'luxury'], 'mid'),
     accessibility: parsed.accessibility || false,
-    preferences: parsed.preferences || [],
+    preferences: _sanitizePreferences(parsed.preferences),
     needsOriginClarification,
     // Destination, for logging/display purposes only — engine.js
     // builds the real route label from resolved leg data.
