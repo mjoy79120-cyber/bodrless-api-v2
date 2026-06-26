@@ -76,6 +76,23 @@ class WhatsAppBookingFlow {
   }
 
   // ─────────────────────────────────────────────
+  // Lightweight active-session check, reused by webhook.js so it
+  // never has to duplicate this query independently. This is the
+  // single source of truth for "is there an active booking
+  // conversation for this phone number" — handleMessage() below
+  // remains the only place that actually loads and acts on the
+  // session's contents.
+  // ─────────────────────────────────────────────
+  async hasActiveSession(from) {
+    const { data: session } = await supabase
+      .from('whatsapp_booking_sessions')
+      .select('phone')
+      .eq('phone', from)
+      .maybeSingle();
+    return !!session;
+  }
+
+  // ─────────────────────────────────────────────
   // Called for every incoming message while a booking session is active.
   // Returns true if it handled the message.
   // ─────────────────────────────────────────────

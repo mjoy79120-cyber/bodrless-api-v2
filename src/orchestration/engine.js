@@ -47,22 +47,82 @@ class OrchestrationEngine {
 
       // ─────────────────────────────
       // MULTI-DESTINATION BRANCH
-      // Entirely separate path — single-destination logic below
-      // is untouched and still handles everything it always has.
+      // ─────────────────────────────
+      // A "multi-destination" prompt is not always one continuous
+      // itinerary. Each leg beyond the first may:
+      //   - restate no origin at all -> ambiguous, must ask before
+      //     searching anything (ASK)
+      //   - restate an origin matching the previous leg's destination
+      //     -> genuinely continuous, stays one itinerary (CONTINUOUS)
+      //   - restate a DIFFERENT origin -> this is actually a separate,
+      //     independent trip bundled into the same message, e.g.
+      //     "Nairobi to Zanzibar 4 nights then Nairobi to Kampala 3
+      //     nights" — two unrelated round trips, not a Zanzibar->Kampala
+      //     itinerary (INDEPENDENT)
+      //
+      // See _classifyMultiDestinationLegs for the classification pass.
       // ─────────────────────────────
       if (tripParams.isMultiDestination) {
         this._validateMultiDestinationParams(tripParams);
 
-        const itinerary = await this._orchestrateMultiDestination(tripParams, sessionId);
+        const classification = this._classifyMultiDestinationLegs(tripParams);
+
+        if (classification.needsClarification) {
+          const question = `Where will you be departing from for ${this._titleCase(classification.needsClarification.destination)}?`;
+          return {
+            sessionId,
+            text: question,
+            packages: [],
+            needsClarification: true,
+            tripParams,
+            intent,
+            conversationHistory: [
+              ...conversationHistory,
+              { role: 'user', content: prompt },
+              { role: 'assistant', content: question, params: tripParams, packageCount: 0 },
+            ].slice(-10),
+            generatedAt: new Date().toISOString(),
+          };
+        }
+
+        // Run each group (continuous itinerary OR independent single
+        // trip) in stated order, collecting one trip result per group.
+        const tripResults = [];
+        for (const group of classification.groups) {
+          if (group.type === 'continuous') {
+            const groupParams = { ...tripParams, legs: group.legs, isMultiDestination: true };
+            const itinerary = await this._orchestrateMultiDestination(groupParams, sessionId);
+            tripResults.push({
+              text: `I put together a ${itinerary.summary.totalNights}-night itinerary across ${itinerary.legs.length} stops.`,
+              packages: [itinerary],
+              label: itinerary.summary.route,
+            });
+          } else {
+            // Independent leg — its own standalone single-destination
+            // trip, reusing the exact same search/build/rank logic as
+            // a normal one-destination prompt.
+            const legParams = {
+              ...tripParams,
+              isMultiDestination: false,
+              legs: undefined,
+              origin: group.leg.origin,
+              destination: group.leg.destination,
+              departureDate: tripParams.departureDate, // TODO: per-leg dates once buffer/date-chaining is extended to independent legs — see follow-up note below
+              nights: group.leg.nights,
+            };
+            const result = await this._runSingleDestinationSearch(legParams, sessionId, prompt);
+            tripResults.push({ text: result.text, packages: result.packages, label: legParams.destination });
+          }
+        }
 
         const updatedHistory = [
           ...conversationHistory,
           { role: 'user', content: prompt },
           {
             role: 'assistant',
-            content: `Built a ${itinerary.legs.length}-stop itinerary`,
+            content: `Built ${tripResults.length} trip result(s): ${tripResults.map(t => t.label).join(', ')}`,
             params: tripParams,
-            packageCount: 1,
+            packageCount: tripResults.reduce((sum, t) => sum + t.packages.length, 0),
           },
         ].slice(-10);
 
@@ -70,18 +130,19 @@ class OrchestrationEngine {
           sessionId,
           agencyId,
           prompt,
-          tripParams: {
-            ...tripParams,
-            destination: itinerary.summary.route,
-          },
-          packagesReturned: 1,
+          tripParams: { ...tripParams, destination: tripResults.map(t => t.label).join(' + ') },
+          packagesReturned: tripResults.length,
           channel: context.channel || 'widget',
         }).catch(err => logger.error('Failed to log search', { error: err.message }));
 
+        // Multiple independent/continuous results -> caller (webhook/
+        // widget) is responsible for presenting each as its own labeled
+        // block, in this order. See tripResults array.
         return {
           sessionId,
-          text: `I put together a ${itinerary.summary.totalNights}-night itinerary across ${itinerary.legs.length} stops.`,
-          packages: [itinerary],
+          text: tripResults.length === 1 ? tripResults[0].text : `I found ${tripResults.length} separate trips in your message.`,
+          packages: tripResults.flatMap(t => t.packages),
+          tripResults,
           tripParams,
           intent,
           conversationHistory: updatedHistory,
@@ -89,69 +150,32 @@ class OrchestrationEngine {
         };
       }
 
-      this._validateTripParams(tripParams);
-
-      const [
-        outboundResult, outboundBuses,
-        returnResult, returnBuses,
-        hotels
-      ] = await Promise.all([
-        this._searchFlightsWithHubFallback(tripParams, 'outbound'),
-        this._searchBuses(tripParams, 'outbound'),
-        tripParams.returnDate ? this._searchFlightsWithHubFallback(tripParams, 'return') : Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true }),
-        tripParams.returnDate ? this._searchBuses(tripParams, 'return') : Promise.resolve([]),
-        this._searchHotels(tripParams),
-      ]);
-
-      const outboundTransport = [...outboundResult.results, ...outboundBuses];
-      const returnTransport   = [...returnResult.results,   ...returnBuses];
-
-      console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length, outboundResult.connectsVia ? `(via ${outboundResult.connectsVia})` : '');
-      console.log("FINAL RETURN TRANSPORT:",   returnTransport.length, returnResult.connectsVia ? `(via ${returnResult.connectsVia})` : '');
-      console.log("FINAL HOTELS:",             hotels.length);
-
-      const packages = await this._buildPackages({
-        outboundTransport,
-        returnTransport,
-        hotels,
-        tripParams,
-        intent,
-        connectionInfo: {
-          outbound: { connectsVia: outboundResult.connectsVia, connectingLegBookable: outboundResult.connectingLegBookable },
-          return:   { connectsVia: returnResult.connectsVia,   connectingLegBookable: returnResult.connectingLegBookable },
-        },
-      });
+      const singleResult = await this._runSingleDestinationSearch(tripParams, sessionId, prompt, intent);
 
       const updatedHistory = [
         ...conversationHistory,
         { role: 'user', content: prompt },
         {
           role: 'assistant',
-          content: `Found ${packages.length} packages`,
+          content: `Found ${singleResult.packages.length} packages`,
           params: tripParams,
-          packageCount: packages.length,
+          packageCount: singleResult.packages.length,
         },
       ].slice(-10);
-
-      const rankedPackages = rankPackages(packages, tripParams).slice(0, 4);
-
-      const responseText = rankedPackages.length > 0
-        ? `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.`
-        : `Sorry, I couldn't find any matching travel packages for ${tripParams.destination}.`;
 
       this._logSearch({
         sessionId,
         agencyId,
         prompt,
         tripParams,
-        packagesReturned: rankedPackages.length,
+        packagesReturned: singleResult.packages.length,
         channel: context.channel || 'widget',
       }).catch(err => logger.error('Failed to log search', { error: err.message }));
 
       return {
         sessionId,
-        text: responseText,
-        packages: rankedPackages,
+        text: singleResult.text,
+        packages: singleResult.packages,
         tripParams,
         intent,
         conversationHistory: updatedHistory,
@@ -162,6 +186,152 @@ class OrchestrationEngine {
       logger.error("Engine failure", { error: error.message });
       throw error;
     }
+  }
+
+  // ─────────────────────────────
+  // SINGLE-DESTINATION SEARCH (extracted, reusable)
+  // Used by orchestrate()'s normal single-destination path AND by
+  // each INDEPENDENT leg split out of a multi-destination prompt
+  // (see _classifyMultiDestinationLegs) — same search/build/rank
+  // logic either way, just scoped to whatever tripParams it's given.
+  // Does NOT touch conversationHistory/_logSearch — callers handle
+  // that themselves since the two call sites log differently.
+  // ─────────────────────────────
+  async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null) {
+    this._validateTripParams(tripParams);
+
+    const resolvedIntent = intent || this._detectIntent(prompt, null);
+
+    const [
+      outboundResult, outboundBuses,
+      returnResult, returnBuses,
+      hotels
+    ] = await Promise.all([
+      this._searchFlightsWithHubFallback(tripParams, 'outbound'),
+      this._searchBuses(tripParams, 'outbound'),
+      tripParams.returnDate ? this._searchFlightsWithHubFallback(tripParams, 'return') : Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true }),
+      tripParams.returnDate ? this._searchBuses(tripParams, 'return') : Promise.resolve([]),
+      this._searchHotels(tripParams),
+    ]);
+
+    const outboundTransport = [...outboundResult.results, ...outboundBuses];
+    const returnTransport   = [...returnResult.results,   ...returnBuses];
+
+    console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length, outboundResult.connectsVia ? `(via ${outboundResult.connectsVia})` : '');
+    console.log("FINAL RETURN TRANSPORT:",   returnTransport.length, returnResult.connectsVia ? `(via ${returnResult.connectsVia})` : '');
+    console.log("FINAL HOTELS:",             hotels.length);
+
+    const packages = await this._buildPackages({
+      outboundTransport,
+      returnTransport,
+      hotels,
+      tripParams,
+      intent: resolvedIntent,
+      connectionInfo: {
+        outbound: { connectsVia: outboundResult.connectsVia, connectingLegBookable: outboundResult.connectingLegBookable },
+        return:   { connectsVia: returnResult.connectsVia,   connectingLegBookable: returnResult.connectingLegBookable },
+      },
+    });
+
+    const rankedPackages = rankPackages(packages, tripParams).slice(0, 4);
+
+    const responseText = rankedPackages.length > 0
+      ? `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.`
+      : `Sorry, I couldn't find any matching travel packages for ${tripParams.destination}.`;
+
+    return { text: responseText, packages: rankedPackages };
+  }
+
+  // ─────────────────────────────
+  // CLASSIFY MULTI-DESTINATION LEGS
+  // Walks legs in order, comparing each leg's stated origin (if any)
+  // against the PREVIOUS leg's destination (or the top-level origin,
+  // for leg 1) to decide whether the itinerary stays one continuous
+  // trip, splits into independent trips, or needs a clarifying
+  // question before any searching happens.
+  //
+  // Returns either:
+  //   { needsClarification: { destination } }   -- stop, ask, no search
+  //   { groups: [ { type: 'continuous', legs }, { type: 'independent', leg }, ... ] }
+  //
+  // Matching a leg's stated origin against the previous destination
+  // uses simple normalized string comparison (lowercase, trimmed) —
+  // both values come from the same place-name vocabulary the parser
+  // already extracts from, so this doesn't need fuzzy matching on
+  // top of what promptParser.js already does.
+  // ─────────────────────────────
+  _classifyMultiDestinationLegs(tripParams) {
+    const legs = tripParams.legs || [];
+    const groups = [];
+    let currentContinuousRun = [];
+    let previousDestination = tripParams.origin || null;
+
+    for (let i = 0; i < legs.length; i++) {
+      const leg = legs[i];
+      const isFirstLeg = i === 0;
+
+      if (isFirstLeg) {
+        // Leg 1's origin is the top-level tripParams.origin — already
+        // validated/clarified upstream (needsOriginClarification on
+        // tripParams itself), nothing new to classify here.
+        currentContinuousRun.push(leg);
+        previousDestination = leg.destination;
+        continue;
+      }
+
+      const statedOrigin = leg.origin ? this._normalize(leg.origin) : null;
+      const prevDest = previousDestination ? this._normalize(previousDestination) : null;
+
+      if (!statedOrigin) {
+        // No origin restated for this leg at all -> ambiguous,
+        // stop and ask rather than assuming continuation.
+        return { needsClarification: { destination: leg.destination } };
+      }
+
+      if (statedOrigin === prevDest) {
+        // Explicitly confirmed continuous — same as not stating one,
+        // except the traveler removed the ambiguity themselves.
+        currentContinuousRun.push(leg);
+        previousDestination = leg.destination;
+        continue;
+      }
+
+      // Stated origin differs from the previous stop -> this leg (and
+      // everything after it, until the next break) is NOT part of the
+      // same itinerary as what came before. Close out the current
+      // continuous run, then start this leg as the seed of a new one.
+      if (currentContinuousRun.length > 0) {
+        groups.push(
+          currentContinuousRun.length === 1
+            ? { type: 'independent', leg: currentContinuousRun[0] }
+            : { type: 'continuous', legs: currentContinuousRun }
+        );
+      }
+      currentContinuousRun = [{ ...leg, origin: leg.origin }];
+      previousDestination = leg.destination;
+    }
+
+    if (currentContinuousRun.length > 0) {
+      groups.push(
+        currentContinuousRun.length === 1
+          ? { type: 'independent', leg: currentContinuousRun[0] }
+          : { type: 'continuous', legs: currentContinuousRun }
+      );
+    }
+
+    // A "continuous" group of exactly one leg (e.g. leg 1 alone, when
+    // leg 2 broke off as independent) still needs an origin to search
+    // with — leg 1's origin is tripParams.origin; for any later
+    // single-leg group it's the leg's own stated origin (guaranteed
+    // present, since we only ever get here via the "differs" branch
+    // above, which requires a stated origin).
+    for (const group of groups) {
+      if (group.type === 'independent' && !group.leg.origin) {
+        group.leg = { ...group.leg, origin: tripParams.origin };
+      }
+    }
+
+    return { groups };
   }
 
   // ─────────────────────────────
@@ -1213,6 +1383,13 @@ class OrchestrationEngine {
         cancellationPolicy: t.cancellationPolicy,
         currency:           t.currency           || 'KES',
         isDelayed:          t.isDelayed          || false,
+        // NEW — surfaces the existing cancellationPolicy in the
+        // same policySummary slot whatsapp.js/widget.js read from.
+        // Buses have no baggage data anywhere upstream (IABIRI
+        // doesn't return any), so baggageSummary stays null here
+        // rather than guessing.
+        policySummary:  t.cancellationPolicy || 'Cancellation policy not specified',
+        baggageSummary: null,
       };
     }
 
@@ -1238,7 +1415,47 @@ class OrchestrationEngine {
       passengerIds: t.passengerIds || [],
       originIata:   t.originIata   || null,
       destIata:     t.destIata     || null,
+      // NEW — derived purely from fields TravelDuqa already gives
+      // us (checkedBags/carryOn/canBook/canHold). See
+      // _formatBaggageSummary/_formatFlightPolicySummary below.
+      baggageSummary: this._formatBaggageSummary(t.checkedBags, t.carryOn),
+      policySummary:  this._formatFlightPolicySummary(t.canBook, t.canHold),
     };
+  }
+
+  // ─────────────────────────────
+  // BAGGAGE SUMMARY (flights)
+  // checkedBags/carryOn are quantities from TravelDuqa's baggage
+  // array (see adapters/travelduqa.js _normalizeOffers) — both
+  // default to 0 there, not null, so 0 is a real "none included"
+  // answer, not a missing-data signal.
+  // ─────────────────────────────
+  _formatBaggageSummary(checkedBags, carryOn) {
+    const checked = Number(checkedBags) || 0;
+    const carry   = Number(carryOn)     || 0;
+
+    if (checked === 0 && carry === 0) return 'No checked or carry-on baggage included';
+
+    const parts = [];
+    if (checked > 0) parts.push(`${checked} checked bag${checked > 1 ? 's' : ''}`);
+    if (carry   > 0) parts.push(`${carry} carry-on${carry > 1 ? 's' : ''}`);
+    return parts.join(', ');
+  }
+
+  // ─────────────────────────────
+  // POLICY SUMMARY (flights)
+  // TravelDuqa doesn't return real cancellation/change-fee terms
+  // in this adapter — only canBook/canHold. We surface those facts
+  // honestly plus a disclaimer, rather than inventing refund terms
+  // we don't actually have.
+  // ─────────────────────────────
+  _formatFlightPolicySummary(canBook, canHold) {
+    const bookingNote = canHold
+      ? 'Hold available'
+      : canBook
+        ? 'Instant booking only'
+        : 'Booking availability unconfirmed';
+    return `${bookingNote} · Subject to airline fare rules`;
   }
 
   // ─────────────────────────────

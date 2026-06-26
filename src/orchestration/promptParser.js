@@ -395,10 +395,10 @@ FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or mo
 
 {
   "isMultiDestination": true,
-  "origin": "full city name in lowercase, or null if not stated",
+  "origin": "full city name in lowercase, or null if not stated — this is the origin for the FIRST leg only",
   "legs": [
-    { "destination": "full place name in lowercase", "nights": number },
-    { "destination": "full place name in lowercase", "nights": number }
+    { "destination": "full place name in lowercase", "nights": number, "origin": "full city name in lowercase, or null" },
+    { "destination": "full place name in lowercase", "nights": number, "origin": "full city name in lowercase, or null" }
   ],
   "departureDate": "YYYY-MM-DD or null",
   "passengers": number (default 1),
@@ -406,6 +406,11 @@ FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or mo
   "accessibility": true or false,
   "preferences": an array containing ONLY the categories that genuinely apply, chosen from: "beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible" — return an EMPTY array [] if none are clearly implied by the prompt
 }
+
+CRITICAL rule for each leg's "origin" field (this is separate from the top-level "origin", which only applies to leg 1):
+- Set a leg's "origin" to null if the traveler did NOT restate a departure city for that specific leg (e.g. "...then 4 days in Mombasa" — no origin restated for Mombasa, so origin: null).
+- Set a leg's "origin" to the stated city ONLY if the traveler explicitly named a departure city for that specific leg (e.g. "...then from Nairobi to Kampala 3 nights" — origin: "nairobi" for the Kampala leg, even if "nairobi" was already used as the origin for an earlier leg).
+- Do NOT infer or fill in a leg's origin from context, from the previous leg's destination, or from the top-level origin. If the traveler did not type a departure city for that leg, it is null — leave it null and let a later step decide what it means.
 
 OTHERWISE (single destination), return ONLY this shape:
 
@@ -474,36 +479,49 @@ RULES:
 // patterns using the known-place list, so a Gemini outage doesn't
 // silently downgrade a multi-destination prompt into a broken
 // single-destination parse.
+//
+// Per-leg origin extraction here is intentionally conservative —
+// it only looks for an explicit "from <city>" immediately preceding
+// a fragment's place name. Anything it can't confidently extract is
+// left null (same "don't guess" rule as the Groq path), which is
+// the safe default since the engine treats null as "ask the
+// traveler" rather than silently assuming continuity.
 // ─────────────────────────────────────────────
 function _detectMultiDestinationRules(prompt) {
   const lower = prompt.toLowerCase().trim();
 
   // Needs at least two "<N> nights/days ... <place>" fragments,
   // joined by then/and/followed by, to count as multi-destination.
-  const fragmentPattern = /(\d+)\s*(?:days?|nights?)\s*(?:in|at|to)?\s*([a-z\s]+?)(?=\s*(?:,|\.|then|and|followed by|after that|next|$))/g;
+  // Captures an optional leading "from <city> to" so per-leg origin
+  // can be extracted (group 1), separate from the place name itself
+  // (group 3).
+  const fragmentPattern = /(?:from\s+([a-z\s]+?)\s+to\s+)?(\d+)\s*(?:days?|nights?)\s*(?:in|at|to)?\s*([a-z\s]+?)(?=\s*(?:,|\.|then|and|followed by|after that|next|$))/g;
   const fragments = [...lower.matchAll(fragmentPattern)];
 
   if (fragments.length < 2) return null;
 
   const sortedPlaces = [...KNOWN_NON_AIRPORT_DESTINATIONS, ...Object.keys(CITY_CODES)]
     .sort((a, b) => b.length - a.length);
+  const sortedCities = Object.keys(CITY_CODES).sort((a, b) => b.length - a.length);
 
   const legs = [];
   for (const match of fragments) {
-    const nights = parseInt(match[1]);
-    const rawPlace = match[2].trim();
+    const legOriginRaw = match[1] ? match[1].trim() : null;
+    const nights = parseInt(match[2]);
+    const rawPlace = match[3].trim();
     const resolvedPlace = _resolveCityFuzzy(rawPlace, sortedPlaces) || rawPlace;
-    if (resolvedPlace) legs.push({ destination: resolvedPlace, nights });
+    const legOrigin = legOriginRaw ? (_resolveCityFuzzy(legOriginRaw, sortedCities) || legOriginRaw) : null;
+    if (resolvedPlace) legs.push({ destination: resolvedPlace, nights, origin: legOrigin });
   }
 
   if (legs.length < 2) return null;
 
-  // Origin: look for "from <city>" anywhere in the prompt; otherwise
-  // leave null so the engine can ask for clarification, same as the
-  // single-destination rules path does.
-  const fromMatch = lower.match(/from\s+([a-z\s]+?)(?:\s|,|$)/);
-  const sortedCities = Object.keys(CITY_CODES).sort((a, b) => b.length - a.length);
-  const origin = fromMatch ? _resolveCityFuzzy(fromMatch[1], sortedCities) : null;
+  // Top-level origin: look for "from <city>" preceding the FIRST
+  // fragment specifically (not anywhere in the prompt, since a later
+  // "from <city>" belongs to that leg, not leg 1). Falls back to
+  // leg[0]'s own extracted origin if the fragment pattern already
+  // captured one.
+  const origin = legs[0].origin || null;
 
   const passengerMatch = lower.match(/(\d+)\s*(people|persons|passengers|adults|pax|travelers?)/);
   const passengers = passengerMatch ? parseInt(passengerMatch[1]) : 1;
@@ -836,6 +854,14 @@ function _sanitizePreferences(value) {
 // is intentionally NOT done here — that's destinationIntel.js's
 // job inside engine.js, since it needs the validated, per-mode
 // access data (charter vs flight vs transfer), not just a code.
+//
+// Per-leg origin is passed through as-is (null or a stated city) —
+// classifying what a leg's origin MEANS (continuous vs. independent
+// trip vs. needs clarification) is engine.js's job in
+// _classifyLegTransitions, since that decision also depends on the
+// PREVIOUS leg's destination, which this function doesn't have
+// visibility into on a per-field basis the way the engine's
+// sequential loop does.
 // ─────────────────────────────────────────────
 function _enrichMultiDestinationParams(parsed) {
   const needsOriginClarification = !parsed.origin;
@@ -843,6 +869,7 @@ function _enrichMultiDestinationParams(parsed) {
   const legs = (parsed.legs || []).map(leg => ({
     destination: leg.destination,
     nights: leg.nights || 1,
+    origin: leg.origin || null,
   }));
 
   return {

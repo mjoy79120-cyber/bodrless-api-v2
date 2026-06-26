@@ -12,6 +12,11 @@
  * → Otherwise, if the message looks like a package selection ("1",
  *   "2", "option 2", etc.) AND we have recent packages cached for this
  *   phone number, kick off the booking flow
+ * → Otherwise, if the message looks like raw passenger details
+ *   (Name:/ID:/Phone:/DOB: lines) but there's no active booking
+ *   session, redirect the traveler to search first instead of letting
+ *   it fall into normal orchestration (which would otherwise try to
+ *   parse trip params out of passenger text and corrupt the booking)
  * → Otherwise, run normal orchestration with persistent memory
  * → Bodrless replies dynamically via WhatsApp
  * ─────────────────────────────────────────────────────────────
@@ -31,6 +36,14 @@ const { logger } = require('../utils/logger');
 // windows, but if conversations need to survive restarts, move this to
 // Supabase the same way whatsapp_booking_sessions works.
 const recentPackagesByPhone = new Map();
+
+// Matches a free-text passenger-detail line, e.g. "Name: John Doe" or
+// "DOB: 1990-05-21". Used only to detect a traveler replying with
+// passenger details outside of an active booking session — see Step
+// 2.5 below. Intentionally loose (any single matching line trips it)
+// since a partially-remembered format from an expired session is
+// exactly the case we want to catch.
+const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|phone|email|dob|date of birth)\s*:/im;
 
 // ── GET /api/webhooks/whatsapp ───────────────────────────────
 router.get('/whatsapp', (req, res) => {
@@ -93,12 +106,75 @@ router.post('/whatsapp', async (req, res) => {
       // so something sensible still happens with a bare "1" or "2".
     }
 
+    // ── Step 2.5: passenger-detail safety net ──
+    // Step 1 only catches this if a booking session is already active.
+    // If a traveler free-types passenger details (Name:/ID:/Phone:/DOB:
+    // lines) with NO active session — e.g. the session expired, they
+    // already completed a booking, or they never actually started one —
+    // letting this fall through to orchestrate() below would have it
+    // treated as a fresh trip search prompt, producing corrupted bookings
+    // (parser tries to extract a destination/dates out of passenger text).
+    // Catch it here instead and point them back to search first.
+    if (PASSENGER_DETAIL_LINE.test(prompt.trim())) {
+      const hasSession = await whatsappBookingFlow.hasActiveSession(from);
+      if (!hasSession) {
+        await whatsappService.sendText(phoneNumberId, from,
+          "It looks like you're sending traveler details, but I don't have an active booking for you right now. Please search for a trip first, then reply with the option number to start booking — I'll ask for traveler details at that point."
+        );
+        return;
+      }
+    }
+
     // ── Step 3: normal search/orchestration ──
     await whatsappService.sendText(phoneNumberId, from,
       "Got it! Give me a moment while I check the options for you..."
     );
 
     const result = await orchestrationEngine.orchestrate(prompt, agencyId, from);
+
+    // A multi-destination prompt with an ambiguous leg (no origin
+    // restated, and it doesn't match the previous stop) — engine.js
+    // stops before searching anything and asks instead. No packages,
+    // no booking cache update; the traveler's reply becomes a fresh
+    // prompt that should carry enough info to resolve it.
+    if (result.needsClarification) {
+      await whatsappService.sendText(phoneNumberId, from, result.text);
+      return;
+    }
+
+    // Multi-destination prompts that split into independent trips
+    // (e.g. "Nairobi to Zanzibar 4 nights then Nairobi to Kampala 3
+    // nights") come back as tripResults — one labeled block per trip,
+    // sent in the order the traveler stated them. A single continuous
+    // itinerary or a normal single-destination search has no
+    // tripResults and falls through to the original one-block flow.
+    if (result.tripResults && result.tripResults.length > 1) {
+      const allPackagesInOrder = [];
+
+      for (let i = 0; i < result.tripResults.length; i++) {
+        const trip = result.tripResults[i];
+        const introLine = i === 0
+          ? `Let's start with ${trip.label}:`
+          : `Now for ${trip.label}:`;
+
+        await whatsappService.sendText(phoneNumberId, from, introLine);
+
+        if (trip.packages && trip.packages.length > 0) {
+          await whatsappService.sendPackages(phoneNumberId, from, trip.packages);
+          allPackagesInOrder.push(...trip.packages);
+        } else {
+          await whatsappService.sendText(phoneNumberId, from, `Sorry, I couldn't find any matching options for ${trip.label}.`);
+        }
+      }
+
+      if (allPackagesInOrder.length > 0) {
+        recentPackagesByPhone.set(from, { packages: allPackagesInOrder, cachedAt: Date.now() });
+        await whatsappService.sendText(phoneNumberId, from,
+          `Reply with the option number (1-${allPackagesInOrder.length}) to book one of the options above.`
+        );
+      }
+      return;
+    }
 
     await whatsappService.sendText(phoneNumberId, from, result.text);
 
