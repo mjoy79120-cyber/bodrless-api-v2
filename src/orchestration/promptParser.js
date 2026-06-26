@@ -204,6 +204,7 @@ async function parsePrompt(prompt) {
       }
     }
 
+    parsed._originalPrompt = prompt;
     return _enrichParams(parsed);
   } catch (error) {
     logger.warn('Gemini parsing failed, falling back to rule-based parser', { error: error.message });
@@ -218,6 +219,7 @@ async function parsePrompt(prompt) {
     }
 
     const parsed = _parseWithRules(prompt);
+    parsed._originalPrompt = prompt;
     return _enrichParams(parsed);
   }
 }
@@ -432,6 +434,7 @@ CRITICAL OUTPUT RULE: every field above describing a choice between options (e.g
 RULES:
 - CRITICAL: Pay attention to directional transport. If a user says "bus going and flight coming back", set outboundTransportMode="bus" and returnTransportMode="flight".
 - If only one transport mode is mentioned (e.g. "fly to Mombasa"), apply it to both outbound and return.
+- CRITICAL tripType rule: if the traveler mentions a number of nights or days (e.g. "4 nights", "3 days"), that means they want to come back — set tripType="round_trip". Only use tripType="one_way" if the traveler explicitly says "one way", "single trip", "not coming back", or gives no return timeframe of any kind. A stated nights/days duration is ALWAYS a round-trip signal, never one-way.
 - origin = where they are coming FROM. A simple "X to Y" phrasing (e.g. "Nairobi to Mombasa") means X is the origin — extract it. Only set origin to null if the prompt truly gives no departure location at all (e.g. "I want to go to Mombasa" with no "from" stated). Do NOT guess a city if none is given, but DO extract one that is clearly stated, including in plain "X to Y" form.
 - destination (single) / each leg's destination (multi) = where they want to GO. Use the place name as stated (e.g. "maasai mara", "kilifi", "watamu") — do NOT convert it to a nearby airport or city name. Place name resolution happens in a separate step.
 - If a city name appears to be a misspelling of a real city (e.g. "zanibar", "mombsa", "nairobii"), correct it to the real city name in your response rather than treating it as unrecognized.
@@ -726,8 +729,30 @@ function _enrichParams(parsed) {
 
   const nights = parsed.nights || _defaultNights(parsed.departureDate, parsed.returnDate);
 
-  const returnDate = parsed.returnDate ||
-    (parsed.departureDate ? _addDays(parsed.departureDate, nights) : null);
+  // FIX: returnDate previously only computed when departureDate was
+  // already present — if the traveler gave a nights count but no
+  // specific date ("4 nights" with no date), departureDate stayed
+  // null, so returnDate ALSO stayed null regardless of tripType,
+  // which silently skipped the entire return-leg search in
+  // engine.js (gated on tripParams.returnDate being truthy). Default
+  // departureDate here too, mirroring the [FLIGHT FALLBACK] used in
+  // engine.js's _searchFlights, so returnDate always computes
+  // correctly whenever a nights count is known.
+  const departureDate = parsed.departureDate || _defaultDepartureDate();
+
+  const returnDate = parsed.returnDate || _addDays(departureDate, nights);
+
+  // Defensive backstop: a stated nights/days duration is a strong,
+  // unambiguous round-trip signal — if the LLM said tripType
+  // "one_way" despite the traveler explicitly giving a nights
+  // value (e.g. "4 nights"), that's a self-contradiction. Correct
+  // it here rather than relying solely on prompt wording, since
+  // smaller models don't always follow instructions reliably.
+  const explicitOneWaySignal = /\bone[\s-]?way\b|\bsingle\s+trip\b|\bnot\s+coming\s+back\b/i.test(String(parsed._originalPrompt || ''));
+  const sanitizedTripType = _sanitizeEnum(parsed.tripType, ['round_trip', 'one_way'], 'round_trip');
+  const correctedTripType = (parsed.nights && sanitizedTripType === 'one_way' && !explicitOneWaySignal)
+    ? 'round_trip'
+    : sanitizedTripType;
 
   return {
     ...parsed,
@@ -736,6 +761,7 @@ function _enrichParams(parsed) {
     destinationCode,
     origin: parsed.origin || null,
     destination: parsed.destination,
+    departureDate,
     nights,
     returnDate,
     requiresFlight,
@@ -743,7 +769,7 @@ function _enrichParams(parsed) {
     needsOriginClarification,
     passengers: parsed.passengers || 1,
     budget: _sanitizeEnum(parsed.budget, ['low', 'mid', 'high', 'luxury'], 'mid'),
-    tripType: _sanitizeEnum(parsed.tripType, ['round_trip', 'one_way'], 'round_trip'),
+    tripType: correctedTripType,
     accessibility: parsed.accessibility || false,
     seatPreference: _sanitizeEnum(parsed.seatPreference, ['window', 'aisle', 'middle', 'extra_legroom', 'front', 'back', 'upper_deck', 'lower_deck'], null),
     mealPlan: _sanitizeEnum(parsed.mealPlan, ['all_inclusive', 'full_board', 'half_board', 'bed_and_breakfast', 'room_only'], null),
@@ -753,6 +779,7 @@ function _enrichParams(parsed) {
     returnTransportMode: _sanitizeEnum(parsed.returnTransportMode, ['flight', 'bus', 'train', 'drive'], null),
     preferences: _sanitizePreferences(parsed.preferences),
     busSeatPosition: parsed.busSeatPosition || null,
+    _originalPrompt: undefined, // internal scratch field, not part of tripParams
   };
 }
 
