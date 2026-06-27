@@ -28,6 +28,24 @@ class OrchestrationEngine {
     logger.info(`[${sessionId}] Started`, { agencyId, prompt });
 
     try {
+      // ─────────────────────────────
+      // RESUME A PENDING CLARIFICATION
+      // If the last response was a clarification question ("Where
+      // will you be departing from for Kampala?"), previousParams
+      // carries an _awaitingClarification marker (see
+      // _buildClarificationResponse below) describing exactly what
+      // was missing. THIS message is the traveler's answer to that
+      // specific question — treat it as filling in that one field,
+      // not as a brand-new prompt to parse from scratch. Without
+      // this, a one-word reply like "Zanzibar" would go through
+      // normal fresh parsing, which has no idea a question is even
+      // pending and will likely fail or misparse it as an unrelated
+      // destination search.
+      // ─────────────────────────────
+      if (previousParams?._awaitingClarification) {
+        return await this._resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, context.channel);
+      }
+
       const intent = this._detectIntent(prompt, previousParams);
 
       let tripParams;
@@ -45,142 +63,10 @@ class OrchestrationEngine {
       console.log("INTENT:", intent);
       console.log("PARSED TRIP PARAMS:", tripParams);
 
-      // ─────────────────────────────
-      // MULTI-DESTINATION BRANCH
-      // ─────────────────────────────
-      // A "multi-destination" prompt is not always one continuous
-      // itinerary. Each leg beyond the first may:
-      //   - restate no origin at all -> ambiguous, must ask before
-      //     searching anything (ASK)
-      //   - restate an origin matching the previous leg's destination
-      //     -> genuinely continuous, stays one itinerary (CONTINUOUS)
-      //   - restate a DIFFERENT origin -> this is actually a separate,
-      //     independent trip bundled into the same message, e.g.
-      //     "Nairobi to Zanzibar 4 nights then Nairobi to Kampala 3
-      //     nights" — two unrelated round trips, not a Zanzibar->Kampala
-      //     itinerary (INDEPENDENT)
-      //
-      // See _classifyMultiDestinationLegs for the classification pass.
-      // ─────────────────────────────
-      if (tripParams.isMultiDestination) {
-        this._validateMultiDestinationParams(tripParams);
-
-        const classification = this._classifyMultiDestinationLegs(tripParams);
-
-        if (classification.needsClarification) {
-          const question = `Where will you be departing from for ${this._titleCase(classification.needsClarification.destination)}?`;
-          return {
-            sessionId,
-            text: question,
-            packages: [],
-            needsClarification: true,
-            tripParams,
-            intent,
-            conversationHistory: [
-              ...conversationHistory,
-              { role: 'user', content: prompt },
-              { role: 'assistant', content: question, params: tripParams, packageCount: 0 },
-            ].slice(-10),
-            generatedAt: new Date().toISOString(),
-          };
-        }
-
-        // Run each group (continuous itinerary OR independent single
-        // trip) in stated order, collecting one trip result per group.
-        const tripResults = [];
-        for (const group of classification.groups) {
-          if (group.type === 'continuous') {
-            const groupParams = { ...tripParams, legs: group.legs, isMultiDestination: true };
-            const itinerary = await this._orchestrateMultiDestination(groupParams, sessionId);
-            tripResults.push({
-              text: `I put together a ${itinerary.summary.totalNights}-night itinerary across ${itinerary.legs.length} stops.`,
-              packages: [itinerary],
-              label: itinerary.summary.route,
-            });
-          } else {
-            // Independent leg — its own standalone single-destination
-            // trip, reusing the exact same search/build/rank logic as
-            // a normal one-destination prompt.
-            const legParams = {
-              ...tripParams,
-              isMultiDestination: false,
-              legs: undefined,
-              origin: group.leg.origin,
-              destination: group.leg.destination,
-              departureDate: tripParams.departureDate, // TODO: per-leg dates once buffer/date-chaining is extended to independent legs — see follow-up note below
-              nights: group.leg.nights,
-            };
-            const result = await this._runSingleDestinationSearch(legParams, sessionId, prompt);
-            tripResults.push({ text: result.text, packages: result.packages, label: legParams.destination });
-          }
-        }
-
-        const updatedHistory = [
-          ...conversationHistory,
-          { role: 'user', content: prompt },
-          {
-            role: 'assistant',
-            content: `Built ${tripResults.length} trip result(s): ${tripResults.map(t => t.label).join(', ')}`,
-            params: tripParams,
-            packageCount: tripResults.reduce((sum, t) => sum + t.packages.length, 0),
-          },
-        ].slice(-10);
-
-        this._logSearch({
-          sessionId,
-          agencyId,
-          prompt,
-          tripParams: { ...tripParams, destination: tripResults.map(t => t.label).join(' + ') },
-          packagesReturned: tripResults.length,
-          channel: context.channel || 'widget',
-        }).catch(err => logger.error('Failed to log search', { error: err.message }));
-
-        // Multiple independent/continuous results -> caller (webhook/
-        // widget) is responsible for presenting each as its own labeled
-        // block, in this order. See tripResults array.
-        return {
-          sessionId,
-          text: tripResults.length === 1 ? tripResults[0].text : `I found ${tripResults.length} separate trips in your message.`,
-          packages: tripResults.flatMap(t => t.packages),
-          tripResults,
-          tripParams,
-          intent,
-          conversationHistory: updatedHistory,
-          generatedAt: new Date().toISOString(),
-        };
-      }
-
-      const singleResult = await this._runSingleDestinationSearch(tripParams, sessionId, prompt, intent);
-
-      const updatedHistory = [
-        ...conversationHistory,
-        { role: 'user', content: prompt },
-        {
-          role: 'assistant',
-          content: `Found ${singleResult.packages.length} packages`,
-          params: tripParams,
-          packageCount: singleResult.packages.length,
-        },
-      ].slice(-10);
-
-      this._logSearch({
-        sessionId,
-        agencyId,
-        prompt,
-        tripParams,
-        packagesReturned: singleResult.packages.length,
-        channel: context.channel || 'widget',
-      }).catch(err => logger.error('Failed to log search', { error: err.message }));
-
-      return {
-        sessionId,
-        text: singleResult.text,
-        packages: singleResult.packages,
-        tripParams,
-        intent,
-        conversationHistory: updatedHistory,
-        generatedAt: new Date().toISOString(),
-      };
+      // Multi-destination classification, single-destination search,
+      // clarification-question handling — all shared with
+      // _resumeClarification's re-entry path. See _continueOrchestration.
+      return await this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, context.channel);
 
     } catch (error) {
       logger.error("Engine failure", { error: error.message });
@@ -656,6 +542,246 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
+  // BUILD CLARIFICATION RESPONSE
+  // Shared by all three "ask before searching" call sites in
+  // orchestrate(). Tags the returned tripParams with
+  // _awaitingClarification — a marker describing exactly what was
+  // asked — so that when this gets saved as previousParams (see
+  // webhooks.js's _saveConversationState) and the traveler's next
+  // message comes in, orchestrate() can recognize it as an ANSWER
+  // to a pending question rather than parsing it as a fresh prompt.
+  // See _resumeClarification, which reads this marker.
+  // ─────────────────────────────
+  _buildClarificationResponse({ sessionId, prompt, question, tripParams, intent, conversationHistory, awaitingClarification }) {
+    const taggedParams = { ...tripParams, _awaitingClarification: awaitingClarification };
+    return {
+      sessionId,
+      text: question,
+      packages: [],
+      needsClarification: true,
+      tripParams: taggedParams,
+      intent,
+      conversationHistory: [
+        ...conversationHistory,
+        { role: 'user', content: prompt },
+        { role: 'assistant', content: question, params: taggedParams, packageCount: 0 },
+      ].slice(-10),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  // ─────────────────────────────
+  // RESUME A PENDING CLARIFICATION
+  // previousParams carries _awaitingClarification (set by
+  // _buildClarificationResponse on the PREVIOUS turn). This message
+  // is the traveler's answer — fill in the specific missing field
+  // based on awaitingClarification.type, then re-run orchestration
+  // with the now-complete params. Does NOT call parsePrompt() on
+  // this message at all — a one-word answer like "Zanzibar" has no
+  // business going through full trip-prompt extraction, and doing
+  // so risks Groq misreading it as an unrelated fresh search.
+  //
+  // The reply is taken at face value as a place name (lightly
+  // cleaned), same "don't overthink it" posture as
+  // webhooks.js's _extractName for the welcome-message flow — if
+  // the traveler answers with something that clearly isn't a place
+  // (empty, or matches no reasonable pattern), we fall back to
+  // asking again rather than guessing.
+  // ─────────────────────────────
+  async _resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, channel) {
+    const marker = previousParams._awaitingClarification;
+    const answer = String(prompt || '').trim().toLowerCase();
+
+    // A one-word/short-phrase clarification answer has no follow-up
+    // signal worth detecting (it's not "show me cheaper options", it's
+    // "Zanzibar") — use a neutral default intent rather than running
+    // _detectIntent on text that was never meant to carry trip-search
+    // semantics like budget/transport-mode preferences.
+    const neutralIntent = { isFollowUp: false, adjustments: {}, productScope: { needsTransport: true, needsHotel: true, needsTransfers: true } };
+
+    if (!answer) {
+      // Empty/unusable reply — ask again rather than guess.
+      const question = `Sorry, I didn't catch that — where will you be departing from?`;
+      return this._buildClarificationResponse({
+        sessionId, prompt, question, tripParams: previousParams,
+        intent: neutralIntent,
+        conversationHistory, awaitingClarification: marker,
+      });
+    }
+
+    // Strip the same conversational filler _extractName guards
+    // against, in case the traveler answers in full sentences
+    // ("I'll be coming from Mombasa") rather than a bare place name.
+    const cleanedAnswer = answer
+      .replace(/^(i'?ll be |i'?m |coming |departing |leaving )?(coming |departing |leaving )?from\s+/i, '')
+      .replace(/^(it'?s|i'?m|i am)\s+/i, '')
+      .trim();
+
+    const resolvedOrigin = cleanedAnswer || answer;
+
+    let tripParams = { ...previousParams };
+    delete tripParams._awaitingClarification;
+
+    if (marker?.type === 'single_origin' || marker?.type === 'overall_origin') {
+      tripParams.origin = resolvedOrigin;
+      tripParams.needsOriginClarification = false;
+    } else if (marker?.type === 'leg_origin' && Array.isArray(tripParams.legs)) {
+      // Find the leg this question was about and fill in its origin.
+      const targetIdx = tripParams.legs.findIndex(l => this._normalize(l.destination) === this._normalize(marker.destination));
+      if (targetIdx !== -1) {
+        tripParams.legs = tripParams.legs.map((leg, i) => i === targetIdx ? { ...leg, origin: resolvedOrigin } : leg);
+      }
+      if (!tripParams.origin) tripParams.origin = resolvedOrigin;
+      tripParams.needsOriginClarification = false;
+    }
+
+    console.log("RESUMED CLARIFICATION — completed params:", tripParams);
+
+    // Re-run orchestration with the now-complete params, exactly as
+    // if this had been a fresh, fully-specified prompt — reuses every
+    // existing code path (multi-dest classification, single-dest
+    // search) rather than duplicating logic here.
+    return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel);
+  }
+
+  // ─────────────────────────────
+  // CONTINUE ORCHESTRATION WITH RESOLVED PARAMS
+  // This is the single shared implementation of "given complete
+  // tripParams, classify/search/return a result" — used by BOTH
+  // orchestrate()'s normal flow (intent computed fresh there) AND
+  // _resumeClarification's re-entry path once a pending question has
+  // been answered. Kept as one method so the multi-destination/
+  // single-destination branches are never maintained in two places.
+  // intent and channel are passed in rather than recomputed/hardcoded
+  // here, since the two callers have different sources for each
+  // (orchestrate() already has a real intent from the original
+  // message; _resumeClarification has no meaningful intent to detect
+  // from a one-word clarification answer, so it passes a neutral
+  // default — see _resumeClarification).
+  // ─────────────────────────────
+  async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel) {
+    tripParams.agencyId = agencyId;
+
+    if (tripParams.isMultiDestination) {
+      this._validateMultiDestinationParams(tripParams);
+
+      if (tripParams.needsOriginClarification) {
+        const question = `Where will you be departing from for your trip?`;
+        return this._buildClarificationResponse({
+          sessionId, prompt, question, tripParams, intent, conversationHistory,
+          awaitingClarification: { type: 'overall_origin' },
+        });
+      }
+
+      const classification = this._classifyMultiDestinationLegs(tripParams);
+
+      if (classification.needsClarification) {
+        const question = `Where will you be departing from for ${this._titleCase(classification.needsClarification.destination)}?`;
+        return this._buildClarificationResponse({
+          sessionId, prompt, question, tripParams, intent, conversationHistory,
+          awaitingClarification: { type: 'leg_origin', destination: classification.needsClarification.destination },
+        });
+      }
+
+      const tripResults = [];
+      for (const group of classification.groups) {
+        if (group.type === 'continuous') {
+          const groupParams = { ...tripParams, legs: group.legs, isMultiDestination: true };
+          const itinerary = await this._orchestrateMultiDestination(groupParams, sessionId);
+          tripResults.push({
+            text: `I put together a ${itinerary.summary.totalNights}-night itinerary across ${itinerary.legs.length} stops.`,
+            packages: [itinerary],
+            label: itinerary.summary.route,
+          });
+        } else {
+          const legParams = {
+            ...tripParams,
+            isMultiDestination: false,
+            legs: undefined,
+            origin: group.leg.origin,
+            destination: group.leg.destination,
+            departureDate: tripParams.departureDate,
+            nights: group.leg.nights,
+          };
+          const result = await this._runSingleDestinationSearch(legParams, sessionId, prompt);
+          tripResults.push({ text: result.text, packages: result.packages, label: legParams.destination });
+        }
+      }
+
+      const updatedHistory = [
+        ...conversationHistory,
+        { role: 'user', content: prompt },
+        {
+          role: 'assistant',
+          content: `Built ${tripResults.length} trip result(s): ${tripResults.map(t => t.label).join(', ')}`,
+          params: tripParams,
+          packageCount: tripResults.reduce((sum, t) => sum + t.packages.length, 0),
+        },
+      ].slice(-10);
+
+      this._logSearch({
+        sessionId,
+        agencyId,
+        prompt,
+        tripParams: { ...tripParams, destination: tripResults.map(t => t.label).join(' + ') },
+        packagesReturned: tripResults.length,
+        channel: channel || 'widget',
+      }).catch(err => logger.error('Failed to log search', { error: err.message }));
+
+      return {
+        sessionId,
+        text: tripResults.length === 1 ? tripResults[0].text : `I found ${tripResults.length} separate trips in your message.`,
+        packages: tripResults.flatMap(t => t.packages),
+        tripResults,
+        tripParams,
+        intent,
+        conversationHistory: updatedHistory,
+        generatedAt: new Date().toISOString(),
+      };
+    }
+
+    if (tripParams.needsOriginClarification) {
+      const question = `Where will you be departing from for ${tripParams.destination ? this._titleCase(tripParams.destination) : 'your trip'}?`;
+      return this._buildClarificationResponse({
+        sessionId, prompt, question, tripParams, intent, conversationHistory,
+        awaitingClarification: { type: 'single_origin' },
+      });
+    }
+
+    const singleResult = await this._runSingleDestinationSearch(tripParams, sessionId, prompt, intent);
+
+    const updatedHistory = [
+      ...conversationHistory,
+      { role: 'user', content: prompt },
+      {
+        role: 'assistant',
+        content: `Found ${singleResult.packages.length} packages`,
+        params: tripParams,
+        packageCount: singleResult.packages.length,
+      },
+    ].slice(-10);
+
+    this._logSearch({
+      sessionId,
+      agencyId,
+      prompt,
+      tripParams,
+      packagesReturned: singleResult.packages.length,
+      channel: channel || 'widget',
+    }).catch(err => logger.error('Failed to log search', { error: err.message }));
+
+    return {
+      sessionId,
+      text: singleResult.text,
+      packages: singleResult.packages,
+      tripParams,
+      intent,
+      conversationHistory: updatedHistory,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  // ─────────────────────────────
   // LOG SEARCH TO SUPABASE
   // ─────────────────────────────
   async _logSearch({ sessionId, agencyId, prompt, tripParams, packagesReturned, channel }) {
@@ -946,8 +1072,15 @@ class OrchestrationEngine {
       return { results: direct, connectsVia: null, connectingLegBookable: true };
     }
 
-    const origin = (leg === 'return' ? tripParams.destination : tripParams.origin || '').toLowerCase();
-    const destination = (leg === 'return' ? tripParams.origin : tripParams.destination || '').toLowerCase();
+    // FIX: the || '' fallback previously sat INSIDE one ternary branch
+    // only (`tripParams.origin || ''`), so on a 'return' leg the other
+    // branch (`tripParams.destination`) had no fallback at all — if it
+    // was null (e.g. a single-word prompt like "Nairobi" with no real
+    // destination resolved), this crashed with "Cannot read properties
+    // of null (reading 'toLowerCase')" before ever reaching a normal
+    // "no results" response. The fallback now wraps the whole ternary.
+    const origin = ((leg === 'return' ? tripParams.destination : tripParams.origin) || '').toLowerCase();
+    const destination = ((leg === 'return' ? tripParams.origin : tripParams.destination) || '').toLowerCase();
 
     for (const hub of OrchestrationEngine.REGIONAL_HUBS) {
       if (hub === origin || hub === destination) continue;

@@ -411,6 +411,23 @@ CRITICAL rule for each leg's "origin" field (this is separate from the top-level
 - Set a leg's "origin" to null if the traveler did NOT restate a departure city for that specific leg (e.g. "...then 4 days in Mombasa" — no origin restated for Mombasa, so origin: null).
 - Set a leg's "origin" to the stated city ONLY if the traveler explicitly named a departure city for that specific leg (e.g. "...then from Nairobi to Kampala 3 nights" — origin: "nairobi" for the Kampala leg, even if "nairobi" was already used as the origin for an earlier leg).
 - Do NOT infer or fill in a leg's origin from context, from the previous leg's destination, or from the top-level origin. If the traveler did not type a departure city for that leg, it is null — leave it null and let a later step decide what it means.
+- The traveler may restate the SAME origin city for multiple legs — this is normal and means each leg is a separate trip from that city, NOT that the second mention is a mistake or should be dropped. Always capture every explicitly stated origin, even if it repeats a city already used elsewhere in the prompt.
+
+WORKED EXAMPLE (read this carefully — this exact pattern has caused mistakes before):
+Prompt: "Plan me a trip nairobi to mombasa 3 nights on the 28th of June and nairobi to dar es salaam 4 nights"
+This names TWO separate trips, each explicitly starting from nairobi. Correct output:
+{
+  "isMultiDestination": true,
+  "origin": "nairobi",
+  "legs": [
+    { "destination": "mombasa", "nights": 3, "origin": null },
+    { "destination": "dar es salaam", "nights": 4, "origin": "nairobi" }
+  ],
+  "departureDate": "2026-06-28",
+  ...
+}
+Notice: the FIRST "nairobi" (before "mombasa") fills the TOP-LEVEL "origin" field, not leg 1's own origin field — leg 1 never needs its own origin field populated, since the top-level origin already covers it. The SECOND "nairobi" (before "dar es salaam") is a genuine, deliberate restatement by the traveler and MUST be captured as leg 2's "origin" — do not drop it, blank it, or assume it was already accounted for just because the word "nairobi" appeared earlier in the prompt for a different leg.
+
 
 OTHERWISE (single destination), return ONLY this shape:
 
@@ -864,17 +881,31 @@ function _sanitizePreferences(value) {
 // sequential loop does.
 // ─────────────────────────────────────────────
 function _enrichMultiDestinationParams(parsed) {
-  const needsOriginClarification = !parsed.origin;
-
   const legs = (parsed.legs || []).map(leg => ({
     destination: leg.destination,
     nights: leg.nights || 1,
     origin: leg.origin || null,
   }));
 
+  // DEFENSIVE BACKFILL: a known misparse pattern (seen in production
+  // logs) has the model put the traveler's stated origin on LEG 1's
+  // own "origin" field instead of the top-level "origin" field the
+  // schema asks for — e.g. top-level origin comes back null, but
+  // legs[0].origin comes back "nairobi". Per the schema, leg 1 never
+  // needs its own origin (the top-level field covers it), so if we
+  // see this shape, recover the value rather than silently losing it
+  // and forcing an unnecessary clarification question.
+  let origin = parsed.origin || null;
+  if (!origin && legs[0]?.origin) {
+    origin = legs[0].origin;
+    legs[0] = { ...legs[0], origin: null };
+  }
+
+  const needsOriginClarification = !origin;
+
   return {
     isMultiDestination: true,
-    origin: parsed.origin || null,
+    origin,
     legs,
     departureDate: parsed.departureDate || _defaultDepartureDate(),
     passengers: parsed.passengers || 1,
