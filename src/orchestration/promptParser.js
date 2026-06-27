@@ -397,10 +397,10 @@ FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or mo
   "isMultiDestination": true,
   "origin": "full city name in lowercase, or null if not stated — this is the origin for the FIRST leg only",
   "legs": [
-    { "destination": "full place name in lowercase", "nights": number, "origin": "full city name in lowercase, or null" },
-    { "destination": "full place name in lowercase", "nights": number, "origin": "full city name in lowercase, or null" }
+    { "destination": "full place name in lowercase", "nights": number, "origin": "full city name in lowercase, or null", "departureDate": "YYYY-MM-DD or null" },
+    { "destination": "full place name in lowercase", "nights": number, "origin": "full city name in lowercase, or null", "departureDate": "YYYY-MM-DD or null" }
   ],
-  "departureDate": "YYYY-MM-DD or null",
+  "departureDate": "YYYY-MM-DD or null — the FIRST leg's departure date only, if stated",
   "passengers": number (default 1),
   "budget": choose exactly ONE: "low" or "mid" or "high" or "luxury" (default "mid" if not stated),
   "accessibility": true or false,
@@ -413,20 +413,25 @@ CRITICAL rule for each leg's "origin" field (this is separate from the top-level
 - Do NOT infer or fill in a leg's origin from context, from the previous leg's destination, or from the top-level origin. If the traveler did not type a departure city for that leg, it is null — leave it null and let a later step decide what it means.
 - The traveler may restate the SAME origin city for multiple legs — this is normal and means each leg is a separate trip from that city, NOT that the second mention is a mistake or should be dropped. Always capture every explicitly stated origin, even if it repeats a city already used elsewhere in the prompt.
 
+CRITICAL rule for each leg's "departureDate" field (separate from the top-level "departureDate", which only applies to leg 1):
+- Set a leg's "departureDate" to null if the traveler did NOT state a specific date for that particular leg.
+- Set it to a real date ONLY if the traveler explicitly gave a date tied to that specific leg (e.g. "on the 28th of June" appearing right next to that leg's mention).
+- Do NOT copy the top-level departureDate, a previous leg's date, or today's date into a leg's departureDate just to fill the field. A leg with no date of its own gets null — a later step calculates a sensible date for it.
+
 WORKED EXAMPLE (read this carefully — this exact pattern has caused mistakes before):
 Prompt: "Plan me a trip nairobi to mombasa 3 nights on the 28th of June and nairobi to dar es salaam 4 nights"
-This names TWO separate trips, each explicitly starting from nairobi. Correct output:
+This names TWO separate trips, each explicitly starting from nairobi. Only the FIRST trip has a date stated ("on the 28th of June" sits right next to the Mombasa mention) — the second trip (Dar es Salaam) has no date stated at all. Correct output:
 {
   "isMultiDestination": true,
   "origin": "nairobi",
   "legs": [
-    { "destination": "mombasa", "nights": 3, "origin": null },
-    { "destination": "dar es salaam", "nights": 4, "origin": "nairobi" }
+    { "destination": "mombasa", "nights": 3, "origin": null, "departureDate": null },
+    { "destination": "dar es salaam", "nights": 4, "origin": "nairobi", "departureDate": null }
   ],
   "departureDate": "2026-06-28",
   ...
 }
-Notice: the FIRST "nairobi" (before "mombasa") fills the TOP-LEVEL "origin" field, not leg 1's own origin field — leg 1 never needs its own origin field populated, since the top-level origin already covers it. The SECOND "nairobi" (before "dar es salaam") is a genuine, deliberate restatement by the traveler and MUST be captured as leg 2's "origin" — do not drop it, blank it, or assume it was already accounted for just because the word "nairobi" appeared earlier in the prompt for a different leg.
+Notice: the FIRST "nairobi" (before "mombasa") fills the TOP-LEVEL "origin" field, not leg 1's own origin field — leg 1 never needs its own origin field populated, since the top-level origin already covers it. The SECOND "nairobi" (before "dar es salaam") is a genuine, deliberate restatement by the traveler and MUST be captured as leg 2's "origin" — do not drop it, blank it, or assume it was already accounted for just because the word "nairobi" appeared earlier in the prompt for a different leg. Likewise, "28th of June" belongs to the top-level "departureDate" (it described the Mombasa leg, which is leg 1) — it must NOT be copied into leg 2's "departureDate", since the traveler never gave Dar es Salaam its own date.
 
 
 OTHERWISE (single destination), return ONLY this shape:
@@ -881,10 +886,20 @@ function _sanitizePreferences(value) {
 // sequential loop does.
 // ─────────────────────────────────────────────
 function _enrichMultiDestinationParams(parsed) {
-  const legs = (parsed.legs || []).map(leg => ({
+  const topLevelDepartureDate = parsed.departureDate || _defaultDepartureDate();
+
+  const legs = (parsed.legs || []).map((leg, i) => ({
     destination: leg.destination,
     nights: leg.nights || 1,
     origin: leg.origin || null,
+    // Leg 1's date IS the top-level departureDate (same field,
+    // covered already — see the origin defensive backfill below for
+    // the analogous situation). Leg 2+ keep whatever the model
+    // returned: null if genuinely unstated (engine.js calculates a
+    // sensible date for these — see _classifyMultiDestinationLegs/
+    // _continueOrchestration's independent-leg handling), or the
+    // explicit date if the traveler gave one for that specific leg.
+    departureDate: i === 0 ? topLevelDepartureDate : (leg.departureDate || null),
   }));
 
   // DEFENSIVE BACKFILL: a known misparse pattern (seen in production
@@ -907,7 +922,7 @@ function _enrichMultiDestinationParams(parsed) {
     isMultiDestination: true,
     origin,
     legs,
-    departureDate: parsed.departureDate || _defaultDepartureDate(),
+    departureDate: topLevelDepartureDate,
     passengers: parsed.passengers || 1,
     budget: _sanitizeEnum(parsed.budget, ['low', 'mid', 'high', 'luxury'], 'mid'),
     accessibility: parsed.accessibility || false,

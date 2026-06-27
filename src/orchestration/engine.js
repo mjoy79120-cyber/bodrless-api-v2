@@ -684,6 +684,14 @@ class OrchestrationEngine {
       }
 
       const tripResults = [];
+      // Tracks the end date of whichever leg (continuous itinerary OR
+      // independent trip) most recently ran, so the NEXT independent
+      // leg with no date of its own can calculate "starts right after
+      // the previous trip ends" instead of defaulting to some
+      // unrelated date. Seeded from the overall tripParams.departureDate
+      // (or today+14 if even that's missing) for the very first leg.
+      let previousLegEndDate = tripParams.departureDate || this._defaultStartDate();
+
       for (const group of classification.groups) {
         if (group.type === 'continuous') {
           const groupParams = { ...tripParams, legs: group.legs, isMultiDestination: true };
@@ -693,18 +701,49 @@ class OrchestrationEngine {
             packages: [itinerary],
             label: itinerary.summary.route,
           });
+          const lastStop = itinerary.legs[itinerary.legs.length - 1];
+          if (lastStop?.checkOut) previousLegEndDate = lastStop.checkOut;
         } else {
+          // FIX: returnDate was never computed for independent legs —
+          // only departureDate and nights were set. _runSingleDestinationSearch
+          // (and orchestrate()/_continueOrchestration generally) only
+          // searches a return leg when tripParams.returnDate is truthy,
+          // so every independent leg silently came back outbound-only,
+          // even when the traveler explicitly stated a nights count
+          // (e.g. "Nairobi to Mombasa 3 nights ... Nairobi to Dar es
+          // Salaam 4 nights" — both legs are round trips, but neither
+          // got a return search).
+          //
+          // DATE CALCULATION: if this leg stated its own date, use it
+          // verbatim — that's an explicit traveler instruction, never
+          // overridden. If it didn't, calculate a sensible default
+          // (right after the previous leg's trip ends) rather than
+          // asking — but the assumption is always stated back to the
+          // traveler in the result text, since silently picking dates
+          // this consequential (wrong dates = wrong flights booked)
+          // without saying so would be worse than asking.
+          const dateWasAssumed = !group.leg.departureDate;
+          const legDepartureDate = group.leg.departureDate || previousLegEndDate;
+          const legReturnDate = this._addDaysStr(legDepartureDate, group.leg.nights || 1);
+
           const legParams = {
             ...tripParams,
             isMultiDestination: false,
             legs: undefined,
             origin: group.leg.origin,
             destination: group.leg.destination,
-            departureDate: tripParams.departureDate,
+            departureDate: legDepartureDate,
+            returnDate: legReturnDate,
             nights: group.leg.nights,
           };
           const result = await this._runSingleDestinationSearch(legParams, sessionId, prompt);
-          tripResults.push({ text: result.text, packages: result.packages, label: legParams.destination });
+
+          const assumptionNote = dateWasAssumed
+            ? ` (I've scheduled this for ${legDepartureDate} to ${legReturnDate}, right after your previous trip — let me know if you meant different dates.)`
+            : '';
+
+          tripResults.push({ text: result.text + assumptionNote, packages: result.packages, label: legParams.destination });
+          previousLegEndDate = legReturnDate;
         }
       }
 
