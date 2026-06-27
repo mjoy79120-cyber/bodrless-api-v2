@@ -91,7 +91,7 @@ class OrchestrationEngine {
     const [
       outboundResult, outboundBuses,
       returnResult, returnBuses,
-      hotels
+      hotelResults
     ] = await Promise.all([
       this._searchFlightsWithHubFallback(tripParams, 'outbound'),
       this._searchBuses(tripParams, 'outbound'),
@@ -100,12 +100,52 @@ class OrchestrationEngine {
       this._searchHotels(tripParams),
     ]);
 
-    const outboundTransport = [...outboundResult.results, ...outboundBuses];
-    const returnTransport   = [...returnResult.results,   ...returnBuses];
+    let outboundTransport = [...outboundResult.results, ...outboundBuses];
+    let returnTransport   = [...returnResult.results,   ...returnBuses];
+    let hotels = hotelResults;
 
     console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length, outboundResult.connectsVia ? `(via ${outboundResult.connectsVia})` : '');
     console.log("FINAL RETURN TRANSPORT:",   returnTransport.length, returnResult.connectsVia ? `(via ${returnResult.connectsVia})` : '');
     console.log("FINAL HOTELS:",             hotels.length);
+
+    // ─────────────────────────────
+    // PREFERRED TRANSPORT PROVIDER / HOTEL FILTERING
+    // If the traveler named a specific airline, bus company, train
+    // operator, or hotel, narrow results to that provider FIRST,
+    // before building packages — "build around that" per how this
+    // was requested, not just a ranking nudge. If narrowing empties
+    // the list (genuinely not available on this route/destination),
+    // fall back to the full unfiltered list rather than returning
+    // nothing, but flag this honestly in the response text so the
+    // traveler isn't left thinking their preference was honored when
+    // it wasn't. See _filterByProvider/_filterHotelsByName below.
+    // ─────────────────────────────
+    let unavailableProviderNote = null;
+    let unavailableHotelNote = null;
+
+    if (tripParams.preferredTransportProvider) {
+      const obFiltered = this._filterByProvider(outboundTransport, tripParams.preferredTransportProvider);
+      const retFiltered = returnTransport.length > 0 ? this._filterByProvider(returnTransport, tripParams.preferredTransportProvider) : returnTransport;
+
+      const obHasMatch = obFiltered.length > 0;
+      const retHasMatch = returnTransport.length === 0 || retFiltered.length > 0;
+
+      if (obHasMatch && retHasMatch) {
+        outboundTransport = obFiltered;
+        returnTransport = retFiltered;
+      } else {
+        unavailableProviderNote = `${tripParams.preferredTransportProvider} isn't available on this route, so here are the available options instead.`;
+      }
+    }
+
+    if (tripParams.preferredHotel) {
+      const hotelsFiltered = this._filterHotelsByName(hotels, tripParams.preferredHotel);
+      if (hotelsFiltered.length > 0) {
+        hotels = hotelsFiltered;
+      } else {
+        unavailableHotelNote = `${tripParams.preferredHotel} isn't available for these dates, so here are the available hotels instead.`;
+      }
+    }
 
     const packages = await this._buildPackages({
       outboundTransport,
@@ -121,11 +161,46 @@ class OrchestrationEngine {
 
     const rankedPackages = rankPackages(packages, tripParams).slice(0, 4);
 
+    const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
     const responseText = rankedPackages.length > 0
-      ? `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.`
+      ? `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.${unavailableNotes ? ' ' + unavailableNotes : ''}`
       : `Sorry, I couldn't find any matching travel packages for ${tripParams.destination}.`;
 
     return { text: responseText, packages: rankedPackages };
+  }
+
+  // ─────────────────────────────
+  // FILTER TRANSPORT BY PREFERRED PROVIDER
+  // Matches against the `airline` field, which carries the provider
+  // name regardless of transport mode — flight (airline name), bus
+  // (bus.provider, mapped to airline in _searchBuses), or train.
+  // Partial, case-insensitive, whitespace-normalized match, so
+  // "Emirates" matches an airline field of "Emirates Airlines" and
+  // "buscar dreamline" matches "Buscar Dreamline Express" etc.
+  // ─────────────────────────────
+  _filterByProvider(transportList, preferredProvider) {
+    const target = this._normalize(preferredProvider);
+    if (!target) return transportList;
+    return transportList.filter(t => {
+      const providerName = this._normalize(t.airline || t.provider || '');
+      return providerName.includes(target) || target.includes(providerName);
+    });
+  }
+
+  // ─────────────────────────────
+  // FILTER HOTELS BY PREFERRED NAME
+  // Same matching posture as _filterByProvider — partial,
+  // case-insensitive, normalized. Hotel names are free text from
+  // Supabase/HotelBeds, so exact match would be too brittle (e.g.
+  // "JW Marriott" vs a listing named "JW Marriott Nairobi").
+  // ─────────────────────────────
+  _filterHotelsByName(hotelList, preferredHotel) {
+    const target = this._normalize(preferredHotel);
+    if (!target) return hotelList;
+    return hotelList.filter(h => {
+      const hotelName = this._normalize(h.name || '');
+      return hotelName.includes(target) || target.includes(hotelName);
+    });
   }
 
   // ─────────────────────────────

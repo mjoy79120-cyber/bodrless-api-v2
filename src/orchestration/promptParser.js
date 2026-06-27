@@ -404,6 +404,8 @@ FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or mo
   "passengers": number (default 1),
   "budget": choose exactly ONE: "low" or "mid" or "high" or "luxury" (default "mid" if not stated),
   "accessibility": true or false,
+  "preferredTransportProvider": "the transport company name exactly as the traveler said it — could be an airline (e.g. 'Emirates', 'Qatar Airways'), a bus company (e.g. 'Buscar Dreamline', 'Modern Coast'), or a train/SGR operator. Capture it regardless of transport mode. null if not mentioned",
+  "preferredHotel": "the hotel name exactly as the traveler said it (e.g. 'JW Marriott', 'Sarova Stanley'), or null if not mentioned",
   "preferences": an array containing ONLY the categories that genuinely apply, chosen from: "beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible" — return an EMPTY array [] if none are clearly implied by the prompt
 }
 
@@ -453,6 +455,8 @@ OTHERWISE (single destination), return ONLY this shape:
   "trainClass": choose exactly ONE: "first_class" or "economy" or "premium" or "sgr", or null if not stated,
   "timePreference": choose exactly ONE: "morning" or "afternoon" or "evening" or "night", or null if not stated,
   "accessibility": true or false,
+  "preferredTransportProvider": "the transport company name exactly as the traveler said it — could be an airline (e.g. 'Emirates', 'Qatar Airways'), a bus company (e.g. 'Buscar Dreamline', 'Modern Coast'), or a train/SGR operator. Capture it regardless of transport mode. null if not mentioned",
+  "preferredHotel": "the hotel name exactly as the traveler said it (e.g. 'JW Marriott', 'Sarova Stanley'), or null if not mentioned",
   "preferences": an array containing ONLY the categories that genuinely apply, chosen from: "beach", "safari", "culture", "adventure", "family", "honeymoon", "business", "accessible" — return an EMPTY array [] if none are clearly implied by the prompt
 }
 
@@ -817,6 +821,8 @@ function _enrichParams(parsed) {
     timePreference: _sanitizeEnum(parsed.timePreference, ['morning', 'afternoon', 'evening', 'night'], null),
     outboundTransportMode: _sanitizeEnum(parsed.outboundTransportMode, ['flight', 'bus', 'train', 'drive'], null),
     returnTransportMode: _sanitizeEnum(parsed.returnTransportMode, ['flight', 'bus', 'train', 'drive'], null),
+    preferredTransportProvider: _sanitizeFreeText(parsed.preferredTransportProvider),
+    preferredHotel: _sanitizeFreeText(parsed.preferredHotel),
     preferences: _sanitizePreferences(parsed.preferences),
     busSeatPosition: parsed.busSeatPosition || null,
     _originalPrompt: undefined, // internal scratch field, not part of tripParams
@@ -836,6 +842,22 @@ function _sanitizeEnum(value, allowed, fallback) {
   if (typeof value !== 'string') return fallback;
   const normalized = value.trim().toLowerCase();
   return allowed.includes(normalized) ? normalized : fallback;
+}
+
+// ─────────────────────────────────────────────
+// SANITIZE FREE-TEXT VALUE
+// For fields like preferredTransportProvider/preferredHotel that
+// aren't a fixed enum (any airline/bus company/train operator or
+// hotel name is valid) — just guards against non-string garbage and
+// trims whitespace, no allowed-value list to check against. A
+// genuinely empty string after trimming is treated the same as null
+// (no preference stated), since "" and null mean the same thing to
+// every downstream consumer of this field.
+// ─────────────────────────────────────────────
+function _sanitizeFreeText(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 // ─────────────────────────────────────────────
@@ -926,6 +948,8 @@ function _enrichMultiDestinationParams(parsed) {
     passengers: parsed.passengers || 1,
     budget: _sanitizeEnum(parsed.budget, ['low', 'mid', 'high', 'luxury'], 'mid'),
     accessibility: parsed.accessibility || false,
+    preferredTransportProvider: _sanitizeFreeText(parsed.preferredTransportProvider),
+    preferredHotel: _sanitizeFreeText(parsed.preferredHotel),
     preferences: _sanitizePreferences(parsed.preferences),
     needsOriginClarification,
     // Destination, for logging/display purposes only — engine.js
