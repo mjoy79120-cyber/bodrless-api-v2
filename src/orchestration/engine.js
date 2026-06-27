@@ -952,7 +952,7 @@ class OrchestrationEngine {
   _detectIntent(prompt, previousParams) {
     const lower = prompt.toLowerCase();
 
-    const isFollowUp = !!(previousParams && (
+    const followUpSignals = !!(
       lower.match(/cheaper|less expensive|lower|affordable|budget|bei nafuu/i) ||
       lower.match(/expensive|luxury|premium|upgrade|better|high end|bei ya juu/i) ||
       lower.match(/other options|different|alternatives|show me more|more options/i) ||
@@ -967,7 +967,32 @@ class OrchestrationEngine {
       lower.match(/different flight|another airline|change flight/i) ||
       lower.match(/mid budget|moderate/i) ||
       lower.match(/bus|train|flight|fly|drive/i)
-    ));
+    );
+
+    // FIX: a prompt like "Nairobi to Mombasa 3 nights then Nairobi to
+    // Kampala 4 nights" matched the \d+\s*nights?\ follow-up regex
+    // above purely because it contains "3 nights"/"4 nights" — but
+    // it's a complete, self-contained NEW trip request with its own
+    // origin/destination, not a tweak to a previous search. Treating
+    // it as a follow-up meant _adjustParams only updated nights/budget
+    // on the OLD destination from previousParams, silently keeping a
+    // stale destination from an earlier conversation (e.g. a prior
+    // Dar es Salaam search) instead of the traveler's actual new
+    // Kampala request.
+    //
+    // A prompt containing its own "X to Y" / "from X to Y" structure
+    // — once or, for multi-destination, more than once — is a strong,
+    // self-sufficient fresh-trip signal that should override an
+    // incidental follow-up-style word match. This is intentionally
+    // conservative (requires the actual "to"/"from...to" shape, not
+    // just any place name) so a genuine follow-up like "actually make
+    // it 5 nights" doesn't get misclassified just because some other
+    // part of a multi-turn conversation mentioned "to" once.
+    const freshTripPattern = /\b[a-z\s]{2,30}?\s+to\s+[a-z\s]{2,30}\b/i;
+    const freshTripMatches = lower.match(new RegExp(freshTripPattern, 'gi')) || [];
+    const hasOwnDestinationStructure = freshTripMatches.length > 0;
+
+    const isFollowUp = !!(previousParams && followUpSignals && !hasOwnDestinationStructure);
 
     const adjustments = {};
     const productScope = {
