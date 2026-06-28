@@ -368,7 +368,7 @@ function _resolveCityFuzzy(rawToken, sortedCities) {
 }
 
 // ─────────────────────────────────────────────
-// GROQ PARSER (llama-3.1-8b-instant)
+// GROQ PARSER (openai/gpt-oss-120b)
 // Switched from Gemini due to persistent billing/quota issues
 // on Gemini's free tier that blocked production use entirely.
 // Same prompt and JSON schema as before — only the transport
@@ -376,12 +376,22 @@ function _resolveCityFuzzy(rawToken, sortedCities) {
 // response_format: json_object guarantees valid JSON back, so
 // there's no need to strip markdown fences the way the Gemini
 // REST call required.
+//
+// MODEL UPGRADE (this session): was llama-3.1-8b-instant, which
+// Groq announced as deprecated on June 17, 2026. Moved to
+// openai/gpt-oss-120b — OpenAI's own open-weight model (not a Llama
+// model behind an OpenAI-compatible API) — same Groq account, same
+// endpoint, same auth, same response_format support. A genuine
+// capability upgrade aimed at the structured-extraction misses
+// we've hit repeatedly with the 8B model (dropped/misplaced origins
+// on prompts like "nairobi to diani" and various multi-destination
+// phrasings) — not just a deprecation-driven swap.
 // ─────────────────────────────────────────────
 async function _parseWithGemini(prompt) {
   const response = await axios.post(
     `https://api.groq.com/openai/v1/chat/completions`,
     {
-      model: 'llama-3.1-8b-instant',
+      model: 'openai/gpt-oss-120b',
       response_format: { type: 'json_object' },
       temperature: 0.1,
       max_completion_tokens: 800,
