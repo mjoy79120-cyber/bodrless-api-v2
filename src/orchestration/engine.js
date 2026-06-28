@@ -171,35 +171,111 @@ class OrchestrationEngine {
 
   // ─────────────────────────────
   // FILTER TRANSPORT BY PREFERRED PROVIDER
-  // Matches against the `airline` field, which carries the provider
-  // name regardless of transport mode — flight (airline name), bus
-  // (bus.provider, mapped to airline in _searchBuses), or train.
-  // Partial, case-insensitive, whitespace-normalized match, so
-  // "Emirates" matches an airline field of "Emirates Airlines" and
-  // "buscar dreamline" matches "Buscar Dreamline Express" etc.
+  // Built defensively for REAL supplier data, not just the airline
+  // field's exact display name — TravelDuqa/IABIRI responses vary in
+  // ways synthetic testing can't fully anticipate:
+  //   - Airline CODE vs name: a traveler might type "EK" or "Emirates"
+  //     — both should match. t.airlineCode (IATA code, set by
+  //     adapters/travelduqa.js's _normalizeOffers) is checked
+  //     alongside t.airline/t.provider.
+  //   - Word order / extra words in provider names: "Buscar Dreamline"
+  //     should still match "Buscar Dreamline Express", and in
+  //     principle a differently-ordered real-world listing too —
+  //     tokenized matching (every word in the shorter name appears
+  //     somewhere in the longer one) is more forgiving than a single
+  //     substring check.
+  // This is a best-effort match, not a guarantee — once live inventory
+  // is plugged in, watch for cases where a real provider name doesn't
+  // match and the alias needs adding explicitly (see _PROVIDER_ALIASES).
   // ─────────────────────────────
   _filterByProvider(transportList, preferredProvider) {
     const target = this._normalize(preferredProvider);
     if (!target) return transportList;
+    const targetTokens = target.split(' ').filter(Boolean);
+    const aliasTargets = this._expandProviderAliases(target);
+
     return transportList.filter(t => {
       const providerName = this._normalize(t.airline || t.provider || '');
-      return providerName.includes(target) || target.includes(providerName);
+      const providerCode = this._normalize(t.airlineCode || '');
+
+      // Direct substring match either direction (handles the common
+      // case cheaply: "emirates" in "emirates airlines").
+      if (providerName && (providerName.includes(target) || target.includes(providerName))) return true;
+
+      // Code match: traveler typed the IATA/provider code directly.
+      if (providerCode && (providerCode === target || target.includes(providerCode))) return true;
+
+      // Tokenized match: every word in the shorter name appears
+      // somewhere in the longer one, regardless of order — catches
+      // "Buscar Dreamline" vs "Buscar Dreamline Express Coach".
+      const providerTokens = providerName.split(' ').filter(Boolean);
+      if (targetTokens.length > 0 && providerTokens.length > 0) {
+        const [shorter, longer] = targetTokens.length <= providerTokens.length
+          ? [targetTokens, providerTokens]
+          : [providerTokens, targetTokens];
+        if (shorter.every(tok => longer.includes(tok))) return true;
+      }
+
+      // Known alias match (e.g. "KQ" <-> "Kenya Airways").
+      if (aliasTargets.some(alias => providerName.includes(alias) || providerCode === alias)) return true;
+
+      return false;
     });
   }
 
   // ─────────────────────────────
+  // KNOWN PROVIDER ALIASES
+  // Small, explicit, maintained list for common East African /
+  // international carriers a traveler is likely to abbreviate. NOT
+  // meant to be exhaustive — extend this as real misses turn up
+  // against live inventory, the same way REGIONAL_HUBS and CITY_CODES
+  // are maintained lists rather than something inferred on the fly.
+  // ─────────────────────────────
+  static PROVIDER_ALIASES = {
+    'kq': 'kenya airways', 'ek': 'emirates', 'qr': 'qatar airways',
+    'et': 'ethiopian airlines', 'ww': 'wow air', 'sa': 'south african airways',
+    'rw': 'rwandair', 'pw': 'precision air', 'kl': 'klm',
+    'jw': 'jw marriott', 'sw': 'swiss',
+  };
+
+  _expandProviderAliases(normalizedTarget) {
+    const aliases = OrchestrationEngine.PROVIDER_ALIASES;
+    const expanded = [];
+    if (aliases[normalizedTarget]) expanded.push(this._normalize(aliases[normalizedTarget]));
+    for (const [code, fullName] of Object.entries(aliases)) {
+      if (this._normalize(fullName) === normalizedTarget) expanded.push(code);
+    }
+    return expanded;
+  }
+
+  // ─────────────────────────────
   // FILTER HOTELS BY PREFERRED NAME
-  // Same matching posture as _filterByProvider — partial,
-  // case-insensitive, normalized. Hotel names are free text from
-  // Supabase/HotelBeds, so exact match would be too brittle (e.g.
-  // "JW Marriott" vs a listing named "JW Marriott Nairobi").
+  // Same tokenized-matching posture as _filterByProvider, for the
+  // same reason — real hotel listings (HotelBeds especially) vary in
+  // word order and add location suffixes ("JW Marriott Hotel
+  // Nairobi" vs a traveler typing "JW Marriott").
   // ─────────────────────────────
   _filterHotelsByName(hotelList, preferredHotel) {
     const target = this._normalize(preferredHotel);
     if (!target) return hotelList;
+    const targetTokens = target.split(' ').filter(Boolean);
+    const aliasTargets = this._expandProviderAliases(target);
+
     return hotelList.filter(h => {
       const hotelName = this._normalize(h.name || '');
-      return hotelName.includes(target) || target.includes(hotelName);
+      if (hotelName && (hotelName.includes(target) || target.includes(hotelName))) return true;
+
+      const hotelTokens = hotelName.split(' ').filter(Boolean);
+      if (targetTokens.length > 0 && hotelTokens.length > 0) {
+        const [shorter, longer] = targetTokens.length <= hotelTokens.length
+          ? [targetTokens, hotelTokens]
+          : [hotelTokens, targetTokens];
+        if (shorter.every(tok => longer.includes(tok))) return true;
+      }
+
+      if (aliasTargets.some(alias => hotelName.includes(alias))) return true;
+
+      return false;
     });
   }
 
