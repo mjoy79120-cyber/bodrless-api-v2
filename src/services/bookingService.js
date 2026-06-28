@@ -29,7 +29,7 @@
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 const paymentService = require('./paymentService');
-const notificationService = require('./notificationService');
+const notificationService = require('./notifications');
 
 let supplierAdapter = null;
 try {
