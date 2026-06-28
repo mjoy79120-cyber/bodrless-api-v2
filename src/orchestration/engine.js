@@ -1750,7 +1750,12 @@ class OrchestrationEngine {
       cabinClass:   t.cabinClass   || null,
       checkedBags:  t.checkedBags  || null,
       carryOn:      t.carryOn      || null,
-      stops:        t.stops        || null,
+      // FIX: ?? not || — a real 0 (non-stop) was being turned into
+      // null by `t.stops || null` (since 0 is falsy), so the ranker's
+      // `stops === 0` direct-flight bonus never fired and non-stop
+      // flights silently lost their +10. ?? only falls back on
+      // null/undefined, preserving a genuine 0.
+      stops:        t.stops        ?? null,
       duration:     t.duration     || null,
       currency:     t.currency     || 'KES',
       offerId:      t.offerId      || null,

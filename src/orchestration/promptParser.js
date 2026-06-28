@@ -726,6 +726,34 @@ function _extractDate(prompt) {
   const isoMatch = prompt.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return isoMatch[0];
 
+  // FIX: day + month with NO year (e.g. "28th of June", "28 June",
+  // "June 28th"). Previously the fallback parser only understood a
+  // full 4-digit year, so the exact natural phrasing travelers use
+  // most ("28th of June") returned null whenever Groq was down,
+  // silently degrading date handling on the highest-traffic pattern.
+  // The (?!\d) guard stops the day group from swallowing the first
+  // digits of a year ("June 2026" must not parse as day 20). Year is
+  // inferred as the current year, rolled to next year if that date
+  // has already passed ("June 28" said in July means next June).
+  // Runs only AFTER the 4-digit-year branches above have failed, so
+  // explicit-year prompts are never affected.
+  const dayMonth = prompt.match(/(\d{1,2})(?!\d)(?:st|nd|rd|th)?\s+(?:of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b/i);
+  const monthDay = prompt.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(?!\d)(?:st|nd|rd|th)?\b/i);
+  const noYear = dayMonth || monthDay;
+  if (noYear) {
+    const day = (dayMonth ? noYear[1] : noYear[2]).padStart(2, '0');
+    const monthName = (dayMonth ? noYear[2] : noYear[1]).toLowerCase();
+    const month = months[monthName];
+    if (month) {
+      const now = new Date();
+      let year = now.getFullYear();
+      const candidate = new Date(`${year}-${month}-${day}`);
+      // Roll to next year only if the date is valid AND already past.
+      if (!isNaN(candidate.getTime()) && candidate < now) year += 1;
+      return `${year}-${month}-${day}`;
+    }
+  }
+
   return null;
 }
 
@@ -784,8 +812,6 @@ function _enrichParams(parsed) {
   // correctly whenever a nights count is known.
   const departureDate = parsed.departureDate || _defaultDepartureDate();
 
-  const returnDate = parsed.returnDate || _addDays(departureDate, nights);
-
   // Defensive backstop: a stated nights/days duration is a strong,
   // unambiguous round-trip signal — if the LLM said tripType
   // "one_way" despite the traveler explicitly giving a nights
@@ -797,6 +823,19 @@ function _enrichParams(parsed) {
   const correctedTripType = (parsed.nights && sanitizedTripType === 'one_way' && !explicitOneWaySignal)
     ? 'round_trip'
     : sanitizedTripType;
+
+  // FIX: returnDate is only computed for genuine round trips. Before,
+  // it was set unconditionally, so a real one-way ("Nairobi to Mombasa
+  // one way") still got a returnDate — and engine.js's return-leg
+  // search is gated on tripParams.returnDate being truthy, so it
+  // searched, priced, and displayed a return leg the traveler never
+  // asked for. Now a one-way (AFTER the round-trip-when-nights-stated
+  // correction above) gets null, correctly skipping the return search.
+  // Hotels are unaffected: _searchHotels falls back to checkIn + nights
+  // when returnDate is null, so accommodation still spans the full stay.
+  const returnDate = correctedTripType === 'one_way'
+    ? null
+    : (parsed.returnDate || _addDays(departureDate, nights));
 
   return {
     ...parsed,

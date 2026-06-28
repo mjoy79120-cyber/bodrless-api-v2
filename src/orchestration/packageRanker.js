@@ -44,12 +44,17 @@ function _scorePackage(pkg, tripParams) {
   }
 
   // ── Hotel rating (0-30 points) — skip if no hotel ───────
+  // stars and review rating are BOTH 0-5 in this codebase
+  // (engine.js defaults stars→4, rating→4.5), so both divide by 5.
+  // Split within the 30-point budget: up to 20 from star class,
+  // up to 10 from review rating. Previously stars alone could reach
+  // 30 and rating was divided by 10 (wrong scale) and added on top,
+  // pushing this block past its labeled 0-30 ceiling to ~45.
   if (pkg.hotel) {
-    const hotelScore = ((pkg.hotel.stars || 3) / 5) * 30;
-    score += hotelScore;
+    score += ((pkg.hotel.stars || 3) / 5) * 20;
 
     if (pkg.hotel.rating) {
-      score += (pkg.hotel.rating / 10) * 15;
+      score += ((pkg.hotel.rating || 0) / 5) * 10;
     }
   }
 
@@ -60,7 +65,10 @@ function _scorePackage(pkg, tripParams) {
   }
 
   // ── Transfers included (0-5 points) ─────────────────────
-  if (pkg.transfers) score += 5;
+  // An empty array [] is truthy, so a package with transfers
+  // explicitly disabled (e.g. "flight only", needsTransfers:false)
+  // was still collecting this bonus. Require at least one leg.
+  if (pkg.transfers && pkg.transfers.length > 0) score += 5;
 
   return score;
 }
