@@ -13,7 +13,8 @@
  *                         sweeper job to auto-cancel if payment stalls.
  *   3. confirmPayment() — called by the IntaSend webhook (or the sweeper,
  *                         via status poll) once payment succeeds. Converts
- *                         the TravelDuqa hold into a ticketed booking.
+ *                         the TravelDuqa hold into a ticketed booking, and
+ *                         fires supplier/agency/traveler notifications.
  *   4. failPayment()    — called if payment fails/times out. Cancels the
  *                         HotelBeds booking (refundable rate => free) and
  *                         lets the TravelDuqa hold expire naturally.
@@ -28,6 +29,7 @@
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 const paymentService = require('./paymentService');
+const notificationService = require('./notificationService');
 
 let supplierAdapter = null;
 try {
@@ -38,9 +40,6 @@ try {
 
 class BookingService {
 
-  // ─────────────────────────────────────────────
-  // VALIDATE PACKAGE BEFORE TOUCHING ANY SUPPLIER
-  // ─────────────────────────────────────────────
   validatePackage(pkg, passengerDetails, guestPhone, guestEmail) {
     const transport = pkg.transport || {};
     const hotel      = pkg.hotel || {};
@@ -65,12 +64,6 @@ class BookingService {
     return { valid: true, isFlightBooking, isHotelBooking };
   }
 
-  // ─────────────────────────────────────────────
-  // STEP 1 — INIT BOOKING
-  // Flight hold first, then hotel confirm. Rolls back the flight hold
-  // (lets it expire — TravelDuqa holds have no cancellation cost) if the
-  // hotel step fails, and tells the caller plainly what happened.
-  // ─────────────────────────────────────────────
   async initBooking({ bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel }) {
     const transport = pkg.transport || {};
     const hotel      = pkg.hotel || {};
@@ -91,7 +84,6 @@ class BookingService {
     let hotelResult  = null;
     let stage = 'pending';
 
-    // ── Step 1: Hold the flight ──
     if (isFlightBooking) {
       try {
         await supplierAdapter.selectOffer({
@@ -131,7 +123,6 @@ class BookingService {
       }
     }
 
-    // ── Step 2: Confirm the hotel (refundable rate only) ──
     if (isHotelBooking) {
       try {
         const leadGuest = { firstName: passengerDetails[0].firstName, lastName: passengerDetails[0].lastName };
@@ -158,9 +149,6 @@ class BookingService {
         const supplierMessage = err.response?.data?.message || err.message;
         logger.error('Hotel booking failed after flight hold', { bookingRef, error: supplierMessage });
 
-        // Flight hold has no cancellation cost — we simply let it expire
-        // naturally rather than calling an explicit cancel, since TravelDuqa
-        // holds auto-release after their expiry window with no penalty.
         if (flightResult) {
           await this._persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, 'failed', flightResult, null);
           return {
@@ -176,7 +164,7 @@ class BookingService {
     }
 
     if (!isFlightBooking && !isHotelBooking) {
-      stage = 'hotel_confirmed'; // Supabase-only package, nothing to hold — proceed straight to payment step
+      stage = 'hotel_confirmed';
     }
 
     const totalPrice = summary.totalPrice || 0;
@@ -196,12 +184,6 @@ class BookingService {
     };
   }
 
-  // ─────────────────────────────────────────────
-  // STEP 2 — TRIGGER PAYMENT (real IntaSend STK push)
-  // Sets payment_deadline so the sweeper job knows when to auto-cancel
-  // if payment never lands — this is the actual safety net, since
-  // HotelBeds bookings are immediate confirmations with no true hold.
-  // ─────────────────────────────────────────────
   async triggerPayment({ bookingRef, phone, amount, currency, email, firstName, lastName }) {
     try {
       const result = await paymentService.triggerStkPush({
@@ -234,8 +216,13 @@ class BookingService {
 
   // ─────────────────────────────────────────────
   // STEP 3 — CONFIRM PAYMENT
-  // Call this once the M-Pesa callback confirms payment received.
-  // Converts the TravelDuqa hold into a ticketed booking.
+  // NOTIFICATION HOOK: this is the moment a booking becomes genuinely
+  // confirmed (payment received, flight ticketed) — the right place
+  // to fire notifyBookingConfirmed(), not initBooking() (flight/hotel
+  // are only HELD at that point, payment hasn't landed yet). Wrapped
+  // so a notification failure NEVER blocks or rolls back a
+  // successful, paid booking — the booking is real regardless of
+  // whether a hotel's WhatsApp number happened to be unreachable.
   // ─────────────────────────────────────────────
   async confirmPayment({ bookingRef }) {
     const { data: booking, error } = await supabase
@@ -267,13 +254,55 @@ class BookingService {
       .eq('booking_ref', bookingRef);
 
     logger.info('Booking fully confirmed after payment', { bookingRef });
+
+    // Fire-and-log, not fire-and-await-inline-with-the-response — a
+    // notification failure (missing contact info, WhatsApp API
+    // hiccup, etc.) must never make a successfully PAID booking look
+    // like it failed to the traveler calling this method.
+    this._fireBookingConfirmedNotifications(booking).catch(err => {
+      logger.error('Booking confirmation notifications failed (booking itself is still confirmed)', {
+        bookingRef, error: err.message,
+      });
+    });
+
     return { success: true, bookingRef, status: 'confirmed' };
   }
 
   // ─────────────────────────────────────────────
-  // PAYMENT FAILED / TIMED OUT
-  // Cancels the hotel (refundable, so free) and lets the flight hold expire.
+  // FIRE BOOKING-CONFIRMED NOTIFICATIONS
+  // Maps the bookings row's stored JSON columns (flight_details,
+  // hotel_details, transfer_details — all persisted in _persistStage
+  // below) into the shape notificationService.notifyBookingConfirmed
+  // expects. Kept separate so confirmPayment's main flow stays
+  // focused on the supplier/payment logic.
   // ─────────────────────────────────────────────
+  async _fireBookingConfirmedNotifications(booking) {
+    const transferList = Array.isArray(booking.transfer_details)
+      ? booking.transfer_details
+      : (booking.transfer_details ? [booking.transfer_details] : []);
+
+    await notificationService.notifyBookingConfirmed({
+      booking: {
+        bookingRef: booking.booking_ref,
+        agencyId: booking.agency_id,
+        guestName: booking.guest_name,
+        guestPhone: booking.guest_phone,
+        guestEmail: booking.guest_email,
+        origin: booking.origin,
+        destination: booking.destination,
+        checkIn: booking.flight_details?.departureTime || null,
+        checkOut: null,
+        passengers: booking.passengers,
+        totalPrice: booking.total_price,
+        currency: booking.currency,
+        specialRequests: null,
+      },
+      flight: booking.flight_details || null,
+      hotel: booking.hotel_details || null,
+      transfers: transferList,
+    });
+  }
+
   async failPayment({ bookingRef }) {
     const { data: booking } = await supabase
       .from('bookings')
@@ -298,9 +327,6 @@ class BookingService {
     return { success: true, bookingRef, status: 'cancelled' };
   }
 
-  // ─────────────────────────────────────────────
-  // PERSIST CURRENT STAGE TO SUPABASE
-  // ─────────────────────────────────────────────
   async _persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, stage, flightResult, hotelResult) {
     const transport = pkg.transport || {};
     const hotel      = pkg.hotel || {};
