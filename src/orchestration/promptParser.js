@@ -368,7 +368,7 @@ function _resolveCityFuzzy(rawToken, sortedCities) {
 }
 
 // ─────────────────────────────────────────────
-// GROQ PARSER (openai/gpt-oss-120b)
+// GROQ PARSER (llama-3.1-8b-instant)
 // Switched from Gemini due to persistent billing/quota issues
 // on Gemini's free tier that blocked production use entirely.
 // Same prompt and JSON schema as before — only the transport
@@ -376,22 +376,12 @@ function _resolveCityFuzzy(rawToken, sortedCities) {
 // response_format: json_object guarantees valid JSON back, so
 // there's no need to strip markdown fences the way the Gemini
 // REST call required.
-//
-// MODEL UPGRADE (this session): was llama-3.1-8b-instant, which
-// Groq announced as deprecated on June 17, 2026. Moved to
-// openai/gpt-oss-120b — OpenAI's own open-weight model (not a Llama
-// model behind an OpenAI-compatible API) — same Groq account, same
-// endpoint, same auth, same response_format support. A genuine
-// capability upgrade aimed at the structured-extraction misses
-// we've hit repeatedly with the 8B model (dropped/misplaced origins
-// on prompts like "nairobi to diani" and various multi-destination
-// phrasings) — not just a deprecation-driven swap.
 // ─────────────────────────────────────────────
 async function _parseWithGemini(prompt) {
   const response = await axios.post(
     `https://api.groq.com/openai/v1/chat/completions`,
     {
-      model: 'openai/gpt-oss-120b',
+      model: 'llama-3.1-8b-instant',
       response_format: { type: 'json_object' },
       temperature: 0.1,
       max_completion_tokens: 800,
@@ -477,6 +467,7 @@ RULES:
 - If only one transport mode is mentioned (e.g. "fly to Mombasa"), apply it to both outbound and return.
 - CRITICAL tripType rule: if the traveler mentions a number of nights or days (e.g. "4 nights", "3 days"), that means they want to come back — set tripType="round_trip". Only use tripType="one_way" if the traveler explicitly says "one way", "single trip", "not coming back", or gives no return timeframe of any kind. A stated nights/days duration is ALWAYS a round-trip signal, never one-way.
 - origin = where they are coming FROM. A simple "X to Y" phrasing (e.g. "Nairobi to Mombasa") means X is the origin — extract it. Only set origin to null if the prompt truly gives no departure location at all (e.g. "I want to go to Mombasa" with no "from" stated). Do NOT guess a city if none is given, but DO extract one that is clearly stated, including in plain "X to Y" form.
+- CRITICAL — word order is NOT a reliable cue for which city is the origin. The destination is frequently stated FIRST and the origin LAST, especially after the word "from". In "I'd like to visit Zanzibar travelling from Nairobi", "visit Mombasa from Nairobi", or "Zanzibar, departing from Nairobi", the destination is Zanzibar/Mombasa and the origin is Nairobi — the city after "from" is ALWAYS the origin, no matter where it appears in the sentence. Do not assume the first city mentioned is the origin. Ignore conversational filler like "I'd like to", "I want to go to", "fly to", "visit" when deciding — anchor on the actual place names and the word "from".
 - destination (single) / each leg's destination (multi) = where they want to GO. Use the place name as stated (e.g. "maasai mara", "kilifi", "watamu") — do NOT convert it to a nearby airport or city name. Place name resolution happens in a separate step.
 - If a city name appears to be a misspelling of a real city (e.g. "zanibar", "mombsa", "nairobii"), correct it to the real city name in your response rather than treating it as unrecognized.
 - For multi-destination prompts, preserve the ORDER the traveler stated the destinations in — legs[0] is visited first.
@@ -579,6 +570,40 @@ function _detectMultiDestinationRules(prompt) {
 }
 
 // ─────────────────────────────────────────────
+// PLACE-LIKE TOKEN GUARD
+// The rule-based extractors below grab loose text around "to"/"from"
+// keywords. Conversational phrasing means those captures are often
+// NOT places — e.g. "I'd like to visit X" leaves "d like" before the
+// "to", "fly to X" leaves "fly", "I want to go to X" leaves "i want".
+// Previously such garbage was kept verbatim as the origin/destination
+// (the "deline"/"d like" bug). _looksLikePlace lets a capture through
+// only if it contains at least one substantive, non-filler word — so
+// real non-hub places ("meru", "watamu", "kilifi") still pass, but
+// filler fragments are rejected, leaving origin null so the engine
+// asks "where are you departing from?" instead of inventing a city.
+// ─────────────────────────────────────────────
+const _PLACE_FILLER_WORDS = new Set([
+  // pronoun/contraction fragments (apostrophes are stripped upstream)
+  'i', 'id', 'im', 'ill', 'd', 'll', 'm', 're', 've', 's', 't', 'we', 'us', 'my', 'our',
+  // intent verbs / politeness / filler
+  'like', 'want', 'wanna', 'love', 'would', 'will', 'can', 'could', 'please', 'help',
+  'me', 'go', 'going', 'goin', 'travel', 'travelling', 'traveling', 'fly', 'flying',
+  'visit', 'visiting', 'trip', 'holiday', 'vacation', 'need', 'gonna', 'looking',
+  'book', 'booking', 'plan', 'planning', 'take', 'get', 'head', 'heading', 'a', 'an',
+  'the', 'to', 'from', 'for', 'on', 'in', 'at', 'and', 'then', 'next', 'this', 'some',
+]);
+
+function _looksLikePlace(token) {
+  if (!token) return false;
+  const words = String(token).trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+  // A plausible place has at least one word that is reasonably long
+  // AND not a known filler word. "meru"/"watamu" pass; "d like",
+  // "i want", "fly", "visit" do not.
+  return words.some(w => w.length >= 3 && !_PLACE_FILLER_WORDS.has(w));
+}
+
+// ─────────────────────────────────────────────
 // RULE-BASED FALLBACK
 // ─────────────────────────────────────────────
 function _parseWithRules(prompt) {
@@ -623,31 +648,58 @@ function _parseWithRules(prompt) {
   let origin = null;
   let destination = null;
 
-  const fromToMatch = lower.match(/(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
-  const kwendaMatch = lower.match(/(?:nataka\s+kwenda|kwenda|going\s+to|travel\s+to|trip\s+to|visit)\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
+  // ── Explicit "from <origin>" FIRST ─────────────────────────
+  // The strongest, least ambiguous origin signal, and word-order
+  // independent — it works whether the traveler writes "from Nairobi
+  // to Mombasa", "visit Zanzibar from Nairobi" (destination stated
+  // first), or buries "from Nairobi" at the end of a sentence. We
+  // capture it and REMOVE the clause from the working string so a
+  // trailing "from <city>" can't pollute destination extraction
+  // below — that pollution is what turned "fly to mombasa from
+  // nairobi" into a trip whose DESTINATION resolved to nairobi.
+  let work = lower;
+  const fromMatch = lower.match(/\bfrom\s+([a-z][a-z\s]*?)(?=\s*(?:,|\.|\bto\b|\bon\b|\bfor\b|\bnext\b|\bthis\b|\bdeparting\b|\bleaving\b|\bvia\b|\d|$))/);
+  if (fromMatch) {
+    const cand = fromMatch[1].trim();
+    origin = _resolveCityFuzzy(cand, sortedCities) || (_looksLikePlace(cand) ? cand : null);
+    work = lower.replace(fromMatch[0], ' ');
+  }
 
+  // ── "X to Y" on the cleaned string ─────────────────────────
+  // Guarded so the conversational "to" in "like to visit" / "want
+  // to go" / "fly to" can't hijack the match: a captured token is
+  // accepted as origin/destination only if it resolves to a known
+  // city OR _looksLikePlace() (a plausible non-hub place name like
+  // "meru"/"watamu") — never raw filler like "d like"/"i want"/"fly".
+  const fromToMatch = work.match(/(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
   if (fromToMatch) {
-    const fromCity = fromToMatch[1].trim();
-    const toCity = fromToMatch[2].trim();
-    // Use fuzzy matching against known airport-cities first (catches
-    // typos like "mombsa" -> "mombasa"), but if a place genuinely
-    // isn't a known airport-city (e.g. "meru", "watamu", "kilifi"),
-    // keep the raw extracted text rather than discarding it to null.
-    // Those non-hub places still need to flow through as real
-    // strings so destinationIntel / the hub-connecting fallback in
-    // engine.js can resolve them later — silently dropping them here
-    // broke "Meru to Mombasa" entirely (origin stayed null).
-    origin = _resolveCityFuzzy(fromCity, sortedCities) || fromCity || origin;
-    destination = _resolveCityFuzzy(toCity, sortedCities) || toCity || destination;
+    const t1 = fromToMatch[1].trim();
+    const t2 = fromToMatch[2].trim();
+    const c1 = _resolveCityFuzzy(t1, sortedCities) || (_looksLikePlace(t1) ? t1 : null);
+    const c2 = _resolveCityFuzzy(t2, sortedCities) || (_looksLikePlace(t2) ? t2 : null);
+    if (c1 && c2) {
+      // Genuine "origin to destination" (both sides are real places).
+      if (!origin)      origin = c1;
+      if (!destination) destination = c2;
+    } else if (c2 && !destination) {
+      // "<filler> to <place>" e.g. "fly to mombasa" — only the
+      // destination side is real; origin stays whatever "from" found
+      // (or null -> clarification).
+      destination = c2;
+    }
   }
 
+  // ── Destination via "visit / go to / travel to <dest>" ─────
+  const kwendaMatch = work.match(/(?:nataka\s+kwenda|kwenda|going\s+to|go\s+to|travel\s+to|trip\s+to|fly\s+to|visit)\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
   if (kwendaMatch && !destination) {
-    const toCity = kwendaMatch[1].trim();
-    destination = _resolveCityFuzzy(toCity, sortedCities) || toCity || destination;
+    const cand = kwendaMatch[1].trim();
+    destination = _resolveCityFuzzy(cand, sortedCities) || (_looksLikePlace(cand) ? cand : null);
   }
 
+  // ── Last resort: scan the cleaned string for any known place ──
   if (!destination) {
-    const words = lower.split(/\s+/).filter(w => w.length > 2);
+    const words = work.split(/\s+/).filter(w => w.length > 2);
+    const scanOrigin = origin; // remember whether origin pre-existed (e.g. from "from")
     for (const word of words) {
       const match = _fuzzyMatchCity(word, sortedCities) ||
         sortedCities.find(city => word.includes(city) || city.includes(word));
@@ -656,7 +708,10 @@ function _parseWithRules(prompt) {
         else if (match !== origin) { destination = match; break; }
       }
     }
-    if (origin && !destination) { destination = origin; origin = null; }
+    // Reinterpret a lone SCAN-found place as the destination — but
+    // NEVER reassign an origin that came from an explicit "from <city>",
+    // or "from nairobi" alone would wrongly become the destination.
+    if (!scanOrigin && origin && !destination) { destination = origin; origin = null; }
   }
 
   // CHANGED: no longer silently defaulting origin to 'nairobi'. A missing
