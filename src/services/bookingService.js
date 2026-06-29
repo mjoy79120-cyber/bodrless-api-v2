@@ -30,6 +30,7 @@ const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 const paymentService = require('./paymentService');
 const notificationService = require('./notifications');
+const tracking = require('./trackingService');
 
 let supplierAdapter = null;
 try {
@@ -115,6 +116,16 @@ class BookingService {
       } catch (err) {
         const supplierMessage = err.response?.data?.message || err.message;
         logger.error('Flight hold failed', { bookingRef, error: supplierMessage });
+        tracking.alert({
+          type:       'flight_hold_failed',
+          severity:   'error',
+          title:      `Flight hold failed — ${bookingRef}`,
+          detail:     supplierMessage,
+          context:    { bookingRef, offerId: transport.offerId, resultId: transport.resultId },
+          agencyId,
+          bookingRef,
+          channel,
+        });
         return {
           success: false,
           error: `We couldn't hold this flight with the airline (${supplierMessage}). Please search again.`,
@@ -192,6 +203,21 @@ class BookingService {
       } catch (err) {
         const supplierMessage = err.response?.data?.message || err.message;
         logger.error('Hotel booking failed after flight hold', { bookingRef, error: supplierMessage });
+
+        // Critical: flight is held (real commitment) but hotel failed.
+        // Agency needs to know so they can advise the traveler.
+        tracking.alert({
+          type:       flightResult ? 'hotel_confirm_failed' : 'booking_failed',
+          severity:   flightResult ? 'critical' : 'error',
+          title:      flightResult
+            ? `Hotel failed after flight hold — ${bookingRef}`
+            : `Hotel booking failed — ${bookingRef}`,
+          detail:     supplierMessage,
+          context:    { bookingRef, rateKey: hotel.rateKey, hotelCode: hotel.hotelCode, flightHeld: !!flightResult },
+          agencyId,
+          bookingRef,
+          channel,
+        });
 
         if (flightResult) {
           await this._persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, 'failed', flightResult, null);
@@ -298,6 +324,11 @@ class BookingService {
       .eq('booking_ref', bookingRef);
 
     logger.info('Booking fully confirmed after payment', { bookingRef });
+
+    // Link the booking ref back to the conversation that created it.
+    // session_id lives in trip_params jsonb, not a top-level column.
+    const sessionId = booking.trip_params?.sessionId || null;
+    tracking.markConverted({ sessionId, bookingRef });
 
     // Fire-and-log, not fire-and-await-inline-with-the-response — a
     // notification failure (missing contact info, WhatsApp API

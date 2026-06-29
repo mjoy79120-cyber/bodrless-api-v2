@@ -5,6 +5,7 @@ const { parsePrompt } = require("./promptParser");
 const { rankPackages } = require("./packageRanker");
 const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
 const destinationIntel = require("../services/destinationIntel");
+const tracking = require("../services/trackingService");
 
 // Supplier adapter layer — all external suppliers go through here
 let supplierAdapter = null;
@@ -129,6 +130,18 @@ class OrchestrationEngine {
       // graceful-degradation path below.
       logger.error("Engine failure — returning graceful fallback instead of throwing", {
         sessionId, error: error.message, stack: error.stack,
+      });
+
+      // Alert immediately — an engine crash means someone got no results
+      // at all and we have no idea why unless we log it.
+      tracking.alert({
+        type:     'engine_crash',
+        severity: 'error',
+        title:    'Engine error — traveler got no results',
+        detail:   error.message,
+        context:  { prompt: typeof prompt === 'string' ? prompt.slice(0, 500) : null, agencyId, stack: error.stack },
+        agencyId,
+        sessionId,
       });
       return {
         sessionId,
@@ -1250,6 +1263,35 @@ class OrchestrationEngine {
       channel: channel || 'widget',
     }).catch(err => logger.error('Failed to log search', { error: err.message }));
 
+    // Log full conversation turn for visibility + debugging
+    tracking.logTurn({
+      sessionId,
+      agencyId,
+      channel:            channel || 'widget',
+      phone:              context?.phone || null,
+      userMessage:        prompt,
+      engineResponse:     singleResult.text,
+      packagesCount:      singleResult.packages.length,
+      needsClarification: false,
+      tripParams,
+      packages:           singleResult.packages,
+    });
+
+    // Alert when a search returns nothing — could be a supplier issue,
+    // a destination we can't serve, or a bad parse.
+    if (singleResult.packages.length === 0) {
+      tracking.alert({
+        type:      'zero_results',
+        severity:  'warning',
+        title:     `No results for "${tripParams.destination || 'unknown destination'}"`,
+        detail:    `Prompt: "${prompt.slice(0, 200)}"`,
+        context:   { prompt, destination: tripParams.destination, origin: tripParams.origin, tripParams },
+        agencyId,
+        sessionId,
+        channel:   channel || 'widget',
+      });
+    }
+
     return {
       sessionId,
       text: singleResult.text,
@@ -1351,7 +1393,7 @@ class OrchestrationEngine {
           nationality:        p.nationality     || null,
           passport_number:    p.passportNumber  || p.passport_number || null,
           passport_expiry:    p.passportExpiry  || p.passport_expiry || null,
-          national_id_number: p.nationalId      || p.national_id_number || null,
+          national_id: p.nationalId || p.national_id_number || p.national_id || null,
           gender:             p.gender          || null,
           passenger_type:     p.type            || 'adult',
           phone:              p.phone           || guestPhone,
