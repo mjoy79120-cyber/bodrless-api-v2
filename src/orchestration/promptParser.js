@@ -207,7 +207,18 @@ async function parsePrompt(prompt) {
     parsed._originalPrompt = prompt;
     return _enrichParams(parsed);
   } catch (error) {
-    logger.warn('Gemini parsing failed, falling back to rule-based parser', { error: error.message });
+    // Surface the ACTUAL provider error, not just "Request failed with
+    // status code 400". axios puts the API's JSON error body on
+    // error.response.data — without logging it you're blind to the real
+    // cause (e.g. a decommissioned model, an unsupported param). This is
+    // what would have shown the llama-3.1-8b-instant deprecation
+    // immediately instead of via a week of bad parses.
+    logger.warn('LLM (Groq) parsing failed, falling back to rule-based parser', {
+      error: error.message,
+      status: error.response?.status,
+      providerError: error.response?.data,
+      model: process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
+    });
 
     // Rule-based multi-destination check runs first — if Gemini is
     // down, a multi-destination prompt should still be recognized
@@ -368,26 +379,51 @@ function _resolveCityFuzzy(rawToken, sortedCities) {
 }
 
 // ─────────────────────────────────────────────
-// GROQ PARSER (llama-3.1-8b-instant)
-// Switched from Gemini due to persistent billing/quota issues
-// on Gemini's free tier that blocked production use entirely.
-// Same prompt and JSON schema as before — only the transport
-// layer (endpoint, auth, response shape) changed. Groq's
-// response_format: json_object guarantees valid JSON back, so
-// there's no need to strip markdown fences the way the Gemini
-// REST call required.
+// LLM PARSER (Groq — OpenAI-compatible chat completions)
+// NOTE: this function is historically named _parseWithGemini and the
+// fallback log still says "Gemini" — the actual provider is Groq
+// (https://api.groq.com), called via its OpenAI-compatible endpoint.
+// The model is set by GROQ_MODEL (default openai/gpt-oss-20b). Groq's
+// response_format: json_object returns clean JSON, but we still parse
+// defensively via _safeParseJson in case a reasoning model wraps it.
 // ─────────────────────────────────────────────
+
+// Tolerant JSON extraction: returns the parsed object, pulling the
+// first balanced {...} block out of any surrounding prose or ```json
+// fences a model might add. Throws if no valid JSON object is found,
+// so the caller falls back to the rule-based parser as before.
+function _safeParseJson(raw) {
+  if (typeof raw !== 'string') throw new Error('LLM content not a string');
+  const text = raw.trim();
+  try {
+    return JSON.parse(text);
+  } catch (_) { /* fall through to extraction */ }
+
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    return JSON.parse(text.slice(start, end + 1));
+  }
+  throw new Error('No JSON object found in LLM response');
+}
+
 async function _parseWithGemini(prompt) {
-  const response = await axios.post(
-    `https://api.groq.com/openai/v1/chat/completions`,
-    {
-      model: 'llama-3.1-8b-instant',
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-      max_completion_tokens: 800,
-      messages: [{
-        role: 'user',
-        content: `You are a travel booking assistant for East Africa. Extract trip details from this prompt and return ONLY valid JSON with no explanation, no markdown, no code blocks.
+  // Model is env-configurable so a Groq model deprecation never again
+  // silently breaks parsing without a code change. Default is
+  // openai/gpt-oss-20b — Groq's official replacement for
+  // llama-3.1-8b-instant, which Groq decommissioned on 2026-06-17
+  // (that decommission is what caused every request to 400 and fall
+  // back to the rule-based parser). Override via GROQ_MODEL on Render.
+  const model = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
+
+  const requestBody = {
+    model,
+    response_format: { type: 'json_object' },
+    temperature: 0.1,
+    max_completion_tokens: 800,
+    messages: [{
+      role: 'user',
+      content: `You are a travel booking assistant for East Africa. Extract trip details from this prompt and return ONLY valid JSON with no explanation, no markdown, no code blocks.
 
 Prompt: "${prompt}"
 
@@ -478,7 +514,19 @@ RULES:
 - "new year" = ${new Date().getFullYear() + 1}-01-01
 - For "weekend" use nights: 2, for "week" use nights: 7`
       }]
-    },
+  };
+
+  // gpt-oss models are reasoning models — keep the reasoning overhead
+  // minimal so this stays fast (we have a tight latency budget) while
+  // still returning clean JSON. Only sent for gpt-oss models, since
+  // other models reject an unknown reasoning_effort param with a 400.
+  if (/gpt-oss/i.test(model)) {
+    requestBody.reasoning_effort = 'low';
+  }
+
+  const response = await axios.post(
+    `https://api.groq.com/openai/v1/chat/completions`,
+    requestBody,
     {
       headers: {
         'Content-Type': 'application/json',
@@ -488,8 +536,15 @@ RULES:
     }
   );
 
-  const content = response.data.choices[0].message.content;
-  const parsed = JSON.parse(content);
+  const content = response.data?.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error('LLM returned no content');
+  }
+  // response_format json_object should return a bare JSON object, but
+  // some reasoning models occasionally wrap it in prose or ```json
+  // fences. Extract the first {...} block defensively before parsing
+  // so a stray wrapper doesn't force a fallback to the rule parser.
+  const parsed = _safeParseJson(content);
 
   // NOTE: no longer defaulting origin to 'nairobi' here — a missing
   // origin is now a real signal (needsOriginClarification, set in
