@@ -56,7 +56,7 @@ class WhatsAppBookingFlow {
   // Called when the person picks a package number after a search.
   // ─────────────────────────────────────────────
   async startBooking({ phoneNumberId, from, agencyId, selectedPackage }) {
-    await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from); // clear any stale session
+    await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
 
     await supabase.from('whatsapp_booking_sessions').insert({
       phone: from,
@@ -76,12 +76,7 @@ class WhatsAppBookingFlow {
   }
 
   // ─────────────────────────────────────────────
-  // Lightweight active-session check, reused by webhook.js so it
-  // never has to duplicate this query independently. This is the
-  // single source of truth for "is there an active booking
-  // conversation for this phone number" — handleMessage() below
-  // remains the only place that actually loads and acts on the
-  // session's contents.
+  // Lightweight active-session check used by webhook.js.
   // ─────────────────────────────────────────────
   async hasActiveSession(from) {
     const { data: session } = await supabase
@@ -103,7 +98,7 @@ class WhatsAppBookingFlow {
       .eq('phone', from)
       .maybeSingle();
 
-    if (!session) return false; // no active booking conversation
+    if (!session) return false;
 
     if (/^cancel$/i.test(text.trim())) {
       await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
@@ -115,6 +110,13 @@ class WhatsAppBookingFlow {
       return this._handleDetailsMessage({ phoneNumberId, from, text, session });
     }
 
+    // ── Price-change approval step ───────────────────────────
+    // Session is held in this state after initBooking() returned
+    // PRICE_CHANGED — waiting for the traveler to reply yes or no.
+    if (session.current_step === 'awaiting_price_approval') {
+      return this._handlePriceApproval({ phoneNumberId, from, text, session });
+    }
+
     return false;
   }
 
@@ -123,7 +125,7 @@ class WhatsAppBookingFlow {
   // ─────────────────────────────────────────────
   _parseDetailsMessage(text, expectedCount) {
     const blocks = text
-      .split(/\n\s*\n/) // split on blank lines
+      .split(/\n\s*\n/)
       .map(b => b.trim())
       .filter(Boolean);
 
@@ -148,19 +150,19 @@ class WhatsAppBookingFlow {
         }
       });
 
-      const name = fields['name'];
-      const idNum = fields['id/passport no'] || fields['id'] || fields['passport'] || fields['id/passport'];
+      const name   = fields['name'];
+      const idNum  = fields['id/passport no'] || fields['id'] || fields['passport'] || fields['id/passport'];
       const gender = fields['gender'];
-      const phone = fields['phone'];
-      const email = fields['email'];
-      const dob = fields['dob'] || fields['date of birth'];
+      const phone  = fields['phone'];
+      const email  = fields['email'];
+      const dob    = fields['dob'] || fields['date of birth'];
 
       if (!name) {
         return { error: `Traveler ${i + 1} is missing a Name. Please check the format and try again.` };
       }
       const nameParts = name.trim().split(/\s+/);
       const firstName = nameParts[0];
-      const lastName = nameParts.slice(1).join(' ') || nameParts[0];
+      const lastName  = nameParts.slice(1).join(' ') || nameParts[0];
 
       if (!dob || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
         return { error: `Traveler ${i + 1}'s DOB must be in YYYY-MM-DD format (e.g. 1990-05-21). Please check and resend.` };
@@ -229,24 +231,151 @@ class WhatsAppBookingFlow {
 
     const result = await bookingService.initBooking({
       bookingRef,
-      agencyId: session.agency_id,
+      agencyId:         session.agency_id,
       pkg,
       passengerDetails: parsed.passengers,
       guestName,
-      guestPhone: parsed.guestPhone,
-      guestEmail: parsed.guestEmail,
-      channel: 'whatsapp',
+      guestPhone:       parsed.guestPhone,
+      guestEmail:       parsed.guestEmail,
+      channel:          'whatsapp',
     });
 
-    await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
+    // ── PRICE CHANGED ────────────────────────────────────────
+    // HotelBeds re-priced the room once the child's real DOB age
+    // was applied. Don't treat this as a failure — hold the session
+    // open in a new state so the traveler can reply yes or no, then
+    // resume from exactly here with priceApproved: true if they
+    // agree. This mirrors the widget's showPriceApprovalAlert but as
+    // a WhatsApp message + session state, not inline DOM elements.
+    // The session is NOT deleted here — it's updated to carry
+    // everything needed to re-call initBooking on approval.
+    if (!result.success && result.code === 'PRICE_CHANGED') {
+      const oldFmt = `${result.currency} ${Number(result.oldPrice).toLocaleString()}`;
+      const newFmt = `${result.currency} ${Number(result.newPrice).toLocaleString()}`;
+      const flightNote = result.flightHeld
+        ? '\n\nYour flight hold is not yet charged — it will expire automatically if you cancel.'
+        : '';
 
+      await supabase
+        .from('whatsapp_booking_sessions')
+        .update({
+          current_step: 'awaiting_price_approval',
+          // Carry the booking context so we can re-call initBooking on yes,
+          // without asking the traveler to re-enter all their details.
+          price_approval_ctx: {
+            bookingRef,
+            guestName,
+            guestPhone:       parsed.guestPhone,
+            guestEmail:       parsed.guestEmail,
+            passengerDetails: parsed.passengers,
+            oldPrice:         result.oldPrice,
+            newPrice:         result.newPrice,
+            currency:         result.currency,
+            flightHeld:       result.flightHeld || false,
+          },
+        })
+        .eq('phone', from);
+
+      await whatsappService.sendText(phoneNumberId, from,
+        `The hotel price changed once the child's real date of birth was applied:\n\n` +
+        `Old price: ~${oldFmt}~\n` +
+        `New price: *${newFmt}*` +
+        flightNote +
+        `\n\nReply *yes* to approve the new price and continue, or *no* to cancel.`
+      );
+
+      return true;
+    }
+
+    // ── Normal failure ───────────────────────────────────────
     if (!result.success) {
+      await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
       await whatsappService.sendText(phoneNumberId, from,
         `We hit a snag: ${result.error}\n\nNo payment has been taken. Feel free to search again.`
       );
       return true;
     }
 
+    // ── Success — proceed to payment ─────────────────────────
+    await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
+    await this._proceedToPayment({ phoneNumberId, from, result, parsed });
+    return true;
+  }
+
+  // ─────────────────────────────────────────────
+  // HANDLE PRICE APPROVAL REPLY
+  // Traveler replied "yes" or "no" to the price-change question.
+  // "yes" re-calls initBooking with priceApproved: true so it uses
+  // the already-fetched rateKey and doesn't re-fetch again.
+  // Anything that isn't a clear yes is treated as a cancel so the
+  // traveler isn't accidentally charged.
+  // ─────────────────────────────────────────────
+  async _handlePriceApproval({ phoneNumberId, from, text, session }) {
+    const answer = text.trim().toLowerCase();
+    const ctx    = session.price_approval_ctx || {};
+
+    const isYes = /^(yes|yeah|y|ok|okay|approve|confirmed?|sure|proceed|go ahead)$/i.test(answer);
+    const isNo  = /^(no|nope|n|cancel|stop|decline|reject|don'?t)$/i.test(answer);
+
+    if (!isYes && !isNo) {
+      await whatsappService.sendText(phoneNumberId, from,
+        `Please reply *yes* to approve the new price of *${ctx.currency} ${Number(ctx.newPrice).toLocaleString()}*, or *no* to cancel.`
+      );
+      return true;
+    }
+
+    await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
+
+    if (isNo) {
+      const flightNote = ctx.flightHeld
+        ? ' Your flight hold will expire automatically — no charge has been made.'
+        : '';
+      await whatsappService.sendText(phoneNumberId, from,
+        `Booking cancelled.${flightNote} Feel free to search again if you would like different options.`
+      );
+      return true;
+    }
+
+    // Approved — re-call initBooking with priceApproved: true.
+    // The reconciliation step will find the same corrected age, re-fetch
+    // the same rateKey, and this time proceed past the price check.
+    await whatsappService.sendText(phoneNumberId, from, 'Great — processing your booking at the new price now...');
+
+    const result = await bookingService.initBooking({
+      bookingRef:       ctx.bookingRef,
+      agencyId:         session.agency_id,
+      pkg:              session.package_snapshot,
+      passengerDetails: ctx.passengerDetails,
+      guestName:        ctx.guestName,
+      guestPhone:       ctx.guestPhone,
+      guestEmail:       ctx.guestEmail,
+      channel:          'whatsapp',
+      priceApproved:    true,
+    });
+
+    if (!result.success) {
+      await whatsappService.sendText(phoneNumberId, from,
+        `Something went wrong at the new price: ${result.error}\n\nNo payment has been taken. Please search again.`
+      );
+      return true;
+    }
+
+    await this._proceedToPayment({
+      phoneNumberId,
+      from,
+      result,
+      parsed: { guestPhone: ctx.guestPhone, guestEmail: ctx.guestEmail, passengers: ctx.passengerDetails },
+    });
+    return true;
+  }
+
+  // ─────────────────────────────────────────────
+  // PROCEED TO PAYMENT
+  // Shared continuation after a successful initBooking — both the
+  // normal path and the price-approved path end up here. Sends the
+  // confirmation message and triggers the M-Pesa STK push.
+  // ─────────────────────────────────────────────
+  async _proceedToPayment({ phoneNumberId, from, result, parsed }) {
     await whatsappService.sendText(phoneNumberId, from,
       `Flight held and hotel confirmed!\n\n` +
       `*Booking ref:* ${result.bookingRef}\n` +
@@ -256,20 +385,22 @@ class WhatsAppBookingFlow {
 
     const paymentResult = await bookingService.triggerPayment({
       bookingRef: result.bookingRef,
-      phone: parsed.guestPhone,
-      amount: result.totalPrice,
-      currency: result.currency,
-      email: parsed.guestEmail,
-      firstName: parsed.passengers[0].firstName,
-      lastName: parsed.passengers[0].lastName,
+      phone:      parsed.guestPhone,
+      amount:     result.totalPrice,
+      currency:   result.currency,
+      email:      parsed.guestEmail,
+      firstName:  parsed.passengers[0].firstName,
+      lastName:   parsed.passengers[0].lastName,
     });
 
     if (!paymentResult.success) {
       await whatsappService.sendText(phoneNumberId, from,
         `Your flight and hotel are held, but we couldn't send the payment prompt (${paymentResult.error}). Please contact support with booking ref ${result.bookingRef}.`
       );
-      logger.error('WhatsApp payment trigger failed after successful booking init', { bookingRef: result.bookingRef, error: paymentResult.error });
-      return true;
+      logger.error('WhatsApp payment trigger failed after successful booking init', {
+        bookingRef: result.bookingRef, error: paymentResult.error,
+      });
+      return;
     }
 
     await whatsappService.sendText(phoneNumberId, from,
@@ -277,7 +408,6 @@ class WhatsAppBookingFlow {
     );
 
     logger.info('WhatsApp booking init + payment trigger complete', { bookingRef: result.bookingRef, from });
-    return true;
   }
 }
 

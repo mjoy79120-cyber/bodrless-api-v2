@@ -28,6 +28,33 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
+  // BUILD OCCUPANCY
+  // Produces a HotelBeds occupancy node from a real adult/child split.
+  // Per HotelBeds rules, the `children` count MUST equal the number of
+  // CH entries in `paxes`, and every child needs an `age` — otherwise
+  // E_REQUEST_CHILDRENDONTMATCH / E_REQUEST_AGESDONTMATCH (400). To make
+  // that impossible to violate, the child count is derived from the
+  // number of valid ages we actually have, not a separate counter.
+  // ─────────────────────────────────────────────
+  _buildOccupancy({ rooms = 1, adults = 1, children = 0, childAges = [] }) {
+    const ages = (Array.isArray(childAges) ? childAges : [])
+      .map(a => parseInt(a, 10))
+      .filter(a => Number.isFinite(a) && a >= 0 && a < 18);
+
+    // Guarantee children count and paxes ages are always consistent.
+    const childCount = Math.min(Math.max(0, children || 0), ages.length);
+    const occ = {
+      rooms,
+      adults: Math.max(1, adults || 1), // HotelBeds requires >=1 adult
+      children: childCount,
+    };
+    if (childCount > 0) {
+      occ.paxes = ages.slice(0, childCount).map(age => ({ type: 'CH', age }));
+    }
+    return occ;
+  }
+
+  // ─────────────────────────────────────────────
   // SEARCH HOTELS
   // ─────────────────────────────────────────────
   async search({
@@ -35,49 +62,59 @@ class HotelBedsAdapter {
     checkIn,
     checkOut,
     passengers = 1,
+    adults = null,
+    children = 0,
+    childAges = [],
     nights = 1,
     budget = 'mid',
     rooms = 1,
+    hotelCode = null,
   }) {
     try {
-      logger.info('HotelBeds: searching hotels', { destination, checkIn, checkOut, passengers });
-
-      // Resolve destination to HotelBeds destination code
-      const destCode = await this._resolveDestination(destination);
-      if (!destCode) {
-        logger.warn('HotelBeds: could not resolve destination code', { destination });
-        return [];
-      }
+      logger.info('HotelBeds: searching hotels', { destination, checkIn, checkOut, passengers, children, hotelCode });
 
       const checkInDate  = this._formatDate(checkIn);
       const checkOutDate = checkOut
         ? this._formatDate(checkOut)
         : this._addDays(checkInDate, nights);
 
+      const occupancy = this._buildOccupancy({
+        rooms,
+        adults: adults != null ? adults : passengers,
+        children,
+        childAges,
+      });
+
       const payload = {
         stay: {
           checkIn:  checkInDate,
           checkOut: checkOutDate,
         },
-        occupancies: [
-          {
-            rooms:  rooms,
-            adults: passengers,
-            children: 0,
-          },
-        ],
-        destination: {
-          code: destCode,
-        },
-        filter: {
-          maxHotels: 10,
-          minRate:   this._budgetMinRate(budget),
-          maxRate:   this._budgetMaxRate(budget),
-          paymentType: 'AT_WEB',
-        },
+        occupancies: [occupancy],
       };
 
-      console.log('HOTELBEDS REQUEST:', JSON.stringify({ destCode, checkInDate, checkOutDate, passengers, budget }, null, 2));
+      // Selector: either a specific hotel (used by the booking-side
+      // re-fetch to re-price one exact hotel at a corrected occupancy)
+      // or a destination code (normal search).
+      if (hotelCode) {
+        payload.hotels = { hotel: [Number(hotelCode) || hotelCode] };
+      } else {
+        const destCode = await this._resolveDestination(destination);
+        if (!destCode) {
+          logger.warn('HotelBeds: could not resolve destination code', { destination });
+          return [];
+        }
+        payload.destination = { code: destCode };
+      }
+
+      payload.filter = {
+        maxHotels: hotelCode ? 1 : 10,
+        minRate:   this._budgetMinRate(budget),
+        maxRate:   this._budgetMaxRate(budget),
+        paymentType: 'AT_WEB',
+      };
+
+      console.log('HOTELBEDS REQUEST:', JSON.stringify({ destination, hotelCode, checkInDate, checkOutDate, occupancy, budget }, null, 2));
 
       const response = await axios.post(
         `${this.baseUrl}/hotel-api/1.0/hotels`,
@@ -101,6 +138,29 @@ class HotelBedsAdapter {
       logger.error('HotelBeds search failed', { error: err.message });
       return [];
     }
+  }
+
+  // ─────────────────────────────────────────────
+  // REFETCH RATE — re-price one hotel at a corrected occupancy
+  // Used by the booking flow when a child's true age (from DOB) differs
+  // from what was searched. Returns the cheapest refundable rate for the
+  // exact hotel at the corrected occupancy: { rateKey, pricePerNight,
+  // totalRate, currency } or null if nothing comes back.
+  // ─────────────────────────────────────────────
+  async refetchRate({ hotelCode, checkIn, checkOut, nights = 1, adults = 1, children = 0, childAges = [], rooms = 1 }) {
+    if (!hotelCode) return null;
+    const results = await this.search({
+      hotelCode, checkIn, checkOut, nights, adults, children, childAges, rooms,
+      budget: 'mid', // wide rate band; we just need the rate for this exact hotel
+    });
+    if (!results || results.length === 0) return null;
+    const hotel = results[0];
+    return {
+      rateKey:       hotel.rateKey,
+      pricePerNight: hotel.pricePerNight,
+      totalRate:     hotel.totalRate,
+      currency:      hotel.currency,
+    };
   }
 
   // ─────────────────────────────────────────────
@@ -148,7 +208,7 @@ class HotelBedsAdapter {
   // ─────────────────────────────────────────────
   // BOOK
   // Confirms a real reservation against a rateKey from search().
-  // guests: array of { firstName, lastName, type: 'adult'|'child', roomId }
+  // guests: array of { firstName, lastName, type: 'adult'|'child', roomId, age }
   // holder: { firstName, lastName, email, phone } — the lead/contact guest,
   // must also appear as a pax in room 1 per HotelBeds requirements.
   // ─────────────────────────────────────────────

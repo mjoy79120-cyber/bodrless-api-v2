@@ -438,6 +438,9 @@ FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or mo
   ],
   "departureDate": "YYYY-MM-DD or null — the FIRST leg's departure date only, if stated",
   "passengers": number (default 1),
+  "adults": number — count of adult travelers (default: equal to passengers when no children are mentioned),
+  "children": number — count of child travelers (default 0; a "child"/"kid"/"toddler"/"baby"/"infant" or a stated age under 18 counts),
+  "childAges": array of integers — the age in years of each child IF stated (e.g. "a 7 year old and a 4 year old" -> [7, 4]); use an empty array [] if children are mentioned but no ages given, or if there are no children,
   "budget": choose exactly ONE: "low" or "mid" or "high" or "luxury" (default "mid" if not stated),
   "accessibility": true or false,
   "preferredTransportProvider": "the transport company name exactly as the traveler said it — could be an airline (e.g. 'Emirates', 'Qatar Airways'), a bus company (e.g. 'Buscar Dreamline', 'Modern Coast'), or a train/SGR operator. Capture it regardless of transport mode. null if not mentioned",
@@ -481,6 +484,9 @@ OTHERWISE (single destination), return ONLY this shape:
   "departureDate": "YYYY-MM-DD or null",
   "returnDate": "YYYY-MM-DD or null",
   "passengers": number (default 1),
+  "adults": number — count of adult travelers (default: equal to passengers when no children are mentioned),
+  "children": number — count of child travelers (default 0; a "child"/"kid"/"toddler"/"baby"/"infant" or a stated age under 18 counts),
+  "childAges": array of integers — the age in years of each child IF stated (e.g. "a 7 year old and a 4 year old" -> [7, 4]); use an empty array [] if children are mentioned but no ages given, or if there are no children,
   "budget": choose exactly ONE: "low" or "mid" or "high" or "luxury" (default "mid" if not stated),
   "nights": number (default 3),
   "tripType": choose exactly ONE: "round_trip" or "one_way" (default "round_trip" unless the traveler explicitly says one-way),
@@ -499,6 +505,7 @@ OTHERWISE (single destination), return ONLY this shape:
 CRITICAL OUTPUT RULE: every field above describing a choice between options (e.g. "choose exactly ONE: A or B or C") means you must output ONE of those literal values (e.g. just "mid", not the word "or" or any list). NEVER output a field's full list of possible values joined together — that is always wrong. If genuinely unsure which single value applies, use the stated default or null, never the full option list.
 
 RULES:
+- CRITICAL occupancy rule: passengers = adults + children (the total headcount). Count "adults" and "children" separately. A "child", "kid", "toddler", "baby", "infant", "son", "daughter", or anyone given an age under 18 is a CHILD, not an adult. Examples: "2 adults and a child" -> passengers 3, adults 2, children 1, childAges []. "me my wife and our 7 year old" -> passengers 3, adults 2, children 1, childAges [7]. "family of 4 with kids aged 5 and 8" -> passengers 4, adults 2, children 2, childAges [5,8]. "2 people" with no children mentioned -> passengers 2, adults 2, children 0, childAges []. Only put an age in childAges if it was actually stated; if a child is mentioned with no age, leave childAges shorter than children (e.g. children 1, childAges []).
 - CRITICAL: Pay attention to directional transport. If a user says "bus going and flight coming back", set outboundTransportMode="bus" and returnTransportMode="flight".
 - If only one transport mode is mentioned (e.g. "fly to Mombasa"), apply it to both outbound and return.
 - CRITICAL tripType rule: if the traveler mentions a number of nights or days (e.g. "4 nights", "3 days"), that means they want to come back — set tripType="round_trip". Only use tripType="one_way" if the traveler explicitly says "one way", "single trip", "not coming back", or gives no return timeframe of any kind. A stated nights/days duration is ALWAYS a round-trip signal, never one-way.
@@ -606,7 +613,13 @@ function _detectMultiDestinationRules(prompt) {
   const origin = legs[0].origin || null;
 
   const passengerMatch = lower.match(/(\d+)\s*(people|persons|passengers|adults|pax|travelers?)/);
-  const passengers = passengerMatch ? parseInt(passengerMatch[1]) : 1;
+  const passengersBase = passengerMatch ? parseInt(passengerMatch[1]) : 1;
+
+  const occ = _extractOccupancy(lower);
+  const children = occ.children || 0;
+  const childAges = occ.childAges || [];
+  const passengers = occ.passengers != null ? occ.passengers : passengersBase;
+  const adults = occ.adults != null ? occ.adults : Math.max(1, passengers - children);
 
   let budget = 'mid';
   if (lower.match(/luxury|5[\s-]?star|five[\s-]?star|premium/)) budget = 'luxury';
@@ -618,6 +631,9 @@ function _detectMultiDestinationRules(prompt) {
     legs,
     departureDate: _extractDate(lower) || _resolveRelativeDate(lower) || null,
     passengers,
+    adults,
+    children,
+    childAges,
     budget,
     accessibility: _detectAccessibility(lower),
     preferences: [],
@@ -659,6 +675,58 @@ function _looksLikePlace(token) {
 }
 
 // ─────────────────────────────────────────────
+// OCCUPANCY EXTRACTION (rule-based fallback)
+// Best-effort adults/children/childAges parsing for when Groq is
+// unavailable. Groq is the primary (and far more capable) path; this
+// just needs to catch the common shapes ("2 adults and a child",
+// "family of 4 with a 7 year old") and never crash. Anything it
+// can't determine is left for the engine's child-age clarification.
+// Returns { adults, children, childAges, passengers } where any of
+// adults/passengers may be null (caller applies defaults).
+// ─────────────────────────────────────────────
+function _extractOccupancy(text) {
+  const lower = String(text || '').toLowerCase();
+
+  const adultMatch = lower.match(/(\d+)\s*adults?\b/);
+  let adults = adultMatch ? parseInt(adultMatch[1], 10) : null;
+
+  let children = 0;
+  const childCountMatch = lower.match(/(\d+)\s*(?:children|kids|child|toddlers?|infants?|babies)\b/);
+  if (childCountMatch) {
+    children = parseInt(childCountMatch[1], 10);
+  }
+
+  // child ages: "7 year old", "7-year-old", "7yo", then "aged 5 and 8"
+  const childAges = [];
+  const yearOldRe = /(\d{1,2})\s*(?:-|\s)?(?:years?|yrs?|y\/o|yo)\b(?:[\s-]*old)?/gi;
+  let m;
+  while ((m = yearOldRe.exec(lower)) !== null) childAges.push(parseInt(m[1], 10));
+  if (childAges.length === 0) {
+    const agedMatch = lower.match(/\bage[ds]?\s+([\d,\sand&]+)/);
+    if (agedMatch) {
+      const nums = agedMatch[1].match(/\d{1,2}/g);
+      if (nums) nums.forEach(n => childAges.push(parseInt(n, 10)));
+    }
+  }
+
+  // If no explicit child count but a child word or ages appeared, infer it.
+  if (children === 0) {
+    if (childAges.length > 0) children = childAges.length;
+    else if (/\b(?:child|kids?|children|toddler|infant|baby|son|daughter)\b/.test(lower)) children = 1;
+  }
+  const cappedAges = childAges.slice(0, children);
+
+  const paxMatch = lower.match(/(\d+)\s*(?:people|persons|passengers|pax|travel?ers?|of us)\b/);
+  let passengers = paxMatch ? parseInt(paxMatch[1], 10) : null;
+
+  // Reconcile: passengers = adults + children.
+  if (passengers === null && adults !== null) passengers = adults + children;
+  if (adults === null && passengers !== null) adults = Math.max(0, passengers - children);
+
+  return { adults, children, childAges: cappedAges, passengers };
+}
+
+// ─────────────────────────────────────────────
 // RULE-BASED FALLBACK
 // ─────────────────────────────────────────────
 function _parseWithRules(prompt) {
@@ -669,11 +737,20 @@ function _parseWithRules(prompt) {
   }
 
   const passengerMatch = lower.match(/(\d+)\s*(watu|wenza|watu\s*wawili|people|persons|passengers|adults|pax|travelers?)/);
-  const passengers = passengerMatch
+  const passengersBase = passengerMatch
       ? parseInt(passengerMatch[1])
       : lower.includes('wawili') || lower.includes('sisi wawili') ? 2
       : lower.includes('familia') || lower.includes('family') ? 4
       : 1;
+
+  // Occupancy breakdown (adults/children/ages). Falls back to treating
+  // everyone as adults when no children are mentioned, so existing
+  // adult-only behaviour is unchanged.
+  const occ = _extractOccupancy(lower);
+  const children = occ.children || 0;
+  const childAges = occ.childAges || [];
+  const passengers = occ.passengers != null ? occ.passengers : passengersBase;
+  const adults = occ.adults != null ? occ.adults : Math.max(1, passengers - children);
 
   let budget = 'mid';
   if (lower.match(/luxury|5[\s-]?star|five[\s-]?star|premium|first[\s-]?class/)) budget = 'luxury';
@@ -797,6 +874,9 @@ function _parseWithRules(prompt) {
     departureDate,
     returnDate: null,
     passengers,
+    adults,
+    children,
+    childAges,
     budget,
     nights,
     tripType: lower.match(/one[\s-]?way|kwenda\s+tu/) ? 'one_way' : 'round_trip',
@@ -905,6 +985,40 @@ function _resolveRelativeDate(prompt) {
 }
 
 // ─────────────────────────────────────────────
+// NORMALIZE OCCUPANCY
+// Produces a consistent { adults, children, childAges, passengers }
+// from whatever the parser captured, enforcing the invariants the
+// rest of the system (and HotelBeds) rely on:
+//   - passengers === adults + children, always
+//   - at least 1 adult (HotelBeds rejects child-only with
+//     E_REQUEST_ATLEASTONEADULT)
+//   - childAges holds only valid <18 ages and never exceeds children
+//     (a shorter childAges than children is the signal that an age is
+//     still missing — the engine asks for it before searching hotels)
+// Backward compatible: when no children are present, adults =
+// passengers exactly as before, so adult-only trips are unchanged.
+// ─────────────────────────────────────────────
+function _normalizeOccupancy(parsed) {
+  let children = Number.isFinite(parsed.children) ? Math.max(0, Math.floor(parsed.children)) : 0;
+
+  let childAges = Array.isArray(parsed.childAges)
+    ? parsed.childAges.map(a => parseInt(a, 10)).filter(a => Number.isFinite(a) && a >= 0 && a < 18)
+    : [];
+  if (childAges.length > children) childAges = childAges.slice(0, children);
+
+  const totalStated = Number.isFinite(parsed.passengers) ? Math.max(1, Math.floor(parsed.passengers)) : null;
+  let adults = Number.isFinite(parsed.adults) ? Math.max(0, Math.floor(parsed.adults)) : null;
+
+  if (adults == null) {
+    adults = totalStated != null ? Math.max(1, totalStated - children) : 1;
+  }
+  if (adults < 1) adults = 1; // HotelBeds requires at least one adult
+
+  const passengers = adults + children;
+  return { adults, children, childAges, passengers };
+}
+
+// ─────────────────────────────────────────────
 // ENRICH PARAMS — SINGLE DESTINATION
 // ─────────────────────────────────────────────
 function _enrichParams(parsed) {
@@ -970,7 +1084,7 @@ function _enrichParams(parsed) {
     requiresFlight,
     requiresBus,
     needsOriginClarification,
-    passengers: parsed.passengers || 1,
+    ..._normalizeOccupancy(parsed),
     budget: _sanitizeEnum(parsed.budget, ['low', 'mid', 'high', 'luxury'], 'mid'),
     tripType: correctedTripType,
     accessibility: parsed.accessibility || false,
@@ -1104,7 +1218,7 @@ function _enrichMultiDestinationParams(parsed) {
     origin,
     legs,
     departureDate: topLevelDepartureDate,
-    passengers: parsed.passengers || 1,
+    ..._normalizeOccupancy(parsed),
     budget: _sanitizeEnum(parsed.budget, ['low', 'mid', 'high', 'luxury'], 'mid'),
     accessibility: parsed.accessibility || false,
     preferredTransportProvider: _sanitizeFreeText(parsed.preferredTransportProvider),

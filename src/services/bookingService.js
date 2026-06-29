@@ -64,7 +64,7 @@ class BookingService {
     return { valid: true, isFlightBooking, isHotelBooking };
   }
 
-  async initBooking({ bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel }) {
+  async initBooking({ bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, priceApproved = false }) {
     const transport = pkg.transport || {};
     const hotel      = pkg.hotel || {};
     const transfers  = pkg.transfers || {};
@@ -124,25 +124,69 @@ class BookingService {
     }
 
     if (isHotelBooking) {
+      // Reconcile the searched occupancy against the real DOB ages. If a
+      // child's true age differs from what was searched, this silently
+      // re-fetches a valid rateKey; if that reveals a price jump beyond
+      // tolerance, we STOP here and surface it for approval before any
+      // payment, rather than booking or charging.
+      let recon;
+      try {
+        recon = await this._reconcileHotelOccupancy({ pkg, passengerDetails, priceApproved });
+      } catch (err) {
+        logger.error('Hotel occupancy reconciliation failed; using original rate', { bookingRef, error: err.message });
+        recon = { guests: null, rateKey: hotel.rateKey, priceChanged: false };
+      }
+
+      if (recon.priceChanged && !priceApproved) {
+        // Don't book the hotel, don't charge. If a flight was held, let it
+        // expire (no charge) and persist the failed stage exactly as the
+        // hotel-confirm-failed path does.
+        if (flightResult) {
+          await this._persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, 'failed', flightResult, null);
+        }
+        return {
+          success: false,
+          code: 'PRICE_CHANGED',
+          needsApproval: true,
+          oldPrice:   recon.oldPrice,
+          newPrice:   recon.newPrice,
+          currency:   recon.currency,
+          priceDelta: Number((recon.newPrice - recon.oldPrice).toFixed(2)),
+          newRateKey: recon.rateKey,
+          flightHeld: !!flightResult,
+          message: `The hotel price changed from ${recon.currency} ${recon.oldPrice} to ${recon.currency} ${recon.newPrice} once the child's real age was applied. Re-initiate with priceApproved=true to continue at the new price.`,
+        };
+      }
+
       try {
         const leadGuest = { firstName: passengerDetails[0].firstName, lastName: passengerDetails[0].lastName };
-        const guestsForHotel = passengerDetails.map(p => ({
+        // Prefer the reconciled guests (type + age from DOB); fall back to a
+        // plain mapping only if reconciliation couldn't build them.
+        const guestsForHotel = recon.guests || passengerDetails.map(p => ({
           firstName: p.firstName,
           lastName:  p.lastName,
           type:      p.type === 'child' ? 'child' : 'adult',
           roomId:    1,
         }));
+        const effectiveRateKey = recon.rateKey || hotel.rateKey;
 
         hotelResult = await supplierAdapter.book({
           supplier:        'hotelbeds',
-          rateKey:         hotel.rateKey,
+          rateKey:         effectiveRateKey,
           holder:          leadGuest,
           guests:          guestsForHotel,
           clientReference: bookingRef,
           remark:          `Booked via Bodrless for ${agencyId}`,
         });
 
-        stage = isFlightBooking ? 'hotel_confirmed' : 'hotel_confirmed';
+        // If a re-fetched rateKey was used, keep the package/hotel in sync so
+        // persistence and the combined total reflect what was actually booked.
+        if (recon.rateKey && recon.rateKey !== hotel.rateKey) {
+          hotel.rateKey = recon.rateKey;
+          if (recon.newPrice) hotel.totalRate = recon.newPrice;
+        }
+
+        stage = 'hotel_confirmed';
         logger.info('Hotel confirmed', { bookingRef, supplierRef: hotelResult?.supplierBookingReference });
 
       } catch (err) {
@@ -325,6 +369,114 @@ class BookingService {
       .eq('booking_ref', bookingRef);
 
     return { success: true, bookingRef, status: 'cancelled' };
+  }
+
+  // ─────────────────────────────────────────────
+  // CALCULATE AGE from a date of birth (years, floored). Returns null
+  // for missing/unparseable dates so callers can fall back safely.
+  // ─────────────────────────────────────────────
+  _calculateAge(dob) {
+    if (!dob) return null;
+    const d = new Date(dob);
+    if (isNaN(d.getTime())) return null;
+    const now = new Date();
+    let age = now.getFullYear() - d.getFullYear();
+    const m = now.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+    return age >= 0 && age < 120 ? age : null;
+  }
+
+  // ─────────────────────────────────────────────
+  // RECONCILE HOTEL OCCUPANCY (search ages vs real DOB ages)
+  // Builds the HotelBeds guest list (type + age from each passenger's DOB)
+  // and, if a child's true age differs from what was searched, silently
+  // re-fetches a fresh rateKey for that exact hotel at the corrected
+  // occupancy. Returns:
+  //   { guests, rateKey, priceChanged, oldPrice?, newPrice?, currency? }
+  // priceChanged is true ONLY when a re-fetch revealed a price move beyond
+  // tolerance — the caller then stops and asks the traveler to approve
+  // BEFORE any payment. Every failure path falls back to the original
+  // rateKey and never silently mischarges.
+  // ─────────────────────────────────────────────
+  async _reconcileHotelOccupancy({ pkg, passengerDetails, priceApproved }) {
+    const hotel = pkg.hotel || {};
+    const occ = (pkg.summary && pkg.summary.occupancy) || null;
+
+    // Guests with type + age derived from DOB (authoritative at booking).
+    const guests = (passengerDetails || []).map(p => {
+      const dob = p.dateOfBirth || p.date_of_birth || p.dob || null;
+      const age = this._calculateAge(dob);
+      const isChild = age != null && age < 18;
+      const g = {
+        firstName: p.firstName || p.first_name,
+        lastName:  p.lastName  || p.last_name,
+        roomId:    1,
+        type:      isChild ? 'child' : 'adult',
+      };
+      if (isChild && age != null) g.age = age;
+      return g;
+    });
+
+    // Nothing to reconcile against, or no re-fetchable hotel -> use as-is.
+    if (!occ || !hotel.hotelCode || !hotel.rateKey || typeof supplierAdapter?.refetchRate !== 'function') {
+      return { guests, rateKey: hotel.rateKey, priceChanged: false };
+    }
+
+    const trueChildAges = guests
+      .filter(g => g.type === 'child' && g.age != null)
+      .map(g => g.age).sort((a, b) => a - b);
+    const searchedChildAges = (Array.isArray(occ.childAges) ? occ.childAges : [])
+      .slice().sort((a, b) => a - b);
+
+    const agesMatch =
+      trueChildAges.length === searchedChildAges.length &&
+      trueChildAges.every((a, i) => a === searchedChildAges[i]);
+
+    if (agesMatch) {
+      return { guests, rateKey: hotel.rateKey, priceChanged: false };
+    }
+
+    // Ages drifted -> re-fetch a valid rate for this exact hotel.
+    const adults = Math.max(1, guests.filter(g => g.type === 'adult').length);
+    let refetch = null;
+    try {
+      refetch = await supplierAdapter.refetchRate({
+        supplier:  'hotelbeds',
+        hotelCode: hotel.hotelCode,
+        checkIn:   occ.checkIn,
+        checkOut:  occ.checkOut,
+        nights:    occ.nights || pkg.summary?.nights || 1,
+        adults,
+        children:  trueChildAges.length,
+        childAges: trueChildAges,
+        rooms:     1,
+      });
+    } catch (err) {
+      logger.error('Hotel rate re-fetch threw; using original rateKey', { hotelCode: hotel.hotelCode, error: err.message });
+    }
+
+    if (!refetch || !refetch.rateKey) {
+      logger.warn('Hotel rate re-fetch returned nothing; using original rateKey', { hotelCode: hotel.hotelCode });
+      return { guests, rateKey: hotel.rateKey, priceChanged: false };
+    }
+
+    const oldPrice = Number(hotel.totalRate || (hotel.pricePerNight || 0) * (occ.nights || pkg.summary?.nights || 1) || 0);
+    const newPrice = Number(refetch.totalRate || 0);
+    const tolerance = Math.max(2, oldPrice * 0.02); // 2 currency units OR 2%
+    const priceChanged = oldPrice > 0 && newPrice > 0 && Math.abs(newPrice - oldPrice) > tolerance;
+
+    if (priceChanged && !priceApproved) {
+      return {
+        guests,
+        rateKey: refetch.rateKey,
+        priceChanged: true,
+        oldPrice, newPrice,
+        currency: refetch.currency || hotel.currency || 'EUR',
+      };
+    }
+
+    logger.info('Hotel rate re-fetched for corrected child age(s)', { hotelCode: hotel.hotelCode, oldPrice, newPrice, priceApproved });
+    return { guests, rateKey: refetch.rateKey, priceChanged: false, oldPrice, newPrice, currency: refetch.currency || hotel.currency };
   }
 
   async _persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, stage, flightResult, hotelResult) {

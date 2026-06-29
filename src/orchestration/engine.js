@@ -880,6 +880,28 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────
+  // CHILD-AGE CLARIFICATION CHECK
+  // Returns { question, missing } when a child was declared without an
+  // age (childAges shorter than the children count), else null. HotelBeds
+  // requires an age for every child to price a room and to keep the
+  // searched rate valid through to booking, so we ask rather than guess.
+  // ─────────────────────────────
+  _needsChildAgeClarification(tripParams) {
+    const children = tripParams.children || 0;
+    if (children <= 0) return null;
+    const ages = Array.isArray(tripParams.childAges) ? tripParams.childAges : [];
+    if (ages.length >= children) return null;
+
+    const missing = children - ages.length;
+    const question = children === 1
+      ? `How old is the child travelling? I need their age to price the hotel correctly.`
+      : ages.length === 0
+        ? `How old are the ${children} children travelling? I need each child's age to price the hotel correctly (e.g. "5 and 8").`
+        : `I still need ${missing === 1 ? "the remaining child's age" : `${missing} more children's ages`}. How old ${missing === 1 ? 'is' : 'are'} they?`;
+    return { question, missing };
+  }
+
+  // ─────────────────────────────
   // RESUME A PENDING CLARIFICATION
   // previousParams carries _awaitingClarification (set by
   // _buildClarificationResponse on the PREVIOUS turn). This message
@@ -913,7 +935,9 @@ class OrchestrationEngine {
       // reprompt to match what we actually asked for.
       const question = marker?.type === 'destination'
         ? `Sorry, I didn't catch that — where would you like to travel to?`
-        : `Sorry, I didn't catch that — where will you be departing from?`;
+        : marker?.type === 'child_age'
+          ? `Sorry, I didn't catch that — how old ${(previousParams.children || 0) === 1 ? 'is the child' : 'are the children'} travelling?`
+          : `Sorry, I didn't catch that — where will you be departing from?`;
       return this._buildClarificationResponse({
         sessionId, prompt, question, tripParams: previousParams,
         intent: neutralIntent,
@@ -933,6 +957,36 @@ class OrchestrationEngine {
       delete tripParams._awaitingClarification;
       tripParams.destination = cleanedDest;
       console.log("RESUMED CLARIFICATION (destination) — completed params:", tripParams);
+      return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel);
+    }
+
+    // ── CHILD AGE answer ─────────────────────────────────────
+    // Answer to "how old is the child?" — pull the number(s) out of
+    // the reply ("7", "she's 7", "5 and 8") and append to childAges.
+    // If ages are still missing afterwards, _continueOrchestration's
+    // child-age gate will simply ask again for the remainder.
+    if (marker?.type === 'child_age') {
+      const tripParams = { ...previousParams };
+      delete tripParams._awaitingClarification;
+      const existing = Array.isArray(tripParams.childAges) ? [...tripParams.childAges] : [];
+      const children = tripParams.children || 0;
+      const newAges = (answer.match(/\d{1,2}/g) || [])
+        .map(n => parseInt(n, 10))
+        .filter(n => Number.isFinite(n) && n >= 0 && n < 18);
+      tripParams.childAges = existing.concat(newAges).slice(0, children);
+
+      if (tripParams.childAges.length < children) {
+        // Still missing at least one age — ask for the rest.
+        const gate = this._needsChildAgeClarification(tripParams);
+        return this._buildClarificationResponse({
+          sessionId, prompt,
+          question: gate ? gate.question : `Please tell me the remaining child age(s).`,
+          tripParams, intent: neutralIntent, conversationHistory,
+          awaitingClarification: { type: 'child_age' },
+        });
+      }
+
+      console.log("RESUMED CLARIFICATION (child_age) — completed params:", tripParams);
       return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel);
     }
 
@@ -1158,6 +1212,19 @@ class OrchestrationEngine {
       return this._buildClarificationResponse({
         sessionId, prompt, question, tripParams, intent, conversationHistory,
         awaitingClarification: { type: 'single_origin' },
+      });
+    }
+
+    // Child-age gate: HotelBeds needs every child's age at search time to
+    // return a rate that will still be valid at booking (a child with no
+    // age can't be priced, and an age guessed here would later clash with
+    // the real DOB). So if a child was mentioned without an age, ask for
+    // the missing one(s) before searching rather than guessing.
+    const childAgeGate = this._needsChildAgeClarification(tripParams);
+    if (childAgeGate) {
+      return this._buildClarificationResponse({
+        sessionId, prompt, question: childAgeGate.question, tripParams, intent, conversationHistory,
+        awaitingClarification: { type: 'child_age' },
       });
     }
 
@@ -1793,6 +1860,13 @@ class OrchestrationEngine {
             checkIn,
             checkOut,
             passengers:  tripParams.passengers || 1,
+            // Real occupancy breakdown — HotelBeds needs adults/children
+            // split (and child ages) at search time, not just a flat
+            // headcount, or the rateKey it returns won't match the pax
+            // sent at booking. Defaults keep adult-only searches identical.
+            adults:      tripParams.adults != null ? tripParams.adults : (tripParams.passengers || 1),
+            children:    tripParams.children || 0,
+            childAges:   Array.isArray(tripParams.childAges) ? tripParams.childAges : [],
             nights,
             budget:      tripParams.budget,
             rooms:       1,
@@ -2199,6 +2273,17 @@ class OrchestrationEngine {
             mealPlan:       tripParams.mealPlan  || hotel?.mealPlan || null,
             seatPreference: tripParams.seatPreference || null,
             transportType:  ob?.transportType    || 'none',
+            // Occupancy actually searched — carried so bookingService can
+            // detect a DOB/age drift at booking time and re-fetch a valid
+            // rateKey (see the HotelBeds search/booking age-match rules).
+            occupancy: {
+              adults:    tripParams.adults != null ? tripParams.adults : (tripParams.passengers || 1),
+              children:  tripParams.children || 0,
+              childAges: Array.isArray(tripParams.childAges) ? tripParams.childAges : [],
+              checkIn:   tripParams.departureDate || null,
+              checkOut:  tripParams.returnDate || null,
+              nights:    tripParams.nights || 0,
+            },
           },
           transport:       this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination),
           returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),

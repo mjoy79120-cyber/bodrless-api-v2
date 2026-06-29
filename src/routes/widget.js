@@ -79,7 +79,14 @@ router.get('/', (req, res) => {
   '".itin-stop-title{font-size:12px;font-weight:700;color:var(--et-navy);margin-bottom:4px;}",\n' +
   '".itin-stop-title.buffer{color:var(--et-muted);font-style:italic;}",\n' +
   '".itin-line{font-size:11px;color:var(--et-muted);line-height:1.5;margin-bottom:2px;}",\n' +
-  '".itin-connects{font-size:10px;color:var(--et-red);font-style:italic;}"\n' +
+  '".itin-connects{font-size:10px;color:var(--et-red);font-style:italic;}",\n' +
+  '".price-alert{background:#FFF7E6;border:1px solid #F0C36D;border-radius:12px;padding:12px;margin-top:8px;}",\n' +
+  '".price-alert p{font-size:12px;color:#5A4A1A;margin:0 0 10px 0;line-height:1.5;}",\n' +
+  '".price-alert .old{text-decoration:line-through;color:var(--et-muted);}",\n' +
+  '".price-alert .new{color:var(--et-red);font-weight:700;}",\n' +
+  '".price-alert-actions{display:flex;gap:8px;}",\n' +
+  '".price-approve{flex:1;background:var(--et-navy);color:white;border:none;padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}",\n' +
+  '".price-cancel{flex:1;background:white;color:var(--et-navy);border:1.5px solid var(--et-border);padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}"\n' +
   '].join("");\n' +
   'document.head.appendChild(style);\n' +
 
@@ -242,6 +249,115 @@ router.get('/', (req, res) => {
   '      })\n' +
   '      .catch(function() { /* silent retry on next interval tick */ });\n' +
   '  }, 5000);\n' +
+  '}\n' +
+
+  // ── PRICE-CHANGE APPROVAL ──────────────────────────────────
+  // Shown when book-init reports code: "PRICE_CHANGED" (HotelBeds
+  // re-priced the room once the real DOB-derived child age was
+  // applied). Renders inline in the chat — Approve re-calls book-init
+  // with priceApproved: true using the SAME passengers/phone/email
+  // already collected (never re-asks the form), Cancel just removes
+  // the alert and tells the traveler nothing was charged.
+  'function showPriceApprovalAlert(priceInfo, bookCtx, bookBtn) {\n' +
+  '  var existing = document.getElementById("et-price-alert");\n' +
+  '  if (existing) existing.remove();\n' +
+  '  var div = document.createElement("div");\n' +
+  '  div.className = "price-alert";\n' +
+  '  div.id = "et-price-alert";\n' +
+  '  var p = document.createElement("p");\n' +
+  '  p.innerHTML = "Once the real date of birth was applied for the child traveler, the hotel price changed: " +\n' +
+  '    "<span class=\\"old\\">" + fmtPrice(priceInfo.oldPrice, priceInfo.currency) + "</span> \u2192 " +\n' +
+  '    "<span class=\\"new\\">" + fmtPrice(priceInfo.newPrice, priceInfo.currency) + "</span>." +\n' +
+  '    (priceInfo.flightHeld ? " Your flight is held and not yet charged \u2014 it will simply expire if you cancel." : "");\n' +
+  '  div.appendChild(p);\n' +
+  '  var actions = document.createElement("div");\n' +
+  '  actions.className = "price-alert-actions";\n' +
+  '  var approveBtn = document.createElement("button");\n' +
+  '  approveBtn.className = "price-approve";\n' +
+  '  approveBtn.innerText = "Approve new price";\n' +
+  '  var cancelBtn = document.createElement("button");\n' +
+  '  cancelBtn.className = "price-cancel";\n' +
+  '  cancelBtn.innerText = "Cancel booking";\n' +
+  '  actions.appendChild(approveBtn);\n' +
+  '  actions.appendChild(cancelBtn);\n' +
+  '  div.appendChild(actions);\n' +
+  '  messages.appendChild(div);\n' +
+  '  messages.scrollTop = messages.scrollHeight;\n' +
+
+  '  cancelBtn.onclick = function() {\n' +
+  '    div.remove();\n' +
+  '    addMsg("Booking cancelled \u2014 no payment was taken. Feel free to search again if you would like different dates or a different hotel.", "bot");\n' +
+  '  };\n' +
+
+  '  approveBtn.onclick = function() {\n' +
+  '    approveBtn.disabled = true;\n' +
+  '    cancelBtn.disabled = true;\n' +
+  '    approveBtn.innerText = "Processing...";\n' +
+  '    fetch("' + apiBase + '/api/trips/book-init", {\n' +
+  '      method: "POST",\n' +
+  '      headers: { "Content-Type": "application/json" },\n' +
+  '      body: JSON.stringify({\n' +
+  '        agencyId: "' + agencyKey + '",\n' +
+  '        guestName: bookCtx.guestName,\n' +
+  '        guestPhone: bookCtx.phone,\n' +
+  '        guestEmail: bookCtx.email,\n' +
+  '        passengers: bookCtx.passengers,\n' +
+  '        package: bookCtx.pkg,\n' +
+  '        priceApproved: true\n' +
+  '      })\n' +
+  '    })\n' +
+  '    .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })\n' +
+  '    .then(function(result) {\n' +
+  '      div.remove();\n' +
+  '      if (!result.ok || !result.data.success) {\n' +
+  '        var msg = (result.data && result.data.error) ? result.data.error : "Booking failed at the new price. Please try again.";\n' +
+  '        addMsg(msg, "bot");\n' +
+  '        return;\n' +
+  '      }\n' +
+  '      continueToPayment(result.data, bookCtx, bookBtn);\n' +
+  '    })\n' +
+  '    .catch(function() {\n' +
+  '      div.remove();\n' +
+  '      addMsg("Network error confirming the new price. Please try again.", "bot");\n' +
+  '    });\n' +
+  '  };\n' +
+  '}\n' +
+
+  // ── Shared "after a successful book-init" continuation ─────
+  // Factored out so both the normal Confirm Booking path AND the
+  // price-approval Approve path trigger payment identically.
+  'function continueToPayment(data, bookCtx, bookBtn) {\n' +
+  '  var bookingRef = data.bookingRef;\n' +
+  '  var totalPrice = data.totalPrice;\n' +
+  '  var currency = data.currency;\n' +
+  '  addMsg("Flight held and hotel confirmed! Ref: " + bookingRef + ". Total due: " + currency + " " + totalPrice.toLocaleString() + ". Sending an M-Pesa payment prompt to " + bookCtx.phone + " now...", "bot");\n' +
+  '  messages.scrollTop = messages.scrollHeight;\n' +
+
+  '  fetch("' + apiBase + '/api/trips/book-pay", {\n' +
+  '    method: "POST",\n' +
+  '    headers: { "Content-Type": "application/json" },\n' +
+  '    body: JSON.stringify({\n' +
+  '      bookingRef: bookingRef,\n' +
+  '      phone: bookCtx.phone,\n' +
+  '      amount: totalPrice,\n' +
+  '      currency: currency,\n' +
+  '      email: bookCtx.email,\n' +
+  '      firstName: bookCtx.passengers[0].firstName,\n' +
+  '      lastName: bookCtx.passengers[0].lastName\n' +
+  '    })\n' +
+  '  })\n' +
+  '  .then(function(pr) { return pr.json().then(function(pdata) { return { ok: pr.ok, data: pdata }; }); })\n' +
+  '  .then(function(payResult) {\n' +
+  '    if (!payResult.ok || !payResult.data.success) {\n' +
+  '      if (bookBtn) { bookBtn.innerText = "Payment failed to send"; bookBtn.style.background = "#C0392B"; }\n' +
+  '      addMsg("Your flight and hotel are held, but we could not send the payment prompt (" + (payResult.data.error || "unknown error") + "). Please contact support with booking ref " + bookingRef + ".", "bot");\n' +
+  '      return;\n' +
+  '    }\n' +
+  '    if (bookBtn) { bookBtn.innerText = "Awaiting payment..."; bookBtn.style.background = "#f0ad4e"; bookBtn.disabled = true; }\n' +
+  '    addMsg("Check your phone and enter your M-Pesa PIN to complete payment for booking " + bookingRef + ". This booking will be held for 30 minutes.", "bot");\n' +
+  '    messages.scrollTop = messages.scrollHeight;\n' +
+  '    pollBookingStatus(bookingRef, bookBtn || { innerText: "", style: {} });\n' +
+  '  });\n' +
   '}\n' +
 
   'function showNameForm(p, bookBtn) {\n' +
@@ -412,6 +528,7 @@ router.get('/', (req, res) => {
   '    if (needsFlightDetails && !email) { errorMsg.innerText = "Email is required for flight bookings."; errorMsg.style.display = "block"; return; }\n' +
 
   '    var guestName = passengers[0].firstName + " " + passengers[0].lastName;\n' +
+  '    var bookCtx = { guestName: guestName, phone: phone, email: email, passengers: passengers, pkg: p };\n' +
   '    confirmBtn.innerText = "Processing...";\n' +
   '    confirmBtn.disabled = true;\n' +
   '    fetch("' + apiBase + '/api/trips/book-init", {\n' +
@@ -428,6 +545,16 @@ router.get('/', (req, res) => {
   '    })\n' +
   '    .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })\n' +
   '    .then(function(result) {\n' +
+  // ── PRICE CHANGED — ask for approval instead of treating as a failure ──
+  // bookingService deliberately stopped short of booking/charging because
+  // a child's real DOB-derived age differed from what was searched.
+  // Show the new price inline and let the traveler decide, rather than
+  // surfacing this as a generic "booking failed" error.
+  '      if (!result.ok && result.data && result.data.code === "PRICE_CHANGED") {\n' +
+  '        form.remove();\n' +
+  '        showPriceApprovalAlert(result.data, bookCtx, bookBtn);\n' +
+  '        return;\n' +
+  '      }\n' +
   '      if (!result.ok || !result.data.success) {\n' +
   '        var msg = (result.data && result.data.error) ? result.data.error : "Booking failed. Please try again.";\n' +
   '        errorMsg.innerText = msg;\n' +
@@ -436,42 +563,8 @@ router.get('/', (req, res) => {
   '        confirmBtn.disabled = false;\n' +
   '        return;\n' +
   '      }\n' +
-  '      var bookingRef = result.data.bookingRef;\n' +
-  '      var totalPrice = result.data.totalPrice;\n' +
-  '      var currency = result.data.currency;\n' +
-  '      confirmBtn.innerText = "Sending M-Pesa prompt...";\n' +
-  '      addMsg("Flight held and hotel confirmed! Ref: " + bookingRef + ". Total due: " + currency + " " + totalPrice.toLocaleString() + ". Sending an M-Pesa payment prompt to " + phone + " now...", "bot");\n' +
-  '      messages.scrollTop = messages.scrollHeight;\n' +
-
-  '      return fetch("' + apiBase + '/api/trips/book-pay", {\n' +
-  '        method: "POST",\n' +
-  '        headers: { "Content-Type": "application/json" },\n' +
-  '        body: JSON.stringify({\n' +
-  '          bookingRef: bookingRef,\n' +
-  '          phone: phone,\n' +
-  '          amount: totalPrice,\n' +
-  '          currency: currency,\n' +
-  '          email: email,\n' +
-  '          firstName: passengers[0].firstName,\n' +
-  '          lastName: passengers[0].lastName\n' +
-  '        })\n' +
-  '      })\n' +
-  '      .then(function(pr) { return pr.json().then(function(pdata) { return { ok: pr.ok, data: pdata }; }); })\n' +
-  '      .then(function(payResult) {\n' +
-  '        form.remove();\n' +
-  '        if (!payResult.ok || !payResult.data.success) {\n' +
-  '          bookBtn.innerText = "Payment failed to send";\n' +
-  '          bookBtn.style.background = "#C0392B";\n' +
-  '          addMsg("Your flight and hotel are held, but we could not send the payment prompt (" + (payResult.data.error || "unknown error") + "). Please contact support with booking ref " + bookingRef + ".", "bot");\n' +
-  '          return;\n' +
-  '        }\n' +
-  '        bookBtn.innerText = "Awaiting payment...";\n' +
-  '        bookBtn.style.background = "#f0ad4e";\n' +
-  '        bookBtn.disabled = true;\n' +
-  '        addMsg("Check your phone and enter your M-Pesa PIN to complete payment for booking " + bookingRef + ". This booking will be held for 30 minutes.", "bot");\n' +
-  '        messages.scrollTop = messages.scrollHeight;\n' +
-  '        pollBookingStatus(bookingRef, bookBtn);\n' +
-  '      });\n' +
+  '      form.remove();\n' +
+  '      continueToPayment(result.data, bookCtx, bookBtn);\n' +
   '    })\n' +
   '    .catch(function() {\n' +
   '      errorMsg.innerText = "Network error. Please try again.";\n' +

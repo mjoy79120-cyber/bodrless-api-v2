@@ -67,11 +67,30 @@ class SupplierAdapterLayer {
   // ─────────────────────────────────────────────
   // SEARCH HOTELS
   // Hotels → HotelBeds
+  //
+  // FIX: adults, children, childAges were previously dropped here —
+  // only the flat `passengers` count was forwarded, so every hotel
+  // search told HotelBeds "N adults, 0 children" regardless of the
+  // actual occupancy. That caused the rateKey returned at search time
+  // to mismatch the pax sent at booking (E_REQUEST_CHILDRENDONTMATCH).
+  // hotelCode is forwarded for the booking-side re-fetch path in
+  // bookingService._reconcileHotelOccupancy — it searches one specific
+  // hotel at the corrected DOB-derived child age to get a valid rateKey.
   // ─────────────────────────────────────────────
-  async searchHotels({ destination, checkIn, checkOut, passengers, nights, budget, rooms }) {
+  async searchHotels({ destination, checkIn, checkOut, passengers, adults, children, childAges, nights, budget, rooms, hotelCode }) {
     try {
       const results = await this.adapters.hotelbeds.search({
-        destination, checkIn, checkOut, passengers, nights, budget, rooms,
+        destination,
+        checkIn,
+        checkOut,
+        passengers,
+        adults,
+        children,
+        childAges,
+        nights,
+        budget,
+        rooms,
+        hotelCode,
       });
       console.log('HOTELBEDS HOTELS:', results.length);
       return results;
@@ -79,6 +98,23 @@ class SupplierAdapterLayer {
       console.error('HotelBeds adapter error:', err.message);
       return [];
     }
+  }
+
+  // ─────────────────────────────────────────────
+  // REFETCH RATE (hotels — HotelBeds)
+  // Re-prices one specific hotel at a corrected occupancy (used by
+  // bookingService._reconcileHotelOccupancy when a child's real DOB
+  // age differs from what was searched). Delegates straight to the
+  // HotelBeds adapter's refetchRate() — a targeted single-hotel
+  // availability call that returns a fresh rateKey.
+  // ─────────────────────────────────────────────
+  async refetchRate({ supplier, hotelCode, checkIn, checkOut, nights, adults, children, childAges, rooms }) {
+    const adapter = this.adapters[supplier || 'hotelbeds'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    if (typeof adapter.refetchRate !== 'function') {
+      throw new Error(`${supplier || 'hotelbeds'} adapter does not support refetchRate`);
+    }
+    return adapter.refetchRate({ hotelCode, checkIn, checkOut, nights, adults, children, childAges, rooms });
   }
 
   // ─────────────────────────────────────────────
