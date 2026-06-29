@@ -19,6 +19,57 @@ try {
 class OrchestrationEngine {
 
   // ─────────────────────────────
+  // LATENCY BUDGET
+  // Every external supplier call is wrapped in _withTimeout so a
+  // single slow/hung supplier can't blow the overall response-time
+  // budget. On timeout the call resolves to a safe fallback (the
+  // same shape a "no results" response returns — usually [] or null)
+  // rather than rejecting, so a missing supplier DEGRADES results
+  // instead of failing the whole search. Because outbound/return/
+  // hotel searches all run in parallel, this per-call ceiling keeps
+  // the total comfortably under the 30s target even in the worst
+  // case.
+  //
+  // This is a BACKSTOP, not the primary timeout. Each adapter sets
+  // its own (shorter) HTTP timeout — e.g. TravelDuqa's search is 9s
+  // (TRAVELDUQA_SEARCH_TIMEOUT_MS) — and should fail fast on its own,
+  // logging a precise reason. This 10s wrapper sits just ABOVE that
+  // so it only fires if an adapter's own timeout somehow doesn't
+  // (hung socket, an adapter with no timeout configured, etc.).
+  // Keep this >= the largest adapter search timeout, or you'll cut
+  // off adapters mid-request and lose results they were about to
+  // return. Tune via SUPPLIER_TIMEOUT_MS on Render.
+  //
+  // NOTE: JS can't truly cancel the underlying request; on timeout
+  // we simply stop waiting for it. The clearTimeout prevents the
+  // timer leaking once the real call settles.
+  // ─────────────────────────────
+  static SUPPLIER_TIMEOUT_MS = Number(process.env.SUPPLIER_TIMEOUT_MS) || 10000;
+
+  _withTimeout(promise, fallback, label) {
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        logger.warn('Supplier call timed out — using fallback', {
+          label, ms: OrchestrationEngine.SUPPLIER_TIMEOUT_MS,
+        });
+        resolve(fallback);
+      }, OrchestrationEngine.SUPPLIER_TIMEOUT_MS);
+    });
+
+    // If the real promise settles first, clear the timer and pass its
+    // value/error straight through (so existing try/catch at each call
+    // site still sees real rejections exactly as before). If the timer
+    // wins, the call site sees `fallback` and carries on.
+    const tracked = Promise.resolve(promise).then(
+      (v) => { clearTimeout(timer); return v; },
+      (e) => { clearTimeout(timer); throw e; },
+    );
+
+    return Promise.race([tracked, timeout]);
+  }
+
+  // ─────────────────────────────
   // MAIN ORCHESTRATE
   // ─────────────────────────────
   async orchestrate(prompt, agencyId, context = {}) {
@@ -69,8 +120,29 @@ class OrchestrationEngine {
       return await this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, context.channel);
 
     } catch (error) {
-      logger.error("Engine failure", { error: error.message });
-      throw error;
+      // NEVER dead-end the traveler. Whatever went wrong — a parser
+      // crash, an unexpected supplier response shape, a malformed
+      // params object — we log it in full for engineers but hand the
+      // traveler an actionable next step instead of throwing (which
+      // the caller would surface as a generic failure / nothing at
+      // all). This is the master safety net behind every other
+      // graceful-degradation path below.
+      logger.error("Engine failure — returning graceful fallback instead of throwing", {
+        sessionId, error: error.message, stack: error.stack,
+      });
+      return {
+        sessionId,
+        text: "I had trouble putting that together. Could you tell me in a short line where you'd like to go and which city you're travelling from? For example: \"Nairobi to Zanzibar, 3 nights\".",
+        packages: [],
+        needsClarification: true,
+        // Drop any pending-clarification marker so the next message is
+        // parsed fresh rather than mis-applied to a half-built state.
+        tripParams: null,
+        intent: null,
+        conversationHistory,
+        generatedAt: new Date().toISOString(),
+        degraded: true,
+      };
     }
   }
 
@@ -88,6 +160,12 @@ class OrchestrationEngine {
 
     const resolvedIntent = intent || this._detectIntent(prompt, null);
 
+    // [TIMING] Wall-clock around the parallel supplier-search phase. These
+    // logs show up in Render and tell you exactly where the seconds go on
+    // real traffic — search phase vs package-build phase. Remove or lower
+    // to logger.debug once latency is comfortably within budget.
+    const _tSearch = Date.now();
+
     const [
       outboundResult, outboundBuses,
       returnResult, returnBuses,
@@ -99,6 +177,8 @@ class OrchestrationEngine {
       tripParams.returnDate ? this._searchBuses(tripParams, 'return') : Promise.resolve([]),
       this._searchHotels(tripParams),
     ]);
+
+    console.log(`[TIMING] single-dest supplier search (${tripParams.destination}): ${Date.now() - _tSearch}ms`);
 
     let outboundTransport = [...outboundResult.results, ...outboundBuses];
     let returnTransport   = [...returnResult.results,   ...returnBuses];
@@ -147,6 +227,7 @@ class OrchestrationEngine {
       }
     }
 
+    const _tBuild = Date.now();
     const packages = await this._buildPackages({
       outboundTransport,
       returnTransport,
@@ -158,15 +239,72 @@ class OrchestrationEngine {
         return:   { connectsVia: returnResult.connectsVia,   connectingLegBookable: returnResult.connectingLegBookable },
       },
     });
+    console.log(`[TIMING] single-dest package build (${tripParams.destination}): ${Date.now() - _tBuild}ms`);
 
     const rankedPackages = rankPackages(packages, tripParams).slice(0, 4);
 
     const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
-    const responseText = rankedPackages.length > 0
-      ? `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.${unavailableNotes ? ' ' + unavailableNotes : ''}`
-      : `Sorry, I couldn't find any matching travel packages for ${tripParams.destination}.`;
+
+    let responseText;
+    if (rankedPackages.length > 0) {
+      responseText = `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.${unavailableNotes ? ' ' + unavailableNotes : ''}`;
+    } else {
+      // Never leave the traveler at a flat dead end. Suggest places the
+      // agency can ACTUALLY fulfil right now (pulled from their own
+      // inventory — real, bookable, honest — not invented), plus the
+      // option to adjust dates. If we can't even fetch suggestions, fall
+      // back to a plain but still actionable nudge.
+      const suggestions = await this._suggestAvailableDestinations(tripParams.agencyId, tripParams.destination);
+      const dest = this._titleCase(tripParams.destination);
+      responseText = suggestions.length > 0
+        ? `I couldn't find availability for ${dest} on those dates. I can put a trip together to one of these right now: ${suggestions.join(', ')}. Want me to try one of those, or adjust your dates?`
+        : `I couldn't find availability for ${dest} on those dates. Try shifting your dates or naming a nearby city and I'll search again.`;
+    }
 
     return { text: responseText, packages: rankedPackages };
+  }
+
+  // ─────────────────────────────
+  // SUGGEST AVAILABLE DESTINATIONS
+  // Last-resort honesty helper: when a search returns zero options, we
+  // still want to hand the traveler something actionable. This pulls a
+  // handful of destinations the agency genuinely has inventory for (from
+  // their own hotels table), so the suggestion is real and bookable —
+  // never a fabricated "we have flights to X" claim. Runs ONLY on the
+  // zero-result path, so it adds no latency to normal searches, and is
+  // fully wrapped so it can never itself throw or dead-end the response.
+  // NOTE: uses the hotels table as the proxy for "destinations this
+  // agency serves"; extend to the flights table too if you curate
+  // transport-only destinations separately.
+  // ─────────────────────────────
+  async _suggestAvailableDestinations(agencyId, exclude = null) {
+    try {
+      const { data, error } = await supabase
+        .from('hotels')
+        .select('location, city, destination, name')
+        .eq('agency_id', agencyId)
+        .limit(200);
+
+      if (error || !Array.isArray(data)) return [];
+
+      const ex = exclude ? this._normalize(exclude) : null;
+      const seen = new Set();
+      const places = [];
+
+      for (const row of data) {
+        const place = row.location || row.city || row.destination;
+        if (!place) continue;
+        const norm = this._normalize(place);
+        if (!norm || norm === ex || seen.has(norm)) continue;
+        seen.add(norm);
+        places.push(this._titleCase(place));
+        if (places.length >= 4) break;
+      }
+      return places;
+    } catch (err) {
+      logger.error('suggestAvailableDestinations failed', { error: err.message });
+      return [];
+    }
   }
 
   // ─────────────────────────────
@@ -435,21 +573,37 @@ class OrchestrationEngine {
     //    stops[0]). This lets legResults[i] line up directly with
     //    transitions[i] below, instead of being off by one and
     //    missing the very first origin -> stops[0] transition.
-    const transitions = [];
-    let previousStop = { destination: origin, checkOut: stops[0]?.checkIn || tripParams.departureDate, isAirstripDestination: false };
-
-    for (let i = 0; i < stops.length; i++) {
-      const toStop = stops[i];
-      const transition = await this._resolveTransition(previousStop, toStop, tripParams);
-      transitions.push(transition);
-      previousStop = toStop;
-    }
-
-    // Final leg home — transport arriving back at origin after the last stop.
+    // Each transition's endpoints come ENTIRELY from the precomputed
+    // `stops` array (the transport RESULT of one leg never feeds into
+    // the next — only stop metadata like destination/checkOut/airstrip
+    // flag does), so every transition plus the final return leg can be
+    // resolved CONCURRENTLY instead of one-at-a-time. For a 3-stop
+    // itinerary that's 4 sequential supplier searches collapsed into a
+    // single parallel wave. transitions[i] still lines up with stops[i]
+    // exactly as before (Promise.all preserves order).
     const lastStop = stops[stops.length - 1];
-    const returnTransition = await this._resolveTransition(lastStop, { destination: origin, checkIn: lastStop.checkOut, isAirstripDestination: false }, tripParams);
 
-    // 4. For each real stay, search the hotel using existing
+    const _tTransitions = Date.now();
+    const transitionPairs = stops.map((toStop, i) => {
+      const fromStop = i === 0
+        ? { destination: origin, checkOut: stops[0]?.checkIn || tripParams.departureDate, isAirstripDestination: false }
+        : stops[i - 1];
+      return { fromStop, toStop };
+    });
+
+    const [transitions, returnTransition] = await Promise.all([
+      Promise.all(transitionPairs.map(({ fromStop, toStop }) =>
+        this._resolveTransition(fromStop, toStop, tripParams)
+      )),
+      // Final leg home — transport arriving back at origin after the last stop.
+      this._resolveTransition(
+        lastStop,
+        { destination: origin, checkIn: lastStop.checkOut, isAirstripDestination: false },
+        tripParams
+      ),
+    ]);
+    console.log(`[TIMING] multi-dest transitions (${stops.length} stops + return): ${Date.now() - _tTransitions}ms`);
+
     //    single-leg logic. Transfer legs are built afterward
     //    (step 5b), once we know the actual transport that
     //    arrives at each stop — transfer labels depend on mode
@@ -647,14 +801,18 @@ class OrchestrationEngine {
     if (!supplierAdapter || !date) return null;
 
     try {
-      const results = await supplierAdapter.searchTransport({
-        origin:         fromCity,
-        destination:    toCity,
-        date,
-        passengers:     tripParams.passengers || 1,
-        transportMode:  'flight',
-        timePreference: tripParams.timePreference,
-      });
+      const results = await this._withTimeout(
+        supplierAdapter.searchTransport({
+          origin:         fromCity,
+          destination:    toCity,
+          date,
+          passengers:     tripParams.passengers || 1,
+          transportMode:  'flight',
+          timePreference: tripParams.timePreference,
+        }),
+        [],
+        `transition ${fromCity}->${toCity}`
+      );
 
       return this._pickCheapest(results, r => r.price);
     } catch (err) {
@@ -751,13 +909,31 @@ class OrchestrationEngine {
     const neutralIntent = { isFollowUp: false, adjustments: {}, productScope: { needsTransport: true, needsHotel: true, needsTransfers: true } };
 
     if (!answer) {
-      // Empty/unusable reply — ask again rather than guess.
-      const question = `Sorry, I didn't catch that — where will you be departing from?`;
+      // Empty/unusable reply — ask again rather than guess. Word the
+      // reprompt to match what we actually asked for.
+      const question = marker?.type === 'destination'
+        ? `Sorry, I didn't catch that — where would you like to travel to?`
+        : `Sorry, I didn't catch that — where will you be departing from?`;
       return this._buildClarificationResponse({
         sessionId, prompt, question, tripParams: previousParams,
         intent: neutralIntent,
         conversationHistory, awaitingClarification: marker,
       });
+    }
+
+    // ── DESTINATION answer ───────────────────────────────────
+    // Answer to "where would you like to travel to?" — take it at
+    // face value as a place name (lightly cleaned of "to/go to/visit"
+    // lead-ins), the same don't-re-parse posture used for origins.
+    if (marker?.type === 'destination') {
+      const cleanedDest = answer
+        .replace(/^(i'?d like to |i'?d love to |i'?m |i want to |i would like to )?(go to |travel to |visit |fly to |to )?/i, '')
+        .trim() || answer;
+      const tripParams = { ...previousParams };
+      delete tripParams._awaitingClarification;
+      tripParams.destination = cleanedDest;
+      console.log("RESUMED CLARIFICATION (destination) — completed params:", tripParams);
+      return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel);
     }
 
     // Strip the same conversational filler _extractName guards
@@ -814,7 +990,40 @@ class OrchestrationEngine {
     tripParams.agencyId = agencyId;
 
     if (tripParams.isMultiDestination) {
-      this._validateMultiDestinationParams(tripParams);
+      // Don't let malformed multi-destination params (fewer than 2
+      // legs, a leg missing a destination) throw and dead-end the
+      // traveler. If validation fails, salvage: if at least one leg
+      // has a real destination, fall through to a normal single-
+      // destination search on the first usable leg; otherwise ask
+      // the traveler to restate their trip.
+      try {
+        this._validateMultiDestinationParams(tripParams);
+      } catch (validationErr) {
+        logger.warn('Multi-destination validation failed — attempting graceful salvage', { error: validationErr.message });
+        const usableLeg = (tripParams.legs || []).find(l => l && l.destination);
+        if (usableLeg) {
+          tripParams = {
+            ...tripParams,
+            isMultiDestination: false,
+            legs: undefined,
+            destination: usableLeg.destination,
+            nights: usableLeg.nights || tripParams.nights || 3,
+            origin: usableLeg.origin || tripParams.origin || null,
+          };
+          // fall through to the single-destination path below.
+        } else {
+          return this._buildClarificationResponse({
+            sessionId, prompt,
+            question: "I couldn't quite follow the trip you described. Could you list the places you'd like to visit and how many nights at each? For example: \"3 nights Maasai Mara then 4 nights Mombasa\".",
+            tripParams: { ...tripParams, _awaitingClarification: undefined },
+            intent, conversationHistory,
+            awaitingClarification: null,
+          });
+        }
+      }
+    }
+
+    if (tripParams.isMultiDestination) {
 
       if (tripParams.needsOriginClarification) {
         const question = `Where will you be departing from for your trip?`;
@@ -928,6 +1137,20 @@ class OrchestrationEngine {
         conversationHistory: updatedHistory,
         generatedAt: new Date().toISOString(),
       };
+    }
+
+    // If we couldn't pin down WHERE the traveler wants to go (a long,
+    // rambling, or ambiguous prompt the parser couldn't resolve a
+    // destination from), ask for it rather than letting
+    // _validateTripParams throw "Missing destination" and dead-end.
+    if (!tripParams.destination) {
+      return this._buildClarificationResponse({
+        sessionId, prompt,
+        question: "I want to get this right — where would you like to travel to?",
+        tripParams: { ...tripParams, _awaitingClarification: undefined },
+        intent, conversationHistory,
+        awaitingClarification: { type: 'destination' },
+      });
     }
 
     if (tripParams.needsOriginClarification) {
@@ -1297,31 +1520,52 @@ class OrchestrationEngine {
     const origin = ((leg === 'return' ? tripParams.destination : tripParams.origin) || '').toLowerCase();
     const destination = ((leg === 'return' ? tripParams.origin : tripParams.destination) || '').toLowerCase();
 
-    for (const hub of OrchestrationEngine.REGIONAL_HUBS) {
-      if (hub === origin || hub === destination) continue;
+    // Fire every candidate hub's "hub -> destination" search CONCURRENTLY
+    // instead of walking them one at a time. The old sequential loop could
+    // do up to 6 hubs x 2 calls = 12 supplier round-trips back-to-back —
+    // the single biggest latency source in the engine. We then pick the
+    // first hub IN PRIORITY ORDER (REGIONAL_HUBS order, preserved by
+    // Promise.all keeping array order) that actually reached the
+    // destination, and only THEN do that one hub's "origin -> hub" search
+    // to set connectingLegBookable. Net: ~2 parallel waves instead of up
+    // to ~12 sequential calls, with identical results and identical
+    // hub-priority semantics to before.
+    const candidateHubs = OrchestrationEngine.REGIONAL_HUBS.filter(
+      (hub) => hub !== origin && hub !== destination
+    );
 
-      const hubToDestParams = leg === 'return'
-        ? { ...tripParams, destination: hub, origin: tripParams.destination }
-        : { ...tripParams, origin: hub };
+    const fromHubResults = await Promise.all(
+      candidateHubs.map((hub) => {
+        const hubToDestParams = leg === 'return'
+          ? { ...tripParams, destination: hub, origin: tripParams.destination }
+          : { ...tripParams, origin: hub };
+        return this._searchFlights(hubToDestParams, leg)
+          .then((results) => ({ hub, results }))
+          .catch((err) => {
+            logger.error('Hub fallback leg search failed', { hub, leg, error: err.message });
+            return { hub, results: [] };
+          });
+      })
+    );
 
-      const legFromHub = await this._searchFlights(hubToDestParams, leg);
-      if (legFromHub.length === 0) continue; // this hub doesn't even reach the destination — try the next one
-
+    // First hub (in priority order) with real bookable legs to the destination.
+    const winner = fromHubResults.find((r) => r.results.length > 0);
+    if (winner) {
       const originToHubParams = leg === 'return'
-        ? { ...tripParams, origin: tripParams.destination, destination: hub }
-        : { ...tripParams, destination: hub };
+        ? { ...tripParams, origin: tripParams.destination, destination: winner.hub }
+        : { ...tripParams, destination: winner.hub };
 
       const legToHub = await this._searchFlights(originToHubParams, leg);
 
-      console.log(`HUB FALLBACK (${leg}): trying ${origin} -> ${hub} -> ${destination} | toHub: ${legToHub.length}, fromHub: ${legFromHub.length}`);
+      console.log(`HUB FALLBACK (${leg}): ${origin} -> ${winner.hub} -> ${destination} | toHub: ${legToHub.length}, fromHub: ${winner.results.length}`);
 
-      // The bookable leg is always hub->destination (that's the
-      // real flight/bus we can sell). origin->hub is only included
-      // if it's ALSO genuinely bookable — otherwise it's flagged
-      // as the traveler's own responsibility (e.g. matatu).
+      // The bookable leg is always hub->destination (that's the real
+      // flight/bus we can sell). origin->hub is only included if it's
+      // ALSO genuinely bookable — otherwise it's flagged as the
+      // traveler's own responsibility (e.g. matatu).
       return {
-        results: legFromHub,
-        connectsVia: hub,
+        results: winner.results,
+        connectsVia: winner.hub,
         connectingLegBookable: legToHub.length > 0,
       };
     }
@@ -1379,14 +1623,18 @@ class OrchestrationEngine {
 
     if (supplierAdapter && searchDate) {
       try {
-        const liveFlights = await supplierAdapter.searchTransport({
-          origin:         searchOrigin,
-          destination:    searchDestination,
-          date:           searchDate,
-          passengers:     tripParams.passengers  || 1,
-          transportMode:  'flight',
-          timePreference: tripParams.timePreference,
-        });
+        const liveFlights = await this._withTimeout(
+          supplierAdapter.searchTransport({
+            origin:         searchOrigin,
+            destination:    searchDestination,
+            date:           searchDate,
+            passengers:     tripParams.passengers  || 1,
+            transportMode:  'flight',
+            timePreference: tripParams.timePreference,
+          }),
+          [],
+          `flight ${leg} ${searchOrigin}->${searchDestination}`
+        );
         console.log(`TRAVELDUQA FLIGHTS (${leg}):`, liveFlights.length);
         results.push(...liveFlights);
       } catch (err) {
@@ -1430,14 +1678,18 @@ class OrchestrationEngine {
     if (!supplierAdapter || !searchDate) return [];
 
     try {
-      const buses = await supplierAdapter.searchTransport({
-        origin:        searchOrigin,
-        destination:   searchDestination,
-        date:          searchDate,
-        passengers:    tripParams.passengers,
-        transportMode: 'bus',
-        timePreference: tripParams.timePreference,
-      });
+      const buses = await this._withTimeout(
+        supplierAdapter.searchTransport({
+          origin:        searchOrigin,
+          destination:   searchDestination,
+          date:          searchDate,
+          passengers:    tripParams.passengers,
+          transportMode: 'bus',
+          timePreference: tripParams.timePreference,
+        }),
+        [],
+        `bus ${leg} ${searchOrigin}->${searchDestination}`
+      );
 
       console.log(`IABIRI BUSES (${leg}):`, buses.length);
 
@@ -1535,15 +1787,19 @@ class OrchestrationEngine {
         const nights   = tripParams.nights || 1;
         const checkOut = tripParams.returnDate || this._addDaysStr(checkIn, nights);
 
-        const liveHotels = await supplierAdapter.searchHotels({
-          destination: tripParams.destination,
-          checkIn,
-          checkOut,
-          passengers:  tripParams.passengers || 1,
-          nights,
-          budget:      tripParams.budget,
-          rooms:       1,
-        });
+        const liveHotels = await this._withTimeout(
+          supplierAdapter.searchHotels({
+            destination: tripParams.destination,
+            checkIn,
+            checkOut,
+            passengers:  tripParams.passengers || 1,
+            nights,
+            budget:      tripParams.budget,
+            rooms:       1,
+          }),
+          [],
+          `hotels ${tripParams.destination}`
+        );
 
         console.log("HOTELBEDS HOTELS (engine):", liveHotels.length);
         results.push(...liveHotels);
@@ -1892,57 +2148,74 @@ class OrchestrationEngine {
 
     const startIndex = tripParams.showAlternatives ? 1 : 0;
 
-    for (let i = 0; i < maxItems; i++) {
-      const ob       = hasOutbound  && scope.needsTransport  ? outboundTransport[(i + startIndex) % outboundTransport.length] : null;
-      const ret      = hasReturn    && scope.needsTransport  ? returnTransport[(i  + startIndex) % returnTransport.length]    : null;
-      const hotel    = hasHotels    && scope.needsHotel      ? hotels[(i    + startIndex) % hotels.length]                    : null;
+    // Build every package CONCURRENTLY rather than one at a time. Each
+    // iteration independently does a transfer-rate lookup (Supabase) and
+    // currency conversion (sumToKES) — running them sequentially meant N
+    // packages = N round-trips back-to-back. Order doesn't matter here
+    // since rankPackages re-sorts by score downstream. Skipped slots
+    // (no transport AND no hotel) return null and are filtered out, exactly
+    // mirroring the old `continue`.
+    // NOTE: _buildTransferLegs re-queries the same agency transfer rate on
+    // every package even though that rate is constant across packages in a
+    // single search — a future win is to fetch it once and pass it in, but
+    // that touches the shared _buildTransferLegs signature (also called by
+    // multi-dest), so it's left for a deliberate follow-up rather than this
+    // latency pass.
+    const built = await Promise.all(
+      Array.from({ length: maxItems }, (_, i) => i).map(async (i) => {
+        const ob    = hasOutbound && scope.needsTransport ? outboundTransport[(i + startIndex) % outboundTransport.length] : null;
+        const ret   = hasReturn   && scope.needsTransport ? returnTransport[(i + startIndex) % returnTransport.length]    : null;
+        const hotel = hasHotels   && scope.needsHotel     ? hotels[(i + startIndex) % hotels.length]                      : null;
 
-      if (!ob && !hotel) continue;
+        if (!ob && !hotel) return null;
 
-      const nights = tripParams.nights || 1;
+        const nights = tripParams.nights || 1;
 
-      // Transfer legs depend on which transport mode was actually
-      // selected for THIS package (ob), so they're built per-package
-      // rather than pre-fetched once for the whole search.
-      const transferLegs = scope.needsTransfers
-        ? await this._buildTransferLegs(tripParams, ob)
-        : [];
-      const transferTotal = transferLegs.reduce((sum, leg) => sum + (leg.price || 0), 0);
-      const transferCurrency = transferLegs[0]?.currency || 'KES';
+        // Transfer legs depend on which transport mode was actually
+        // selected for THIS package (ob), so they're built per-package
+        // rather than pre-fetched once for the whole search.
+        const transferLegs = scope.needsTransfers
+          ? await this._buildTransferLegs(tripParams, ob)
+          : [];
+        const transferTotal = transferLegs.reduce((sum, leg) => sum + (leg.price || 0), 0);
+        const transferCurrency = transferLegs[0]?.currency || 'KES';
 
-      const totalPrice = await sumToKES([
-        { amount: ob?.price,                              currency: ob?.currency       || 'KES' },
-        { amount: ret?.price,                             currency: ret?.currency      || 'KES' },
-        { amount: (hotel?.pricePerNight || 0) * nights,    currency: hotel?.currency    || 'KES' },
-        { amount: transferTotal,                           currency: transferCurrency },
-      ]);
+        const totalPrice = await sumToKES([
+          { amount: ob?.price,                              currency: ob?.currency       || 'KES' },
+          { amount: ret?.price,                             currency: ret?.currency      || 'KES' },
+          { amount: (hotel?.pricePerNight || 0) * nights,    currency: hotel?.currency    || 'KES' },
+          { amount: transferTotal,                           currency: transferCurrency },
+        ]);
 
-      packages.push({
-        packageId: uuidv4(),
-        summary: {
-          route:          `${tripParams.origin || 'Anywhere'} to ${tripParams.destination}`,
-          passengers:     tripParams.passengers,
-          nights:         tripParams.nights || 0,
-          totalPrice,
-          pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
-          currency:       CANONICAL_CURRENCY,
-          mealPlan:       tripParams.mealPlan  || hotel?.mealPlan || null,
-          seatPreference: tripParams.seatPreference || null,
-          transportType:  ob?.transportType    || 'none',
-        },
-        transport:       this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination),
-        returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),
-        hotel,
-        transfers: transferLegs,
-        // Connection advisory — only present when the outbound/return
-        // leg required connecting via a regional hub AND that
-        // connecting leg (origin -> hub) has no real supplier
-        // behind it (e.g. Meru -> Nairobi is matatu-only). Never
-        // silently implies Bodrless arranged a leg it didn't.
-        connectionAdvisory: this._buildConnectionAdvisory(tripParams, connectionInfo),
-        status: "available",
-      });
-    }
+        return {
+          packageId: uuidv4(),
+          summary: {
+            route:          `${tripParams.origin || 'Anywhere'} to ${tripParams.destination}`,
+            passengers:     tripParams.passengers,
+            nights:         tripParams.nights || 0,
+            totalPrice,
+            pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+            currency:       CANONICAL_CURRENCY,
+            mealPlan:       tripParams.mealPlan  || hotel?.mealPlan || null,
+            seatPreference: tripParams.seatPreference || null,
+            transportType:  ob?.transportType    || 'none',
+          },
+          transport:       this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination),
+          returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),
+          hotel,
+          transfers: transferLegs,
+          // Connection advisory — only present when the outbound/return
+          // leg required connecting via a regional hub AND that
+          // connecting leg (origin -> hub) has no real supplier
+          // behind it (e.g. Meru -> Nairobi is matatu-only). Never
+          // silently implies Bodrless arranged a leg it didn't.
+          connectionAdvisory: this._buildConnectionAdvisory(tripParams, connectionInfo),
+          status: "available",
+        };
+      })
+    );
+
+    packages.push(...built.filter(Boolean));
 
     return packages;
   }
