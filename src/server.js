@@ -16,7 +16,9 @@ const healthRoutes = require('./routes/health');
 const uploadRoutes = require('./routes/uploads');
 const widgetRoutes = require('./routes/widget');
 const apiV1Routes = require('./routes/api');
+const adminRoutes = require('./routes/admin');
 const { startSweeper } = require('./services/paymentSweeper');
+const tracking = require('./services/trackingService');
 
 const app = express();
 
@@ -62,7 +64,7 @@ app.use('/widget.js', (req, res, next) => {
 
 // ── Public Routes (no auth) ──────────────────────────
 app.use('/api/webhooks', webhookRoutes);
-app.use('/api/webhooks', intasendWebhookRoutes); // adds POST /api/webhooks/intasend
+app.use('/api/webhooks', intasendWebhookRoutes);
 app.use('/health', healthRoutes);
 app.use('/widget.js', widgetRoutes);
 
@@ -71,6 +73,9 @@ app.use('/api/v1', apiV1Routes);
 
 // ── Agency routes (auth handled inside the router) ───
 app.use('/api/agencies', agencyRoutes);
+
+// ── Admin dashboard (protected by BODRLESS_ADMIN_KEY) ─
+app.use('/admin', adminRoutes);
 
 // ── Other Protected Routes ────────────────────────────
 const { authenticateAgency } = require('./middleware/auth');
@@ -119,6 +124,11 @@ app.listen(PORT, '0.0.0.0', () => {
   // Start the payment sweeper — auto-cancels stale unpaid HotelBeds
   // bookings past their payment deadline (the Option C safety net).
   startSweeper();
+
+  // Check every 5 minutes for bookings stuck in awaiting_payment
+  // for more than 30 minutes and write a critical alert.
+  setInterval(() => tracking.checkStuckPayments(), 5 * 60 * 1000);
+  logger.info('Stuck payment checker started (every 5 min)');
 });
 
 // Keep alive — production only

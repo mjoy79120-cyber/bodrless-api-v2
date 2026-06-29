@@ -27,6 +27,7 @@
 
 const axios = require('axios');
 const { logger } = require('../utils/logger');
+const tracking = require('../services/trackingService');
 
 const CITY_CODES = {
   // EAST AFRICA
@@ -218,6 +219,21 @@ async function parsePrompt(prompt) {
       status: error.response?.status,
       providerError: error.response?.data,
       model: process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
+    });
+
+    // Alert when the LLM fails — repeated fallbacks mean the rule
+    // parser is handling real traffic, which is much weaker and was
+    // the root cause of the "deline" bug. Better to know early.
+    tracking.alert({
+      type:     'llm_fallback',
+      severity: error.response?.status === 400 ? 'error' : 'warning',
+      title:    `Groq LLM failed — using rule parser (${error.response?.status || 'timeout'})`,
+      detail:   error.message,
+      context:  {
+        model:         process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
+        status:        error.response?.status,
+        providerError: error.response?.data,
+      },
     });
 
     // Rule-based multi-destination check runs first — if Gemini is
