@@ -21,8 +21,20 @@ class TravelDuqaAdapter {
     this.baseUrl      = 'https://www.app.travelduqa.africa/connect';
     this.token        = process.env.TRAVELDUQA_ACCESS_TOKEN;
     this.version      = process.env.TRAVELDUQA_API_VERSION || 'v1';
-    this.timeout        = 15000;
-    this.searchTimeout  = 30000;
+    // Booking/utility calls (selectOffer, book, cancel, getLocations...).
+    // These are user-initiated actions, not the package-search hot path,
+    // so a longer ceiling is fine.
+    this.timeout        = Number(process.env.TRAVELDUQA_TIMEOUT_MS) || 15000;
+    // SEARCH hot path (getOffers). This was 30000 — but the engine can make
+    // up to THREE of these calls back-to-back on a no-direct-route search
+    // (direct -> hub-from -> hub-to), so at 30s each a single fallback could
+    // run ~90s. Capped to 9s so even the worst-case 3-call chain (~27s) stays
+    // under the 30s product budget, and the engine's _withTimeout backstop
+    // (10s) sits just above it. Tune via TRAVELDUQA_SEARCH_TIMEOUT_MS on
+    // Render (no redeploy needed) — raise it if the [TIMING] logs show
+    // TravelDuqa legitimately needs longer and you're losing real results to
+    // "search timed out" warnings; lower it if searches still brush 30s.
+    this.searchTimeout  = Number(process.env.TRAVELDUQA_SEARCH_TIMEOUT_MS) || 9000;
     this.supplier = 'travelduqa';
     this._iataCache = null;
   }
@@ -461,12 +473,36 @@ class TravelDuqaAdapter {
   }
 
   _fuzzyMatch(input, candidates) {
+    const inputLen = (input || '').length;
+
+    // GUARD 1 — too short to fuzzy-match safely. A 1-2 char token sits
+    // within edit distance of dozens of airport names by pure
+    // coincidence. Valid short inputs (real IATA codes like "nbo") are
+    // already handled by exact lookup before fuzzy is ever called, so
+    // anything this short reaching here is noise.
+    if (inputLen < 3) return null;
+
     let best = null;
     let bestDistance = Infinity;
+
     for (const candidate of candidates) {
+      // GUARD 2 — length gap. A genuine typo barely changes a word's
+      // length; a gap of more than 2 means it's a different word, not a
+      // misspelling. Skips most false matches cheaply.
+      if (Math.abs(candidate.length - inputLen) > 2) continue;
+
       const distance = this._levenshtein(input, candidate);
       const maxAllowed = candidate.length <= 5 ? 1 : candidate.length <= 9 ? 2 : 3;
-      if (distance <= maxAllowed && distance < bestDistance) {
+
+      // GUARD 3 — similarity floor. The match must be at least ~75%
+      // similar to the input. This is what rejects loose "within
+      // maxAllowed" matches on junk tokens — e.g. "d like" -> "deline"
+      // is distance 2 on a 6-char input (only ~67% similar) and is now
+      // refused, where a real typo like "mombsa" -> "mombasa" (~86%) or
+      // "zanibar" -> "zanzibar" (~88%) still passes cleanly.
+      const similarity = 1 - distance / Math.max(inputLen, candidate.length);
+
+      if (distance <= maxAllowed && similarity >= 0.75 && distance < bestDistance) {
         best = candidate;
         bestDistance = distance;
       }
