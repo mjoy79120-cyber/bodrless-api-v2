@@ -19,6 +19,7 @@ const apiV1Routes = require('./routes/api');
 const adminRoutes = require('./routes/admin');
 const { startSweeper } = require('./services/paymentSweeper');
 const tracking = require('./services/trackingService');
+const insightsEngine = require('./services/insightsEngine');
 
 const app = express();
 
@@ -129,6 +130,16 @@ app.listen(PORT, '0.0.0.0', () => {
   // for more than 30 minutes and write a critical alert.
   setInterval(() => tracking.checkStuckPayments(), 5 * 60 * 1000);
   logger.info('Stuck payment checker started (every 5 min)');
+
+  // Refresh pattern-detection insights every hour (dead-end
+  // destinations, parser struggle, conversion gaps, channel
+  // friction, repeat-no-booking travelers, supplier drift). Read-
+  // only analysis over existing data — never changes live search/
+  // ranking behavior. Also run once on startup so the dashboard
+  // isn't empty for up to an hour after a fresh deploy.
+  insightsEngine.refreshAll().catch(err => logger.error('Initial insights refresh failed', { error: err.message }));
+  setInterval(() => insightsEngine.refreshAll(), 60 * 60 * 1000);
+  logger.info('Insights engine scheduled (hourly, plus on startup)');
 });
 
 // Keep alive — production only

@@ -265,6 +265,38 @@ router.post('/api/alerts/:id/resolve', requireAdminKey, async (req, res) => {
   }
 });
 
+// ── Insights (Tier 1 pattern detection — read-only, pre-computed) ──
+// Reads pre-computed rows from the `insights` table, refreshed
+// hourly by insightsEngine.refreshAll() (see server.js). Never
+// computes patterns live — keeps this endpoint fast regardless of
+// data volume.
+router.get('/api/insights', requireAdminKey, async (req, res) => {
+  try {
+    const { type, agency_id } = req.query;
+    let query = supabase.from('insights').select('*').order('severity', { ascending: false }).order('computed_at', { ascending: false });
+    if (type)       query = query.eq('type', type);
+    if (agency_id)  query = query.eq('agency_id', agency_id);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json({ success: true, insights: data || [] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Manual trigger — useful right after deploy, or to refresh on
+// demand without waiting for the next hourly run.
+router.post('/api/insights/refresh', requireAdminKey, async (req, res) => {
+  try {
+    const insightsEngine = require('../services/insightsEngine');
+    const result = await insightsEngine.refreshAll();
+    res.json({ success: true, result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── WhatsApp overview (Bodrless ops) ─────────────────────────
 // All agencies' WhatsApp numbers, contact counts, and volume in
 // one call — for the ops dashboard WhatsApp section.
@@ -605,6 +637,10 @@ tr:last-child td{border-bottom:none}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
       Alerts <span id="alert-badge" style="display:none;background:#dc2626;color:#fff;font-size:10px;padding:1px 6px;border-radius:10px;margin-left:4px"></span>
     </div>
+    <div class="nav-item" onclick="showSection('insights',this)" id="nav-insights">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9.663 17h4.673M12 3v1m6.364 1.636-.707.707M21 12h-1M4 12H3m3.343-5.657-.707-.707m2.828 9.9a5 5 0 1 1 6.364 0M9.5 17a3.5 3.5 0 0 0 5 0"/></svg>
+      Insights
+    </div>
   </nav>
   <div id="sidebar-foot">
     <div class="live-pill"><span class="live-dot"></span> Live</div>
@@ -666,6 +702,17 @@ tr:last-child td{border-bottom:none}
       <div id="alerts-body"><div class="loading">Loading...</div></div>
     </div>
 
+    <!-- INSIGHTS -->
+    <div id="section-insights" class="section">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <p style="font-size:12px;color:var(--muted);max-width:560px">
+          Patterns detected from your real search and booking data — refreshed hourly. Nothing here changes live search behavior automatically; these are observations for you to act on.
+        </p>
+        <button class="refresh-btn" onclick="refreshInsights()" id="insights-refresh-btn">Refresh now</button>
+      </div>
+      <div id="insights-body"><div class="loading">Loading...</div></div>
+    </div>
+
   </div>
 </div>
 
@@ -708,10 +755,11 @@ function showSection(id, el){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   document.getElementById('section-'+id).classList.add('active');
   if(el) el.classList.add('active');
-  const titles={overview:'Overview',agencies:'Agencies',bookings:'Bookings',destinations:'Destinations',live:'Live activity',conversations:'Conversations',alerts:'Alerts'};
+  const titles={overview:'Overview',agencies:'Agencies',bookings:'Bookings',destinations:'Destinations',live:'Live activity',conversations:'Conversations',alerts:'Alerts',insights:'Insights'};
   document.getElementById('page-title').textContent = titles[id]||id;
   if(id==='conversations') loadConversations();
   else if(id==='alerts') loadAlerts();
+  else if(id==='insights') loadInsights();
   else if(DATA) renderSection(id);
 }
 
@@ -1172,6 +1220,80 @@ async function resolveAlert(id, btn){
     if(j.success) loadAlerts();
     else { btn.disabled=false; btn.textContent='Resolve'; alert('Failed: '+j.error); }
   } catch(e){ btn.disabled=false; btn.textContent='Resolve'; }
+}
+
+async function loadInsights(){
+  const el = document.getElementById('insights-body');
+  el.innerHTML = '<div class="loading">Loading insights...</div>';
+  try {
+    const r = await fetch('/admin/api/insights?key='+encodeURIComponent(ADMIN_KEY));
+    const j = await r.json();
+    if(!j.success) throw new Error(j.error);
+    renderInsights(j.insights);
+  } catch(e){
+    el.innerHTML = '<div class="err">'+e.message+'</div>';
+  }
+}
+
+async function refreshInsights(){
+  const btn = document.getElementById('insights-refresh-btn');
+  btn.disabled = true; btn.textContent = 'Refreshing...';
+  try {
+    const r = await fetch('/admin/api/insights/refresh?key='+encodeURIComponent(ADMIN_KEY), { method:'POST' });
+    const j = await r.json();
+    if(!j.success) throw new Error(j.error);
+    await loadInsights();
+  } catch(e){
+    alert('Refresh failed: '+e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Refresh now';
+  }
+}
+
+const INSIGHT_TYPE_LABELS = {
+  dead_end_destination: 'Dead-end destination',
+  parser_struggle:      'Parser struggle',
+  conversion_gap:       'Conversion gap',
+  channel_friction:     'Channel friction',
+  repeat_no_booking:    'Repeat, no booking',
+  supplier_drift:       'Supplier drift',
+};
+
+function renderInsights(insights){
+  const el = document.getElementById('insights-body');
+  if(!insights || !insights.length){
+    el.innerHTML = '<div class="card"><div class="empty">No patterns detected yet — insights need real search/booking volume to find anything meaningful. Check back as traffic grows, or click "Refresh now" if you just deployed this.</div></div>';
+    return;
+  }
+
+  const severityColor = { info:'#2563eb', notable:'#d97706', high:'#dc2626' };
+  const severityBg     = { info:'#dbeafe', notable:'#fef9c3', high:'#fee2e2' };
+
+  const byType = {};
+  for (const i of insights) {
+    if (!byType[i.type]) byType[i.type] = [];
+    byType[i.type].push(i);
+  }
+
+  el.innerHTML = Object.entries(byType).map(([type, items]) => \`
+    <div style="margin-bottom:20px">
+      <div class="section-label" style="margin-top:0">\${INSIGHT_TYPE_LABELS[type] || type}</div>
+      \${items.map(i => \`
+        <div class="card" style="margin-bottom:10px;border-left:3px solid \${severityColor[i.severity]||'#94a3b8'}">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                <span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:4px;background:\${severityBg[i.severity]};color:\${severityColor[i.severity]}">\${(i.severity||'info').toUpperCase()}</span>
+                \${i.agency_id ? '<span style="font-size:11px;color:var(--muted)">'+i.agency_id+'</span>' : '<span style="font-size:11px;color:var(--muted)">platform-wide</span>'}
+              </div>
+              <div style="font-size:13px;font-weight:500;margin-bottom:4px">\${i.title}</div>
+              \${i.detail ? '<div style="font-size:12px;color:var(--muted);line-height:1.5">'+i.detail+'</div>' : ''}
+            </div>
+          </div>
+        </div>
+      \`).join('')}
+    </div>
+  \`).join('');
 }
 </script>
 </body>
