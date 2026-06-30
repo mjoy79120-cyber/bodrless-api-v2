@@ -141,11 +141,26 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // REFETCH RATE — re-price one hotel at a corrected occupancy
-  // Used by the booking flow when a child's true age (from DOB) differs
-  // from what was searched. Returns the cheapest refundable rate for the
-  // exact hotel at the corrected occupancy: { rateKey, pricePerNight,
-  // totalRate, currency } or null if nothing comes back.
+  // REFETCH RATE — re-price one hotel ONLY when the traveler's real
+  // DOB (collected at booking time) contradicts the child age they
+  // stated upfront (collected at search time, before the FIRST
+  // Availability call — see engine.js's _needsChildAgeClarification,
+  // which asks for child ages before any search runs). This is NOT a
+  // routine double-search: the normal flow is exactly one Availability
+  // call (correct ages stated upfront) -> Booking. This path only
+  // fires on a genuine data discrepancy — the traveler gave an age
+  // estimate at search time, then a precise DOB at booking time that
+  // implies a different age — which is a data-integrity correction,
+  // not a workflow choice.
+  //
+  // CERTIFICATION NOTE (HotelBeds workflow rule 2.1/2.2): the literal
+  // call sequence in this rare case is still Availability -> Availability
+  // (re-fetch) -> Booking, which the checklist flags as a pattern to
+  // avoid in the general case. Raise this specific, conditional
+  // exception directly with HotelBeds (apitude@hotelbeds.com) during
+  // certification — explain it only triggers on a genuine traveler-
+  // provided DOB/age mismatch, not as a normal part of every booking —
+  // rather than assuming it's automatically acceptable.
   // ─────────────────────────────────────────────
   async refetchRate({ hotelCode, checkIn, checkOut, nights = 1, adults = 1, children = 0, childAges = [], rooms = 1 }) {
     if (!hotelCode) return null;
@@ -242,10 +257,17 @@ class HotelBedsAdapter {
 
       console.log('HOTELBEDS BOOK REQUEST:', JSON.stringify(payload, null, 2));
 
+      // FIX (HotelBeds certification checklist 3.11): "Does your system
+      // has the proper Booking Confirmation Response Timeout been set?
+      // Please notice that the Timeout for the Booking Confirmation
+      // Response should be set at a minimum of 60 seconds." This was
+      // 30000ms (30s) — below the required minimum — and is explicitly
+      // one of the items HotelBeds checks during certification, not
+      // just a performance tuning choice.
       const response = await axios.post(
         `${this.baseUrl}/hotel-api/1.0/bookings`,
         payload,
-        { headers: this._headers(), timeout: 30000 }
+        { headers: this._headers(), timeout: 60000 }
       );
 
       console.log('HOTELBEDS BOOK RESPONSE:', JSON.stringify(response.data, null, 2));
