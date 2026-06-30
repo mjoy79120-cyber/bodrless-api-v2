@@ -6,6 +6,7 @@ const { rankPackages } = require("./packageRanker");
 const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
 const destinationIntel = require("../services/destinationIntel");
 const tracking = require("../services/trackingService");
+const travelerIntelligence = require("../services/travelerIntelligence");
 
 // Supplier adapter layer — all external suppliers go through here
 let supplierAdapter = null;
@@ -95,7 +96,7 @@ class OrchestrationEngine {
       // destination search.
       // ─────────────────────────────
       if (previousParams?._awaitingClarification) {
-        return await this._resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, context.channel);
+        return await this._resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, context.channel, context.phone);
       }
 
       const intent = this._detectIntent(prompt, previousParams);
@@ -118,7 +119,7 @@ class OrchestrationEngine {
       // Multi-destination classification, single-destination search,
       // clarification-question handling — all shared with
       // _resumeClarification's re-entry path. See _continueOrchestration.
-      return await this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, context.channel);
+      return await this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, context.channel, context.phone);
 
     } catch (error) {
       // NEVER dead-end the traveler. Whatever went wrong — a parser
@@ -254,7 +255,29 @@ class OrchestrationEngine {
     });
     console.log(`[TIMING] single-dest package build (${tripParams.destination}): ${Date.now() - _tBuild}ms`);
 
-    const rankedPackages = rankPackages(packages, tripParams).slice(0, 4);
+    // ─────────────────────────────────────────────
+    // TRAVELER INTELLIGENCE
+    // Derives a per-prompt traveler profile (budget sensitivity,
+    // refund sensitivity, time-criticality, transfer tolerance, etc.)
+    // purely from the prompt text + already-parsed tripParams — no
+    // LLM call, no cross-request learning, fully deterministic. The
+    // resulting profile feeds packageRanker as an ADDITIVE bonus on
+    // top of the existing fixed-budget scoring (budget fit/hotel/
+    // transport/transfers) — it can nudge ranking toward what this
+    // traveler seems to actually want, but can never override or
+    // distort the core scoring categories already tuned earlier.
+    // Wrapped defensively: a bug here must never break a real search,
+    // it should just silently fall back to profile-less ranking
+    // (which is exactly today's current behavior).
+    // ─────────────────────────────────────────────
+    let travelerProfile = null;
+    try {
+      travelerProfile = travelerIntelligence.analyze(tripParams, prompt);
+    } catch (err) {
+      logger.warn('TravelerIntelligence.analyze failed — ranking without a profile', { error: err.message });
+    }
+
+    const rankedPackages = rankPackages(packages, tripParams, travelerProfile).slice(0, 4);
 
     const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
 
@@ -932,7 +955,7 @@ class OrchestrationEngine {
   // (empty, or matches no reasonable pattern), we fall back to
   // asking again rather than guessing.
   // ─────────────────────────────
-  async _resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, channel) {
+  async _resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, channel, phone = null) {
     const marker = previousParams._awaitingClarification;
     const answer = String(prompt || '').trim().toLowerCase();
 
@@ -970,7 +993,7 @@ class OrchestrationEngine {
       delete tripParams._awaitingClarification;
       tripParams.destination = cleanedDest;
       console.log("RESUMED CLARIFICATION (destination) — completed params:", tripParams);
-      return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel);
+      return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
     }
 
     // ── CHILD AGE answer ─────────────────────────────────────
@@ -1000,7 +1023,7 @@ class OrchestrationEngine {
       }
 
       console.log("RESUMED CLARIFICATION (child_age) — completed params:", tripParams);
-      return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel);
+      return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
     }
 
     // Strip the same conversational filler _extractName guards
@@ -1035,7 +1058,7 @@ class OrchestrationEngine {
     // if this had been a fresh, fully-specified prompt — reuses every
     // existing code path (multi-dest classification, single-dest
     // search) rather than duplicating logic here.
-    return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel);
+    return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
   }
 
   // ─────────────────────────────
@@ -1053,7 +1076,7 @@ class OrchestrationEngine {
   // from a one-word clarification answer, so it passes a neutral
   // default — see _resumeClarification).
   // ─────────────────────────────
-  async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel) {
+  async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone = null) {
     tripParams.agencyId = agencyId;
 
     if (tripParams.isMultiDestination) {
@@ -1268,7 +1291,7 @@ class OrchestrationEngine {
       sessionId,
       agencyId,
       channel:            channel || 'widget',
-      phone:              context?.phone || null,
+      phone:              phone || null,
       userMessage:        prompt,
       engineResponse:     singleResult.text,
       packagesCount:      singleResult.packages.length,
