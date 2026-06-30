@@ -1283,6 +1283,7 @@ class OrchestrationEngine {
       prompt,
       tripParams,
       packagesReturned: singleResult.packages.length,
+      packages:         singleResult.packages,
       channel: channel || 'widget',
     }).catch(err => logger.error('Failed to log search', { error: err.message }));
 
@@ -1329,22 +1330,75 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // LOG SEARCH TO SUPABASE
   // ─────────────────────────────
-  async _logSearch({ sessionId, agencyId, prompt, tripParams, packagesReturned, channel }) {
+  async _logSearch({ sessionId, agencyId, prompt, tripParams, packagesReturned, packages = [], channel }) {
     try {
+      // ── Preferred provider tracking ───────────────────
+      // preferredTransportProvider is parsed live and used for
+      // matching during the search, but never persisted until now.
+      // We write it here — alongside mode and a fulfillment flag —
+      // so the admin dashboard can show "top requested providers"
+      // split by mode (flights/buses/trains), with requested vs
+      // actually-fulfilled counts side by side. That split surfaces
+      // real supplier gaps: a provider requested 20x but fulfilled
+      // only 3x is a clear inventory problem worth acting on.
+      const preferredProvider = tripParams.preferredTransportProvider
+        ? tripParams.preferredTransportProvider.toLowerCase().trim()
+        : null;
+
+      // Derive transport mode from the parsed trip. outboundTransportMode
+      // is the explicit mode if the traveler said "bus" or "flight";
+      // otherwise we infer from IATA codes (has IATA codes = flight-likely).
+      // Stored as 'flight'/'bus'/'train'/null — matches the migration CHECK
+      // constraint exactly so Supabase doesn't reject the row.
+      let preferredMode = null;
+      if (preferredProvider) {
+        if (tripParams.outboundTransportMode) {
+          preferredMode = tripParams.outboundTransportMode; // 'flight'/'bus'/'train'
+        } else if (tripParams.requiresFlight) {
+          preferredMode = 'flight';
+        } else if (tripParams.requiresBus) {
+          preferredMode = 'bus';
+        }
+      }
+
+      // Fulfillment: did the named provider actually appear in the
+      // packages we returned? Checks airline name + airlineCode on
+      // transport (Duffel/TravelDuqa shape) — case-insensitive,
+      // partial-match tolerant so "Emirates" matches "Emirates
+      // Airlines" without needing an exact string. null when no
+      // provider was requested (not false — false would mean "was
+      // requested but not fulfilled", null means "n/a").
+      let preferredFulfilled = null;
+      if (preferredProvider && packages.length > 0) {
+        const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const target = normalize(preferredProvider);
+        preferredFulfilled = packages.some(pkg => {
+          const t = pkg.transport;
+          if (!t) return false;
+          return normalize(t.airline || '').includes(target) ||
+                 target.includes(normalize(t.airline || '')) ||
+                 normalize(t.airlineCode || '').includes(target) ||
+                 normalize(t.provider || '').includes(target);
+        });
+      }
+
       await supabase.from('trip_searches').insert({
-        id:                uuidv4(),
-        agency_id:         agencyId,
-        session_id:        sessionId,
-        prompt:            prompt,
-        destination:       tripParams.destination || null,
-        origin:            tripParams.origin      || null,
-        passengers:        tripParams.passengers  || 1,
-        budget:            tripParams.budget      || null,
-        nights:            tripParams.nights      || null,
-        packages_returned: packagesReturned,
-        channel:           channel,
-        converted:         false,
-        created_at:        new Date().toISOString(),
+        id:                           uuidv4(),
+        agency_id:                    agencyId,
+        session_id:                   sessionId,
+        prompt:                       prompt,
+        destination:                  tripParams.destination || null,
+        origin:                       tripParams.origin      || null,
+        passengers:                   tripParams.passengers  || 1,
+        budget:                       tripParams.budget      || null,
+        nights:                       tripParams.nights      || null,
+        packages_returned:            packagesReturned,
+        channel:                      channel,
+        converted:                    false,
+        preferred_transport_provider: preferredProvider,
+        preferred_transport_mode:     preferredMode,
+        preferred_fulfilled:          preferredFulfilled,
+        created_at:                   new Date().toISOString(),
       });
     } catch (err) {
       logger.error('trip_searches insert failed', { error: err.message });

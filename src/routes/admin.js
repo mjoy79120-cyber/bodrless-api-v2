@@ -270,6 +270,58 @@ router.post('/api/alerts/:id/resolve', requireAdminKey, async (req, res) => {
 // hourly by insightsEngine.refreshAll() (see server.js). Never
 // computes patterns live — keeps this endpoint fast regardless of
 // data volume.
+// ── Top preferred transport providers ────────────────────────
+// Aggregates preferred_transport_provider from trip_searches,
+// split by mode (flight/bus/train), showing requested vs
+// fulfilled counts. Only rows where preferred_transport_provider
+// IS NOT NULL are included — this is a "named preference" table,
+// not a general transport stats table.
+router.get('/api/providers', requireAdminKey, async (req, res) => {
+  try {
+    const since = new Date();
+    since.setDate(since.getDate() - 30);
+
+    const { data, error } = await supabase
+      .from('trip_searches')
+      .select('preferred_transport_provider, preferred_transport_mode, preferred_fulfilled, agency_id, created_at')
+      .not('preferred_transport_provider', 'is', null)
+      .gte('created_at', since.toISOString());
+
+    if (error) throw error;
+    const rows = data || [];
+
+    // Group by mode then provider name, counting requested vs fulfilled
+    const byMode = { flight: {}, bus: {}, train: {}, other: {} };
+    for (const r of rows) {
+      const mode   = r.preferred_transport_mode || 'other';
+      const bucket = byMode[mode] || (byMode[mode] = {});
+      const name   = r.preferred_transport_provider;
+      if (!bucket[name]) bucket[name] = { name, requested: 0, fulfilled: 0 };
+      bucket[name].requested++;
+      if (r.preferred_fulfilled === true) bucket[name].fulfilled++;
+    }
+
+    const toList = (bucket) =>
+      Object.values(bucket)
+        .sort((a, b) => b.requested - a.requested)
+        .slice(0, 10);
+
+    res.json({
+      success: true,
+      providers: {
+        flight: toList(byMode.flight),
+        bus:    toList(byMode.bus),
+        train:  toList(byMode.train),
+        other:  toList(byMode.other),
+      },
+      totalWithPreference: rows.length,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.get('/api/insights', requireAdminKey, async (req, res) => {
   try {
     const { type, agency_id } = req.query;
@@ -641,6 +693,10 @@ tr:last-child td{border-bottom:none}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9.663 17h4.673M12 3v1m6.364 1.636-.707.707M21 12h-1M4 12H3m3.343-5.657-.707-.707m2.828 9.9a5 5 0 1 1 6.364 0M9.5 17a3.5 3.5 0 0 0 5 0"/></svg>
       Insights
     </div>
+    <div class="nav-item" onclick="showSection('providers',this)" id="nav-providers">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      Providers
+    </div>
   </nav>
   <div id="sidebar-foot">
     <div class="live-pill"><span class="live-dot"></span> Live</div>
@@ -713,6 +769,14 @@ tr:last-child td{border-bottom:none}
       <div id="insights-body"><div class="loading">Loading...</div></div>
     </div>
 
+    <!-- PROVIDERS -->
+    <div id="section-providers" class="section">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:16px;max-width:560px">
+        Airlines, bus companies, and train operators travelers have named in their prompts — last 30 days. Requested = every time a client named this provider. Fulfilled = it actually appeared in the returned packages.
+      </p>
+      <div id="providers-body"><div class="loading">Loading...</div></div>
+    </div>
+
   </div>
 </div>
 
@@ -755,11 +819,12 @@ function showSection(id, el){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   document.getElementById('section-'+id).classList.add('active');
   if(el) el.classList.add('active');
-  const titles={overview:'Overview',agencies:'Agencies',bookings:'Bookings',destinations:'Destinations',live:'Live activity',conversations:'Conversations',alerts:'Alerts',insights:'Insights'};
+  const titles={overview:'Overview',agencies:'Agencies',bookings:'Bookings',destinations:'Destinations',live:'Live activity',conversations:'Conversations',alerts:'Alerts',insights:'Insights',providers:'Top Providers'};
   document.getElementById('page-title').textContent = titles[id]||id;
   if(id==='conversations') loadConversations();
   else if(id==='alerts') loadAlerts();
   else if(id==='insights') loadInsights();
+  else if(id==='providers') loadProviders();
   else if(DATA) renderSection(id);
 }
 
@@ -1294,6 +1359,63 @@ function renderInsights(insights){
       \`).join('')}
     </div>
   \`).join('');
+}
+
+async function loadProviders(){
+  const el = document.getElementById('providers-body');
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const r = await fetch('/admin/api/providers?key='+encodeURIComponent(ADMIN_KEY));
+    const j = await r.json();
+    if(!j.success) throw new Error(j.error);
+    renderProviders(j.providers, j.totalWithPreference);
+  } catch(e){
+    el.innerHTML = '<div class="err">'+e.message+'</div>';
+  }
+}
+
+function renderProviders(providers, total){
+  const el = document.getElementById('providers-body');
+  const modes = [
+    { key:'flight', label:'Airlines', color:'#2563eb', icon:'✈' },
+    { key:'bus',    label:'Bus companies', color:'#16a34a', icon:'🚌' },
+    { key:'train',  label:'Train operators', color:'#d97706', icon:'🚆' },
+  ];
+
+  const hasAny = modes.some(m => (providers[m.key]||[]).length > 0);
+  if(!hasAny){
+    el.innerHTML = '<div class="card"><div class="empty">No named provider preferences recorded yet — this panel fills in as travelers mention specific airlines, bus companies, or train operators in their prompts (e.g. "fly Emirates" or "take Modern Coast"). Last 30 days.</div></div>';
+    return;
+  }
+
+  el.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">'+total+' searches with a named provider preference in the last 30 days</div>' +
+    modes.map(m => {
+      const list = providers[m.key] || [];
+      if(!list.length) return '';
+      const maxReq = list[0].requested || 1;
+      return '<div class="card" style="margin-bottom:14px">' +
+        '<div class="section-label" style="margin-top:0;color:'+m.color+'">' + m.icon + ' ' + m.label + '</div>' +
+        list.map(p => {
+          const reqPct  = Math.round((p.requested / maxReq) * 100);
+          const fulPct  = Math.round((p.fulfilled / maxReq) * 100);
+          const fulRate = p.requested > 0 ? Math.round((p.fulfilled / p.requested) * 100) : 0;
+          return '<div style="margin-bottom:12px">' +
+            '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">' +
+              '<span style="font-weight:500">'+p.name+'</span>' +
+              '<span style="color:var(--muted)">'+p.fulfilled+'/'+p.requested+' fulfilled ('+fulRate+'%)</span>' +
+            '</div>' +
+            '<div style="height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;position:relative;margin-bottom:2px">' +
+              '<div style="height:100%;width:'+reqPct+'%;background:'+m.color+'33;border-radius:3px;position:absolute"></div>' +
+              '<div style="height:100%;width:'+fulPct+'%;background:'+m.color+';border-radius:3px;position:absolute"></div>' +
+            '</div>' +
+            '<div style="display:flex;gap:12px;font-size:10px;color:var(--muted)">' +
+              '<span>■ Requested: '+p.requested+'</span>' +
+              '<span style="opacity:0.6">■ Fulfilled: '+p.fulfilled+'</span>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    }).join('');
 }
 </script>
 </body>
