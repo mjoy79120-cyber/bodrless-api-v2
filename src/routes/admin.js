@@ -265,6 +265,137 @@ router.post('/api/alerts/:id/resolve', requireAdminKey, async (req, res) => {
   }
 });
 
+// ── WhatsApp overview (Bodrless ops) ─────────────────────────
+// All agencies' WhatsApp numbers, contact counts, and volume in
+// one call — for the ops dashboard WhatsApp section.
+router.get('/api/whatsapp/overview', requireAdminKey, async (req, res) => {
+  try {
+    const [
+      { data: agencies },
+      { data: contacts },
+      { data: searches },
+      { data: bookings },
+      { data: sessions },
+      { data: widgetSearches },
+      { data: widgetBookings },
+    ] = await Promise.all([
+      supabase.from('agencies').select('id,name,whatsapp_number,whatsapp_phone_number_id,widget_key,ops_whatsapp_number'),
+      supabase.from('whatsapp_contacts').select('phone,name,first_seen_at,updated_at').order('updated_at', { ascending: false }).limit(500),
+      supabase.from('trip_searches').select('agency_id,converted,created_at').eq('channel', 'whatsapp'),
+      supabase.from('bookings').select('agency_id,total_price,currency,booking_stage,payment_status,created_at').eq('channel', 'whatsapp'),
+      supabase.from('whatsapp_booking_sessions').select('phone,agency_id,current_step,created_at'),
+      // Widget channel — fetched alongside WhatsApp so this endpoint
+      // answers "which channel is this agency actually using" in one
+      // call. Important for agencies that only embedded the widget
+      // and never connected WhatsApp at all.
+      supabase.from('trip_searches').select('agency_id,converted,created_at').eq('channel', 'widget'),
+      supabase.from('bookings').select('agency_id,total_price,currency,booking_stage,payment_status,created_at').eq('channel', 'widget'),
+    ]);
+
+    const allAgencies  = agencies  || [];
+    const allContacts  = contacts  || [];
+    const allSearches  = searches  || [];
+    const allBookings  = bookings  || [];
+    const allSessions  = sessions  || [];
+    const allWidgetSearches = widgetSearches || [];
+    const allWidgetBookings = widgetBookings || [];
+
+    const toKES = (price, currency) => {
+      const cur = (currency || 'USD').toUpperCase();
+      return cur === 'KES' ? price : cur === 'EUR' ? price * 130 : price * 129;
+    };
+
+    // Per-agency stats, BOTH channels
+    const agencyStats = allAgencies.map(a => {
+      const agSearches  = allSearches.filter(s => s.agency_id === a.id);
+      const agBookings  = allBookings.filter(b => b.agency_id === a.id);
+      const agSessions  = allSessions.filter(s => s.agency_id === a.id);
+      const confirmed   = agBookings.filter(b => b.payment_status === 'paid' || b.booking_stage === 'paid');
+      const gmv         = confirmed.reduce((sum, b) => sum + toKES(Number(b.total_price || 0), b.currency), 0);
+
+      const agWidgetSearches = allWidgetSearches.filter(s => s.agency_id === a.id);
+      const agWidgetBookings = allWidgetBookings.filter(b => b.agency_id === a.id);
+      const widgetConfirmed  = agWidgetBookings.filter(b => b.payment_status === 'paid' || b.booking_stage === 'paid');
+      const widgetGmv        = widgetConfirmed.reduce((sum, b) => sum + toKES(Number(b.total_price || 0), b.currency), 0);
+
+      const totalChannelSearches = agSearches.length + agWidgetSearches.length;
+
+      return {
+        agencyId:    a.id,
+        agencyName:  a.name,
+        whatsapp: {
+          number:      a.whatsapp_number || null,
+          isConnected: !!a.whatsapp_phone_number_id,
+          searches:    agSearches.length,
+          bookings:    confirmed.length,
+          gmvKES:      Math.round(gmv),
+          activeSessions: agSessions.length,
+          conversion:  agSearches.length > 0 ? Number((confirmed.length / agSearches.length * 100).toFixed(1)) : 0,
+        },
+        widget: {
+          isConfigured: !!a.widget_key,
+          searches:     agWidgetSearches.length,
+          bookings:     widgetConfirmed.length,
+          gmvKES:       Math.round(widgetGmv),
+          conversion:   agWidgetSearches.length > 0 ? Number((widgetConfirmed.length / agWidgetSearches.length * 100).toFixed(1)) : 0,
+        },
+        // Which channel is actually driving this agency's traffic —
+        // the quick-glance answer for "do they need the widget pushed
+        // harder, or is WhatsApp carrying them."
+        primaryChannel: totalChannelSearches === 0
+          ? 'none'
+          : agSearches.length >= agWidgetSearches.length ? 'whatsapp' : 'widget',
+        whatsappShare: totalChannelSearches > 0 ? Number((agSearches.length / totalChannelSearches * 100).toFixed(1)) : 0,
+      };
+    });
+
+
+    // Recent contacts across all agencies (last 24h)
+    const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
+    const recentContacts = allContacts
+      .filter(c => c.updated_at > oneDayAgo)
+      .slice(0, 20);
+
+    // Global totals — both channels
+    const totalConfirmed = allBookings.filter(b => b.payment_status === 'paid' || b.booking_stage === 'paid');
+    const totalGMV = totalConfirmed.reduce((sum, b) => sum + toKES(Number(b.total_price || 0), b.currency), 0);
+
+    const widgetTotalConfirmed = allWidgetBookings.filter(b => b.payment_status === 'paid' || b.booking_stage === 'paid');
+    const widgetTotalGMV = widgetTotalConfirmed.reduce((sum, b) => sum + toKES(Number(b.total_price || 0), b.currency), 0);
+
+    // Ops number (your own number across all agencies)
+    const opsNumber = allAgencies.find(a => a.ops_whatsapp_number)?.ops_whatsapp_number || null;
+
+    res.json({
+      success: true,
+      opsNumber,
+      totals: {
+        // WhatsApp
+        totalContacts:      allContacts.length,
+        activeNow:          allSessions.length,
+        whatsappSearches:   allSearches.length,
+        whatsappBookings:   totalConfirmed.length,
+        whatsappGMVKES:     Math.round(totalGMV),
+        recentContacts24h:  recentContacts.length,
+        // Widget
+        widgetSearches:     allWidgetSearches.length,
+        widgetBookings:     widgetTotalConfirmed.length,
+        widgetGMVKES:       Math.round(widgetTotalGMV),
+        // Combined
+        totalSearches:      allSearches.length + allWidgetSearches.length,
+        totalGMVKES:        Math.round(totalGMV + widgetTotalGMV),
+      },
+      agencyBreakdown:  agencyStats,
+      recentContacts,
+      generatedAt:      new Date().toISOString(),
+    });
+
+  } catch (err) {
+    logger.error('WhatsApp overview failed', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── JSON API endpoint (for programmatic access) ───────────────
 router.get('/api/stats', requireAdminKey, async (req, res) => {
   try {

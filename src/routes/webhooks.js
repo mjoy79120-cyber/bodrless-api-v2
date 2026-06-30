@@ -35,22 +35,10 @@ const whatsappService = require('../services/whatsapp');
 const whatsappBookingFlow = require('../services/whatsappBooking');
 const { logger } = require('../utils/logger');
 
-// In-memory cache of each phone number's most recent search results,
-// so we know what package "1" or "2" refers to when they reply.
-// NOTE: this resets on server restart — fine for short-lived selection
-// windows, but if conversations need to survive restarts, move this to
-// Supabase the same way whatsapp_booking_sessions works.
 const recentPackagesByPhone = new Map();
 
-// Matches a free-text passenger-detail line, e.g. "Name: John Doe" or
-// "DOB: 1990-05-21". Used only to detect a traveler replying with
-// passenger details outside of an active booking session — see Step
-// 2.5 below. Intentionally loose (any single matching line trips it)
-// since a partially-remembered format from an expired session is
-// exactly the case we want to catch.
 const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|phone|email|dob|date of birth)\s*:/im;
 
-// ── GET /api/webhooks/whatsapp ───────────────────────────────
 router.get('/whatsapp', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -64,7 +52,6 @@ router.get('/whatsapp', (req, res) => {
   }
 });
 
-// ── POST /api/webhooks/whatsapp ──────────────────────────────
 router.post('/whatsapp', async (req, res) => {
   res.status(200).send('OK');
 
@@ -91,15 +78,7 @@ router.post('/whatsapp', async (req, res) => {
     const prompt = message.text.body;
     const agencyId = await _resolveAgency(phoneNumberId);
 
-    // ── Step 0: welcome message + name capture ──
-    // First-ever contact from this number -> send the welcome message,
-    // mark them as awaiting a name reply, and stop (this message was
-    // just "hi"/the trigger, not a trip request — nothing to parse).
-    // If they're already awaiting a name, THIS message is their name
-    // reply (or, if it doesn't look like a name at all, we skip the
-    // name step gracefully and let it fall through to normal handling
-    // below rather than blocking trip planning on it).
-    const contact = await _getOrCreateContact(from);
+    const contact = await _getOrCreateContact(from, agencyId);
 
     if (contact.justCreated) {
       await whatsappService.sendText(phoneNumberId, from,
@@ -117,16 +96,12 @@ router.post('/whatsapp', async (req, res) => {
         );
         return;
       }
-      // Didn't look like a name — quietly stop asking and fall through
-      // to normal handling below, so trip planning isn't blocked on it.
       await _clearAwaitingName(from);
     }
 
-    // ── Step 1: is there an active booking conversation for this number? ──
     const handledByBooking = await whatsappBookingFlow.handleMessage({ phoneNumberId, from, text: prompt });
     if (handledByBooking) return;
 
-    // ── Step 2: does this look like a package selection? ──
     const selectionMatch = prompt.trim().match(/^(?:option\s*)?([1-4])$/i);
     if (selectionMatch) {
       const cached = recentPackagesByPhone.get(from);
@@ -138,19 +113,8 @@ router.post('/whatsapp', async (req, res) => {
           return;
         }
       }
-      // No cached packages to select from — fall through to normal orchestration
-      // so something sensible still happens with a bare "1" or "2".
     }
 
-    // ── Step 2.5: passenger-detail safety net ──
-    // Step 1 only catches this if a booking session is already active.
-    // If a traveler free-types passenger details (Name:/ID:/Phone:/DOB:
-    // lines) with NO active session — e.g. the session expired, they
-    // already completed a booking, or they never actually started one —
-    // letting this fall through to orchestrate() below would have it
-    // treated as a fresh trip search prompt, producing corrupted bookings
-    // (parser tries to extract a destination/dates out of passenger text).
-    // Catch it here instead and point them back to search first.
     if (PASSENGER_DETAIL_LINE.test(prompt.trim())) {
       const hasSession = await whatsappBookingFlow.hasActiveSession(from);
       if (!hasSession) {
@@ -161,51 +125,24 @@ router.post('/whatsapp', async (req, res) => {
       }
     }
 
-    // ── Step 3: normal search/orchestration ──
     await whatsappService.sendText(phoneNumberId, from,
       "Got it! Give me a moment while I check the options for you..."
     );
 
-    // FIX: previously called orchestrate(prompt, agencyId, from) —
-    // passing the phone number STRING where engine.js expects a real
-    // context object ({ conversationHistory, previousParams }).
-    // context.conversationHistory/previousParams silently came back
-    // undefined every time (a string has no such properties), so
-    // every WhatsApp message was treated as a brand-new search and
-    // follow-up detection ("cheaper options", "make it 5 nights
-    // instead", etc.) never worked over WhatsApp — same conversation
-    // memory the widget already keeps in browser variables, just
-    // missing on this channel. Loaded from whatsapp_contacts (see
-    // migration 002) since a WhatsApp conversation can span far
-    // longer than a browser tab stays open.
     const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
       conversationHistory: contact.conversation_history || [],
       previousParams: contact.previous_params || null,
       channel: 'whatsapp',
+      phone: from,
     });
 
-    // Persist whatever the engine returned back onto the contact row,
-    // mirroring the widget's "if (data.tripParams) previousParams = ..."
-    // pattern — so the NEXT message from this number has the updated
-    // state available, the same way the widget's browser variables do.
     await _saveConversationState(from, result.conversationHistory, result.tripParams);
 
-    // A multi-destination prompt with an ambiguous leg (no origin
-    // restated, and it doesn't match the previous stop) — engine.js
-    // stops before searching anything and asks instead. No packages,
-    // no booking cache update; the traveler's reply becomes a fresh
-    // prompt that should carry enough info to resolve it.
     if (result.needsClarification) {
       await whatsappService.sendText(phoneNumberId, from, result.text);
       return;
     }
 
-    // Multi-destination prompts that split into independent trips
-    // (e.g. "Nairobi to Zanzibar 4 nights then Nairobi to Kampala 3
-    // nights") come back as tripResults — one labeled block per trip,
-    // sent in the order the traveler stated them. A single continuous
-    // itinerary or a normal single-destination search has no
-    // tripResults and falls through to the original one-block flow.
     if (result.tripResults && result.tripResults.length > 1) {
       const allPackagesInOrder = [];
 
@@ -240,7 +177,6 @@ router.post('/whatsapp', async (req, res) => {
       await whatsappService.sendPackages(phoneNumberId, from, result.packages);
       recentPackagesByPhone.set(from, { packages: result.packages, cachedAt: Date.now() });
 
-      // Let the customer know they can book directly
       await whatsappService.sendText(phoneNumberId, from,
         `Reply with the option number (1-${result.packages.length}) to book that option.`
       );
@@ -251,7 +187,6 @@ router.post('/whatsapp', async (req, res) => {
   }
 });
 
-// ── Helper ───────────────────────────────────────────────────
 async function _resolveAgency(phoneNumberId) {
   try {
     const { data } = await supabase
@@ -268,14 +203,30 @@ async function _resolveAgency(phoneNumberId) {
   return process.env.DEFAULT_AGENCY_ID || 'azaki-adventures';
 }
 
-// ─────────────────────────────────────────────
-// GET OR CREATE WHATSAPP CONTACT
-// Looks up whatsapp_contacts by phone. If no row exists, this is
-// the traveler's first-ever message — insert one with
-// awaiting_name: true and flag justCreated so the caller knows to
-// send the welcome message rather than treat this as a normal reply.
-// ─────────────────────────────────────────────
-async function _getOrCreateContact(phone) {
+/**
+ * GET OR CREATE WHATSAPP CONTACT
+ * Looks up whatsapp_contacts by phone. If no row exists, this is
+ * the traveler's first-ever message — insert one with
+ * awaiting_name: true and flag justCreated so the caller knows to
+ * send the welcome message rather than treat this as a normal reply.
+ *
+ * FIX: now stamps agency_id at creation time, resolved from the
+ * phone_number_id the message arrived on (same resolution
+ * _resolveAgency already does for routing). Previously this column
+ * didn't exist on the table at all, so "which agency does this
+ * contact belong to" had to be inferred downstream from bookings/
+ * sessions — which missed any contact who'd only searched and never
+ * booked. Setting it here, once, at the moment of first contact, is
+ * the single source of truth going forward.
+ *
+ * If a contact somehow already exists with agency_id still NULL
+ * (pre-migration row, or a backfill miss), we opportunistically set
+ * it now rather than leaving it unset forever — cheap and harmless
+ * since a phone number realistically only ever talks to one agency's
+ * WhatsApp number in this architecture (each agency has its own
+ * number/phone_number_id).
+ */
+async function _getOrCreateContact(phone, agencyId) {
   const { data: existing, error: selectError } = await supabase
     .from('whatsapp_contacts')
     .select('*')
@@ -284,21 +235,25 @@ async function _getOrCreateContact(phone) {
 
   if (selectError) {
     logger.error('whatsapp_contacts lookup failed', { error: selectError.message });
-    // Fail open — treat as an existing, name-known contact so a
-    // Supabase hiccup never blocks trip planning behind a welcome
-    // message loop. No conversation memory available this turn, but
-    // that degrades gracefully (same as a brand-new conversation)
-    // rather than crashing.
     return { justCreated: false, awaiting_name: false, name: null, conversation_history: [], previous_params: null };
   }
 
   if (existing) {
+    if (!existing.agency_id && agencyId) {
+      // Opportunistic backfill — don't block the response on this.
+      supabase
+        .from('whatsapp_contacts')
+        .update({ agency_id: agencyId })
+        .eq('phone', phone)
+        .then(() => {})
+        .catch(err => logger.error('whatsapp_contacts agency_id backfill failed', { error: err.message, phone }));
+    }
     return { ...existing, justCreated: false };
   }
 
   const { error: insertError } = await supabase
     .from('whatsapp_contacts')
-    .insert({ phone, name: null, awaiting_name: true });
+    .insert({ phone, name: null, awaiting_name: true, agency_id: agencyId || null });
 
   if (insertError) {
     logger.error('whatsapp_contacts insert failed', { error: insertError.message });
@@ -308,15 +263,6 @@ async function _getOrCreateContact(phone) {
   return { justCreated: true, awaiting_name: true, name: null };
 }
 
-// ─────────────────────────────────────────────
-// EXTRACT NAME FROM REPLY
-// Loose, human-friendly extraction — strips common filler
-// ("it's", "i'm", "call me", "my name is", etc.) and keeps the
-// rest as the name. Returns null if the reply doesn't look like
-// a name at all (too long, looks like a trip prompt, empty after
-// stripping) — callers treat null as "skip the name step, don't
-// block trip planning on it."
-// ─────────────────────────────────────────────
 function _extractName(text) {
   let cleaned = text.trim();
 
@@ -325,25 +271,17 @@ function _extractName(text) {
 
   if (!cleaned) return null;
 
-  // A real name reply is short. Anything long, or containing digits/
-  // trip-prompt signals (to/from/nights/days/budget keywords), is
-  // almost certainly not a name — likely the traveler skipped ahead
-  // straight into describing a trip.
   const looksLikeTripPrompt = /\d|\bto\b|\bfrom\b|\bnight|\bday|\bbudget|\btrip\b|\bbook\b|\bflight|\bhotel/i.test(cleaned);
   if (looksLikeTripPrompt) return null;
   if (cleaned.split(/\s+/).length > 4) return null;
   if (cleaned.length > 40) return null;
 
-  // Title-case each word for a clean greeting (e.g. "rove" -> "Rove").
   return cleaned
     .split(/\s+/)
     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(' ');
 }
 
-// ─────────────────────────────────────────────
-// SAVE CONTACT NAME
-// ─────────────────────────────────────────────
 async function _saveContactName(phone, name) {
   const { error } = await supabase
     .from('whatsapp_contacts')
@@ -355,11 +293,6 @@ async function _saveContactName(phone, name) {
   }
 }
 
-// ─────────────────────────────────────────────
-// CLEAR AWAITING_NAME (without saving a name)
-// Used when the traveler's reply to "what's your name?" didn't
-// look like a name — stop asking, but don't block trip planning.
-// ─────────────────────────────────────────────
 async function _clearAwaitingName(phone) {
   const { error } = await supabase
     .from('whatsapp_contacts')
@@ -371,18 +304,6 @@ async function _clearAwaitingName(phone) {
   }
 }
 
-// ─────────────────────────────────────────────
-// SAVE CONVERSATION STATE
-// Persists conversationHistory/tripParams returned by orchestrate()
-// back onto the contact row, so the NEXT message from this phone
-// number has them available — the server-side equivalent of the
-// widget overwriting its browser-memory variables after each
-// response (see widget.js's "if (data.tripParams) previousParams =
-// ..." pattern). Best-effort: a failure here shouldn't crash the
-// current response, since the traveler already got their answer —
-// it just means follow-up detection won't have memory on their
-// NEXT message, same as if this were their first message ever.
-// ─────────────────────────────────────────────
 async function _saveConversationState(phone, conversationHistory, tripParams) {
   const { error } = await supabase
     .from('whatsapp_contacts')
