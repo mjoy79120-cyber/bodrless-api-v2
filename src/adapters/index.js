@@ -19,6 +19,7 @@
 
 const travlerAdapter    = require('./travler');
 const travelduqaAdapter = require('./travelduqa');
+const duffelAdapter     = require('./duffel');
 const hotelbedsAdapter  = require('./hotelbeds');
 
 class SupplierAdapterLayer {
@@ -28,13 +29,26 @@ class SupplierAdapterLayer {
       travler:    travlerAdapter,
       iabiri:     travlerAdapter,    // alias — same adapter
       travelduqa: travelduqaAdapter,
+      duffel:     duffelAdapter,
       hotelbeds:  hotelbedsAdapter,
     };
   }
 
   // ─────────────────────────────────────────────
   // SEARCH TRANSPORT
-  // Buses → IABIRI | Flights → TravelDuqa
+  // Buses → IABIRI | Flights → TravelDuqa + Duffel, IN PARALLEL
+  //
+  // TravelDuqa and Duffel are both genuine flight suppliers run
+  // side by side, not primary/fallback — TravelDuqa's sandbox is
+  // missing inventory on some routes/airlines that Duffel covers,
+  // and vice versa is possible too. Both run concurrently via
+  // Promise.allSettled (not sequential awaits) so the total search
+  // latency is bounded by the SLOWER of the two, not their sum —
+  // same reasoning as every other parallelization done this session.
+  // allSettled (not Promise.all) means one supplier's hard failure
+  // can never take down the other's results — exactly the same
+  // "one bad supplier shouldn't break the search" contract the bus
+  // branch below already had.
   // ─────────────────────────────────────────────
   async searchTransport({ origin, destination, date, passengers, transportMode, timePreference }) {
     const results = [];
@@ -51,13 +65,22 @@ class SupplierAdapterLayer {
     }
 
     if (!transportMode || transportMode === 'flight') {
-      try {
-        const flightResults = await this.adapters.travelduqa.search({
-          origin, destination, date, passengers, timePreference,
-        });
-        results.push(...flightResults);
-      } catch (err) {
-        console.error('TravelDuqa adapter error:', err.message);
+      const [travelduqaResult, duffelResult] = await Promise.allSettled([
+        this.adapters.travelduqa.search({ origin, destination, date, passengers, timePreference }),
+        this.adapters.duffel.search({ origin, destination, date, passengers, timePreference }),
+      ]);
+
+      if (travelduqaResult.status === 'fulfilled') {
+        results.push(...travelduqaResult.value);
+      } else {
+        console.error('TravelDuqa adapter error:', travelduqaResult.reason?.message);
+      }
+
+      if (duffelResult.status === 'fulfilled') {
+        results.push(...duffelResult.value);
+        console.log(`DUFFEL: ${duffelResult.value.length} flights added alongside TravelDuqa's ${travelduqaResult.status === 'fulfilled' ? travelduqaResult.value.length : 0}`);
+      } else {
+        console.error('Duffel adapter error:', duffelResult.reason?.message);
       }
     }
 
@@ -136,12 +159,29 @@ class SupplierAdapterLayer {
   }
 
   // ─────────────────────────────────────────────
-  // SELECT OFFER (flights — TravelDuqa)
+  // SELECT OFFER (flights — TravelDuqa's hold-booking model)
   // ─────────────────────────────────────────────
   async selectOffer({ supplier, resultId, offerId }) {
     const adapter = this.adapters[supplier || 'travelduqa'];
     if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
     return adapter.selectOffer({ resultId, offerId });
+  }
+
+  // ─────────────────────────────────────────────
+  // GET OFFER (flights — Duffel's re-verify-before-booking step)
+  // Duffel has no TravelDuqa-style "hold" — instead, per Duffel's
+  // own docs, you must re-fetch the offer right before booking to
+  // get current pricing, since search-time prices aren't guaranteed.
+  // Call this where the booking flow would otherwise call
+  // selectOffer() for a TravelDuqa offer.
+  // ─────────────────────────────────────────────
+  async getOffer({ supplier, offerId }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    if (typeof adapter.getOffer !== 'function') {
+      throw new Error(`${supplier} adapter does not support getOffer`);
+    }
+    return adapter.getOffer(offerId);
   }
 
   // ─────────────────────────────────────────────
@@ -160,6 +200,22 @@ class SupplierAdapterLayer {
         currency:    params.currency || 'KES',
         paymentType: params.paymentType || 'balance',
         sendEticket: params.sendEticket !== false,
+      });
+    }
+
+    if (supplier === 'duffel') {
+      // Duffel passengers must be matched to the offer's own
+      // passenger IDs (duffelPassengerId, captured at search time —
+      // see duffel.js's _normalizeOffers -> duffelPassengerIds).
+      // Without this match Duffel's API rejects the order, since it
+      // has no other way to know which passenger record maps to
+      // which seat/fare on the offer.
+      return adapter.book({
+        offerId:        params.offerId,
+        offerRequestId: params.offerRequestId,
+        passengers:     params.passengerDetails || params.passengers,
+        totalAmount:    params.totalAmount,
+        totalCurrency:  params.currency || params.totalCurrency || 'KES',
       });
     }
 
@@ -224,6 +280,7 @@ class SupplierAdapterLayer {
     const adapter = this.adapters[supplier];
     if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
     if (supplier === 'travelduqa') return adapter.cancel(orderId || bookingRef);
+    if (supplier === 'duffel')     return adapter.cancel(orderId || bookingRef);
     if (supplier === 'hotelbeds')  return adapter.cancel(bookingRef);
     return adapter.cancel(bookingRef);
   }
