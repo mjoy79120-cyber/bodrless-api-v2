@@ -255,24 +255,101 @@ class DuffelAdapter {
 
   // ─────────────────────────────────────────────
   // IATA RESOLUTION
-  // Unlike TravelDuqa, Duffel doesn't require a separate locations
-  // API call — it accepts IATA codes (airport or city) directly in
-  // the slice. Bodrless already resolves city names to IATA codes
-  // upstream (promptParser's CITY_CODES / destinationIntel), so this
-  // is a thin pass-through + sanity check, not a real resolution
-  // step. Kept as its own method (rather than inlined) so a real
-  // lookup can be added later without touching search()'s shape.
+  // FIX: previously only accepted a literal 3-letter code and
+  // rejected everything else — but Bodrless's engine passes CITY
+  // NAMES here ("nairobi", "capetown"), not codes, exactly the same
+  // input TravelDuqa's adapter already handles via its own _iataMap +
+  // fuzzy match. This was a real production gap: every Duffel search
+  // failed with "could not resolve IATA codes" regardless of route,
+  // because city names never satisfied the old 3-letter-only check.
+  // Same hardcoded map as travelduqa.js (kept as the shared source of
+  // truth for this list — if you add a city to one adapter's map, add
+  // it to the other's too, or extract to a shared module later) plus
+  // a tolerant fuzzy match for typos/variants ("capetown" -> "cape
+  // town" -> CPT), using the same length-gap-capped, 75%-similarity-
+  // floor matcher built earlier this session specifically so garbage
+  // input can't coincidentally match a real airport.
   // ─────────────────────────────────────────────
   _resolveIata(value) {
     if (!value) return null;
-    const trimmed = String(value).trim();
-    // Already looks like an IATA code (3 letters) — pass through.
-    if (/^[A-Za-z]{3}$/.test(trimmed)) return trimmed.toUpperCase();
-    // Not a recognizable code — Bodrless's upstream resolution should
-    // have handled this already; log so a real gap is visible rather
-    // than silently failing the search.
-    logger.warn('Duffel: received a non-IATA value for origin/destination, expected upstream resolution', { value: trimmed });
+    const normalized = String(value).trim().toLowerCase();
+
+    // Already a real IATA code — pass through.
+    if (/^[a-z]{3}$/.test(normalized)) return normalized.toUpperCase();
+
+    const map = this._iataMap();
+    if (map[normalized]) return map[normalized];
+
+    const fuzzyMatch = this._fuzzyMatch(normalized, Object.keys(map));
+    if (fuzzyMatch) {
+      logger.info('Duffel: fuzzy-matched city name', { input: value, matched: fuzzyMatch });
+      return map[fuzzyMatch];
+    }
+
+    logger.warn('Duffel: could not resolve city name to an IATA code', { value });
     return null;
+  }
+
+  // Same city->IATA map as travelduqa.js's _iataMap() — kept as a
+  // duplicate rather than a shared import for now, matching this
+  // codebase's existing pattern of each adapter being self-contained.
+  _iataMap() {
+    return {
+      'nairobi': 'NBO', 'jkia': 'NBO', 'mombasa': 'MBA', 'kisumu': 'KIS',
+      'eldoret': 'EDL', 'lamu': 'LAU', 'malindi': 'MYD',
+      'ukunda': 'UKA', 'diani': 'UKA', 'diani beach': 'UKA',
+      'lodwar': 'LOK', 'wajir': 'WJR', 'kitale': 'KTL', 'kakamega': 'GGM',
+      'wilson': 'WIL', 'dar es salaam': 'DAR', 'zanzibar': 'ZNZ',
+      'kilimanjaro': 'JRO', 'arusha': 'ARK', 'mwanza': 'MWZ',
+      'kampala': 'EBB', 'entebbe': 'EBB', 'kigali': 'KGL',
+      'addis ababa': 'ADD', 'johannesburg': 'JNB', 'cape town': 'CPT',
+      'dubai': 'DXB', 'london': 'LHR', 'new york': 'JFK',
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // FUZZY MATCH — same three guards built earlier this session for
+  // the TravelDuqa adapter, applied here too:
+  //  1. inputs under 3 chars never fuzzy-match (too coincidental)
+  //  2. length-gap cap (a genuine typo barely changes word length)
+  //  3. 75% similarity floor (rejects loose "within edit-distance"
+  //     matches on unrelated words, not just literal garbage)
+  // ─────────────────────────────────────────────
+  _levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  _fuzzyMatch(input, candidates) {
+    const inputLen = (input || '').length;
+    if (inputLen < 3) return null;
+
+    let best = null;
+    let bestDistance = Infinity;
+
+    for (const candidate of candidates) {
+      if (Math.abs(candidate.length - inputLen) > 2) continue;
+
+      const distance = this._levenshtein(input, candidate);
+      const maxAllowed = candidate.length <= 5 ? 1 : candidate.length <= 9 ? 2 : 3;
+      const similarity = 1 - distance / Math.max(inputLen, candidate.length);
+
+      if (distance <= maxAllowed && similarity >= 0.75 && distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
   }
 
   _mapCabinClass(cabinClass) {

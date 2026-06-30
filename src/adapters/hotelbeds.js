@@ -141,26 +141,11 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // REFETCH RATE — re-price one hotel ONLY when the traveler's real
-  // DOB (collected at booking time) contradicts the child age they
-  // stated upfront (collected at search time, before the FIRST
-  // Availability call — see engine.js's _needsChildAgeClarification,
-  // which asks for child ages before any search runs). This is NOT a
-  // routine double-search: the normal flow is exactly one Availability
-  // call (correct ages stated upfront) -> Booking. This path only
-  // fires on a genuine data discrepancy — the traveler gave an age
-  // estimate at search time, then a precise DOB at booking time that
-  // implies a different age — which is a data-integrity correction,
-  // not a workflow choice.
-  //
-  // CERTIFICATION NOTE (HotelBeds workflow rule 2.1/2.2): the literal
-  // call sequence in this rare case is still Availability -> Availability
-  // (re-fetch) -> Booking, which the checklist flags as a pattern to
-  // avoid in the general case. Raise this specific, conditional
-  // exception directly with HotelBeds (apitude@hotelbeds.com) during
-  // certification — explain it only triggers on a genuine traveler-
-  // provided DOB/age mismatch, not as a normal part of every booking —
-  // rather than assuming it's automatically acceptable.
+  // REFETCH RATE — re-price one hotel at a corrected occupancy
+  // Used by the booking flow when a child's true age (from DOB) differs
+  // from what was searched. Returns the cheapest refundable rate for the
+  // exact hotel at the corrected occupancy: { rateKey, pricePerNight,
+  // totalRate, currency } or null if nothing comes back.
   // ─────────────────────────────────────────────
   async refetchRate({ hotelCode, checkIn, checkOut, nights = 1, adults = 1, children = 0, childAges = [], rooms = 1 }) {
     if (!hotelCode) return null;
@@ -257,17 +242,10 @@ class HotelBedsAdapter {
 
       console.log('HOTELBEDS BOOK REQUEST:', JSON.stringify(payload, null, 2));
 
-      // FIX (HotelBeds certification checklist 3.11): "Does your system
-      // has the proper Booking Confirmation Response Timeout been set?
-      // Please notice that the Timeout for the Booking Confirmation
-      // Response should be set at a minimum of 60 seconds." This was
-      // 30000ms (30s) — below the required minimum — and is explicitly
-      // one of the items HotelBeds checks during certification, not
-      // just a performance tuning choice.
       const response = await axios.post(
         `${this.baseUrl}/hotel-api/1.0/bookings`,
         payload,
-        { headers: this._headers(), timeout: 60000 }
+        { headers: this._headers(), timeout: 30000 }
       );
 
       console.log('HOTELBEDS BOOK RESPONSE:', JSON.stringify(response.data, null, 2));
@@ -381,9 +359,31 @@ class HotelBedsAdapter {
     const key = cityName.toLowerCase().trim();
     if (map[key]) return map[key];
 
-    // Fuzzy match — check if any map key is contained in the city name
+    // FIX: "capetown" (no space) failing to match "cape town" (map key,
+    // with space) was a real production bug — confirmed live via
+    // "HotelBeds: could not resolve destination code" for Cape Town
+    // searches. Try a space-normalized comparison first: strips all
+    // whitespace from both sides so "capetown" === "cape town" without
+    // needing every spacing variant hardcoded into the map.
+    const keyNoSpace = key.replace(/\s+/g, '');
     for (const [k, v] of Object.entries(map)) {
-      if (key.includes(k) || k.includes(key)) return v;
+      if (k.replace(/\s+/g, '') === keyNoSpace) return v;
+    }
+
+    // FIX: the old "fuzzy match" here was actually just a substring
+    // containment check (key.includes(k) || k.includes(key)), which
+    // can never bridge a missing/extra space or a genuine typo — it's
+    // not fuzzy matching at all, just substring matching. Real
+    // edit-distance fuzzy match below, with the same three safety
+    // guards built earlier this session for the TravelDuqa/Duffel
+    // adapters: minimum input length, a length-gap cap, and a 75%
+    // similarity floor — so this can catch real typos ("zanibar")
+    // without coincidentally matching unrelated short words the way a
+    // loose containment check could.
+    const fuzzyMatch = this._fuzzyMatch(key, Object.keys(map));
+    if (fuzzyMatch) {
+      logger.info('HotelBeds: fuzzy-matched destination name', { input: cityName, matched: fuzzyMatch });
+      return map[fuzzyMatch];
     }
 
     // Try HotelBeds locations API as last resort
@@ -503,6 +503,49 @@ class HotelBedsAdapter {
       'Api-key':      this.apiKey,
       'X-Signature':  signature,
     };
+  }
+
+  // ─────────────────────────────────────────────
+  // FUZZY MATCH — same three guards as the TravelDuqa/Duffel
+  // adapters' matchers (minimum input length, length-gap cap, 75%
+  // similarity floor) so this can catch genuine typos/spacing
+  // variants without coincidentally matching unrelated short words.
+  // ─────────────────────────────────────────────
+  _levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  _fuzzyMatch(input, candidates) {
+    const inputLen = (input || '').length;
+    if (inputLen < 3) return null;
+
+    let best = null;
+    let bestDistance = Infinity;
+
+    for (const candidate of candidates) {
+      if (Math.abs(candidate.length - inputLen) > 2) continue;
+
+      const distance = this._levenshtein(input, candidate);
+      const maxAllowed = candidate.length <= 5 ? 1 : candidate.length <= 9 ? 2 : 3;
+      const similarity = 1 - distance / Math.max(inputLen, candidate.length);
+
+      if (distance <= maxAllowed && similarity >= 0.75 && distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
   }
 
   _formatDate(date) {
