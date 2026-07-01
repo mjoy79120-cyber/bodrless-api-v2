@@ -21,6 +21,7 @@ const { logger } = require('../utils/logger');
 const { authenticateAgency } = require('../middleware/auth');
 const { authenticateSession } = require('../middleware/authSession');
 const dataQueryService = require('../services/dataQueryService');
+const emailService = require('../services/emailService');
 
 // ─────────────────────────────────────────────
 // HELPERS
@@ -136,6 +137,28 @@ router.post('/register', async (req, res) => {
 
     logger.info('New agency registered', { agencyId, name: value.name });
 
+    const widgetCode      = `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${widgetKey}&name=${encodeURIComponent(value.name)}"></script>`;
+    const whatsappWebhook = `https://bodrless-api-v2.onrender.com/api/webhooks/whatsapp?agency_id=${agencyId}`;
+
+    // Fire-and-forget — an email provider hiccup must NEVER make a
+    // successful registration look like it failed to the agency.
+    // Logged on failure (see emailService) so it's visible in your
+    // tracking/alerts, but never awaited into the response.
+    emailService
+      .sendOnboardingEmail({
+        agencyName:      agency.name,
+        agencyEmail:     agency.email,
+        widgetCode,
+        whatsappWebhook,
+        plan:            agency.plan,
+      })
+      .then((result) => {
+        if (!result.success) {
+          logger.warn('Onboarding email did not send', { agencyId, error: result.error });
+        }
+      })
+      .catch((err) => logger.error('Onboarding email dispatch threw', { agencyId, error: err.message }));
+
     return res.status(201).json({
       success: true,
       message: 'Agency registered successfully',
@@ -152,8 +175,8 @@ router.post('/register', async (req, res) => {
         widgetKey,
       },
       integration: {
-        widgetCode:      `<script src="https://bodrless-api-v2.onrender.com/widget.js?key=${widgetKey}&name=${encodeURIComponent(value.name)}"></script>`,
-        whatsappWebhook: `https://bodrless-api-v2.onrender.com/api/webhooks/whatsapp?agency_id=${agencyId}`,
+        widgetCode,
+        whatsappWebhook,
       },
     });
 
@@ -320,9 +343,6 @@ router.post('/logout', authenticateSession, async (req, res) => {
 // ─────────────────────────────────────────────
 // SESSION-PROTECTED — TALK TO MY DATA
 // POST /api/agencies/ask
-// Body: { question: "How much did I earn last month?" }
-// Answers grounded strictly in the agency's real Supabase data —
-// see services/dataQueryService.js for how the answer is generated.
 // ─────────────────────────────────────────────
 router.post('/ask', authenticateSession, async (req, res) => {
   const schema = Joi.object({
@@ -403,9 +423,6 @@ async function _getDashboardData(req, res) {
       new Date(s.created_at) > new Date(Date.now() - 24 * 60 * 60 * 1000)
     );
 
-    // ── Per-customer breakdown ──────────────────────
-    // Groups bookings by guest (phone, falling back to email/name) so
-    // an agency can see each customer's total spend and trip history.
     const customerMap = new Map();
     (bookings || []).forEach(b => {
       const key = b.guest_phone || b.guest_email || b.guest_name || 'unknown';

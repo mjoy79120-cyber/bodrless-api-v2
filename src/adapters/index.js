@@ -49,8 +49,20 @@ class SupplierAdapterLayer {
   // can never take down the other's results — exactly the same
   // "one bad supplier shouldn't break the search" contract the bus
   // branch below already had.
+  //
+  // children/childAges: forwarded ONLY to Duffel — Duffel requires
+  // a real per-passenger age (or type) in its offer_request payload
+  // (see duffel.js's search()); TravelDuqa's adapter doesn't accept
+  // per-child ages today (adults-only passenger count), so it's
+  // intentionally not passed there to avoid sending it a shape it
+  // doesn't expect. Bodrless has no separate "infant" concept in
+  // promptParser — a stated infant/baby/toddler is folded into
+  // `children`/`childAges` already (see promptParser's occupancy
+  // rule), so infantAges is not threaded here; Duffel's search()
+  // still accepts an infants/infantAges param and defaults safely
+  // if it's ever wired up later.
   // ─────────────────────────────────────────────
-  async searchTransport({ origin, destination, date, passengers, transportMode, timePreference }) {
+  async searchTransport({ origin, destination, date, passengers, transportMode, timePreference, children = 0, childAges = [] }) {
     const results = [];
 
     if (!transportMode || transportMode === 'bus') {
@@ -67,7 +79,7 @@ class SupplierAdapterLayer {
     if (!transportMode || transportMode === 'flight') {
       const [travelduqaResult, duffelResult] = await Promise.allSettled([
         this.adapters.travelduqa.search({ origin, destination, date, passengers, timePreference }),
-        this.adapters.duffel.search({ origin, destination, date, passengers, timePreference }),
+        this.adapters.duffel.search({ origin, destination, date, passengers, timePreference, children, childAges }),
       ]);
 
       if (travelduqaResult.status === 'fulfilled') {

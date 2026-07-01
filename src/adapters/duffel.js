@@ -45,6 +45,15 @@ class DuffelAdapter {
     // whatever it collected before our own axios timeout fires.
     this.supplierTimeout = Number(process.env.DUFFEL_SUPPLIER_TIMEOUT_MS) || 7000;
     this.supplier = 'duffel';
+    // Duffel's own age bands, from their passenger docs — used to
+    // validate/clamp incoming ages and to pick a sane default only
+    // as a last resort (see _resolveChildAge below).
+    this.INFANT_MAX_AGE = 1;  // 0-1 (Duffel: under-2s should be 'infant' type territory, but Bodrless
+                               // has no bassinet/lap-infant distinction upstream yet, so infants[] below
+                               // still gets a flat default; child ages here cover the 2-17 band).
+    this.CHILD_MIN_AGE  = 2;
+    this.CHILD_MAX_AGE  = 17;
+    this.DEFAULT_CHILD_AGE = 10; // fallback ONLY when no real age is available at all
   }
 
   // ─────────────────────────────────────────────
@@ -57,9 +66,22 @@ class DuffelAdapter {
   // accepts city codes like "NYC" too, but Bodrless already resolves
   // to airport IATA upstream in promptParser/CITY_CODES, so we pass
   // those straight through).
+  //
+  // childAges: array of real ages (numbers, 2-17), one per child,
+  // sourced from promptParser's childAges field and threaded through
+  // engine.js -> adapters/index.js -> here. Falls back to the
+  // `children` COUNT (with DEFAULT_CHILD_AGE per child) only when
+  // childAges is missing/empty/shorter than the children count — this
+  // keeps the adapter resilient to older callers or partially-parsed
+  // prompts ("2 children" with no ages given) instead of throwing.
+  // infantAges: same idea for infants (0-1), defaults to age 1 (the
+  // safe non-lap-infant end of the band) when not supplied — lap-
+  // infant fare handling (Duffel's true "infant" passenger type/
+  // discount) is still not wired; see KNOWN GAPS in session notes.
   // ─────────────────────────────────────────────
   async search({ origin, destination, date, returnDate = null, passengers = 1,
-                 cabinClass = 'economy', timePreference = null, children = 0, infants = 0 }) {
+                 cabinClass = 'economy', timePreference = null, children = 0, infants = 0,
+                 childAges = [], infantAges = [] }) {
     try {
       logger.info('Duffel: searching flights', { origin, destination, date });
 
@@ -80,19 +102,23 @@ class DuffelAdapter {
 
       // Adults get type:"adult"; anyone under 18 needs a real age per
       // Duffel's docs ("you may only specify an age or a type — not
-      // both"). children/infants here are counts, not ages — Bodrless's
-      // child-age flow (see promptParser childAges) should be threaded
-      // through as real ages once multi-supplier child pricing is
-      // wired end-to-end; until then this defaults young passengers to
-      // age 10 (a safe, conservative non-infant child fare) rather
-      // than silently dropping them from the search, and logs a
-      // warning so this default is visible, not silent.
+      // both"). Real ages now come from promptParser's childAges/
+      // infantAges when available (threaded through engine.js and
+      // adapters/index.js's searchTransport call); only when a real
+      // age is genuinely unavailable for a given passenger does this
+      // fall back to a logged default, instead of silently defaulting
+      // every child the way this used to.
       const passengerList = [];
       for (let i = 0; i < passengers; i++) passengerList.push({ type: 'adult' });
-      for (let i = 0; i < children; i++) passengerList.push({ age: 10 });
-      for (let i = 0; i < infants; i++) passengerList.push({ age: 1 });
-      if (children > 0) {
-        logger.warn('Duffel: child ages not yet threaded through from search params — defaulting to age 10', { children });
+
+      for (let i = 0; i < children; i++) {
+        const age = this._resolveChildAge(childAges[i], i);
+        passengerList.push({ age });
+      }
+
+      for (let i = 0; i < infants; i++) {
+        const age = this._resolveInfantAge(infantAges[i], i);
+        passengerList.push({ age });
       }
 
       const payload = {
@@ -148,6 +174,41 @@ class DuffelAdapter {
       // search. TravelDuqa/bus results still come through.
       return [];
     }
+  }
+
+  // ─────────────────────────────────────────────
+  // Resolve a single child's age for the passengers[] payload.
+  // - Real numeric age in range -> use it, clamped to Duffel's child
+  //   band (2-17) in case upstream parsing produced something like 1
+  //   (should've been an infant) or 18+ (should've been an adult).
+  // - Missing/invalid -> DEFAULT_CHILD_AGE, logged with the index so
+  //   it's traceable to which child in the party got defaulted.
+  // ─────────────────────────────────────────────
+  _resolveChildAge(rawAge, index) {
+    const age = Number(rawAge);
+    if (Number.isFinite(age) && age >= this.CHILD_MIN_AGE && age <= this.CHILD_MAX_AGE) {
+      return age;
+    }
+    if (Number.isFinite(age) && age >= 0) {
+      const clamped = Math.min(Math.max(age, this.CHILD_MIN_AGE), this.CHILD_MAX_AGE);
+      logger.warn('Duffel: child age out of 2-17 band, clamped', { childIndex: index, rawAge, clamped });
+      return clamped;
+    }
+    logger.warn('Duffel: no real age for child, defaulting', { childIndex: index, default: this.DEFAULT_CHILD_AGE });
+    return this.DEFAULT_CHILD_AGE;
+  }
+
+  _resolveInfantAge(rawAge, index) {
+    const age = Number(rawAge);
+    if (Number.isFinite(age) && age >= 0 && age <= this.INFANT_MAX_AGE) {
+      return age;
+    }
+    if (Number.isFinite(age) && age >= 0) {
+      logger.warn('Duffel: infant age out of 0-1 band, clamped', { infantIndex: index, rawAge });
+      return this.INFANT_MAX_AGE;
+    }
+    logger.warn('Duffel: no real age for infant, defaulting', { infantIndex: index, default: this.INFANT_MAX_AGE });
+    return this.INFANT_MAX_AGE;
   }
 
   // ─────────────────────────────────────────────
@@ -255,23 +316,6 @@ class DuffelAdapter {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // IATA RESOLUTION
-  // FIX: previously only accepted a literal 3-letter code and
-  // rejected everything else — but Bodrless's engine passes CITY
-  // NAMES here ("nairobi", "capetown"), not codes, exactly the same
-  // input TravelDuqa's adapter already handles via its own _iataMap +
-  // fuzzy match. This was a real production gap: every Duffel search
-  // failed with "could not resolve IATA codes" regardless of route,
-  // because city names never satisfied the old 3-letter-only check.
-  // Same hardcoded map as travelduqa.js (kept as the shared source of
-  // truth for this list — if you add a city to one adapter's map, add
-  // it to the other's too, or extract to a shared module later) plus
-  // a tolerant fuzzy match for typos/variants ("capetown" -> "cape
-  // town" -> CPT), using the same length-gap-capped, 75%-similarity-
-  // floor matcher built earlier this session specifically so garbage
-  // input can't coincidentally match a real airport.
-  // ─────────────────────────────────────────────
   // ─────────────────────────────────────────────
   // IATA RESOLUTION
   // Three-tier approach for maximum global coverage:

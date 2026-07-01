@@ -852,6 +852,8 @@ class OrchestrationEngine {
           passengers:     tripParams.passengers || 1,
           transportMode:  'flight',
           timePreference: tripParams.timePreference,
+          children:       tripParams.children || 0,
+          childAges:      Array.isArray(tripParams.childAges) ? tripParams.childAges : [],
         }),
         [],
         `transition ${fromCity}->${toCity}`
@@ -1806,6 +1808,8 @@ class OrchestrationEngine {
             passengers:     tripParams.passengers  || 1,
             transportMode:  'flight',
             timePreference: tripParams.timePreference,
+            children:       tripParams.children || 0,
+            childAges:      Array.isArray(tripParams.childAges) ? tripParams.childAges : [],
           }),
           [],
           `flight ${leg} ${searchOrigin}->${searchDestination}`

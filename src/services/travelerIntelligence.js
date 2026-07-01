@@ -27,16 +27,13 @@ class TravelerIntelligence {
       confidence: 1.0
     };
 
-    // --- NEW INTELLIGENCE SIGNALS ---
     profile.refundSensitivity = this.detectRefundSensitivity(text);
     profile.timeCritical = this.detectTimeCritical(text);
     profile.transferTolerance = this.detectTransferTolerance(profile, text);
     profile.riskTolerance = this.detectRiskTolerance(profile, text);
-    
-    // Compute dynamic weights based on accumulated signals
+
     profile.scoringWeights = this.buildScoringWeights(profile);
 
-    // Explicitly mounting Orchestration Hints into the engine's payload
     profile.orchestrationHints = {
       prioritizeRefundable: profile.refundSensitivity >= 8,
       avoidTransfers: profile.transferTolerance === 0,
@@ -147,12 +144,10 @@ class TravelerIntelligence {
     return text.match(/hiking|trekking|climbing|kupanda|milima/) ? 10 : 5;
   }
 
-  // --- INCORPORATED EXPANSION METHODS WITH REGIONAL UTILITIES ---
-  
   detectRefundSensitivity(text) {
     const flexibleWords = [
-      'refundable', 'flexible', 'may change', 'might change', 'tentative', 
-      'not sure', 'change dates', 'cancel', 'cancellation', 
+      'refundable', 'flexible', 'may change', 'might change', 'tentative',
+      'not sure', 'change dates', 'cancel', 'cancellation',
       'kubadilisha', 'kughairi', 'kurudisha pesa'
     ];
     return flexibleWords.some(word => text.includes(word)) ? 10 : 5;
@@ -163,10 +158,10 @@ class TravelerIntelligence {
       return 0;
     }
     if (profile.budgetSensitivity === 'high') {
-      return 3; 
+      return 3;
     }
     if (profile.tripPurpose === 'business') {
-      return 1; 
+      return 1;
     }
     return 2;
   }
@@ -183,7 +178,7 @@ class TravelerIntelligence {
 
   detectTimeCritical(text) {
     const keywords = [
-      'must arrive', 'need to be', 'conference', 'meeting', 'event starts', 
+      'must arrive', 'need to be', 'conference', 'meeting', 'event starts',
       'before', 'deadline', 'wedding', 'appointment', 'lazima', 'haraka', 'harusi', 'mkutano'
     ];
     return keywords.some(word => text.includes(word));
