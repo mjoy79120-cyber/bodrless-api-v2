@@ -63,8 +63,10 @@ class DuffelAdapter {
     try {
       logger.info('Duffel: searching flights', { origin, destination, date });
 
-      const originIata = this._resolveIata(origin);
-      const destIata    = this._resolveIata(destination);
+      const [originIata, destIata] = await Promise.all([
+        this._resolveIata(origin),
+        this._resolveIata(destination),
+      ]);
 
       if (!originIata || !destIata) {
         logger.warn('Duffel: could not resolve IATA codes', { origin, destination });
@@ -270,24 +272,103 @@ class DuffelAdapter {
   // floor matcher built earlier this session specifically so garbage
   // input can't coincidentally match a real airport.
   // ─────────────────────────────────────────────
-  _resolveIata(value) {
+  // ─────────────────────────────────────────────
+  // IATA RESOLUTION
+  // Three-tier approach for maximum global coverage:
+  //   1. Static map (_iataMap) — instant, covers ~100 common
+  //      destinations. No API call, no latency.
+  //   2. Fuzzy match on the static map — catches typos and
+  //      minor variants of known cities.
+  //   3. Duffel Places API live lookup — covers EVERY airport
+  //      worldwide that Duffel knows about. Only fires when tiers
+  //      1 and 2 both miss. Result is cached in memory for the
+  //      process lifetime so the same city never calls the API
+  //      twice per deployment.
+  //
+  // This means "Queenstown", "Reykjavik", "Tulum", "Bora Bora" —
+  // any city a traveler names that Duffel flies to — will resolve
+  // correctly without needing to be manually added to the map.
+  // ─────────────────────────────────────────────
+  async _resolveIata(value) {
     if (!value) return null;
     const normalized = String(value).trim().toLowerCase();
 
-    // Already a real IATA code — pass through.
+    // Tier 1a: Already a 3-letter IATA code
     if (/^[a-z]{3}$/.test(normalized)) return normalized.toUpperCase();
 
+    // Tier 1b: Static map hit (instant)
     const map = this._iataMap();
     if (map[normalized]) return map[normalized];
 
+    // Tier 1c: Fuzzy match on static map
     const fuzzyMatch = this._fuzzyMatch(normalized, Object.keys(map));
     if (fuzzyMatch) {
       logger.info('Duffel: fuzzy-matched city name', { input: value, matched: fuzzyMatch });
       return map[fuzzyMatch];
     }
 
-    logger.warn('Duffel: could not resolve city name to an IATA code', { value });
-    return null;
+    // Tier 2: Duffel Places API live lookup
+    // Uses our existing token — same auth, no extra setup.
+    // Result cached in process memory (_placesCache) so the same
+    // city name only ever calls the API once per deployment.
+    return this._resolveIataViaDuffelPlaces(normalized, value);
+  }
+
+  async _resolveIataViaDuffelPlaces(normalized, original) {
+    // Check process-level cache first
+    if (DuffelAdapter._placesCache[normalized]) {
+      return DuffelAdapter._placesCache[normalized];
+    }
+
+    if (!this.token) {
+      logger.warn('Duffel: no token for Places lookup', { value: original });
+      return null;
+    }
+
+    try {
+      logger.info('Duffel: Places API lookup', { query: original });
+      const response = await axios.get(
+        `${this.baseUrl}/places/suggestions`,
+        {
+          params: { query: original },
+          headers: this._headers(),
+          timeout: 5000, // short timeout — this is a fast lookup endpoint
+        }
+      );
+
+      const suggestions = response.data?.data || [];
+      if (!suggestions.length) {
+        logger.warn('Duffel: Places API returned no suggestions', { value: original });
+        DuffelAdapter._placesCache[normalized] = null; // cache the miss too
+        return null;
+      }
+
+      // Prefer airport type results over city type; take the first one
+      // (Duffel returns results sorted by relevance — first is best match)
+      const best = suggestions.find(s => s.type === 'airport') || suggestions[0];
+      const iata = best.iata_code || best.iata_city_code || null;
+
+      if (iata) {
+        logger.info('Duffel: Places API resolved IATA', { query: original, iata, name: best.name });
+        // Add to runtime map so other adapters / future calls in this
+        // request benefit without another API call
+        DuffelAdapter._placesCache[normalized] = iata;
+      } else {
+        logger.warn('Duffel: Places API suggestion had no IATA code', { value: original, suggestion: best });
+        DuffelAdapter._placesCache[normalized] = null;
+      }
+
+      return iata;
+
+    } catch (err) {
+      if (err.code === 'ECONNABORTED') {
+        logger.warn('Duffel: Places API lookup timed out', { value: original });
+      } else {
+        logger.error('Duffel: Places API lookup failed', { value: original, error: err.message });
+      }
+      // Don't cache errors — let it retry next time (transient failures)
+      return null;
+    }
   }
 
   // Same city->IATA map as travelduqa.js's _iataMap() — kept as a
@@ -536,3 +617,9 @@ class DuffelAdapter {
 }
 
 module.exports = new DuffelAdapter();
+
+// Process-level cache for Duffel Places API lookups.
+// Keyed by normalized city name (lowercase, trimmed).
+// Persists for the lifetime of the Render process — resets on deploy,
+// which is fine since IATA codes don't change frequently.
+DuffelAdapter._placesCache = {};
