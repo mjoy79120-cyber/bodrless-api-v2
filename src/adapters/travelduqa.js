@@ -512,6 +512,31 @@ class TravelDuqaAdapter {
 
   _iataMap() {
     return {
+      // City-level aliases added to fix "mahe", "port louis", "male" etc.
+      // after promptParser correctly resolves countries→cities but those
+      // city names weren't in the IATA map. Rule: every entry in
+      // COUNTRY_TO_CITY in promptParser needs a matching entry here.
+      'mahe': 'SEZ', 'seychelles': 'SEZ', 'praslin': 'SEZ',
+      'port louis': 'MRU', 'mauritius': 'MRU', 'grand baie': 'MRU',
+      'male': 'MLE', 'maldives': 'MLE',
+      'antananarivo': 'TNR', 'madagascar': 'TNR',
+      'bali': 'DPS', 'denpasar': 'DPS',
+      'phuket': 'HKT', 'bangkok': 'BKK', 'chiang mai': 'CNX',
+      'singapore': 'SIN', 'kuala lumpur': 'KUL',
+      'delhi': 'DEL', 'mumbai': 'BOM', 'goa': 'GOI',
+      'tokyo': 'TYO', 'osaka': 'KIX',
+      'paris': 'CDG', 'amsterdam': 'AMS', 'istanbul': 'IST',
+      'doha': 'DOH', 'abu dhabi': 'AUH', 'muscat': 'MCT',
+      'cairo': 'CAI', 'sharm el sheikh': 'SSH', 'hurghada': 'HRG',
+      'marrakech': 'RAK', 'casablanca': 'CMN',
+      'accra': 'ACC', 'lagos': 'LOS',
+      'harare': 'HRE', 'lusaka': 'LUN', 'windhoek': 'WDH',
+      'maputo': 'MPM', 'luanda': 'LAD',
+      'durban': 'DUR',
+      'santorini': 'JTR', 'mykonos': 'JMK', 'athens': 'ATH',
+      'barcelona': 'BCN', 'madrid': 'MAD', 'rome': 'FCO',
+      'miami': 'MIA', 'los angeles': 'LAX', 'cancun': 'CUN',
+      'sydney': 'SYD', 'auckland': 'AKL',
       'nairobi': 'NBO', 'jkia': 'NBO', 'mombasa': 'MBA', 'kisumu': 'KIS',
       'eldoret': 'EDL', 'lamu': 'LAU', 'malindi': 'MYD',
       'ukunda': 'UKA', 'diani': 'UKA', 'diani beach': 'UKA',

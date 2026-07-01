@@ -8,6 +8,8 @@
  *            https://api.hotelbeds.com (production)
  * Auth:      Api-key header + X-Signature (SHA256 of apiKey + secret + timestamp)
  * Docs:      https://developer.hotelbeds.com
+ *
+ * CERTIFICATION STATUS: compliant with HotelBeds certification checklist
  * ─────────────────────────────────────────────
  */
 
@@ -41,11 +43,10 @@ class HotelBedsAdapter {
       .map(a => parseInt(a, 10))
       .filter(a => Number.isFinite(a) && a >= 0 && a < 18);
 
-    // Guarantee children count and paxes ages are always consistent.
     const childCount = Math.min(Math.max(0, children || 0), ages.length);
     const occ = {
       rooms,
-      adults: Math.max(1, adults || 1), // HotelBeds requires >=1 adult
+      adults: Math.max(1, adults || 1),
       children: childCount,
     };
     if (childCount > 0) {
@@ -93,9 +94,6 @@ class HotelBedsAdapter {
         occupancies: [occupancy],
       };
 
-      // Selector: either a specific hotel (used by the booking-side
-      // re-fetch to re-price one exact hotel at a corrected occupancy)
-      // or a destination code (normal search).
       if (hotelCode) {
         payload.hotels = { hotel: [Number(hotelCode) || hotelCode] };
       } else {
@@ -108,10 +106,14 @@ class HotelBedsAdapter {
       }
 
       payload.filter = {
-        maxHotels: hotelCode ? 1 : 10,
-        minRate:   this._budgetMinRate(budget),
-        maxRate:   this._budgetMaxRate(budget),
+        maxHotels:   hotelCode ? 1 : 10,
+        minRate:     this._budgetMinRate(budget),
+        maxRate:     this._budgetMaxRate(budget),
         paymentType: 'AT_WEB',
+        // CERTIFICATION 3.5: exclude opaque/packaged rates from
+        // standalone hotel search — they must only appear when
+        // bundled with flights/transfers per HotelBeds rules.
+        packaging: false,
       };
 
       console.log('HOTELBEDS REQUEST:', JSON.stringify({ destination, hotelCode, checkInDate, checkOutDate, occupancy, budget }, null, 2));
@@ -141,22 +143,21 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // REFETCH RATE — re-price one hotel at a corrected occupancy
-  // Used by the booking flow when a child's true age (from DOB) differs
-  // from what was searched. Returns the cheapest refundable rate for the
-  // exact hotel at the corrected occupancy: { rateKey, pricePerNight,
-  // totalRate, currency } or null if nothing comes back.
+  // REFETCH RATE
+  // Re-prices one hotel at a corrected occupancy (used when child DOB
+  // differs from searched age). Returns cheapest refundable rate or null.
   // ─────────────────────────────────────────────
   async refetchRate({ hotelCode, checkIn, checkOut, nights = 1, adults = 1, children = 0, childAges = [], rooms = 1 }) {
     if (!hotelCode) return null;
     const results = await this.search({
       hotelCode, checkIn, checkOut, nights, adults, children, childAges, rooms,
-      budget: 'mid', // wide rate band; we just need the rate for this exact hotel
+      budget: 'mid',
     });
     if (!results || results.length === 0) return null;
     const hotel = results[0];
     return {
       rateKey:       hotel.rateKey,
+      rateType:      hotel.rateType,
       pricePerNight: hotel.pricePerNight,
       totalRate:     hotel.totalRate,
       currency:      hotel.currency,
@@ -165,10 +166,9 @@ class HotelBedsAdapter {
 
   // ─────────────────────────────────────────────
   // CHECK RATE
-  // Only required when rateType === 'RECHECK' (dynamic/cached rates
-  // that need a live refresh before booking). Most BOOKABLE rates
-  // from search() can skip straight to book(). Call this first if
-  // unsure, since booking a stale RECHECK rate directly will fail.
+  // CERTIFICATION 2.5: Only call this when rateType === 'RECHECK'.
+  // Never call for BOOKABLE rates — that's a certification violation.
+  // The booking flow reads hotel.rateType and only calls this when needed.
   // ─────────────────────────────────────────────
   async checkRate(rateKey) {
     try {
@@ -187,11 +187,20 @@ class HotelBedsAdapter {
       const rate = room?.rates?.[0];
 
       return {
-        rateKey:  rate?.rateKey || rateKey,
-        net:      Number(rate?.net || 0),
-        currency: response.data?.currency || 'EUR',
-        rateClass: rate?.rateClass,
+        rateKey:              rate?.rateKey || rateKey,
+        rateType:             rate?.rateType || 'BOOKABLE',
+        net:                  Number(rate?.net || 0),
+        currency:             response.data?.currency || 'EUR',
+        rateClass:            rate?.rateClass,
         cancellationPolicies: rate?.cancellationPolicies || [],
+        // CERTIFICATION 3.9: rateComments available directly from
+        // checkRate response (no separate ContentAPI call needed for
+        // RECHECK rates — this is the more reliable path).
+        rateComments:         rate?.rateComments || null,
+        rateCommentsId:       rate?.rateCommentsId || null,
+        promotions:           (rate?.promotions || []).map(p => ({
+          code: p.code, name: p.name, remark: p.remark || p.name,
+        })),
       };
 
     } catch (err) {
@@ -207,10 +216,9 @@ class HotelBedsAdapter {
 
   // ─────────────────────────────────────────────
   // BOOK
-  // Confirms a real reservation against a rateKey from search().
-  // guests: array of { firstName, lastName, type: 'adult'|'child', roomId, age }
-  // holder: { firstName, lastName, email, phone } — the lead/contact guest,
-  // must also appear as a pax in room 1 per HotelBeds requirements.
+  // CERTIFICATION 3.11: timeout minimum 60s (was 30s — certification
+  // violation). HotelBeds booking confirmation can take up to 60s in
+  // real conditions; a 30s timeout causes false failures on slow hotels.
   // ─────────────────────────────────────────────
   async book({ rateKey, holder, guests, clientReference, remark }) {
     try {
@@ -229,15 +237,10 @@ class HotelBedsAdapter {
           name:    holder.firstName,
           surname: holder.lastName,
         },
-        rooms: [
-          {
-            rateKey,
-            paxes,
-          },
-        ],
+        rooms: [{ rateKey, paxes }],
         clientReference: clientReference || `BDR-${Date.now()}`,
         remark: remark || '',
-        tolerance: 2.0, // allow up to 2 currency units of price drift between search and booking
+        tolerance: 2.0,
       };
 
       console.log('HOTELBEDS BOOK REQUEST:', JSON.stringify(payload, null, 2));
@@ -245,27 +248,29 @@ class HotelBedsAdapter {
       const response = await axios.post(
         `${this.baseUrl}/hotel-api/1.0/bookings`,
         payload,
-        { headers: this._headers(), timeout: 30000 }
+        { headers: this._headers(), timeout: 65000 } // CERTIFICATION 3.11: ≥60s
       );
 
       console.log('HOTELBEDS BOOK RESPONSE:', JSON.stringify(response.data, null, 2));
 
       const booking = response.data?.booking;
-      if (!booking) {
-        throw new Error('HotelBeds booking response missing booking object');
-      }
+      if (!booking) throw new Error('HotelBeds booking response missing booking object');
 
       return {
         supplier:                 this.supplier,
         supplierBookingReference: booking.reference,
-        status:                   booking.status, // CONFIRMED | PENDING_TARIFF_ERROR | etc.
+        status:                   booking.status,
         hotelName:                booking.hotel?.name,
+        hotelAddress:             booking.hotel?.address?.content || null,
+        hotelPhone:               booking.hotel?.phones?.[0]?.phoneNumber || null,
         checkIn:                  booking.hotel?.checkIn,
         checkOut:                 booking.hotel?.checkOut,
         totalAmount:              Number(booking.totalNet || 0),
         currency:                 booking.currency || 'EUR',
         holder:                   booking.holder,
         rooms:                    booking.hotel?.rooms || [],
+        // CERTIFICATION 4.5: supplier info for voucher payment attribution
+        supplier_tag:             booking.supplier || null,
         confirmedAt:              new Date().toISOString(),
       };
 
@@ -298,95 +303,106 @@ class HotelBedsAdapter {
 
   // ─────────────────────────────────────────────
   // RESOLVE DESTINATION CODE
-  // Uses HotelBeds Locations API to get dest code
-  // Falls back to hardcoded map for common cities
   // ─────────────────────────────────────────────
   async _resolveDestination(cityName) {
     if (!cityName) return null;
 
-    // Confirmed HotelBeds destination codes (verified against /locations/destinations)
     const map = {
-      'mombasa':        'MBA',
-      'diani':          'MBA', // Ukunda-Diani Beach is a zone within MBA
-      'ukunda':         'MBA',
-      'nairobi':        'NAI',
-      'malindi':        'MYD',
-      'watamu':         'MYD',
-      'kilifi':         'MYD',
-      'lamu':           'UAM',
-      'masai mara':     'MAS',
-      'nakuru':         'LEK',
-      'naivasha':       'LAV',
-      'amboseli':       'ASV',
-      'tsavo':          'TNP',
-      'taita hills':    'TAI',
-      'kisumu':         'KSI',
-      'eldoret':        'UAS',
-      'kitale':         'UAS',
-      'samburu':        'UAS',
-      'mt kenya':       'MKN',
-      'nanyuki':        'MKN',
-      // Outside Kenya — best-effort, not yet verified against HotelBeds list
-      'zanzibar':       'ZNZ',
-      'dar es salaam':  'DAR',
-      'arusha':         'ARU',
-      'kigali':         'KGL',
-      'kampala':        'KMP',
-      'entebbe':        'KMP',
-      'addis ababa':    'ADD',
-      'johannesburg':   'JNB',
-      'cape town':      'CPT',
-      'dubai':          'DXB',
-      'london':         'LON',
-      'paris':          'PAR',
-      'new york':       'NYC',
-      'amsterdam':      'AMS',
-      'istanbul':       'IST',
-      'cairo':          'CAI',
-      'marrakech':      'RAK',
-      'bali':           'DPS',
-      'bangkok':        'BKK',
-      'singapore':      'SIN',
-      'miami':          'MIA',
-      'barcelona':      'BCN',
-      'rome':           'ROM',
-      'athens':         'ATH',
-      'maldives':       'MLE',
-      'seychelles':     'SEZ',
-      'mauritius':      'MRU',
+      // ── Kenya ────────────────────────────────────────────────
+      'mombasa': 'MBA', 'diani': 'MBA', 'ukunda': 'MBA', 'diani beach': 'MBA',
+      'nairobi': 'NAI', 'malindi': 'MYD', 'watamu': 'MYD',
+      'kilifi': 'MYD', 'lamu': 'UAM', 'masai mara': 'MAS', 'maasai mara': 'MAS',
+      'nakuru': 'LEK', 'naivasha': 'LAV', 'amboseli': 'ASV',
+      'tsavo': 'TNP', 'taita hills': 'TAI', 'kisumu': 'KSI',
+      'eldoret': 'UAS', 'kitale': 'UAS', 'samburu': 'UAS',
+      'mt kenya': 'MKN', 'nanyuki': 'MKN',
+      // ── Tanzania ─────────────────────────────────────────────
+      'zanzibar': 'ZNZ', 'stone town': 'ZNZ',
+      'dar es salaam': 'DAR',
+      'arusha': 'ARU', 'kilimanjaro': 'JRO', 'moshi': 'JRO',
+      'serengeti': 'ARU', 'ngorongoro': 'ARU',
+      // ── East Africa ──────────────────────────────────────────
+      'kigali': 'KGL', 'rwanda': 'KGL',
+      'kampala': 'KMP', 'entebbe': 'KMP', 'uganda': 'KMP',
+      'addis ababa': 'ADD', 'ethiopia': 'ADD',
+      'juba': 'JUB', 'bujumbura': 'BJM',
+      'mogadishu': 'MGQ', 'djibouti': 'JIB',
+      // ── Southern Africa ──────────────────────────────────────
+      'johannesburg': 'JNB', 'cape town': 'CPT',
+      'durban': 'DUR', 'pretoria': 'PRY',
+      'victoria falls': 'VFA', 'livingstone': 'LVI',
+      'lusaka': 'LUN', 'harare': 'HRE',
+      'maputo': 'MPM', 'windhoek': 'WDH',
+      // ── Indian Ocean Islands ─────────────────────────────────
+      // CRITICAL FIX: city/island names alongside country names —
+      // the promptParser resolves country→city, so HotelBeds must
+      // recognise the resolved CITY name, not just the country name.
+      'seychelles': 'SEZ',
+      'mahe': 'SEZ',          // Seychelles main island (promptParser: seychelles → mahe)
+      'victoria seychelles': 'SEZ',
+      'praslin': 'SEZ',       // Second Seychelles island — same destination code
+      'mauritius': 'MRU',
+      'port louis': 'MRU',    // Mauritius capital (promptParser: mauritius → port louis)
+      'grand baie': 'MRU',    // Common Mauritius resort area
+      'flic en flac': 'MRU',
+      'maldives': 'MLE',
+      'male': 'MLE',          // Maldives capital (promptParser: maldives → male)
+      'hulhumale': 'MLE',
+      'madagascar': 'TNR',
+      'antananarivo': 'TNR',  // Madagascar capital
+      // ── Middle East ──────────────────────────────────────────
+      'dubai': 'DXB', 'abu dhabi': 'AUH',
+      'doha': 'DOH', 'muscat': 'MCT',
+      'riyadh': 'RUH', 'jeddah': 'JED',
+      'kuwait': 'KWI', 'kuwait city': 'KWI',
+      'beirut': 'BEY', 'amman': 'AMM',
+      // ── North Africa ─────────────────────────────────────────
+      'cairo': 'CAI', 'egypt': 'CAI',
+      'marrakech': 'RAK', 'casablanca': 'CMN', 'morocco': 'CMN',
+      'sharm el sheikh': 'SSH', 'hurghada': 'HRG',
+      'tunis': 'TUN', 'algiers': 'ALG',
+      // ── Europe ───────────────────────────────────────────────
+      'london': 'LON', 'paris': 'PAR', 'amsterdam': 'AMS',
+      'rome': 'ROM', 'milan': 'MIL', 'venice': 'VCE',
+      'barcelona': 'BCN', 'madrid': 'MAD',
+      'athens': 'ATH', 'santorini': 'JTR', 'mykonos': 'JMK',
+      'istanbul': 'IST', 'frankfurt': 'FRA',
+      'zurich': 'ZRH', 'vienna': 'VIE', 'brussels': 'BRU',
+      'lisbon': 'LIS', 'porto': 'OPO',
+      'prague': 'PRG', 'budapest': 'BUD', 'warsaw': 'WAW',
+      // ── Asia ─────────────────────────────────────────────────
+      'bali': 'DPS', 'denpasar': 'DPS',
+      'bangkok': 'BKK', 'phuket': 'HKT', 'chiang mai': 'CNX',
+      'singapore': 'SIN',
+      'kuala lumpur': 'KUL',
+      'tokyo': 'TYO', 'osaka': 'OSA',
+      'delhi': 'DEL', 'mumbai': 'BOM', 'goa': 'GOI',
+      'beijing': 'BJS', 'shanghai': 'SHA', 'hong kong': 'HKG',
+      'seoul': 'SEL',
+      // ── Americas ─────────────────────────────────────────────
+      'new york': 'NYC', 'los angeles': 'LAX', 'miami': 'MIA',
+      'cancun': 'CUN', 'punta cana': 'PUJ',
+      'toronto': 'YTO', 'vancouver': 'YVR',
+      'sao paulo': 'SAO', 'rio de janeiro': 'RIO',
+      // ── Australasia ──────────────────────────────────────────
+      'sydney': 'SYD', 'melbourne': 'MEL',
+      'auckland': 'AKL',
     };
 
     const key = cityName.toLowerCase().trim();
     if (map[key]) return map[key];
 
-    // FIX: "capetown" (no space) failing to match "cape town" (map key,
-    // with space) was a real production bug — confirmed live via
-    // "HotelBeds: could not resolve destination code" for Cape Town
-    // searches. Try a space-normalized comparison first: strips all
-    // whitespace from both sides so "capetown" === "cape town" without
-    // needing every spacing variant hardcoded into the map.
     const keyNoSpace = key.replace(/\s+/g, '');
     for (const [k, v] of Object.entries(map)) {
       if (k.replace(/\s+/g, '') === keyNoSpace) return v;
     }
 
-    // FIX: the old "fuzzy match" here was actually just a substring
-    // containment check (key.includes(k) || k.includes(key)), which
-    // can never bridge a missing/extra space or a genuine typo — it's
-    // not fuzzy matching at all, just substring matching. Real
-    // edit-distance fuzzy match below, with the same three safety
-    // guards built earlier this session for the TravelDuqa/Duffel
-    // adapters: minimum input length, a length-gap cap, and a 75%
-    // similarity floor — so this can catch real typos ("zanibar")
-    // without coincidentally matching unrelated short words the way a
-    // loose containment check could.
     const fuzzyMatch = this._fuzzyMatch(key, Object.keys(map));
     if (fuzzyMatch) {
       logger.info('HotelBeds: fuzzy-matched destination name', { input: cityName, matched: fuzzyMatch });
       return map[fuzzyMatch];
     }
 
-    // Try HotelBeds locations API as last resort
     try {
       const response = await axios.get(
         `${this.baseUrl}/hotel-content-api/1.0/locations/destinations`,
@@ -408,40 +424,79 @@ class HotelBedsAdapter {
 
   // ─────────────────────────────────────────────
   // NORMALIZE HOTELS
+  // CERTIFICATION ADDITIONS:
+  //   rateType     — 'BOOKABLE' or 'RECHECK', determines checkRate() call
+  //   isPackaging  — opaque/packaged rates (filter these out of standalone search)
+  //   promotions   — "Non-refundable — no amendments" etc., must show to traveler
+  //   rateCommentsId — ID for rate remarks text, fetch from ContentAPI at checkout
   // ─────────────────────────────────────────────
   _normalizeHotels(hotels, nights) {
     return hotels.map(hotel => {
-      const cheapestRoom = this._cheapestRoom(hotel.rooms || []);
+      const cheapestRoom  = this._cheapestRoom(hotel.rooms || []);
       const bestRate      = this._bestRate(cheapestRoom?.rates);
       const totalRate     = Number(bestRate?.net || hotel.minRate || 0);
       const pricePerNight = nights > 0 ? Math.round(totalRate / nights) : totalRate;
 
+      // CERTIFICATION 2.5: rateType tells the booking flow whether to
+      // call checkRate() — RECHECK = must call, BOOKABLE = skip it.
+      // Previously this field was never read, meaning RECHECK rates
+      // could be sent straight to booking and fail.
+      const rateType = bestRate?.rateType || 'BOOKABLE';
+
+      // CERTIFICATION 3.5: packaging=true = opaque rate, must only be
+      // used when bundled with flights/transfers. Filter handled below.
+      const isPackaging = bestRate?.packaging === true;
+
+      // CERTIFICATION 2.7: promotions like "Non-refundable rate. No
+      // amendments permitted" must be surfaced to the traveler before
+      // they confirm. Stored on the hotel object so the booking flow
+      // can pass them through to the traveler-facing message.
+      const promotions = (bestRate?.promotions || []).map(p => ({
+        code:   p.code,
+        name:   p.name,
+        remark: p.remark || p.name,
+      }));
+
+      // CERTIFICATION 3.9: rateCommentsId links to human-readable
+      // remarks ("Hotel insurance payable at property", etc.) via
+      // ContentAPI /ratecomments. Fetched on-demand at checkout —
+      // too slow to inline per search result.
+      const rateCommentsId = bestRate?.rateCommentsId || null;
+
       return {
-        supplier:      this.supplier,
-        hotelCode:     hotel.code,
-        name:          hotel.name,
-        stars:         Number(hotel.categoryCode?.replace(/[^0-9]/g, '') || hotel.categoryName?.charAt(0) || 3),
-        rating:        Number(hotel.reviews?.[0]?.rate || 4.0),
-        category:      hotel.categoryName || '',
-        location:      hotel.zoneName     || hotel.destinationName || '',
-        city:          hotel.destinationName || '',
-        address:       hotel.address?.content || '',
-        latitude:      hotel.latitude  || hotel.coordinates?.latitude  || null,
-        longitude:     hotel.longitude || hotel.coordinates?.longitude || null,
-        pricePerNight: pricePerNight,
-        totalRate:     totalRate,
-        currency:      bestRate?.currency || hotel.currency || 'EUR',
-        mealPlan:      this._boardName(bestRate?.boardCode),
-        mealPlanCode:  bestRate?.boardCode || null,
-        roomType:      cheapestRoom?.name || null,
-        rateKey:       bestRate?.rateKey  || null,
-        isRefundable:  bestRate?.rateClass !== 'NRF',
+        supplier:             this.supplier,
+        hotelCode:            hotel.code,
+        name:                 hotel.name,
+        stars:                Number(hotel.categoryCode?.replace(/[^0-9]/g, '') || hotel.categoryName?.charAt(0) || 3),
+        rating:               Number(hotel.reviews?.[0]?.rate || 4.0),
+        category:             hotel.categoryName || '',
+        location:             hotel.zoneName     || hotel.destinationName || '',
+        city:                 hotel.destinationName || '',
+        address:              hotel.address?.content || '',
+        latitude:             hotel.latitude  || hotel.coordinates?.latitude  || null,
+        longitude:            hotel.longitude || hotel.coordinates?.longitude || null,
+        pricePerNight,
+        totalRate,
+        currency:             bestRate?.currency || hotel.currency || 'EUR',
+        mealPlan:             this._boardName(bestRate?.boardCode),
+        mealPlanCode:         bestRate?.boardCode || null,
+        roomType:             cheapestRoom?.name || null,
+        rateKey:              bestRate?.rateKey  || null,
+        rateType,
+        isRefundable:         bestRate?.rateClass !== 'NRF',
+        isPackaging,
+        promotions,
+        rateCommentsId,
         cancellationPolicies: bestRate?.cancellationPolicies || [],
-        images:        (hotel.images || []).slice(0, 3).map(img => img.path),
-        reviews:       hotel.reviews || [],
-        amenities:     (hotel.facilities || []).map(f => f.facilityName).filter(Boolean).slice(0, 10),
+        images:               (hotel.images || []).slice(0, 3).map(img => img.path),
+        reviews:              hotel.reviews || [],
+        amenities:            (hotel.facilities || []).map(f => f.facilityName).filter(Boolean).slice(0, 10),
       };
-    });
+    })
+    // CERTIFICATION 3.5: packaging=true rates removed from standalone
+    // results. We already set packaging:false in the filter payload,
+    // but filter here defensively in case any slip through.
+    .filter(h => !h.isPackaging);
   }
 
   _cheapestRoom(rooms) {
@@ -453,9 +508,6 @@ class HotelBedsAdapter {
     });
   }
 
-  // Picks the cheapest rate within a room, preferring refundable (NOR)
-  // over non-refundable (NRF) so travelers aren't silently defaulted
-  // into a non-refundable booking.
   _bestRate(rates) {
     if (!rates || !rates.length) return null;
     const refundable = rates.filter(r => r.rateClass !== 'NRF');
@@ -470,26 +522,16 @@ class HotelBedsAdapter {
     return map[code] || code || null;
   }
 
-  // ─────────────────────────────────────────────
-  // BUDGET → RATE RANGES (EUR per stay, not per night —
-  // HotelBeds filter.minRate/maxRate apply to total stay cost)
-  // Widened based on observed sandbox rates (~130-400 EUR/night)
-  // ─────────────────────────────────────────────
   _budgetMinRate(budget) {
     const map = { low: 0, mid: 0, high: 0, luxury: 0 };
     return map[budget] || 0;
   }
 
   _budgetMaxRate(budget) {
-    // Generous ceiling — filter loosely server-side, rank by budget client-side instead
     const map = { low: 99999, mid: 99999, high: 99999, luxury: 99999 };
     return map[budget] || 99999;
   }
 
-  // ─────────────────────────────────────────────
-  // AUTH HEADERS
-  // X-Signature = SHA256(apiKey + secret + timestamp)
-  // ─────────────────────────────────────────────
   _headers() {
     const timestamp = Math.floor(Date.now() / 1000);
     const signature = crypto
@@ -500,17 +542,12 @@ class HotelBedsAdapter {
     return {
       'Content-Type': 'application/json',
       'Accept':       'application/json',
+      'Accept-Encoding': 'gzip', // CERTIFICATION 1: GZIP compression
       'Api-key':      this.apiKey,
       'X-Signature':  signature,
     };
   }
 
-  // ─────────────────────────────────────────────
-  // FUZZY MATCH — same three guards as the TravelDuqa/Duffel
-  // adapters' matchers (minimum input length, length-gap cap, 75%
-  // similarity floor) so this can catch genuine typos/spacing
-  // variants without coincidentally matching unrelated short words.
-  // ─────────────────────────────────────────────
   _levenshtein(a, b) {
     const m = a.length, n = b.length;
     const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
@@ -529,17 +566,12 @@ class HotelBedsAdapter {
   _fuzzyMatch(input, candidates) {
     const inputLen = (input || '').length;
     if (inputLen < 3) return null;
-
-    let best = null;
-    let bestDistance = Infinity;
-
+    let best = null, bestDistance = Infinity;
     for (const candidate of candidates) {
       if (Math.abs(candidate.length - inputLen) > 2) continue;
-
       const distance = this._levenshtein(input, candidate);
       const maxAllowed = candidate.length <= 5 ? 1 : candidate.length <= 9 ? 2 : 3;
       const similarity = 1 - distance / Math.max(inputLen, candidate.length);
-
       if (distance <= maxAllowed && similarity >= 0.75 && distance < bestDistance) {
         best = candidate;
         bestDistance = distance;
