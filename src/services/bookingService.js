@@ -31,6 +31,7 @@ const { logger } = require('../utils/logger');
 const paymentService = require('./paymentService');
 const notificationService = require('./notifications');
 const tracking = require('./trackingService');
+const voucherService = require('./voucherService');
 
 let supplierAdapter = null;
 try {
@@ -135,11 +136,6 @@ class BookingService {
     }
 
     if (isHotelBooking) {
-      // Reconcile the searched occupancy against the real DOB ages. If a
-      // child's true age differs from what was searched, this silently
-      // re-fetches a valid rateKey; if that reveals a price jump beyond
-      // tolerance, we STOP here and surface it for approval before any
-      // payment, rather than booking or charging.
       let recon;
       try {
         recon = await this._reconcileHotelOccupancy({ pkg, passengerDetails, priceApproved });
@@ -149,9 +145,6 @@ class BookingService {
       }
 
       if (recon.priceChanged && !priceApproved) {
-        // Don't book the hotel, don't charge. If a flight was held, let it
-        // expire (no charge) and persist the failed stage exactly as the
-        // hotel-confirm-failed path does.
         if (flightResult) {
           await this._persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, 'failed', flightResult, null);
         }
@@ -171,8 +164,6 @@ class BookingService {
 
       try {
         const leadGuest = { firstName: passengerDetails[0].firstName, lastName: passengerDetails[0].lastName };
-        // Prefer the reconciled guests (type + age from DOB); fall back to a
-        // plain mapping only if reconciliation couldn't build them.
         const guestsForHotel = recon.guests || passengerDetails.map(p => ({
           firstName: p.firstName,
           lastName:  p.lastName,
@@ -190,8 +181,6 @@ class BookingService {
           remark:          `Booked via Bodrless for ${agencyId}`,
         });
 
-        // If a re-fetched rateKey was used, keep the package/hotel in sync so
-        // persistence and the combined total reflect what was actually booked.
         if (recon.rateKey && recon.rateKey !== hotel.rateKey) {
           hotel.rateKey = recon.rateKey;
           if (recon.newPrice) hotel.totalRate = recon.newPrice;
@@ -204,8 +193,6 @@ class BookingService {
         const supplierMessage = err.response?.data?.message || err.message;
         logger.error('Hotel booking failed after flight hold', { bookingRef, error: supplierMessage });
 
-        // Critical: flight is held (real commitment) but hotel failed.
-        // Agency needs to know so they can advise the traveler.
         tracking.alert({
           type:       flightResult ? 'hotel_confirm_failed' : 'booking_failed',
           severity:   flightResult ? 'critical' : 'error',
@@ -286,13 +273,20 @@ class BookingService {
 
   // ─────────────────────────────────────────────
   // STEP 3 — CONFIRM PAYMENT
-  // NOTIFICATION HOOK: this is the moment a booking becomes genuinely
-  // confirmed (payment received, flight ticketed) — the right place
-  // to fire notifyBookingConfirmed(), not initBooking() (flight/hotel
-  // are only HELD at that point, payment hasn't landed yet). Wrapped
-  // so a notification failure NEVER blocks or rolls back a
-  // successful, paid booking — the booking is real regardless of
-  // whether a hotel's WhatsApp number happened to be unreachable.
+  // This is the moment a booking becomes genuinely confirmed —
+  // payment received, flight ticketed. Vouchers fire here.
+  //
+  // Two voucher sends:
+  //   1. Immediately on confirmation (booking confirmed, pre-payment
+  //      details already locked in at initBooking)
+  //   2. A second send with resend:true is triggered from the IntaSend
+  //      webhook after this returns, so the traveler gets a clear
+  //      "payment confirmed" message with their voucher attached.
+  //      The webhook handles that separately so this method stays
+  //      focused on the supplier/payment flow.
+  //
+  // Both are fire-and-forget — a voucher failure NEVER blocks or
+  // rolls back a successfully paid booking.
   // ─────────────────────────────────────────────
   async confirmPayment({ bookingRef }) {
     const { data: booking, error } = await supabase
@@ -325,32 +319,83 @@ class BookingService {
 
     logger.info('Booking fully confirmed after payment', { bookingRef });
 
-    // Link the booking ref back to the conversation that created it.
-    // session_id lives in trip_params jsonb, not a top-level column.
     const sessionId = booking.trip_params?.sessionId || null;
     tracking.markConverted({ sessionId, bookingRef });
 
-    // Fire-and-log, not fire-and-await-inline-with-the-response — a
-    // notification failure (missing contact info, WhatsApp API
-    // hiccup, etc.) must never make a successfully PAID booking look
-    // like it failed to the traveler calling this method.
-    this._fireBookingConfirmedNotifications(booking).catch(err => {
-      logger.error('Booking confirmation notifications failed (booking itself is still confirmed)', {
-        bookingRef, error: err.message,
-      });
-    });
+    // Fetch agency for voucher delivery (email copy + WhatsApp number)
+    // and notifications. Fire both async so neither can block or
+    // roll back a successfully paid booking.
+    this._fetchAgencyAndFireVoucher(booking, false).catch(err =>
+      logger.error('Voucher/notification fire failed (booking still confirmed)', { bookingRef, error: err.message })
+    );
 
     return { success: true, bookingRef, status: 'confirmed' };
   }
 
   // ─────────────────────────────────────────────
-  // FIRE BOOKING-CONFIRMED NOTIFICATIONS
-  // Maps the bookings row's stored JSON columns (flight_details,
-  // hotel_details, transfer_details — all persisted in _persistStage
-  // below) into the shape notificationService.notifyBookingConfirmed
-  // expects. Kept separate so confirmPayment's main flow stays
-  // focused on the supplier/payment logic.
+  // FETCH AGENCY AND FIRE VOUCHER + NOTIFICATIONS
+  // Fetches the agency row (needed for email copy recipient,
+  // WhatsApp phone_number_id, and agency name on the voucher),
+  // then fires both the voucher delivery and the existing
+  // notifyBookingConfirmed flow in parallel. Separated from
+  // confirmPayment so that function stays readable.
   // ─────────────────────────────────────────────
+  async _fetchAgencyAndFireVoucher(booking, isResend) {
+    let agency = null;
+    try {
+      const { data } = await supabase
+        .from('agencies')
+        .select('id,name,email,whatsapp_phone_number_id')
+        .eq('id', booking.agency_id)
+        .single();
+      agency = data;
+    } catch (err) {
+      logger.warn('Could not fetch agency for voucher', { agencyId: booking.agency_id, error: err.message });
+    }
+
+    // Build the booking shape voucherService expects from the persisted
+    // bookings row — hotel_details and flight_details are the raw supplier
+    // response objects stored in _persistStage.
+    const hotelDetails = booking.hotel_details || {};
+    const voucherBooking = {
+      supplierBookingReference: booking.hotel_supplier_reference || booking.supplier_booking_reference,
+      clientReference:          booking.booking_ref,
+      status:                   'CONFIRMED',
+      confirmedAt:              new Date().toISOString(),
+      hotelName:                hotelDetails.name            || null,
+      hotelAddress:             hotelDetails.address         || null,
+      hotelPhone:               hotelDetails.phone           || null,
+      checkIn:                  hotelDetails.checkIn         || booking.flight_details?.departureTime || null,
+      checkOut:                 hotelDetails.checkOut        || null,
+      nights:                   booking.nights               || null,
+      roomType:                 hotelDetails.roomType        || null,
+      boardType:                hotelDetails.mealPlan        || hotelDetails.boardType || null,
+      guestName:                booking.guest_name           || null,
+      guestEmail:               booking.guest_email          || null,
+      guestPhone:               booking.guest_phone          || null,
+      passengers:               booking.passengers           || 1,
+      totalAmount:              hotelDetails.totalRate       || booking.total_price || 0,
+      currency:                 hotelDetails.currency        || booking.currency || 'EUR',
+      rateComments:             hotelDetails.rateComments    || null,
+      cancellationPolicies:     hotelDetails.cancellationPolicies || [],
+      promotions:               hotelDetails.promotions      || [],
+      supplier_tag:             hotelDetails.supplier_tag    || null,
+      booking_ref:              booking.booking_ref,
+    };
+
+    // Fire voucher and existing booking-confirmed notifications in parallel.
+    // Neither can fail the other.
+    await Promise.allSettled([
+      voucherService.sendVoucher({
+        booking: voucherBooking,
+        hotel:   hotelDetails,
+        agency,
+        resend:  isResend,
+      }),
+      this._fireBookingConfirmedNotifications(booking),
+    ]);
+  }
+
   async _fireBookingConfirmedNotifications(booking) {
     const transferList = Array.isArray(booking.transfer_details)
       ? booking.transfer_details
@@ -358,22 +403,22 @@ class BookingService {
 
     await notificationService.notifyBookingConfirmed({
       booking: {
-        bookingRef: booking.booking_ref,
-        agencyId: booking.agency_id,
-        guestName: booking.guest_name,
-        guestPhone: booking.guest_phone,
-        guestEmail: booking.guest_email,
-        origin: booking.origin,
-        destination: booking.destination,
-        checkIn: booking.flight_details?.departureTime || null,
-        checkOut: null,
-        passengers: booking.passengers,
-        totalPrice: booking.total_price,
-        currency: booking.currency,
+        bookingRef:   booking.booking_ref,
+        agencyId:     booking.agency_id,
+        guestName:    booking.guest_name,
+        guestPhone:   booking.guest_phone,
+        guestEmail:   booking.guest_email,
+        origin:       booking.origin,
+        destination:  booking.destination,
+        checkIn:      booking.flight_details?.departureTime || null,
+        checkOut:     null,
+        passengers:   booking.passengers,
+        totalPrice:   booking.total_price,
+        currency:     booking.currency,
         specialRequests: null,
       },
-      flight: booking.flight_details || null,
-      hotel: booking.hotel_details || null,
+      flight:    booking.flight_details    || null,
+      hotel:     booking.hotel_details     || null,
       transfers: transferList,
     });
   }
@@ -402,10 +447,6 @@ class BookingService {
     return { success: true, bookingRef, status: 'cancelled' };
   }
 
-  // ─────────────────────────────────────────────
-  // CALCULATE AGE from a date of birth (years, floored). Returns null
-  // for missing/unparseable dates so callers can fall back safely.
-  // ─────────────────────────────────────────────
   _calculateAge(dob) {
     if (!dob) return null;
     const d = new Date(dob);
@@ -417,23 +458,10 @@ class BookingService {
     return age >= 0 && age < 120 ? age : null;
   }
 
-  // ─────────────────────────────────────────────
-  // RECONCILE HOTEL OCCUPANCY (search ages vs real DOB ages)
-  // Builds the HotelBeds guest list (type + age from each passenger's DOB)
-  // and, if a child's true age differs from what was searched, silently
-  // re-fetches a fresh rateKey for that exact hotel at the corrected
-  // occupancy. Returns:
-  //   { guests, rateKey, priceChanged, oldPrice?, newPrice?, currency? }
-  // priceChanged is true ONLY when a re-fetch revealed a price move beyond
-  // tolerance — the caller then stops and asks the traveler to approve
-  // BEFORE any payment. Every failure path falls back to the original
-  // rateKey and never silently mischarges.
-  // ─────────────────────────────────────────────
   async _reconcileHotelOccupancy({ pkg, passengerDetails, priceApproved }) {
     const hotel = pkg.hotel || {};
     const occ = (pkg.summary && pkg.summary.occupancy) || null;
 
-    // Guests with type + age derived from DOB (authoritative at booking).
     const guests = (passengerDetails || []).map(p => {
       const dob = p.dateOfBirth || p.date_of_birth || p.dob || null;
       const age = this._calculateAge(dob);
@@ -448,7 +476,6 @@ class BookingService {
       return g;
     });
 
-    // Nothing to reconcile against, or no re-fetchable hotel -> use as-is.
     if (!occ || !hotel.hotelCode || !hotel.rateKey || typeof supplierAdapter?.refetchRate !== 'function') {
       return { guests, rateKey: hotel.rateKey, priceChanged: false };
     }
@@ -467,7 +494,6 @@ class BookingService {
       return { guests, rateKey: hotel.rateKey, priceChanged: false };
     }
 
-    // Ages drifted -> re-fetch a valid rate for this exact hotel.
     const adults = Math.max(1, guests.filter(g => g.type === 'adult').length);
     let refetch = null;
     try {
@@ -493,7 +519,7 @@ class BookingService {
 
     const oldPrice = Number(hotel.totalRate || (hotel.pricePerNight || 0) * (occ.nights || pkg.summary?.nights || 1) || 0);
     const newPrice = Number(refetch.totalRate || 0);
-    const tolerance = Math.max(2, oldPrice * 0.02); // 2 currency units OR 2%
+    const tolerance = Math.max(2, oldPrice * 0.02);
     const priceChanged = oldPrice > 0 && newPrice > 0 && Math.abs(newPrice - oldPrice) > tolerance;
 
     if (priceChanged && !priceApproved) {
