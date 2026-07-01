@@ -46,10 +46,17 @@ class WhatsAppService {
   async sendPackages(phoneNumberId, to, packages) {
     const isItinerary = packages.length === 1 && packages[0]?.isMultiDestination;
 
+    // NOTE: intro line intentionally uses a neutral icon (🧭), not a
+    // flight-specific one — a single search can now legitimately
+    // return a MIX of modes (e.g. a flight package, a bus package,
+    // and an SGR train package all for the same "Nairobi to Kilifi"
+    // search — see engine.js's corridor routing). A hardcoded ✈️
+    // here would misrepresent the list before the traveler even
+    // opens it.
     await this.sendText(phoneNumberId, to,
       isItinerary
         ? `🗺️ I've put together your multi-stop itinerary:`
-        : `✈️ I found *${packages.length} option(s)* for your trip! Here they are:`
+        : `🧭 I found *${packages.length} option(s)* for your trip! Here they are:`
     );
 
     for (let i = 0; i < packages.length; i++) {
@@ -67,6 +74,39 @@ class WhatsAppService {
         ? "Let me know if you'd like to book this, or adjust any part of it!"
         : "Reply with the option number you prefer and we'll get your booking sorted!"
     );
+  }
+
+  // ─────────────────────────────────────────────
+  // TRANSPORT MODE META — icon + label, one place for both
+  // _sendPackageCard and _sendItineraryCard so flight/bus/train
+  // never drift out of sync again. A transport object with no
+  // recognized transportType (or none at all) falls back to the
+  // flight treatment, matching the pre-existing default elsewhere
+  // in this codebase (engine.js's _formatTransportDisplay does the
+  // same: `t.transportType || 'flight'`).
+  // ─────────────────────────────────────────────
+  _transportMeta(transportType) {
+    const type = (transportType || 'flight').toLowerCase();
+    if (type === 'bus')   return { type, icon: '🚌', label: 'Bus',   operatorWord: 'Operator' };
+    if (type === 'train') return { type, icon: '🚆', label: 'Train', operatorWord: 'Service' };
+    return { type: 'flight', icon: '✈️', label: 'Flight', operatorWord: 'Airline' };
+  }
+
+  // ─────────────────────────────────────────────
+  // FORMAT A TRANSPORT PRICE LINE
+  // priceOnRequest entries (static bus operator catalog — Buscar/
+  // Dreamline/Mash shown when live IABIRI has nothing for a route —
+  // see engine.js's _searchStaticBusOperators) have price: null on
+  // purpose, since no real fare is known. `(price || 0)` would
+  // silently show "KES 0", implying the trip is free. Show an
+  // honest "contact operator" line instead.
+  // ─────────────────────────────────────────────
+  _formatPriceLine(transport) {
+    const currency = transport.currency || 'KES';
+    if (transport.priceOnRequest) {
+      return `  Price: Contact operator to confirm`;
+    }
+    return `  Price: ${currency} ${(transport.price || 0).toLocaleString()}`;
   }
 
   /**
@@ -95,37 +135,62 @@ class WhatsAppService {
 
     // ── Outbound transport ──────────────────────────
     if (transport) {
-      const isbus = (transport.transportType || '').toLowerCase() === 'bus';
-      const tCurrency = transport.currency || 'KES';
+      const meta = this._transportMeta(transport.transportType);
       lines.push('');
-      lines.push(isbus ? '*🚌 Outbound Bus*' : '*✈️ Outbound Flight*');
-      lines.push(`  ${isbus ? 'Operator' : 'Airline'}: ${transport.airline || transport.provider || 'TBC'}`);
-      lines.push(`  From: ${transport.origin || 'TBC'} → ${transport.destination || 'TBC'}`);
-      lines.push(`  Departs: ${this._formatTime(transport.departureTime)} · Arrives: ${this._formatTime(transport.arrivalTime)}`);
-      if (transport.stops) lines.push(`  Stops: ${transport.stops}`);
-      if (transport.cabinClass) lines.push(`  Class: ${transport.cabinClass}`);
-      if (!isbus && transport.baggageSummary) lines.push(`  Baggage: ${transport.baggageSummary}`);
-      if (transport.policySummary || transport.cancellationPolicy) {
-        lines.push(`  Cancellation: ${transport.policySummary || (isbus ? transport.cancellationPolicy : null) || 'Confirmed at booking'}`);
+      lines.push(`*${meta.icon} Outbound ${meta.label}*`);
+
+      if (meta.type === 'train') {
+        lines.push(`  Service: ${transport.serviceName || transport.provider || 'SGR'}${transport.trainClass ? ' · ' + transport.trainClass.replace('_', ' ') : ''}`);
+        lines.push(`  From: ${transport.origin || 'TBC'} → ${transport.destination || 'TBC'}`);
+        if (transport.departureTime) lines.push(`  Departs: ${this._formatScheduleTime(transport.departureTime)}`);
+        if (transport.stopsNote) lines.push(`  Stops: ${transport.stopsNote}`);
+        lines.push(`  ${transport.policySummary || (transport.canBook ? 'Bookable via SGR' : 'Not yet bookable through Bodrless — purchase directly via SGR')}`);
+      } else {
+        lines.push(`  ${meta.operatorWord}: ${transport.airline || transport.provider || 'TBC'}${transport.busType ? ' · ' + transport.busType : ''}`);
+        lines.push(`  From: ${transport.origin || 'TBC'} → ${transport.destination || 'TBC'}`);
+        lines.push(`  Departs: ${this._formatTime(transport.departureTime)} · Arrives: ${this._formatTime(transport.arrivalTime)}`);
+        if (transport.stops) lines.push(`  Stops: ${transport.stops}`);
+        if (transport.cabinClass) lines.push(`  Class: ${transport.cabinClass}`);
+        if (meta.type === 'flight' && transport.baggageSummary) lines.push(`  Baggage: ${transport.baggageSummary}`);
+        if (transport.policySummary || transport.cancellationPolicy) {
+          lines.push(`  Cancellation: ${transport.policySummary || (meta.type === 'bus' ? transport.cancellationPolicy : null) || 'Confirmed at booking'}`);
+        }
       }
-      lines.push(`  Price: ${tCurrency} ${(transport.price || 0).toLocaleString()}`);
+
+      // routeNote — e.g. "Buscar runs Nairobi <-> Malindi and stops
+      // at Kilifi along the way" — critical operational context for
+      // through-route bus entries, previously not shown at all.
+      if (transport.routeNote) lines.push(`  ℹ️ ${transport.routeNote}`);
+
+      lines.push(this._formatPriceLine(transport));
     }
 
     // ── Return transport ────────────────────────────
     if (returnTransport) {
-      const isbus = (returnTransport.transportType || '').toLowerCase() === 'bus';
-      const rtCurrency = returnTransport.currency || 'KES';
+      const meta = this._transportMeta(returnTransport.transportType);
       lines.push('');
-      lines.push(isbus ? '*🚌 Return Bus*' : '*✈️ Return Flight*');
-      lines.push(`  ${isbus ? 'Operator' : 'Airline'}: ${returnTransport.airline || returnTransport.provider || 'TBC'}`);
-      lines.push(`  From: ${returnTransport.origin || 'TBC'} → ${returnTransport.destination || 'TBC'}`);
-      lines.push(`  Departs: ${this._formatTime(returnTransport.departureTime)} · Arrives: ${this._formatTime(returnTransport.arrivalTime)}`);
-      if (returnTransport.stops) lines.push(`  Stops: ${returnTransport.stops}`);
-      if (!isbus && returnTransport.baggageSummary) lines.push(`  Baggage: ${returnTransport.baggageSummary}`);
-      if (returnTransport.policySummary || returnTransport.cancellationPolicy) {
-        lines.push(`  Cancellation: ${returnTransport.policySummary || (isbus ? returnTransport.cancellationPolicy : null) || 'Confirmed at booking'}`);
+      lines.push(`*${meta.icon} Return ${meta.label}*`);
+
+      if (meta.type === 'train') {
+        lines.push(`  Service: ${returnTransport.serviceName || returnTransport.provider || 'SGR'}${returnTransport.trainClass ? ' · ' + returnTransport.trainClass.replace('_', ' ') : ''}`);
+        lines.push(`  From: ${returnTransport.origin || 'TBC'} → ${returnTransport.destination || 'TBC'}`);
+        if (returnTransport.departureTime) lines.push(`  Departs: ${this._formatScheduleTime(returnTransport.departureTime)}`);
+        if (returnTransport.stopsNote) lines.push(`  Stops: ${returnTransport.stopsNote}`);
+        lines.push(`  ${returnTransport.policySummary || (returnTransport.canBook ? 'Bookable via SGR' : 'Not yet bookable through Bodrless — purchase directly via SGR')}`);
+      } else {
+        lines.push(`  ${meta.operatorWord}: ${returnTransport.airline || returnTransport.provider || 'TBC'}${returnTransport.busType ? ' · ' + returnTransport.busType : ''}`);
+        lines.push(`  From: ${returnTransport.origin || 'TBC'} → ${returnTransport.destination || 'TBC'}`);
+        lines.push(`  Departs: ${this._formatTime(returnTransport.departureTime)} · Arrives: ${this._formatTime(returnTransport.arrivalTime)}`);
+        if (returnTransport.stops) lines.push(`  Stops: ${returnTransport.stops}`);
+        if (meta.type === 'flight' && returnTransport.baggageSummary) lines.push(`  Baggage: ${returnTransport.baggageSummary}`);
+        if (returnTransport.policySummary || returnTransport.cancellationPolicy) {
+          lines.push(`  Cancellation: ${returnTransport.policySummary || (meta.type === 'bus' ? returnTransport.cancellationPolicy : null) || 'Confirmed at booking'}`);
+        }
       }
-      lines.push(`  Price: ${rtCurrency} ${(returnTransport.price || 0).toLocaleString()}`);
+
+      if (returnTransport.routeNote) lines.push(`  ℹ️ ${returnTransport.routeNote}`);
+
+      lines.push(this._formatPriceLine(returnTransport));
     }
 
     // ── Hotel (only if present) ─────────────────────
@@ -160,11 +225,27 @@ class WhatsAppService {
       lines.push(`⚠️ ${pkg.connectionAdvisory}`);
     }
 
+    // ── Hub transfer note (e.g. flight lands at Malindi for a
+    // Kilifi/Watamu trip — the transfer IS included, this just
+    // explains why an airport/station other than the destination
+    // itself shows up in the itinerary) ──
+    if (pkg.hubTransferNote) {
+      lines.push('');
+      lines.push(`ℹ️ ${pkg.hubTransferNote}`);
+    }
+
     // ── Total (always canonical currency — KES) ──────
     lines.push('');
     lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
     if (summary.pricePerPerson) {
       lines.push(`_(${totalCurrency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
+    }
+    // priceCaveat — set by engine.js whenever a leg's fare is
+    // priceOnRequest (static bus catalog) and was therefore excluded
+    // from totalPrice above, so the traveler never mistakes this
+    // total for a complete, final price.
+    if (summary.priceCaveat) {
+      lines.push(`⚠️ _${summary.priceCaveat}_`);
     }
 
     return this._send(phoneNumberId, {
@@ -214,14 +295,17 @@ class WhatsAppService {
       // ── Transport arriving at this stop ────────────
       const t = leg.transportIn;
       if (t) {
-        const isbus = (t.transportType || '').toLowerCase() === 'bus';
-        const tCurrency = t.currency || 'KES';
-        lines.push(`  ${isbus ? '🚌' : '✈️'} ${t.origin || 'TBC'} → ${t.destination || 'TBC'}`);
-        lines.push(`    ${isbus ? 'Operator' : 'Airline'}: ${t.airline || t.provider || 'TBC'} · ${this._formatTime(t.departureTime)}–${this._formatTime(t.arrivalTime)}`);
+        const meta = this._transportMeta(t.transportType);
+        lines.push(`  ${meta.icon} ${t.origin || 'TBC'} → ${t.destination || 'TBC'}`);
+        if (meta.type === 'train') {
+          lines.push(`    Service: ${t.serviceName || t.provider || 'SGR'}${t.trainClass ? ' · ' + t.trainClass.replace('_', ' ') : ''} · ${this._formatScheduleTime(t.departureTime)}`);
+        } else {
+          lines.push(`    ${meta.operatorWord}: ${t.airline || t.provider || 'TBC'} · ${this._formatTime(t.departureTime)}–${this._formatTime(t.arrivalTime)}`);
+        }
         if (leg.connectsVia && !isBuffer) {
           lines.push(`    _Connects via ${this._titleCase(leg.connectsVia)}_`);
         }
-        lines.push(`    Price: ${tCurrency} ${(t.price || 0).toLocaleString()}`);
+        lines.push(`    ${t.priceOnRequest ? 'Price: Contact operator to confirm' : `Price: ${t.currency || 'KES'} ${(t.price || 0).toLocaleString()}`}`);
       } else if (!isBuffer) {
         lines.push(`  ⚠️ Transport for this leg still to be confirmed`);
       }
@@ -250,12 +334,16 @@ class WhatsAppService {
     // ── Final return-to-origin transport ──────────────
     if (pkg.returnTransport) {
       const rt = pkg.returnTransport;
-      const isbus = (rt.transportType || '').toLowerCase() === 'bus';
-      const rtCurrency = rt.currency || 'KES';
+      const meta = this._transportMeta(rt.transportType);
       lines.push('');
       lines.push(`*Return*`);
-      lines.push(`  ${isbus ? '🚌' : '✈️'} ${rt.origin || 'TBC'} → ${rt.destination || 'TBC'}`);
-      lines.push(`    ${this._formatTime(rt.departureTime)}–${this._formatTime(rt.arrivalTime)} · ${rtCurrency} ${(rt.price || 0).toLocaleString()}`);
+      lines.push(`  ${meta.icon} ${rt.origin || 'TBC'} → ${rt.destination || 'TBC'}`);
+      if (meta.type === 'train') {
+        lines.push(`    ${this._formatScheduleTime(rt.departureTime)} · ${rt.serviceName || rt.provider || 'SGR'}${rt.trainClass ? ' · ' + rt.trainClass.replace('_', ' ') : ''}`);
+      } else {
+        lines.push(`    ${this._formatTime(rt.departureTime)}–${this._formatTime(rt.arrivalTime)}`);
+      }
+      lines.push(`    ${rt.priceOnRequest ? 'Price: Contact operator to confirm' : `${rt.currency || 'KES'} ${(rt.price || 0).toLocaleString()}`}`);
     }
 
     // ── Combined total ─────────────────────────────────
@@ -263,6 +351,9 @@ class WhatsAppService {
     lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
     if (summary.pricePerPerson) {
       lines.push(`_(${totalCurrency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
+    }
+    if (summary.priceCaveat) {
+      lines.push(`⚠️ _${summary.priceCaveat}_`);
     }
 
     return this._send(phoneNumberId, {
@@ -304,6 +395,20 @@ class WhatsAppService {
     const date = new Date(isoString);
     if (isNaN(date)) return isoString;
     return date.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // ─────────────────────────────────────────────
+  // FORMAT A BARE "HH:MM" SCHEDULE TIME (SGR static entries store
+  // departureTime as a plain "08:00" string, not an ISO timestamp —
+  // _formatTime above expects ISO and would print "Invalid Date" or
+  // echo the raw string oddly via `new Date(isoString)`. Kept
+  // separate rather than overloading _formatTime, since the two
+  // input shapes (ISO datetime vs. bare HH:MM) genuinely differ.
+  // ─────────────────────────────────────────────
+  _formatScheduleTime(value) {
+    if (!value) return 'TBC';
+    if (/^\d{1,2}:\d{2}$/.test(value)) return value;
+    return this._formatTime(value);
   }
 
   _titleCase(str) {

@@ -206,10 +206,10 @@ class OrchestrationEngine {
       hotelResults
     ] = await Promise.all([
       this._searchFlightsWithHubFallback(tripParams, 'outbound', destinationAccess),
-      this._searchBuses(tripParams, 'outbound', destinationAccess),
+      this._searchBusesWithStaticFallback(tripParams, 'outbound', destinationAccess),
       this._searchTrain(tripParams, 'outbound', destinationAccess),
       tripParams.returnDate ? this._searchFlightsWithHubFallback(tripParams, 'return', destinationAccess) : Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true }),
-      tripParams.returnDate ? this._searchBuses(tripParams, 'return', destinationAccess) : Promise.resolve([]),
+      tripParams.returnDate ? this._searchBusesWithStaticFallback(tripParams, 'return', destinationAccess) : Promise.resolve([]),
       tripParams.returnDate ? this._searchTrain(tripParams, 'return', destinationAccess) : Promise.resolve([]),
       this._searchHotels(tripParams),
     ]);
@@ -1900,49 +1900,57 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // BUSES
   // ─────────────────────────────
-  async _searchBuses(tripParams, leg = 'outbound', destinationAccess = null) {
-    // Raw per-leg mode BEFORE the 'flight' default is applied — kept
-    // separate from `mode` below so we can tell "traveler said
-    // nothing about transport mode" (null) apart from "traveler
-    // explicitly wants flight/train for THIS leg" (a real, stated
-    // value that just happens to also be 'flight'). The combined
-    // `mode` variable collapses both cases into the same string,
-    // which caused a real production bug: "bus going, flight coming
-    // back" still ran an IABIRI bus search on the return leg, because
-    // the destinationIntel bypass below couldn't distinguish
-    // "defaulted" from "explicitly chosen" — silently disregarding
-    // the traveler's stated return-leg preference.
+  // ─────────────────────────────
+  // BUS ELIGIBILITY FOR THIS LEG
+  // Shared by both the live IABIRI search (_searchBuses) and the
+  // static operator catalog fallback (_searchStaticBusOperators) —
+  // extracted so both paths always agree on whether bus is even an
+  // appropriate mode for this leg, rather than risking the two
+  // checks drifting apart over time.
+  //
+  // Raw per-leg mode BEFORE the 'flight' default is applied — kept
+  // separate from `mode` below so we can tell "traveler said
+  // nothing about transport mode" (null) apart from "traveler
+  // explicitly wants flight/train for THIS leg" (a real, stated
+  // value that just happens to also be 'flight'). Collapsing both
+  // cases into the same string caused a real production bug: "bus
+  // going, flight coming back" still ran an IABIRI bus search on the
+  // return leg, because the destinationIntel bypass couldn't
+  // distinguish "defaulted" from "explicitly chosen" — silently
+  // disregarding the traveler's stated return-leg preference.
+  // ─────────────────────────────
+  _busEligibleForLeg(tripParams, leg, destinationAccess) {
     const explicitLegMode = leg === 'return'
       ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || null)
       : (tripParams.outboundTransportMode || tripParams.transportMode || null);
 
     const mode = explicitLegMode || 'flight';
 
-    // BUG FIX (found via testing): destinationAccess.accessByMode.bus
-    // must be checked BEFORE this gate. mode defaults to 'flight'
-    // whenever the traveler didn't explicitly say "bus" — which is
-    // the normal case ("Nairobi to Kilifi" names no transport mode
-    // at all) — so this early return was silencing the Kilifi/
-    // Watamu direct-bus option entirely, even though destinationIntel
-    // genuinely confirms it exists. A bare, unspecified mode should
-    // still surface a KNOWN, CONFIRMED bus alternative alongside
-    // flights; it should only suppress buses when nothing concrete
-    // backs them (the old hardcoded busRoutes list further below is
-    // intentionally left un-touched by this fix — see its own
-    // comment — so this stays scoped to destinationIntel-confirmed
-    // routes only, not a blanket change to bus search behavior).
-    //
-    // CRITICAL: the bypass below only fires when explicitLegMode is
-    // null — i.e. the traveler said NOTHING about mode for this leg.
-    // If they explicitly asked for flight/train on THIS leg (e.g.
-    // "returning with a flight"), that choice is always respected —
-    // destinationIntel confirming a bus alternative exists is never
-    // grounds to override an explicit per-leg request.
-    const busAccessPreCheck = destinationAccess?.accessByMode?.bus;
-    const isDestinationIntelDirectRoutePreCheck = busAccessPreCheck?.directService === true;
-    const canBypassOnKnownRoute = explicitLegMode === null && isDestinationIntelDirectRoutePreCheck;
+    // The bypass below only fires when explicitLegMode is null — the
+    // traveler said NOTHING about mode for this leg. If they
+    // explicitly asked for flight/train on THIS leg (e.g. "returning
+    // with a flight"), that choice is always respected — a known bus
+    // alternative existing is never grounds to override an explicit
+    // per-leg request.
+    const busAccess = destinationAccess?.accessByMode?.bus;
+    const isDestinationIntelDirectRoute = busAccess?.directService === true;
+    const canBypassOnKnownRoute = explicitLegMode === null && isDestinationIntelDirectRoute;
 
-    if ((mode === 'flight' || mode === 'train') && !canBypassOnKnownRoute) return [];
+    return !((mode === 'flight' || mode === 'train') && !canBypassOnKnownRoute);
+  }
+
+  async _searchBuses(tripParams, leg = 'outbound', destinationAccess = null) {
+    if (!this._busEligibleForLeg(tripParams, leg, destinationAccess)) return [];
+
+    // Needed below to still allow an explicit "bus" request through
+    // even on a route with no pre-vetted busRoutes/destinationIntel
+    // entry — _busEligibleForLeg already confirmed bus is allowed
+    // for this leg; this just recovers which case that was (explicit
+    // vs. defaulted+known-route) for the isBusRoute check further down.
+    const explicitLegMode = leg === 'return'
+      ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || null)
+      : (tripParams.outboundTransportMode || tripParams.transportMode || null);
+    const mode = explicitLegMode || 'flight';
 
     const busRoutes = [
       ['nairobi', 'mombasa'], ['nairobi', 'kampala'], ['nairobi', 'dar es salaam'],
@@ -2062,6 +2070,107 @@ class OrchestrationEngine {
       }));
     } catch (err) {
       logger.error(`bus search failed (${leg})`, { error: err.message });
+      return [];
+    }
+  }
+
+  // ─────────────────────────────
+  // STATIC BUS OPERATOR CATALOG — fallback only, no live API yet
+  // ─────────────────────────────
+  // Real operators confirmed running the Nairobi<->Mombasa and
+  // Nairobi<->Malindi (via Kilifi/Watamu) corridors. Shown ONLY when
+  // the live IABIRI search (_searchBuses above) returns ZERO results
+  // for a leg — today that's every time, since IABIRI has no numeric
+  // city ID mapped for Malindi (see travler.js's _cityCache()), but
+  // this is a genuine fallback, not a permanent replacement: the
+  // moment real IABIRI results start coming back for a route, they
+  // are used instead and this static catalog stops appearing for
+  // that corridor automatically (see _searchBusesWithStaticFallback).
+  //
+  // Deliberately NO invented schedule times or fares — real numbers
+  // weren't available at the time this was built, and a fabricated
+  // "KES 1800, departs 14:00" would be actively misleading. Each
+  // entry is priceOnRequest: true / canBook: false, with a routeNote
+  // pointing the traveler to contact the operator directly.
+  // _buildPackages excludes priceOnRequest transport from the
+  // package's summed total and adds a visible priceCaveat instead of
+  // silently treating the missing price as KES 0.
+  // ─────────────────────────────
+  static STATIC_BUS_OPERATORS = [
+    { provider: 'Buscar',    busType: null },
+    { provider: 'Dreamline', busType: 'Marcopolo G7' },
+    { provider: 'Mash',      busType: 'Mash Polo' },
+  ];
+
+  // Which corridor (if any) this search matches, and — for the
+  // Kilifi/Watamu case — which real stop the traveler actually wants,
+  // since the physical route's own endpoints are Nairobi<->Malindi.
+  _staticBusCorridor(tripParams, destinationAccess) {
+    const origin = (tripParams.origin      || '').toLowerCase().trim();
+    const dest   = (tripParams.destination || '').toLowerCase().trim();
+
+    if ((origin === 'nairobi' && dest === 'mombasa') || (origin === 'mombasa' && dest === 'nairobi')) {
+      return { routeOrigin: 'nairobi', routeHub: 'mombasa', stopsAt: null };
+    }
+
+    const busAccess = destinationAccess?.accessByMode?.bus;
+    if (busAccess?.searchAs === 'malindi') {
+      return { routeOrigin: 'nairobi', routeHub: 'malindi', stopsAt: tripParams.destination };
+    }
+
+    return null;
+  }
+
+  async _searchStaticBusOperators(tripParams, leg = 'outbound', destinationAccess = null) {
+    if (!this._busEligibleForLeg(tripParams, leg, destinationAccess)) return [];
+
+    const corridor = this._staticBusCorridor(tripParams, destinationAccess);
+    if (!corridor) return [];
+
+    const displayOrigin      = leg === 'return' ? tripParams.destination : tripParams.origin;
+    const displayDestination = leg === 'return' ? tripParams.origin      : tripParams.destination;
+
+    return OrchestrationEngine.STATIC_BUS_OPERATORS.map(op => ({
+      supplier:           'static_bus_catalog',
+      transportType:      'bus',
+      provider:            op.provider,
+      airline:             op.provider,
+      busType:             op.busType,
+      origin:              this._titleCase(displayOrigin),
+      destination:         this._titleCase(displayDestination),
+      departureTime:       null,
+      arrivalTime:         null,
+      price:               null,
+      priceOnRequest:      true,
+      currency:            'KES',
+      canBook:             false,
+      availableSeats:      null,
+      totalSeats:          null,
+      amenities:           [],
+      cancellationPolicy:  null,
+      isDelayed:           false,
+      routeNote:           corridor.stopsAt
+        ? `${op.provider}${op.busType ? ` (${op.busType})` : ''} runs ${this._titleCase(corridor.routeOrigin)} \u2194 ${this._titleCase(corridor.routeHub)} and stops at ${this._titleCase(corridor.stopsAt)} along the way. Contact ${op.provider} directly to confirm schedule and fare \u2014 live booking here is pending the Travler/IABIRI integration for this route.`
+        : `Contact ${op.provider}${op.busType ? ` (${op.busType})` : ''} directly to confirm current schedule and fare \u2014 live booking here is pending the Travler/IABIRI integration for this route.`,
+    }));
+  }
+
+  // ─────────────────────────────
+  // LIVE BUS SEARCH WITH STATIC-CATALOG FALLBACK
+  // The live IABIRI result is ALWAYS preferred when it has anything
+  // — this single line is the entire "once we get the live api from
+  // travler we use that" behavior: real results simply win, no flag
+  // or manual switch-over needed. The static catalog only fires when
+  // live search comes back genuinely empty.
+  // ─────────────────────────────
+  async _searchBusesWithStaticFallback(tripParams, leg = 'outbound', destinationAccess = null) {
+    const liveResults = await this._searchBuses(tripParams, leg, destinationAccess);
+    if (liveResults.length > 0) return liveResults;
+
+    try {
+      return await this._searchStaticBusOperators(tripParams, leg, destinationAccess);
+    } catch (err) {
+      logger.warn('Static bus operator catalog fallback failed', { error: err.message });
       return [];
     }
   }
@@ -2426,11 +2535,21 @@ class OrchestrationEngine {
       transportType: t.transportType || 'flight',
       airline:       t.airline       || t.provider || "Transport",
       flightNumber:  t.flightNumber  || null,
-      departureTime: t.departureTime || "08:00",
-      arrivalTime:   t.arrivalTime   || "12:00",
+      // priceOnRequest entries (static bus operator catalog — see
+      // _searchStaticBusOperators) genuinely have no known departure
+      // time; defaulting to "08:00" here would silently fabricate a
+      // schedule fact we don't actually have. Only apply the
+      // placeholder default for objects that are supposed to carry
+      // real schedule data.
+      departureTime: t.priceOnRequest ? (t.departureTime || null) : (t.departureTime || "08:00"),
+      arrivalTime:   t.priceOnRequest ? (t.arrivalTime   || null) : (t.arrivalTime   || "12:00"),
       origin:        t.origin        || fallbackOrigin,
       destination:   t.destination   || fallbackDest,
-      price:         t.price         || 0,
+      // Same reasoning as departureTime above — `t.price || 0` would
+      // silently turn "we don't know the fare" into "this costs
+      // KES 0", which is actively misleading, not just imprecise.
+      price:         t.priceOnRequest ? null : (t.price || 0),
+      priceOnRequest: t.priceOnRequest || false,
       supplier:      t.supplier      || 'supabase',
     };
 
@@ -2451,12 +2570,23 @@ class OrchestrationEngine {
         cancellationPolicy: t.cancellationPolicy,
         currency:           t.currency           || 'KES',
         isDelayed:          t.isDelayed          || false,
+        // NEW — static bus operator catalog entries (see
+        // _searchStaticBusOperators) set canBook: false explicitly;
+        // real IABIRI results never set this field, so default to
+        // true for those — same "no data = assume normal" posture
+        // as everywhere else in this file.
+        canBook:            t.canBook !== undefined ? t.canBook : true,
         // NEW — surfaces the existing cancellationPolicy in the
-        // same policySummary slot whatsapp.js/widget.js read from.
-        // Buses have no baggage data anywhere upstream (IABIRI
-        // doesn't return any), so baggageSummary stays null here
-        // rather than guessing.
-        policySummary:  t.cancellationPolicy || 'Cancellation policy not specified',
+        // same policySummary slot whatsapp.js/widget.js read from,
+        // UNLESS this is a priceOnRequest static catalog entry, in
+        // which case the honest "not yet bookable" note takes
+        // priority — a real cancellationPolicy string doesn't exist
+        // for these yet either. Buses have no baggage data anywhere
+        // upstream (IABIRI doesn't return any), so baggageSummary
+        // stays null here rather than guessing.
+        policySummary:  t.priceOnRequest
+          ? 'Not yet bookable through Bodrless \u2014 contact the operator directly to confirm schedule, fare, and seat availability.'
+          : (t.cancellationPolicy || 'Cancellation policy not specified'),
         baggageSummary: null,
         // NEW — set by _searchBuses for through-routes like Kilifi/
         // Watamu (searched under Malindi's route name since IABIRI
@@ -2680,9 +2810,20 @@ class OrchestrationEngine {
         const transferTotal = transferLegs.reduce((sum, leg) => sum + (leg.price || 0), 0);
         const transferCurrency = transferLegs[0]?.currency || 'KES';
 
+        // priceOnRequest legs (static bus operator catalog — see
+        // _searchStaticBusOperators) have no real fare to sum — using
+        // `ob?.price` directly would silently coerce their `null`
+        // price to 0 inside sumToKES, making the package look like
+        // that leg is free. Exclude it from the total instead, and
+        // surface a visible caveat so nobody mistakes the shown total
+        // for a complete price.
+        const obAmount  = ob?.priceOnRequest  ? 0 : ob?.price;
+        const retAmount = ret?.priceOnRequest ? 0 : ret?.price;
+        const hasPriceOnRequestLeg = !!(ob?.priceOnRequest || ret?.priceOnRequest);
+
         const totalPrice = await sumToKES([
-          { amount: ob?.price,                              currency: ob?.currency       || 'KES' },
-          { amount: ret?.price,                             currency: ret?.currency      || 'KES' },
+          { amount: obAmount,                               currency: ob?.currency       || 'KES' },
+          { amount: retAmount,                              currency: ret?.currency      || 'KES' },
           { amount: (hotel?.pricePerNight || 0) * nights,    currency: hotel?.currency    || 'KES' },
           { amount: transferTotal,                           currency: transferCurrency },
         ]);
@@ -2699,6 +2840,14 @@ class OrchestrationEngine {
             mealPlan:       tripParams.mealPlan  || hotel?.mealPlan || null,
             seatPreference: tripParams.seatPreference || null,
             transportType:  ob?.transportType    || 'none',
+            // NEW — set when either leg is a priceOnRequest static
+            // catalog entry (see obAmount/retAmount above). The total
+            // shown DOES NOT include that leg's fare — this makes
+            // that fact visible to the traveler/agency rather than
+            // letting a missing price silently look like KES 0.
+            priceCaveat: hasPriceOnRequestLeg
+              ? "This total excludes the fare for the bus operator shown below \u2014 contact them directly to confirm price, then add it to this total."
+              : null,
             // Occupancy actually searched — carried so bookingService can
             // detect a DOB/age drift at booking time and re-fetch a valid
             // rateKey (see the HotelBeds search/booking age-match rules).

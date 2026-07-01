@@ -186,8 +186,16 @@ class VoucherService {
       guestPhone:      booking.guestPhone || null,
       passengers:      booking.passengers || 1,
 
-      // Flight (outbound)
+      // Outbound transport — despite the "flight" naming (kept for
+      // backward compatibility with existing callers), this holds
+      // whatever mode was actually booked: flight, bus, or train —
+      // see engine.js's _formatTransportDisplay, which is what
+      // produces this object upstream via selectedPackage.transport.
+      // transportType + mode-specific fields are carried through so
+      // rendering can be honest about which mode this actually is,
+      // instead of always presenting it as a flight.
       flight: flight ? {
+        transportType: flight.transportType || 'flight',
         airline:       flight.airline      || null,
         airlineCode:   flight.airlineCode  || null,
         flightNumber:  flight.flightNumber || null,
@@ -204,10 +212,35 @@ class VoucherService {
         stops:         flight.stops === 0 || flight.stops === 'Non Stop' ? 'Non-stop' : `${flight.stops} stop${flight.stops > 1 ? 's' : ''}`,
         cabinClass:    flight.cabinClass   || 'Economy',
         checkedBags:   flight.checkedBags  || null,
+        // Bus-specific (present when transportType === 'bus')
+        provider:      flight.provider     || null,
+        busType:       flight.busType      || null,
+        routeNote:     flight.routeNote    || null,
+        // Train-specific (present when transportType === 'train')
+        trainClass:    flight.trainClass   || null,
+        serviceName:   flight.serviceName  || null,
+        stopsNote:     flight.stopsNote    || null,
+        canBook:       flight.canBook !== undefined ? flight.canBook : true,
+        priceOnRequest: flight.priceOnRequest || false,
       } : null,
 
-      // Return leg
+      // KNOWN GAP (not fixed here — needs bookingService.js): this
+      // only ever populates when the OUTBOUND object has a nested
+      // .returnLeg, which is exclusively a TravelDuqa/Duffel native
+      // single-offer round-trip shape. For a genuinely independent
+      // return-leg search (e.g. bus outbound / flight return, or any
+      // split-mode trip via engine.js's per-leg _searchFlights/
+      // _searchBuses/_searchTrain), the return transport is a
+      // SEPARATE object (selectedPackage.returnTransport) that never
+      // reaches this nested shape — and engine.js's saveBooking()
+      // only persists selectedPackage.transport (outbound) into
+      // flight_details, with no column for the return leg at all.
+      // Net effect: for a split-mode trip, the return leg is likely
+      // silently ABSENT from the voucher/WhatsApp confirmation today,
+      // not just wrongly-iconed. Needs bookingService.js (and
+      // possibly a bookings-table migration) to actually fix.
       returnFlight: flight?.returnLeg ? {
+        transportType: flight.returnLeg.transportType || 'flight',
         airline:       flight.returnLeg.airline      || null,
         airlineCode:   flight.returnLeg.airlineCode  || null,
         flightNumber:  flight.returnLeg.flightNumber || null,
@@ -221,6 +254,14 @@ class VoucherService {
         duration:      flight.returnLeg.duration     || null,
         stops:         flight.returnLeg.stops === 0 || flight.returnLeg.stops === 'Non Stop' ? 'Non-stop' : `${flight.returnLeg.stops} stop(s)`,
         cabinClass:    flight.returnLeg.cabinClass   || 'Economy',
+        provider:      flight.returnLeg.provider     || null,
+        busType:       flight.returnLeg.busType      || null,
+        routeNote:     flight.returnLeg.routeNote    || null,
+        trainClass:    flight.returnLeg.trainClass   || null,
+        serviceName:   flight.returnLeg.serviceName  || null,
+        stopsNote:     flight.returnLeg.stopsNote    || null,
+        canBook:       flight.returnLeg.canBook !== undefined ? flight.returnLeg.canBook : true,
+        priceOnRequest: flight.returnLeg.priceOnRequest || false,
       } : null,
 
       // Hotel
@@ -286,15 +327,41 @@ class VoucherService {
     const agencySubline = [v.agencyTagline, v.agencyWebsite, v.agencyPhone]
       .filter(Boolean).join('  ·  ');
 
+    // Mode-aware icon/label — a bus or train option must never be
+    // presented with a plane icon; that's actively misleading about
+    // how the traveler is actually getting there.
+    const transportLabel = (t, isReturn) => {
+      const modeWord = t === 'bus' ? 'Bus' : t === 'train' ? 'Train' : 'Flight';
+      return `${isReturn ? 'Return' : 'Outbound'} ${modeWord}`;
+    };
+
+    const transportIcon = (t) => t === 'bus' ? '&#128652;' : t === 'train' ? '&#128646;' : '&#9992;';
+
     const flightRow = (f, label) => f ? `
       <div style="background:${C.LIGHTGREY};border-radius:10px;padding:14px 16px;margin-bottom:10px">
         <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:${C.GREY};margin-bottom:6px">${label}</div>
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-          <span style="font-size:16px;color:${C.NAVY}">&#9992;</span>
+          <span style="font-size:16px;color:${C.NAVY}">${transportIcon(f.transportType)}</span>
           <span style="font-size:15px;font-weight:600;color:${C.NAVY}">${f.origin || '—'} &rarr; ${f.destination || '—'}</span>
-          <span style="font-size:11px;color:${C.GREY};margin-left:auto">${f.stops}</span>
+          ${f.transportType === 'flight' ? `<span style="font-size:11px;color:${C.GREY};margin-left:auto">${f.stops}</span>` : ''}
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:12px;color:${C.BLACK}">
+          ${f.transportType === 'bus' ? `
+          <tr>
+            <td style="padding:2px 0;color:${C.GREY};width:35%">Operator</td>
+            <td>${f.provider || f.airline || '—'}${f.busType ? ' · ' + f.busType : ''}</td>
+          </tr>
+          ${f.departureTimeF ? `<tr><td style="padding:2px 0;color:${C.GREY}">Departure</td><td><strong>${f.departureTimeF}</strong></td></tr>` : ''}
+          ${f.routeNote ? `<tr><td colspan="2" style="padding:6px 0;color:${C.GREY};font-size:11px;line-height:1.5">${f.routeNote}</td></tr>` : ''}
+          ` : f.transportType === 'train' ? `
+          <tr>
+            <td style="padding:2px 0;color:${C.GREY};width:35%">Service</td>
+            <td>${f.serviceName || 'SGR'}${f.trainClass ? ' · ' + f.trainClass.replace('_', ' ') : ''}</td>
+          </tr>
+          ${f.departureTimeF ? `<tr><td style="padding:2px 0;color:${C.GREY}">Departure</td><td><strong>${f.departureTimeF}</strong></td></tr>` : ''}
+          ${f.stopsNote ? `<tr><td style="padding:2px 0;color:${C.GREY}">Stops</td><td>${f.stopsNote}</td></tr>` : ''}
+          ${!f.canBook ? `<tr><td colspan="2" style="padding:6px 0;color:${C.GREY};font-size:11px;line-height:1.5">Not yet bookable through Bodrless — purchase directly via SGR at the station or their booking portal.</td></tr>` : ''}
+          ` : `
           <tr>
             <td style="padding:2px 0;color:${C.GREY};width:35%">Airline</td>
             <td>${f.airline || '—'}${f.flightNumber ? ' · ' + (f.airlineCode || '') + f.flightNumber : ''}</td>
@@ -311,6 +378,7 @@ class VoucherService {
             <td style="padding:2px 0;color:${C.GREY}">Class</td>
             <td>${f.cabinClass || 'Economy'}${f.checkedBags ? ' · ' + f.checkedBags + ' checked bag(s)' : ''}</td>
           </tr>
+          `}
         </table>
       </div>` : '';
 
@@ -380,7 +448,7 @@ class VoucherService {
   <!-- OUTBOUND FLIGHT -->
   ${v.flight ? `
   <div class="no-break" style="background:${C.WHITE};border:1px solid ${C.BORDER};border-radius:12px;padding:14px 18px;margin-bottom:10px">
-    ${flightRow(v.flight, 'Outbound Flight')}
+    ${flightRow(v.flight, transportLabel(v.flight?.transportType, false))}
   </div>` : ''}
 
   <!-- HOTEL -->
@@ -436,7 +504,7 @@ class VoucherService {
   <!-- RETURN FLIGHT -->
   ${v.returnFlight ? `
   <div class="no-break" style="background:${C.WHITE};border:1px solid ${C.BORDER};border-radius:12px;padding:14px 18px;margin-bottom:10px">
-    ${flightRow(v.returnFlight, 'Return Flight')}
+    ${flightRow(v.returnFlight, transportLabel(v.returnFlight?.transportType, true))}
   </div>` : ''}
 
   <!-- PAYMENT ATTRIBUTION (HotelBeds Cert 4.5 — mandatory) -->
@@ -522,6 +590,41 @@ class VoucherService {
     if (!v.guestPhone)  return { success: false, error: 'No guest phone' };
     if (!phoneNumberId) return { success: false, error: 'Agency WhatsApp not configured' };
 
+    // Mode-aware transport block — a bus or train leg must never be
+    // shown with a plane icon/label; that misleads the traveler
+    // about how they're actually getting there. Shared by outbound
+    // and return so both legs stay consistent as new modes are added.
+    const transportBlock = (t, label) => {
+      if (!t) return [];
+      if (t.transportType === 'bus') {
+        const lines = [
+          `🚌 *${label} Bus*`,
+          `${t.origin} → ${t.destination}`,
+          `${t.provider || t.airline || '—'}${t.busType ? ' · ' + t.busType : ''}${t.departureTimeF ? ' · Departs ' + t.departureTimeF : ''}`,
+        ];
+        if (t.routeNote) lines.push(`_${t.routeNote}_`);
+        lines.push('');
+        return lines;
+      }
+      if (t.transportType === 'train') {
+        const lines = [
+          `🚆 *${label} Train*`,
+          `${t.origin} → ${t.destination}`,
+          `${t.serviceName || 'SGR'}${t.trainClass ? ' · ' + t.trainClass.replace('_', ' ') : ''}${t.departureTimeF ? ' · Departs ' + t.departureTimeF : ''}${t.stopsNote ? ' · ' + t.stopsNote : ''}`,
+        ];
+        if (!t.canBook) lines.push(`_Not yet bookable through Bodrless — purchase directly via SGR at the station or their booking portal._`);
+        lines.push('');
+        return lines;
+      }
+      // flight (default)
+      return [
+        `✈ *${label} Flight*`,
+        `${t.origin} → ${t.destination}`,
+        `${t.airline || '—'}${t.flightNumber ? ' · ' + (t.airlineCode || '') + t.flightNumber : ''} · ${t.departureDate || '—'} · ${t.departureTimeF || '—'}${t.arrivalTimeF ? ' → ' + t.arrivalTimeF : ''} · ${t.stops}`,
+        '',
+      ];
+    };
+
     const parts = [
       `✅ *Booking Confirmed*`,
       `*Ref:* ${v.bookingRef}${v.hotelRef ? `  |  Hotel ref: ${v.hotelRef}` : ''}`,
@@ -529,12 +632,7 @@ class VoucherService {
     ];
 
     if (v.flight) {
-      parts.push(
-        `✈ *Outbound Flight*`,
-        `${v.flight.origin} → ${v.flight.destination}`,
-        `${v.flight.airline || '—'}${v.flight.flightNumber ? ' · ' + (v.flight.airlineCode||'') + v.flight.flightNumber : ''} · ${v.flight.departureDate || '—'} · ${v.flight.departureTimeF || '—'}${v.flight.arrivalTimeF ? ' → ' + v.flight.arrivalTimeF : ''} · ${v.flight.stops}`,
-        '',
-      );
+      parts.push(...transportBlock(v.flight, 'Outbound'));
     }
 
     if (v.hotel) {
@@ -565,12 +663,7 @@ class VoucherService {
     }
 
     if (v.returnFlight) {
-      parts.push(
-        `✈ *Return Flight*`,
-        `${v.returnFlight.origin} → ${v.returnFlight.destination}`,
-        `${v.returnFlight.airline || '—'} · ${v.returnFlight.departureDate || '—'} · ${v.returnFlight.departureTimeF || '—'}${v.returnFlight.arrivalTimeF ? ' → ' + v.returnFlight.arrivalTimeF : ''} · ${v.returnFlight.stops}`,
-        '',
-      );
+      parts.push(...transportBlock(v.returnFlight, 'Return'));
     }
 
     if (v.hotel?.rateComments) {
