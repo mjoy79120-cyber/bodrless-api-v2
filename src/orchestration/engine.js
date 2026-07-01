@@ -201,21 +201,23 @@ class OrchestrationEngine {
     const destinationAccess = await this._resolveDestinationAccess(tripParams.destination);
 
     const [
-      outboundResult, outboundBuses,
-      returnResult, returnBuses,
+      outboundResult, outboundBuses, outboundTrains,
+      returnResult, returnBuses, returnTrains,
       hotelResults
     ] = await Promise.all([
       this._searchFlightsWithHubFallback(tripParams, 'outbound', destinationAccess),
       this._searchBuses(tripParams, 'outbound', destinationAccess),
+      this._searchTrain(tripParams, 'outbound', destinationAccess),
       tripParams.returnDate ? this._searchFlightsWithHubFallback(tripParams, 'return', destinationAccess) : Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true }),
       tripParams.returnDate ? this._searchBuses(tripParams, 'return', destinationAccess) : Promise.resolve([]),
+      tripParams.returnDate ? this._searchTrain(tripParams, 'return', destinationAccess) : Promise.resolve([]),
       this._searchHotels(tripParams),
     ]);
 
     console.log(`[TIMING] single-dest supplier search (${tripParams.destination}): ${Date.now() - _tSearch}ms`);
 
-    let outboundTransport = [...outboundResult.results, ...outboundBuses];
-    let returnTransport   = [...returnResult.results,   ...returnBuses];
+    let outboundTransport = [...outboundResult.results, ...outboundBuses, ...outboundTrains];
+    let returnTransport   = [...returnResult.results,   ...returnBuses,   ...returnTrains];
     let hotels = hotelResults;
 
     console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length, outboundResult.connectsVia ? `(via ${outboundResult.connectsVia})` : '');
@@ -1903,7 +1905,23 @@ class OrchestrationEngine {
       ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || 'flight')
       : (tripParams.outboundTransportMode || tripParams.transportMode || 'flight');
 
-    if (mode === 'flight' || mode === 'train') return [];
+    // BUG FIX (found via testing): destinationAccess.accessByMode.bus
+    // must be checked BEFORE this gate. mode defaults to 'flight'
+    // whenever the traveler didn't explicitly say "bus" — which is
+    // the normal case ("Nairobi to Kilifi" names no transport mode
+    // at all) — so this early return was silencing the Kilifi/
+    // Watamu direct-bus option entirely, even though destinationIntel
+    // genuinely confirms it exists. A bare, unspecified mode should
+    // still surface a KNOWN, CONFIRMED bus alternative alongside
+    // flights; it should only suppress buses when nothing concrete
+    // backs them (the old hardcoded busRoutes list further below is
+    // intentionally left un-touched by this fix — see its own
+    // comment — so this stays scoped to destinationIntel-confirmed
+    // routes only, not a blanket change to bus search behavior).
+    const busAccessPreCheck = destinationAccess?.accessByMode?.bus;
+    const isDestinationIntelDirectRoutePreCheck = busAccessPreCheck?.directService === true;
+
+    if ((mode === 'flight' || mode === 'train') && !isDestinationIntelDirectRoutePreCheck) return [];
 
     const busRoutes = [
       ['nairobi', 'mombasa'], ['nairobi', 'kampala'], ['nairobi', 'dar es salaam'],
@@ -1943,18 +1961,33 @@ class OrchestrationEngine {
     if (!isBusRoute && mode !== 'bus') return [];
     if (!supplierAdapter || !searchDate) return [];
 
+    // SEARCH-NAME SUBSTITUTION: some destinations (Kilifi, Watamu)
+    // have no distinct IABIRI route of their own — the bus that
+    // stops there is scheduled under a different city name
+    // (Malindi). Query IABIRI under that real route name (searchAs)
+    // so the search actually finds the service, while still SELLING
+    // it to the traveler as a trip to their real destination — the
+    // bus itself makes that stop, so (unlike the flight/train hub-
+    // transfer case) no extra hub->town transfer leg is added here;
+    // the standard bus-station->hotel transfer that every bus
+    // arrival already gets covers the last mile, same as any other
+    // bus destination.
+    const busSearchAs = busAccess?.searchAs || null;
+    const iabiriSearchOrigin      = busSearchAs && leg === 'return' ? busSearchAs : searchOrigin;
+    const iabiriSearchDestination = busSearchAs && leg !== 'return' ? busSearchAs : searchDestination;
+
     try {
       const buses = await this._withTimeout(
         supplierAdapter.searchTransport({
-          origin:        searchOrigin,
-          destination:   searchDestination,
+          origin:        iabiriSearchOrigin,
+          destination:   iabiriSearchDestination,
           date:          searchDate,
           passengers:    tripParams.passengers,
           transportMode: 'bus',
           timePreference: tripParams.timePreference,
         }),
         [],
-        `bus ${leg} ${searchOrigin}->${searchDestination}`
+        `bus ${leg} ${iabiriSearchOrigin}->${iabiriSearchDestination}`
       );
 
       console.log(`IABIRI BUSES (${leg}):`, buses.length);
@@ -1974,8 +2007,30 @@ class OrchestrationEngine {
         departureTime:      bus.departureTime,
         arrivalTime:        bus.arrivalTime,
         duration:           bus.duration,
-        origin:             bus.origin,
-        destination:        bus.destination,
+        // Relabeled back to the traveler's real origin/destination
+        // for THIS leg — outbound shows "Nairobi -> Kilifi" (the
+        // drop-off point), return shows "Kilifi -> Nairobi" (the
+        // traveler boards where they were dropped off, at Kilifi —
+        // NOT at Malindi, the route's far terminus, which they never
+        // actually visit). Always the traveler's real endpoints,
+        // never the internal IABIRI route name.
+        origin:             busSearchAs ? this._titleCase(leg === 'return' ? tripParams.destination : tripParams.origin) : bus.origin,
+        destination:        busSearchAs ? this._titleCase(leg === 'return' ? tripParams.origin : tripParams.destination) : bus.destination,
+        // Boarding/dropping point selection (e.g. requesting the
+        // Kilifi/Watamu stop specifically, not the Malindi terminus)
+        // happens via IABIRI's own getBoardingDroppingPoints call at
+        // booking time (see travler.js) — this note just tells the
+        // traveler upfront, at search time, that this is a through-
+        // route rather than a dedicated Kilifi/Watamu service.
+        // Always describes the route's FIXED real corridor (origin
+        // <-> hub) regardless of which leg this is — using the
+        // leg-substituted search params here (bug found via testing)
+        // produced a nonsensical "Malindi -> Malindi" note on return
+        // legs, since the search origin itself gets substituted to
+        // the hub name on a return search.
+        routeNote:          busSearchAs
+          ? `This service runs ${this._titleCase(tripParams.origin)} \u2194 ${this._titleCase(busSearchAs)} and stops at ${this._titleCase(tripParams.destination)} along the way \u2014 request that ${leg === 'return' ? 'boarding' : 'drop-off'} point when you book.`
+          : null,
         price:              bus.price,
         currency:           bus.currency           || 'KES',
         availableSeats:     bus.availableSeats,
@@ -1988,6 +2043,117 @@ class OrchestrationEngine {
       logger.error(`bus search failed (${leg})`, { error: err.message });
       return [];
     }
+  }
+
+  // ─────────────────────────────
+  // SGR TRAIN — static schedule, no live adapter/API yet
+  // ─────────────────────────────
+  // The Nairobi-Mombasa SGR (Madaraka Express) schedule and fares
+  // are well-known, stable public facts — not something that needs
+  // a live API call to get right, unlike flight/bus pricing which
+  // genuinely changes per search. Surfaced as an INFORMATIONAL,
+  // not-yet-bookable option (canBook: false) while a real SGR
+  // integration is pending — same "don't claim to have booked what
+  // we haven't" posture as connectionAdvisory elsewhere in this
+  // file. Real schedule/fares (confirmed 2026-07-01):
+  //   - 08:00 daily, both directions — "Intercounty" service,
+  //     stops at multiple stations along the route.
+  //   - 15:00 and 22:00 daily, both directions — "Madaraka
+  //     Express" direct service, stops ONLY at Voi.
+  //   - Fares (flat, not per-km): Economy KES 1,500,
+  //     First Class KES 4,500, Premium KES 12,000.
+  //
+  // Only included when the traveler is budget-conscious
+  // (tripParams.budget === 'low' — SGR Economy at KES 1,500 is by
+  // far the cheapest way to cover the Nairobi<->Mombasa corridor)
+  // OR explicitly asked for a train (outboundTransportMode 'train'
+  // or tripParams.trainClass set), so it doesn't clutter every mid/
+  // high-budget search with an option Bodrless can't yet sell end
+  // to end.
+  // ─────────────────────────────
+  static SGR_SCHEDULE = [
+    { departureTime: '08:00', serviceName: 'SGR Intercounty',              stopsNote: 'Stops at multiple stations along the route' },
+    { departureTime: '15:00', serviceName: 'SGR Madaraka Express (Direct)', stopsNote: 'Stops only at Voi' },
+    { departureTime: '22:00', serviceName: 'SGR Madaraka Express (Direct)', stopsNote: 'Stops only at Voi' },
+  ];
+
+  static SGR_FARES = { economy: 1500, first_class: 4500, premium: 12000 };
+
+  async _searchTrain(tripParams, leg = 'outbound', destinationAccess = null) {
+    const mode = leg === 'return'
+      ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || null)
+      : (tripParams.outboundTransportMode || tripParams.transportMode || null);
+
+    if (mode === 'flight' || mode === 'bus') return [];
+
+    // Hub substitution — same mechanism as _searchFlights: Kilifi/
+    // Watamu/Diani have no train station of their own, so the SGR
+    // leg is really to/from Mombasa (the only relevant hub), with a
+    // real road transfer needed to complete the journey — unlike
+    // the direct-bus-through-town case, this genuinely needs the
+    // hub->town transfer leg, so hubLanding IS tagged here.
+    let hubLanding = null;
+    const trainAccess = destinationAccess?.accessByMode?.train;
+    if (trainAccess?.hubName && (trainAccess.transferRequired || !trainAccess.directService)) {
+      hubLanding = {
+        name: trainAccess.hubName, code: null,
+        distanceKm: trainAccess.transferDistanceKm || null,
+        realDestination: tripParams.destination,
+      };
+    }
+
+    const effectiveDestination = hubLanding ? hubLanding.name : tripParams.destination;
+    const o = (tripParams.origin || '').toLowerCase().trim();
+    const d = (effectiveDestination || '').toLowerCase().trim();
+
+    // SGR only actually runs Nairobi<->Mombasa — nothing else to
+    // check IATA-style, this is a fixed, real, single corridor.
+    const isSgrCorridor = (o === 'nairobi' && d === 'mombasa') || (o === 'mombasa' && d === 'nairobi');
+    if (!isSgrCorridor) return [];
+
+    const explicitTrainRequest = mode === 'train' || !!tripParams.trainClass;
+    const isBudgetSearch = tripParams.budget === 'low';
+    if (!explicitTrainRequest && !isBudgetSearch) return [];
+
+    // Which fare class(es) to surface: an explicit trainClass
+    // request gets exactly that class; a budget-triggered inclusion
+    // (no explicit class named) shows only Economy — the cheapest,
+    // which is the whole reason to surface SGR for a budget search
+    // in the first place, rather than all three classes at once.
+    const classesToShow = (tripParams.trainClass && tripParams.trainClass !== 'sgr')
+      ? [tripParams.trainClass]
+      : ['economy'];
+
+    const searchDate = leg === 'return' ? tripParams.returnDate : tripParams.departureDate;
+
+    const displayOrigin      = leg === 'return' ? effectiveDestination : tripParams.origin;
+    const displayDestination = leg === 'return' ? tripParams.origin    : effectiveDestination;
+
+    const entries = [];
+    for (const schedule of OrchestrationEngine.SGR_SCHEDULE) {
+      for (const cls of classesToShow) {
+        const fare = OrchestrationEngine.SGR_FARES[cls];
+        if (!fare) continue;
+        entries.push({
+          supplier:      'sgr_static',
+          transportType: 'train',
+          origin:        this._titleCase(displayOrigin),
+          destination:   this._titleCase(displayDestination),
+          departureTime: schedule.departureTime,
+          arrivalTime:   null, // exact journey duration not a published fact we have — left null rather than guessed
+          serviceName:   schedule.serviceName,
+          stopsNote:     schedule.stopsNote,
+          trainClass:    cls,
+          price:         fare,
+          currency:      'KES',
+          canBook:       false,
+          travelDate:    searchDate,
+          hubLanding,
+        });
+      }
+    }
+
+    return entries;
   }
 
   // ─────────────────────────────
@@ -2110,19 +2276,27 @@ class OrchestrationEngine {
     const mode = (transport.transportType || 'flight').toLowerCase();
     const originCity = tripParams.origin || 'Nairobi';
     const destCity    = tripParams.destination || transport.destination || 'your destination';
+    // When this transport was tagged with hubLanding (e.g. the SGR
+    // train searched as Nairobi<->Mombasa for a Kilifi/Watamu/Diani
+    // trip — see _searchTrain), the real arrival point is the hub,
+    // not tripParams.destination. Flights already get this right
+    // via transport.destAirport (the live supplier response's own
+    // real airport name); bus/train have no equivalent live-response
+    // override, so use hubLanding.name explicitly for those modes.
+    const hubCity = transport.hubLanding?.name || destCity;
 
     let originHub, destHub;
 
     if (mode === 'bus') {
       originHub = `${this._titleCase(originCity)} Bus Station`;
-      destHub   = `${this._titleCase(destCity)} Bus Station`;
+      destHub   = `${this._titleCase(hubCity)} Bus Station`;
     } else if (mode === 'train') {
       originHub = `${this._titleCase(originCity)} Train Station`;
-      destHub   = `${this._titleCase(destCity)} Train Station`;
+      destHub   = `${this._titleCase(hubCity)} Train Station`;
     } else {
       // flight — use the real airport name from the search result when available
       originHub = transport.originAirport || `${this._titleCase(originCity)} Airport`;
-      destHub   = transport.destAirport   || `${this._titleCase(destCity)} Airport`;
+      destHub   = transport.destAirport   || `${this._titleCase(hubCity)} Airport`;
     }
 
     const rate = await this._getTransferRate(tripParams);
@@ -2262,6 +2436,36 @@ class OrchestrationEngine {
         // doesn't return any), so baggageSummary stays null here
         // rather than guessing.
         policySummary:  t.cancellationPolicy || 'Cancellation policy not specified',
+        baggageSummary: null,
+        // NEW — set by _searchBuses for through-routes like Kilifi/
+        // Watamu (searched under Malindi's route name since IABIRI
+        // has no distinct route for those towns) — tells the
+        // traveler this is a stop on a longer route, not a
+        // dedicated service, and to request that drop-off when
+        // boarding.
+        routeNote:      t.routeNote || null,
+      };
+    }
+
+    if (t.transportType === 'train') {
+      return {
+        ...base,
+        supplier:      t.supplier    || 'sgr_static',
+        provider:      t.serviceName || 'SGR',
+        trainClass:    t.trainClass  || null,
+        serviceName:   t.serviceName || null,
+        stopsNote:     t.stopsNote   || null,
+        currency:      t.currency    || 'KES',
+        canBook:       t.canBook     || false,
+        hubLanding:    t.hubLanding  || null,
+        // Honest, train-specific policy text — the generic flight
+        // policySummary below would otherwise say "Subject to
+        // airline fare rules", which is simply wrong for a train and
+        // would be misleading given SGR isn't bookable through
+        // Bodrless yet at all (see SGR_SCHEDULE comment above).
+        policySummary: t.canBook
+          ? 'Bookable via SGR'
+          : 'Not yet bookable through Bodrless — purchase directly via SGR (Madaraka Express) at the station or their booking portal. Price shown is the standard published fare.',
         baggageSummary: null,
       };
     }
@@ -2496,17 +2700,19 @@ class OrchestrationEngine {
           // behind it (e.g. Meru -> Nairobi is matatu-only). Never
           // silently implies Bodrless arranged a leg it didn't.
           connectionAdvisory: this._buildConnectionAdvisory(tripParams, connectionInfo),
-          // HUB TRANSFER NOTE — present when the outbound flight was
-          // booked to a nearby hub instead of the real destination
-          // (e.g. Malindi for a Kilifi/Watamu trip, via destinationIntel
-          // corridor knowledge in _searchFlights). Unlike
-          // connectionAdvisory above, this is NOT "arrange your own
-          // way" — the transfer leg IS booked and included below
-          // (see transferLegs / _buildTransferLegs); this note just
-          // makes plain to the traveler why "flight to Kilifi" shows
-          // a Malindi airport in the itinerary.
+          // HUB TRANSFER NOTE — present when the outbound transport
+          // (flight OR train) was booked to a nearby hub instead of
+          // the real destination (e.g. Malindi for a Kilifi/Watamu
+          // flight, or Mombasa for a Kilifi/Watamu/Diani SGR train —
+          // via destinationIntel corridor knowledge in _searchFlights/
+          // _searchTrain). Unlike connectionAdvisory above, this is
+          // NOT "arrange your own way" — the transfer leg IS booked
+          // and included below (see transferLegs / _buildTransferLegs);
+          // this note just makes plain to the traveler why a "trip to
+          // Kilifi" shows a Malindi airport or Mombasa train station
+          // in the itinerary.
           hubTransferNote: ob?.hubLanding
-            ? `This trip flies into ${this._titleCase(ob.hubLanding.name)} — the road transfer to ${this._titleCase(ob.hubLanding.realDestination)} is included below.`
+            ? `This trip ${ob.transportType === 'train' ? 'arrives at' : 'flies into'} ${this._titleCase(ob.hubLanding.name)} — the road transfer to ${this._titleCase(ob.hubLanding.realDestination)} is included below.`
             : null,
           status: "available",
         };
