@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const supabase = require("../utils/supabase");
 const { logger } = require("../utils/logger");
-const { parsePrompt } = require("./promptParser");
+const { parsePrompt, resolveCountryToCity } = require("./promptParser");
 const { rankPackages } = require("./packageRanker");
 const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
 const destinationIntel = require("../services/destinationIntel");
@@ -106,6 +106,13 @@ class OrchestrationEngine {
       if (intent.isFollowUp && previousParams) {
         tripParams = this._adjustParams(previousParams, intent);
         tripParams.agencyId = agencyId;
+        // Normalize country names in cached params — previousParams can
+        // carry a raw country name (e.g. "rwanda") from a prior failed
+        // search, and _adjustParams copies it through unchanged. Apply
+        // the same country→city resolution the parser applies to fresh
+        // prompts so a follow-up doesn't re-use a broken cached value.
+        if (tripParams.destination) tripParams.destination = resolveCountryToCity(tripParams.destination);
+        if (tripParams.origin)      tripParams.origin      = resolveCountryToCity(tripParams.origin);
         console.log("FOLLOW-UP DETECTED — adjusted params:", tripParams);
       } else {
         tripParams = await parsePrompt(prompt);
