@@ -1901,9 +1901,22 @@ class OrchestrationEngine {
   // BUSES
   // ─────────────────────────────
   async _searchBuses(tripParams, leg = 'outbound', destinationAccess = null) {
-    const mode = leg === 'return'
-      ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || 'flight')
-      : (tripParams.outboundTransportMode || tripParams.transportMode || 'flight');
+    // Raw per-leg mode BEFORE the 'flight' default is applied — kept
+    // separate from `mode` below so we can tell "traveler said
+    // nothing about transport mode" (null) apart from "traveler
+    // explicitly wants flight/train for THIS leg" (a real, stated
+    // value that just happens to also be 'flight'). The combined
+    // `mode` variable collapses both cases into the same string,
+    // which caused a real production bug: "bus going, flight coming
+    // back" still ran an IABIRI bus search on the return leg, because
+    // the destinationIntel bypass below couldn't distinguish
+    // "defaulted" from "explicitly chosen" — silently disregarding
+    // the traveler's stated return-leg preference.
+    const explicitLegMode = leg === 'return'
+      ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || null)
+      : (tripParams.outboundTransportMode || tripParams.transportMode || null);
+
+    const mode = explicitLegMode || 'flight';
 
     // BUG FIX (found via testing): destinationAccess.accessByMode.bus
     // must be checked BEFORE this gate. mode defaults to 'flight'
@@ -1918,10 +1931,18 @@ class OrchestrationEngine {
     // intentionally left un-touched by this fix — see its own
     // comment — so this stays scoped to destinationIntel-confirmed
     // routes only, not a blanket change to bus search behavior).
+    //
+    // CRITICAL: the bypass below only fires when explicitLegMode is
+    // null — i.e. the traveler said NOTHING about mode for this leg.
+    // If they explicitly asked for flight/train on THIS leg (e.g.
+    // "returning with a flight"), that choice is always respected —
+    // destinationIntel confirming a bus alternative exists is never
+    // grounds to override an explicit per-leg request.
     const busAccessPreCheck = destinationAccess?.accessByMode?.bus;
     const isDestinationIntelDirectRoutePreCheck = busAccessPreCheck?.directService === true;
+    const canBypassOnKnownRoute = explicitLegMode === null && isDestinationIntelDirectRoutePreCheck;
 
-    if ((mode === 'flight' || mode === 'train') && !isDestinationIntelDirectRoutePreCheck) return [];
+    if ((mode === 'flight' || mode === 'train') && !canBypassOnKnownRoute) return [];
 
     const busRoutes = [
       ['nairobi', 'mombasa'], ['nairobi', 'kampala'], ['nairobi', 'dar es salaam'],
