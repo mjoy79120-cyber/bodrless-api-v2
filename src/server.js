@@ -169,6 +169,7 @@ app.listen(PORT, '0.0.0.0', () => {
   } else {
     logger.info('HotelBeds content sync is disabled.');
   }
+});
 
 // Keep alive — production only
 if (process.env.NODE_ENV === 'production') {
