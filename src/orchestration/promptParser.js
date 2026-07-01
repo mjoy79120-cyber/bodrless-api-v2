@@ -306,6 +306,53 @@ function _detectMealPlan(prompt) {
   return null;
 }
 
+// ─────────────────────────────────────────────
+// ROOM COUNT DETECTION
+// "two single rooms", "3 rooms", "separate rooms" etc.
+// Returns the number of rooms as an integer, or null if not stated.
+// A traveler saying "two single rooms" wants 2 rooms booked —
+// different from 2 travelers sharing one room. This matters for
+// HotelBeds occupancy: rooms=2 means two separate bookings with
+// 1 adult each, not 1 booking with 2 adults in one room.
+// ─────────────────────────────────────────────
+function _detectRooms(prompt) {
+  const lower = prompt.toLowerCase();
+
+  // "two single rooms", "3 double rooms", "two rooms"
+  const explicit = lower.match(/\b(one|two|three|four|five|1|2|3|4|5)\s+(?:single|double|twin|triple|family|deluxe|standard)?\s*rooms?\b/i);
+  if (explicit) {
+    const word = explicit[1].toLowerCase();
+    const wordMap = { one:1, two:2, three:3, four:4, five:5 };
+    return wordMap[word] || parseInt(word, 10) || null;
+  }
+
+  // "separate rooms", "own rooms", "different rooms"
+  if (lower.match(/\bseparate\s+rooms?\b|\bown\s+rooms?\b|\bdifferent\s+rooms?\b/)) {
+    // Can't determine exact count from "separate rooms" alone —
+    // will be inferred from passenger count (1 room per person)
+    return null;
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// ROOM TYPE DETECTION
+// "single room", "double room", "twin room" etc.
+// Single = 1 bed for 1 person. Double = 1 large bed for 2.
+// Twin = 2 separate beds for 2 people. Important distinction.
+// ─────────────────────────────────────────────
+function _detectRoomType(prompt) {
+  const lower = prompt.toLowerCase();
+  if (lower.match(/\bsingle\s+room|\bsingle\s+bed|\bsingle\s+occupancy/)) return 'single';
+  if (lower.match(/\btwin\s+room|\btwin\s+bed|\btwo\s+single\s+bed/)) return 'twin';
+  if (lower.match(/\bdouble\s+room|\bdouble\s+bed|\bdouble\s+occupancy/)) return 'double';
+  if (lower.match(/\btriple\s+room|\btriple\s+bed|\bthree\s+bed/)) return 'triple';
+  if (lower.match(/\bfamily\s+room|\bfamily\s+suite/)) return 'family';
+  if (lower.match(/\bsuite\b|\bjunior\s+suite|\bexecutive\s+suite/)) return 'suite';
+  return null;
+}
+
 function _detectTrainClass(prompt) {
   const lower = prompt.toLowerCase();
   if (lower.match(/first\s*class|1st\s*class|daraja\s*ya\s*kwanza|business\s*class\s*train/)) return 'first_class';
@@ -532,6 +579,8 @@ OTHERWISE (single destination), return ONLY this shape:
   "returnTransportMode": choose exactly ONE: "flight" or "bus" or "train" or "drive", or null if not stated,
   "seatPreference": choose exactly ONE: "window" or "aisle" or "middle" or "extra_legroom" or "front" or "back" or "upper_deck" or "lower_deck", or null if not stated,
   "mealPlan": choose exactly ONE: "all_inclusive" or "full_board" or "half_board" or "bed_and_breakfast" or "room_only", or null if not stated,
+  "rooms": integer number of hotel rooms required (e.g. "two single rooms" = 2, "separate rooms" = number of travelers), or null if not stated — IMPORTANT: "two single rooms" means 2 rooms with 1 adult each, NOT 1 room with 2 adults,
+  "roomType": choose ONE: "single" or "double" or "twin" or "triple" or "family" or "suite", or null if not stated,
   "trainClass": choose exactly ONE: "first_class" or "economy" or "premium" or "sgr", or null if not stated,
   "timePreference": choose exactly ONE: "morning" or "afternoon" or "evening" or "night", or null if not stated,
   "accessibility": true or false,
@@ -900,6 +949,8 @@ function _parseWithRules(prompt) {
   const mealPlan = _detectMealPlan(lower);
   const trainClass = _detectTrainClass(lower);
   const timePreference = _detectTimePreference(lower);
+  const rooms = _detectRooms(lower);
+  const roomType = _detectRoomType(lower);
 
   const { outbound, returnLeg } = _detectMultiModalTransport(lower);
   const busSeatPosition = _resolveBusSeatPosition(seatPreference);
@@ -924,6 +975,8 @@ function _parseWithRules(prompt) {
     mealPlan,
     trainClass,
     timePreference,
+    rooms,
+    roomType,
     outboundTransportMode: outbound,
     returnTransportMode: returnLeg || outbound,
     busSeatPosition,
@@ -1132,6 +1185,8 @@ function _enrichParams(parsed) {
     mealPlan: _sanitizeEnum(parsed.mealPlan, ['all_inclusive', 'full_board', 'half_board', 'bed_and_breakfast', 'room_only'], null),
     trainClass: _sanitizeEnum(parsed.trainClass, ['first_class', 'economy', 'premium', 'sgr'], null),
     timePreference: _sanitizeEnum(parsed.timePreference, ['morning', 'afternoon', 'evening', 'night'], null),
+    rooms: parsed.rooms ? Math.max(1, parseInt(parsed.rooms, 10) || 1) : null,
+    roomType: _sanitizeEnum(parsed.roomType, ['single', 'double', 'twin', 'triple', 'family', 'suite'], null),
     outboundTransportMode: _sanitizeEnum(parsed.outboundTransportMode, ['flight', 'bus', 'train', 'drive'], null),
     returnTransportMode: _sanitizeEnum(parsed.returnTransportMode, ['flight', 'bus', 'train', 'drive'], null),
     preferredTransportProvider: _sanitizeFreeText(parsed.preferredTransportProvider),
@@ -1383,4 +1438,4 @@ function _addDays(dateStr, days) {
   return date.toISOString().split('T')[0];
 }
 
-module.exports = { parsePrompt };
+module.exports = { parsePrompt, resolveCountryToCity: _resolveCountryToCity };

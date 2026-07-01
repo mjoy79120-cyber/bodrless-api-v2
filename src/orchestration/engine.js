@@ -1790,29 +1790,11 @@ class OrchestrationEngine {
 
     const results = [];
 
-    const { data, error } = await supabase
-      .from("flights")
-      .select("*")
-      .eq("agency_id", tripParams.agencyId);
-
-    if (!error) {
-      const matchedFlights = (data || []).filter(flight =>
-        this._matchesFlightDestination(flight, searchDestination)
-      );
-      console.log(`SUPABASE FLIGHTS (${leg}):`, matchedFlights.length);
-      results.push(...matchedFlights.map(flight => ({
-        supplier:      'supabase',
-        transportType: flight.transport_type || 'flight',
-        airline:       flight.airline        || flight.provider || "Flight",
-        flightNumber:  flight.flight_number  || "AUTO",
-        departureTime: flight.departure_time || "08:00",
-        arrivalTime:   flight.arrival_time   || "12:00",
-        origin:        flight.origin         || "",
-        destination:   flight.destination    || "",
-        price:         Number(flight.price   || flight.amount || 0),
-        seats:         flight.seats          || null,
-      })));
-    }
+    // NOTE: Supabase static flight inventory removed — all agencies
+    // now use live supplier inventory (TravelDuqa + Duffel in parallel).
+    // The old static `flights` table lookup has been removed since it
+    // always returned 0 results for live agencies and added unnecessary
+    // latency before the real supplier search ran.
 
     if (supplierAdapter && searchDate) {
       try {
@@ -1923,41 +1905,10 @@ class OrchestrationEngine {
   async _searchHotels(tripParams) {
     const results = [];
 
-    // ── Supabase static inventory ────────────────
-    const { data, error } = await supabase
-      .from("hotels")
-      .select("*")
-      .eq("agency_id", tripParams.agencyId);
-
-    if (error) {
-      console.error("HOTEL ERROR:", error);
-    } else {
-      let matchedHotels = (data || []).filter(hotel =>
-        this._matchesDestination(hotel, tripParams.destination)
-      );
-
-      if (tripParams.mealPlan) {
-        const withMealPlan = matchedHotels.filter(h =>
-          (h.meal_plan || '').toLowerCase().includes(tripParams.mealPlan.replace('_', ' '))
-        );
-        if (withMealPlan.length > 0) matchedHotels = withMealPlan;
-      }
-
-      console.log("SUPABASE HOTELS:", matchedHotels.length);
-
-      results.push(...matchedHotels.map(hotel => ({
-        name:          hotel.name          || hotel.hotel_name || "Hotel",
-        stars:         Number(hotel.stars  || 4),
-        rating:        Number(hotel.rating || 4.5),
-        category:      hotel.category      || "",
-        location:      hotel.location      || hotel.city || "",
-        pricePerNight: Number(hotel.price_per_night || hotel.price || hotel.rate || 0),
-        mealPlan:      hotel.meal_plan     || null,
-        reviews:       hotel.reviews       || [],
-        currency:      hotel.currency      || 'KES',
-        supplier:      'supabase',
-      })));
-    }
+    // NOTE: Supabase static hotel inventory removed — all agencies
+    // now use live HotelBeds inventory. The old static `hotels` table
+    // lookup has been removed since live agencies have no rows there
+    // and it added an unnecessary Supabase query before HotelBeds ran.
 
     // ── HotelBeds live inventory ──────────────────
     // FIX: previously gated on tripParams.departureDate being
@@ -1986,16 +1937,19 @@ class OrchestrationEngine {
             checkIn,
             checkOut,
             passengers:  tripParams.passengers || 1,
-            // Real occupancy breakdown — HotelBeds needs adults/children
-            // split (and child ages) at search time, not just a flat
-            // headcount, or the rateKey it returns won't match the pax
-            // sent at booking. Defaults keep adult-only searches identical.
             adults:      tripParams.adults != null ? tripParams.adults : (tripParams.passengers || 1),
             children:    tripParams.children || 0,
             childAges:   Array.isArray(tripParams.childAges) ? tripParams.childAges : [],
             nights,
             budget:      tripParams.budget,
-            rooms:       1,
+            // ROOM COUNT: use explicitly stated room count from the prompt
+            // (e.g. "two single rooms" → rooms=2), otherwise default to 1.
+            // When roomType is 'single', each room holds 1 adult — so
+            // "two single rooms" means 2 rooms × 1 adult each, not 1 room
+            // with 2 adults. HotelBeds' occupancy will correctly produce
+            // separate room+pax entries for multi-room bookings.
+            rooms: tripParams.rooms || 1,
+            roomType: tripParams.roomType || null,
           }),
           [],
           `hotels ${tripParams.destination}`

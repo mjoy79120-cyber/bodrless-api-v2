@@ -69,19 +69,27 @@ class HotelBedsAdapter {
     nights = 1,
     budget = 'mid',
     rooms = 1,
+    roomType = null,   // 'single'|'double'|'twin'|'triple'|'family'|'suite'|null
     hotelCode = null,
   }) {
     try {
-      logger.info('HotelBeds: searching hotels', { destination, checkIn, checkOut, passengers, children, hotelCode });
+      logger.info('HotelBeds: searching hotels', { destination, checkIn, checkOut, passengers, children, rooms, roomType, hotelCode });
 
       const checkInDate  = this._formatDate(checkIn);
       const checkOutDate = checkOut
         ? this._formatDate(checkOut)
         : this._addDays(checkInDate, nights);
 
+      // For single-room-type requests (e.g. "two single rooms"),
+      // divide adults across rooms so each room gets 1 adult, not
+      // all adults crammed into one room configuration.
+      const adultsPerRoom = roomType === 'single'
+        ? 1
+        : adults != null ? adults : passengers;
+
       const occupancy = this._buildOccupancy({
         rooms,
-        adults: adults != null ? adults : passengers,
+        adults: adultsPerRoom,
         children,
         childAges,
       });
