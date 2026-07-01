@@ -33,12 +33,34 @@ const CITY_CODES = {
   // EAST AFRICA
   'nairobi': 'NBO', 'nbo': 'NBO', 'nai': 'NBO',
   'mombasa': 'MBA', 'mba': 'MBA',
-  'zanzibar': 'ZNZ', 'znz': 'ZNZ', 'zan': 'ZNZ',
+  'zanzibar': 'ZNZ', 'znz': 'ZNZ',
+  // NOTE: 'zan' removed — too short and causes false matches against
+  // country names like 'tanzania'. Use full 'zanzibar' instead.
   'dar es salaam': 'DAR', 'dar': 'DAR', 'dar es': 'DAR',
   'kigali': 'KGL', 'kgl': 'KGL',
   'kampala': 'EBB', 'entebbe': 'EBB',
   'addis ababa': 'ADD', 'addis': 'ADD', 'add': 'ADD',
   'arusha': 'ARK',
+
+  // COUNTRY NAMES → PRIMARY GATEWAY AIRPORT
+  // Added here (not just in COUNTRY_TO_CITY) so the rule-based
+  // parser finds the full country name as a direct map hit before
+  // a shorter substring like 'zan' in 'tanzania' triggers first.
+  // Full-word map lookups are checked before substring scanning in
+  // the rule parser, so this prevents the greedy-substring bug.
+  'rwanda':        'KGL',  // Kigali
+  'tanzania':      'DAR',  // Dar es Salaam (most common gateway)
+  'uganda':        'EBB',  // Entebbe/Kampala
+  'ethiopia':      'ADD',  // Addis Ababa
+  'kenya':         'NBO',  // Nairobi
+  'south africa':  'JNB',  // Johannesburg
+  'nigeria':       'LOS',  // Lagos
+  'ghana':         'ACC',  // Accra
+  'egypt':         'CAI',  // Cairo
+  'morocco':       'CMN',  // Casablanca (Mohammed V)
+  'mauritius':     'MRU',
+  'seychelles':    'SEZ',
+  'maldives':      'MLE',
 
   // WEST AFRICA
   'lagos': 'LOS', 'los': 'LOS',
@@ -449,8 +471,8 @@ FIRST, decide: is this a MULTI-DESTINATION itinerary (the traveler names 2 or mo
   "isMultiDestination": true,
   "origin": "full city name in lowercase, or null if not stated — this is the origin for the FIRST leg only",
   "legs": [
-    { "destination": "full place name in lowercase", "nights": number, "origin": "full city name in lowercase, or null", "departureDate": "YYYY-MM-DD or null" },
-    { "destination": "full place name in lowercase", "nights": number, "origin": "full city name in lowercase, or null", "departureDate": "YYYY-MM-DD or null" }
+    { "destination": "full place name in lowercase — if a country name, resolve to most appropriate city given prompt context (e.g. 'rwanda'→'kigali', 'tanzania' with safari context→'arusha', 'tanzania' with beach context→'zanzibar')", "nights": number, "origin": "full city name in lowercase, or null", "departureDate": "YYYY-MM-DD or null" },
+    { "destination": "full place name in lowercase — if a country name, resolve to most appropriate city given prompt context (e.g. 'rwanda'→'kigali', 'tanzania' with safari context→'arusha', 'tanzania' with beach context→'zanzibar')", "nights": number, "origin": "full city name in lowercase, or null", "departureDate": "YYYY-MM-DD or null" }
   ],
   "departureDate": "YYYY-MM-DD or null — the FIRST leg's departure date only, if stated",
   "passengers": number (default 1),
@@ -496,7 +518,7 @@ OTHERWISE (single destination), return ONLY this shape:
 {
   "isMultiDestination": false,
   "origin": "full city name in lowercase, or null if not stated",
-  "destination": "full city name in lowercase",
+  "destination": "full city name in lowercase — if traveler named a country, resolve to most appropriate city given context",
   "departureDate": "YYYY-MM-DD or null",
   "returnDate": "YYYY-MM-DD or null",
   "passengers": number (default 1),
@@ -527,7 +549,7 @@ RULES:
 - CRITICAL tripType rule: if the traveler mentions a number of nights or days (e.g. "4 nights", "3 days"), that means they want to come back — set tripType="round_trip". Only use tripType="one_way" if the traveler explicitly says "one way", "single trip", "not coming back", or gives no return timeframe of any kind. A stated nights/days duration is ALWAYS a round-trip signal, never one-way.
 - origin = where they are coming FROM. A simple "X to Y" phrasing (e.g. "Nairobi to Mombasa") means X is the origin — extract it. Only set origin to null if the prompt truly gives no departure location at all (e.g. "I want to go to Mombasa" with no "from" stated). Do NOT guess a city if none is given, but DO extract one that is clearly stated, including in plain "X to Y" form.
 - CRITICAL — word order is NOT a reliable cue for which city is the origin. The destination is frequently stated FIRST and the origin LAST, especially after the word "from". In "I'd like to visit Zanzibar travelling from Nairobi", "visit Mombasa from Nairobi", or "Zanzibar, departing from Nairobi", the destination is Zanzibar/Mombasa and the origin is Nairobi — the city after "from" is ALWAYS the origin, no matter where it appears in the sentence. Do not assume the first city mentioned is the origin. Ignore conversational filler like "I'd like to", "I want to go to", "fly to", "visit" when deciding — anchor on the actual place names and the word "from".
-- destination (single) / each leg's destination (multi) = where they want to GO. Use the place name as stated (e.g. "maasai mara", "kilifi", "watamu") — do NOT convert it to a nearby airport or city name. Place name resolution happens in a separate step.
+- destination (single) / each leg's destination (multi) = where they want to GO. If the traveler named a CITY or PLACE (e.g. "maasai mara", "kilifi", "watamu", "kigali", "cape town"), use it exactly as stated — do NOT convert it to a nearby airport code. However, if the traveler named a COUNTRY rather than a city (e.g. "rwanda", "tanzania", "uganda", "south africa", "india", "thailand"), resolve it to the most appropriate gateway CITY for that country given the context of the rest of the prompt. Use context clues: "safari in tanzania" → "arusha" or "kilimanjaro"; "beach in tanzania" → "zanzibar"; "business in tanzania" or no context → "dar es salaam". "rwanda" with no qualifier → "kigali" (only major international airport). For countries with obvious single gateways (rwanda → kigali, uganda → kampala, seychelles → mahe, maldives → male, mauritius → port louis), always resolve to that city. For ambiguous multi-city countries with no context clues, use the most common business/transit gateway (tanzania → dar es salaam, india → delhi, usa → new york, uk → london).
 - If a city name appears to be a misspelling of a real city (e.g. "zanibar", "mombsa", "nairobii"), correct it to the real city name in your response rather than treating it as unrecognized.
 - For multi-destination prompts, preserve the ORDER the traveler stated the destinations in — legs[0] is visited first.
 - Today: ${new Date().toISOString().split('T')[0]}
@@ -616,7 +638,7 @@ function _detectMultiDestinationRules(prompt) {
     const rawPlace = match[3].trim();
     const resolvedPlace = _resolveCityFuzzy(rawPlace, sortedPlaces) || rawPlace;
     const legOrigin = legOriginRaw ? (_resolveCityFuzzy(legOriginRaw, sortedCities) || legOriginRaw) : null;
-    if (resolvedPlace) legs.push({ destination: resolvedPlace, nights, origin: legOrigin });
+    if (resolvedPlace) legs.push({ destination: _resolveCountryToCity(resolvedPlace), nights, origin: legOrigin ? _resolveCountryToCity(legOrigin) : null });
   }
 
   if (legs.length < 2) return null;
@@ -1043,8 +1065,10 @@ function _enrichParams(parsed) {
   // ask "Where are you traveling from?" instead of silently guessing.
   const needsOriginClarification = !parsed.origin;
 
-  const originCode = _resolveToCode(parsed.origin);
-  const destinationCode = _resolveToCode(parsed.destination);
+  const resolvedOrigin      = _resolveCountryToCity(parsed.origin);
+  const resolvedDestination = _resolveCountryToCity(parsed.destination);
+  const originCode      = _resolveToCode(resolvedOrigin);
+  const destinationCode = _resolveToCode(resolvedDestination);
 
   const requiresBus = _isBusRoute(originCode, destinationCode);
   const requiresFlight = true;
@@ -1092,8 +1116,8 @@ function _enrichParams(parsed) {
     isMultiDestination: false,
     originCode,
     destinationCode,
-    origin: parsed.origin || null,
-    destination: parsed.destination,
+    origin: resolvedOrigin || null,
+    destination: resolvedDestination,
     departureDate,
     nights,
     returnDate,
@@ -1200,9 +1224,9 @@ function _enrichMultiDestinationParams(parsed) {
   const topLevelDepartureDate = parsed.departureDate || _defaultDepartureDate();
 
   const legs = (parsed.legs || []).map((leg, i) => ({
-    destination: leg.destination,
+    destination: _resolveCountryToCity(leg.destination),
     nights: leg.nights || 1,
-    origin: leg.origin || null,
+    origin: leg.origin ? _resolveCountryToCity(leg.origin) : null,
     // Leg 1's date IS the top-level departureDate (same field,
     // covered already — see the origin defensive backfill below for
     // the analogous situation). Leg 2+ keep whatever the model
@@ -1251,6 +1275,92 @@ function _resolveToCode(city) {
   if (!city) return null;
   const lower = city.toLowerCase().trim();
   return CITY_CODES[lower] || city.toUpperCase().slice(0, 3);
+}
+
+// ─────────────────────────────────────────────
+// COUNTRY → PRIMARY CITY RESOLUTION
+// Travelers frequently say "Rwanda" meaning Kigali, "Tanzania"
+// meaning Dar es Salaam, etc. Country names have no IATA code and
+// no HotelBeds destination code — every adapter rejects them, so
+// a country-name destination produces zero results for all suppliers.
+//
+// This map resolves a country name to the most commonly-booked
+// gateway city for that country from an East Africa travel context:
+//   - Rwanda → Kigali (only major international airport, KGL)
+//   - Tanzania → Dar es Salaam (primary gateway, though Kilimanjaro/
+//     Zanzibar also exist — these are handled separately if the
+//     traveler names them explicitly)
+//   - Uganda → Kampala/Entebbe (EBB is the actual airport)
+//   etc.
+//
+// Applied at parse time so the resolved city flows through to all
+// adapters (TravelDuqa, Duffel, HotelBeds) correctly, rather than
+// needing to be handled in each adapter independently.
+// ─────────────────────────────────────────────
+const COUNTRY_TO_CITY = {
+  // East Africa (primary travel markets)
+  'rwanda':       'kigali',
+  'uganda':       'kampala',
+  'tanzania':     'dar es salaam',
+  'burundi':      'bujumbura',
+  'south sudan':  'juba',
+  'eritrea':      'asmara',
+  'djibouti':     'djibouti',
+  'somalia':      'mogadishu',
+  // Southern Africa
+  'south africa': 'johannesburg',
+  'zimbabwe':     'harare',
+  'zambia':       'lusaka',
+  'mozambique':   'maputo',
+  'malawi':       'lilongwe',
+  'botswana':     'gaborone',
+  'namibia':      'windhoek',
+  'angola':       'luanda',
+  // West Africa
+  'nigeria':      'lagos',
+  'ghana':        'accra',
+  'senegal':      'dakar',
+  'ivory coast':  'abidjan',
+  'cote divoire': 'abidjan',
+  // North Africa / Middle East
+  'egypt':        'cairo',
+  'morocco':      'casablanca',
+  'algeria':      'algiers',
+  'tunisia':      'tunis',
+  // Indian Ocean islands (common EA travel destinations)
+  'mauritius':    'port louis',
+  'seychelles':   'mahe',
+  'madagascar':   'antananarivo',
+  'maldives':     'male',
+  // Asia / Europe (common long-haul from EA)
+  'india':        'delhi',
+  'china':        'beijing',
+  'japan':        'tokyo',
+  'thailand':     'bangkok',
+  'indonesia':    'bali',
+  'turkey':       'istanbul',
+  'france':       'paris',
+  'germany':      'frankfurt',
+  'netherlands':  'amsterdam',
+  'italy':        'rome',
+  'spain':        'madrid',
+  'united kingdom': 'london',
+  'uk':           'london',
+  'usa':          'new york',
+  'united states': 'new york',
+  'canada':       'toronto',
+  'australia':    'sydney',
+};
+
+/**
+ * If the given string is a known country name, returns its primary
+ * gateway city instead. Otherwise returns the input unchanged.
+ * Case-insensitive, trim-safe.
+ */
+function _resolveCountryToCity(name) {
+  if (!name) return name;
+  const key = name.toLowerCase().trim();
+  return COUNTRY_TO_CITY[key] || name;
 }
 
 function _isBusRoute(origin, destination) {
