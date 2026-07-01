@@ -187,15 +187,28 @@ class OrchestrationEngine {
     // to logger.debug once latency is comfortably within budget.
     const _tSearch = Date.now();
 
+    // CORRIDOR ACCESS RESOLUTION: look up ONCE, before any supplier
+    // call, how the destination is actually reached per mode (its
+    // own airport vs. a nearby hub + road transfer, direct bus
+    // service, etc.) — the same destinationIntel knowledge already
+    // used for multi-destination itineraries (_orchestrateMultiDestination),
+    // now applied to plain single-destination searches too, so
+    // "Nairobi to Kilifi" and "Nairobi to Watamu" route through the
+    // real corridor (flight to Malindi + transfer, direct bus, etc.)
+    // instead of silently returning zero transport because Kilifi/
+    // Watamu have no airport of their own to resolve an IATA code
+    // against. See _searchFlights/_searchBuses for how this gets used.
+    const destinationAccess = await this._resolveDestinationAccess(tripParams.destination);
+
     const [
       outboundResult, outboundBuses,
       returnResult, returnBuses,
       hotelResults
     ] = await Promise.all([
-      this._searchFlightsWithHubFallback(tripParams, 'outbound'),
-      this._searchBuses(tripParams, 'outbound'),
-      tripParams.returnDate ? this._searchFlightsWithHubFallback(tripParams, 'return') : Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true }),
-      tripParams.returnDate ? this._searchBuses(tripParams, 'return') : Promise.resolve([]),
+      this._searchFlightsWithHubFallback(tripParams, 'outbound', destinationAccess),
+      this._searchBuses(tripParams, 'outbound', destinationAccess),
+      tripParams.returnDate ? this._searchFlightsWithHubFallback(tripParams, 'return', destinationAccess) : Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true }),
+      tripParams.returnDate ? this._searchBuses(tripParams, 'return', destinationAccess) : Promise.resolve([]),
       this._searchHotels(tripParams),
     ]);
 
@@ -1684,6 +1697,27 @@ class OrchestrationEngine {
   static REGIONAL_HUBS = ['nairobi', 'mombasa', 'kampala', 'dar es salaam', 'addis ababa', 'kigali'];
 
   // ─────────────────────────────
+  // RESOLVE DESTINATION ACCESS
+  // Wraps destinationIntel.resolve() for the single-destination
+  // search path. Wrapped defensively — a destinationIntel failure
+  // (Supabase down, Groq timeout, etc.) must never break a search;
+  // it just falls back to treating the destination as a plain
+  // airport city, which is exactly today's pre-existing behavior
+  // before this corridor-routing feature existed.
+  // ─────────────────────────────
+  async _resolveDestinationAccess(destination) {
+    if (!destination) return null;
+    try {
+      return await destinationIntel.resolve(destination);
+    } catch (err) {
+      logger.warn('DestinationIntel resolution failed — falling back to direct-airport assumption', {
+        destination, error: err.message,
+      });
+      return null;
+    }
+  }
+
+  // ─────────────────────────────
   // SEARCH FLIGHTS WITH HUB-CONNECTING FALLBACK
   // Tries the direct origin->destination search first (unchanged
   // _searchFlights, untouched). Only if that returns nothing does
@@ -1699,8 +1733,8 @@ class OrchestrationEngine {
   // honestly that they need to arrange that first leg themselves
   // — never silently treated as if Bodrless arranged it.
   // ─────────────────────────────
-  async _searchFlightsWithHubFallback(tripParams, leg = 'outbound') {
-    const direct = await this._searchFlights(tripParams, leg);
+  async _searchFlightsWithHubFallback(tripParams, leg = 'outbound', destinationAccess = null) {
+    const direct = await this._searchFlights(tripParams, leg, destinationAccess);
     if (direct.length > 0) {
       return { results: direct, connectsVia: null, connectingLegBookable: true };
     }
@@ -1734,7 +1768,7 @@ class OrchestrationEngine {
         const hubToDestParams = leg === 'return'
           ? { ...tripParams, destination: hub, origin: tripParams.destination }
           : { ...tripParams, origin: hub };
-        return this._searchFlights(hubToDestParams, leg)
+        return this._searchFlights(hubToDestParams, leg, destinationAccess)
           .then((results) => ({ hub, results }))
           .catch((err) => {
             logger.error('Hub fallback leg search failed', { hub, leg, error: err.message });
@@ -1772,15 +1806,51 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // FLIGHTS
   // ─────────────────────────────
-  async _searchFlights(tripParams, leg = 'outbound') {
+  async _searchFlights(tripParams, leg = 'outbound', destinationAccess = null) {
     const mode = leg === 'return'
       ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || 'flight')
       : (tripParams.outboundTransportMode || tripParams.transportMode || 'flight');
 
     if (mode === 'bus' || mode === 'train') return [];
 
-    const searchOrigin      = leg === 'return' ? tripParams.destination : tripParams.origin;
-    const searchDestination = leg === 'return' ? tripParams.origin      : tripParams.destination;
+    let searchOrigin      = leg === 'return' ? tripParams.destination : tripParams.origin;
+    let searchDestination = leg === 'return' ? tripParams.origin      : tripParams.destination;
+
+    // CORRIDOR HUB SUBSTITUTION: some real destinations (Kilifi,
+    // Watamu, ...) have no airport of their own — sending their raw
+    // name to TravelDuqa/Duffel fails IATA resolution deep inside
+    // those adapters and silently returns zero flights (this was the
+    // exact bug behind "Nairobi to Kilifi" returning a hotel-only
+    // result with no explanation). destinationIntel already knows
+    // the real nearby hub (e.g. Kilifi/Watamu -> Malindi) for
+    // multi-destination itineraries; apply the same knowledge here
+    // for a plain single-destination search. hubLanding is carried
+    // on the resulting flight objects so _buildTransferLegs can build
+    // an honest "hub -> real destination" transfer instead of the
+    // generic "Airport -> Hotel" label, and so the traveler-facing
+    // package can say plainly that the flight lands at the hub, not
+    // the town itself.
+    let hubLanding = null;
+    const airAccess = destinationAccess?.accessByMode?.air;
+    if (airAccess?.hubName && (airAccess.transferRequired || !airAccess.directService)) {
+      hubLanding = {
+        name: airAccess.hubName,
+        code: airAccess.hubCode || null,
+        distanceKm: airAccess.transferDistanceKm || null,
+        realDestination: tripParams.destination,
+      };
+      if (leg === 'return') searchOrigin = airAccess.hubName;
+      else searchDestination = airAccess.hubName;
+    } else if (airAccess && !airAccess.hubName && !airAccess.directService) {
+      // destinationIntel explicitly knows there's no reasonable air
+      // route at all for this destination — don't send a doomed
+      // request to the flight suppliers, same "don't guess" posture
+      // as the bus branch below.
+      logger.info('DestinationIntel: no air route known for destination, skipping flight search', {
+        destination: tripParams.destination, leg,
+      });
+      return [];
+    }
 
     let searchDate = leg === 'return' ? tripParams.returnDate : tripParams.departureDate;
     if (!searchDate) {
@@ -1815,7 +1885,7 @@ class OrchestrationEngine {
           `flight ${leg} ${searchOrigin}->${searchDestination}`
         );
         console.log(`TRAVELDUQA FLIGHTS (${leg}):`, liveFlights.length);
-        results.push(...liveFlights);
+        results.push(...(hubLanding ? liveFlights.map(f => ({ ...f, hubLanding })) : liveFlights));
       } catch (err) {
         logger.error(`TravelDuqa flight search failed (${leg})`, { error: err.message });
       }
@@ -1828,7 +1898,7 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // BUSES
   // ─────────────────────────────
-  async _searchBuses(tripParams, leg = 'outbound') {
+  async _searchBuses(tripParams, leg = 'outbound', destinationAccess = null) {
     const mode = leg === 'return'
       ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || 'flight')
       : (tripParams.outboundTransportMode || tripParams.transportMode || 'flight');
@@ -1849,9 +1919,26 @@ class OrchestrationEngine {
     const o = (searchOrigin      || '').toLowerCase();
     const d = (searchDestination || '').toLowerCase();
 
-    const isBusRoute = busRoutes.some(([a, b]) =>
+    const isKnownBusRoute = busRoutes.some(([a, b]) =>
       (o.includes(a) && d.includes(b)) || (o.includes(b) && d.includes(a))
     );
+
+    // DESTINATION-INTEL DIRECT SERVICE: destinationIntel may know a
+    // destination is reachable by direct bus even though it's not in
+    // the hardcoded busRoutes pairs above — e.g. the Nairobi–Malindi
+    // route physically passes through and stops at Kilifi and
+    // Watamu, no transfer needed, unlike the equivalent flight/train
+    // routes to those same towns. busRoutes stays as an additional
+    // known-good allow-list rather than being replaced, since not
+    // every route in it necessarily has a destinationIntel entry yet.
+    // NOTE: this only wires the LOGIC — a route will still return
+    // zero real results until IABIRI's city-ID map (adapters/travler.js
+    // _cityCache()) has real numeric IDs for that town; see that
+    // adapter's own comment on extending IABIRI_CITY_MAP.
+    const busAccess = destinationAccess?.accessByMode?.bus;
+    const isDestinationIntelDirectRoute = busAccess?.directService === true;
+
+    const isBusRoute = isKnownBusRoute || isDestinationIntelDirectRoute;
 
     if (!isBusRoute && mode !== 'bus') return [];
     if (!supplierAdapter || !searchDate) return [];
@@ -2040,6 +2127,21 @@ class OrchestrationEngine {
 
     const rate = await this._getTransferRate(tripParams);
 
+    // HUB-LANDING TRANSFER: when this transport was booked to a
+    // nearby hub instead of the traveler's real destination (see
+    // hubLanding, set in _searchFlights via destinationIntel — e.g.
+    // a flight to Malindi for a Kilifi/Watamu trip), the arrival leg
+    // must say so honestly — "Malindi Airport → Kilifi (road
+    // transfer)" — rather than the generic "Airport → Hotel" label,
+    // which would otherwise wrongly imply the flight landed at the
+    // real destination itself.
+    const arrivalDescription = transport.hubLanding
+      ? `${destHub} → ${this._titleCase(transport.hubLanding.realDestination)} (road transfer${transport.hubLanding.distanceKm ? `, ~${transport.hubLanding.distanceKm}km` : ''})`
+      : `${destHub} → Hotel`;
+    const arrivalDropoff = transport.hubLanding
+      ? `${this._titleCase(transport.hubLanding.realDestination)} (Hotel)`
+      : 'Hotel';
+
     return [
       {
         legType:     'departure',
@@ -2053,11 +2155,20 @@ class OrchestrationEngine {
       {
         legType:     'arrival',
         provider:    rate?.provider || 'Bodrless Standard Transfer',
-        description: `${destHub} → Hotel`,
+        description: arrivalDescription,
         pickup:      destHub,
-        dropoff:     'Hotel',
+        dropoff:     arrivalDropoff,
         price:       rate?.price ?? 1500,
         currency:    rate?.currency || 'KES',
+        // NOTE (known follow-up): pricing here still uses the same
+        // generic agency/default transfer rate lookup as every other
+        // transfer leg (_getTransferRate, matched by
+        // tripParams.destination) — it does NOT yet reflect that a
+        // hub transfer like Malindi->Kilifi (~60km) is a materially
+        // longer/costlier drive than a typical airport->hotel
+        // transfer. Add dedicated transfer rate rows keyed to the
+        // hub->town pair (or a distance-based pricing rule) rather
+        // than reusing whatever generic rate happens to match.
       },
     ];
   }
@@ -2187,6 +2298,12 @@ class OrchestrationEngine {
       // _formatBaggageSummary/_formatFlightPolicySummary below.
       baggageSummary: this._formatBaggageSummary(t.checkedBags, t.carryOn),
       policySummary:  this._formatFlightPolicySummary(t.canBook, t.canHold),
+      // NEW — set by _searchFlights when this flight was booked to a
+      // nearby hub instead of the traveler's real destination (e.g.
+      // Malindi for a Kilifi/Watamu trip) via destinationIntel's
+      // corridor knowledge. Read by _buildTransferLegs to build an
+      // honest "hub -> real destination" transfer label.
+      hubLanding:   t.hubLanding   || null,
     };
   }
 
@@ -2379,6 +2496,18 @@ class OrchestrationEngine {
           // behind it (e.g. Meru -> Nairobi is matatu-only). Never
           // silently implies Bodrless arranged a leg it didn't.
           connectionAdvisory: this._buildConnectionAdvisory(tripParams, connectionInfo),
+          // HUB TRANSFER NOTE — present when the outbound flight was
+          // booked to a nearby hub instead of the real destination
+          // (e.g. Malindi for a Kilifi/Watamu trip, via destinationIntel
+          // corridor knowledge in _searchFlights). Unlike
+          // connectionAdvisory above, this is NOT "arrange your own
+          // way" — the transfer leg IS booked and included below
+          // (see transferLegs / _buildTransferLegs); this note just
+          // makes plain to the traveler why "flight to Kilifi" shows
+          // a Malindi airport in the itinerary.
+          hubTransferNote: ob?.hubLanding
+            ? `This trip flies into ${this._titleCase(ob.hubLanding.name)} — the road transfer to ${this._titleCase(ob.hubLanding.realDestination)} is included below.`
+            : null,
           status: "available",
         };
       })
