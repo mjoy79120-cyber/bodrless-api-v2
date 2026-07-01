@@ -20,6 +20,7 @@ const adminRoutes = require('./routes/admin');
 const { startSweeper } = require('./services/paymentSweeper');
 const tracking = require('./services/trackingService');
 const insightsEngine = require('./services/insightsEngine');
+const hotelbedsContent = require('./services/hotelbedsContent');
 
 const app = express();
 
@@ -140,6 +141,25 @@ app.listen(PORT, '0.0.0.0', () => {
   insightsEngine.refreshAll().catch(err => logger.error('Initial insights refresh failed', { error: err.message }));
   setInterval(() => insightsEngine.refreshAll(), 60 * 60 * 1000);
   logger.info('Insights engine scheduled (hourly, plus on startup)');
+
+  // HotelBeds Content sync — batch-pulls hotel address/phone/email/
+  // category from HotelBeds' Content API, broadly by country code
+  // (KE/TZ/ZA by default — see HOTELBEDS_CONTENT_COUNTRIES), and
+  // upserts into hotelbeds_hotel_content in Supabase. hotelbeds.js's
+  // search()/book() read from that table to fill in fields the live
+  // Availability/Booking API often doesn't carry. Runs once on
+  // startup, then every 24h (much less frequent than insightsEngine's
+  // hourly refresh — hotel content changes far less often than search
+  // patterns, and each run is a multi-country paginated pull against
+  // a rate-limited external API, not a cheap internal query). Never
+  // blocks server startup — runs async, logs/alerts on failure.
+  hotelbedsContent.syncAll().catch(err => logger.error('Initial HotelBeds content sync failed', { error: err.message }));
+  const HOTELBEDS_CONTENT_SYNC_INTERVAL_MS = Number(process.env.HOTELBEDS_CONTENT_SYNC_INTERVAL_MS) || 24 * 60 * 60 * 1000;
+  setInterval(
+    () => hotelbedsContent.syncAll().catch(err => logger.error('Scheduled HotelBeds content sync failed', { error: err.message })),
+    HOTELBEDS_CONTENT_SYNC_INTERVAL_MS
+  );
+  logger.info('HotelBeds content sync scheduled (every 24h, plus on startup)');
 });
 
 // Keep alive — production only

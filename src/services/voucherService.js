@@ -24,6 +24,16 @@
  *   4.3 Holder name + pax per room ✓
  *   4.4 Booking ref, dates, room type, board, rate comments ✓
  *   4.5 "Payable through [supplier], acting as agent..." ✓
+ *
+ * RATE COMMENTS (Cert 3.9/4.4): checkRate() already returns
+ * rateComments text directly for RECHECK rates (see hotelbeds.js) —
+ * that's the reliable path and is used as-is when present. For
+ * BOOKABLE rates that only ever carried a rateCommentsId (never
+ * resolved to text), _buildVoucherData below resolves it on-demand
+ * via hotelbedsContent.resolveRateComment() — a single live Content
+ * API call made once per voucher, not batched, since this only
+ * happens at booking confirmation time (low volume, not
+ * latency-sensitive the way a live search is).
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -33,6 +43,7 @@ const fs           = require('fs');
 const path         = require('path');
 const { Resend }   = require('resend');
 const { logger }   = require('../utils/logger');
+const hotelbedsContent = require('./hotelbedsContent');
 
 const resendClient  = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const FROM          = process.env.EMAIL_FROM     || 'Bodrless <onboarding@resend.dev>';
@@ -63,7 +74,7 @@ class VoucherService {
       return { success: false, error: 'Missing booking reference' };
     }
 
-    const vd      = this._buildVoucherData({ booking, hotel, agency });
+    const vd      = await this._buildVoucherData({ booking, hotel, agency });
     const html    = this._renderHTML(vd);
     const results = { pdf: null, email: null, whatsapp: null };
 
@@ -105,8 +116,13 @@ class VoucherService {
   // Normalizes the raw booking/hotel/agency objects into
   // a clean shape both the HTML template and WhatsApp
   // formatter can use without defensive null-checks everywhere.
+  //
+  // NOW ASYNC: rate comment resolution (see file header) requires
+  // an on-demand Content API call when only a rateCommentsId is
+  // available with no resolved text yet. Every caller of this
+  // method must await it — currently only sendVoucher() above.
   // ─────────────────────────────────────────────
-  _buildVoucherData({ booking, hotel, agency }) {
+  async _buildVoucherData({ booking, hotel, agency }) {
     const fmt = d => {
       if (!d) return null;
       try {
@@ -135,6 +151,26 @@ class VoucherService {
     const paymentText  = supplierVAT
       ? `Payable through ${supplierName}, acting as agent for the service operating company. VAT: ${supplierVAT} Reference: ${booking.supplierBookingReference || booking.hotel_supplier_reference || '—'}`
       : `Payable through ${supplierName}, acting as agent for the service operating company. Reference: ${booking.supplierBookingReference || booking.hotel_supplier_reference || '—'}`;
+
+    // RATE COMMENTS RESOLUTION (Cert 3.9/4.4) — prefer text already
+    // captured at checkRate() time (RECHECK rates); only make the
+    // on-demand Content API call when a rateCommentsId exists but no
+    // text was ever resolved for it (BOOKABLE rates, which never go
+    // through checkRate() — see hotelbeds.js's checkRate certification
+    // comment). Wrapped defensively: a Content API hiccup here must
+    // never block voucher delivery — worst case the voucher simply
+    // omits the rate-comment note, same as before this change.
+    let rateCommentsText = hotelD.rateComments || null;
+    if (!rateCommentsText && hotelD.rateCommentsId) {
+      try {
+        rateCommentsText = await hotelbedsContent.resolveRateComment({
+          code: hotelD.rateCommentsId,
+          date: hotelD.checkIn || booking.checkIn || booking.departureDate || null,
+        });
+      } catch (err) {
+        logger.warn('VoucherService: rate comment resolution failed — voucher will omit it', { error: err.message });
+      }
+    }
 
     return {
       // Refs
@@ -200,7 +236,7 @@ class VoucherService {
         roomType:      hotelD.roomType  || null,
         boardType:     hotelD.mealPlan  || hotelD.boardType || null,
         isRefundable:  hotelD.isRefundable !== false,
-        rateComments:  hotelD.rateComments || null,
+        rateComments:  rateCommentsText,
         cancellationPolicies: hotelD.cancellationPolicies || [],
         promotions:    hotelD.promotions   || [],
       } : null,

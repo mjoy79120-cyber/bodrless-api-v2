@@ -10,12 +10,22 @@
  * Docs:      https://developer.hotelbeds.com
  *
  * CERTIFICATION STATUS: compliant with HotelBeds certification checklist
+ *
+ * CONTENT ENRICHMENT: address/phone/email are not always reliably
+ * populated on the live Availability/Booking API's hotel object (this
+ * was confirmed missing on the booking response specifically — see
+ * book() below). hotelbedsContent.js maintains a locally-synced cache
+ * of this data from HotelBeds' Content API (batch job, see that
+ * file), so both search() and book() fall back to it when the live
+ * response is missing these fields — fast local Supabase reads, no
+ * added latency on the live request path.
  * ─────────────────────────────────────────────
  */
 
 const axios = require('axios');
 const crypto = require('crypto');
 const { logger } = require('../utils/logger');
+const hotelbedsContent = require('../services/hotelbedsContent');
 
 class HotelBedsAdapter {
 
@@ -137,7 +147,15 @@ class HotelBedsAdapter {
       const hotels = response.data?.hotels?.hotels || [];
       logger.info('HotelBeds: results', { count: hotels.length });
 
-      return this._normalizeHotels(hotels, nights);
+      // CONTENT ENRICHMENT: batch-fetch cached address/phone/email
+      // for every hotel in this page of results in ONE Supabase
+      // query, rather than one lookup per hotel. Never blocks or
+      // fails the search — a lookup miss/error just means those
+      // hotels fall back to whatever the live response already had
+      // (possibly nothing, same as before this change).
+      const contentByCode = await this._enrichWithContent(hotels);
+
+      return this._normalizeHotels(hotels, nights, contentByCode);
 
     } catch (err) {
       console.log('HOTELBEDS ERROR DETAIL:', JSON.stringify({
@@ -147,6 +165,24 @@ class HotelBedsAdapter {
       }, null, 2));
       logger.error('HotelBeds search failed', { error: err.message });
       return [];
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // ENRICH WITH CONTENT (batch)
+  // Wrapped defensively — hotelbedsContent.getHotelContentBatch
+  // already catches its own Supabase errors and returns {}, but this
+  // extra layer guarantees a search can NEVER fail because of a
+  // content-lookup problem, even a future change to that method.
+  // ─────────────────────────────────────────────
+  async _enrichWithContent(hotels) {
+    try {
+      const codes = hotels.map(h => h.code).filter(Boolean);
+      if (codes.length === 0) return {};
+      return await hotelbedsContent.getHotelContentBatch(codes);
+    } catch (err) {
+      logger.warn('HotelBeds: content enrichment lookup failed — continuing without it', { error: err.message });
+      return {};
     }
   }
 
@@ -264,13 +300,38 @@ class HotelBedsAdapter {
       const booking = response.data?.booking;
       if (!booking) throw new Error('HotelBeds booking response missing booking object');
 
+      // CONTENT ENRICHMENT: the live booking response's hotel.address/
+      // hotel.phones are frequently absent in practice (this is the
+      // gap the Content API integration exists to close — see file
+      // header). Fall back to the synced content cache by hotel code
+      // whenever the live response is missing either field. Never
+      // blocks or fails the booking — a lookup miss just leaves these
+      // fields null, exactly as before this change.
+      let hotelAddress = booking.hotel?.address?.content || null;
+      let hotelPhone    = booking.hotel?.phones?.[0]?.phoneNumber || null;
+      let hotelEmail    = booking.hotel?.email || null;
+
+      if ((!hotelAddress || !hotelPhone || !hotelEmail) && booking.hotel?.code) {
+        try {
+          const content = await hotelbedsContent.getHotelContent(booking.hotel.code);
+          if (content) {
+            hotelAddress = hotelAddress || content.address || null;
+            hotelPhone    = hotelPhone    || content.phone    || null;
+            hotelEmail    = hotelEmail    || content.email    || null;
+          }
+        } catch (err) {
+          logger.warn('HotelBeds: book() content enrichment failed — continuing without it', { error: err.message });
+        }
+      }
+
       return {
         supplier:                 this.supplier,
         supplierBookingReference: booking.reference,
         status:                   booking.status,
         hotelName:                booking.hotel?.name,
-        hotelAddress:             booking.hotel?.address?.content || null,
-        hotelPhone:               booking.hotel?.phones?.[0]?.phoneNumber || null,
+        hotelAddress,
+        hotelPhone,
+        hotelEmail,
         checkIn:                  booking.hotel?.checkIn,
         checkOut:                 booking.hotel?.checkOut,
         totalAmount:              Number(booking.totalNet || 0),
@@ -437,13 +498,20 @@ class HotelBedsAdapter {
   //   isPackaging  — opaque/packaged rates (filter these out of standalone search)
   //   promotions   — "Non-refundable — no amendments" etc., must show to traveler
   //   rateCommentsId — ID for rate remarks text, fetch from ContentAPI at checkout
+  //
+  // contentByCode — from hotelbedsContent's synced cache (see search()
+  // above), keyed by hotel code. Used ONLY to fill in address/phone/
+  // email/coordinates when the live response's own fields are empty —
+  // never overrides a real value the live response already has.
   // ─────────────────────────────────────────────
-  _normalizeHotels(hotels, nights) {
+  _normalizeHotels(hotels, nights, contentByCode = {}) {
     return hotels.map(hotel => {
       const cheapestRoom  = this._cheapestRoom(hotel.rooms || []);
       const bestRate      = this._bestRate(cheapestRoom?.rates);
       const totalRate     = Number(bestRate?.net || hotel.minRate || 0);
       const pricePerNight = nights > 0 ? Math.round(totalRate / nights) : totalRate;
+
+      const content = contentByCode[hotel.code] || null;
 
       // CERTIFICATION 2.5: rateType tells the booking flow whether to
       // call checkRate() — RECHECK = must call, BOOKABLE = skip it.
@@ -480,9 +548,14 @@ class HotelBedsAdapter {
         category:             hotel.categoryName || '',
         location:             hotel.zoneName     || hotel.destinationName || '',
         city:                 hotel.destinationName || '',
-        address:              hotel.address?.content || '',
-        latitude:             hotel.latitude  || hotel.coordinates?.latitude  || null,
-        longitude:            hotel.longitude || hotel.coordinates?.longitude || null,
+        address:              hotel.address?.content || content?.address || '',
+        // NEW — phone/email weren't part of the normalized hotel shape
+        // at all before; the live availability response never carried
+        // them, only the Content API cache does.
+        phone:                content?.phone || null,
+        email:                content?.email || null,
+        latitude:             hotel.latitude  || hotel.coordinates?.latitude  || content?.latitude  || null,
+        longitude:            hotel.longitude || hotel.coordinates?.longitude || content?.longitude || null,
         pricePerNight,
         totalRate,
         currency:             bestRate?.currency || hotel.currency || 'EUR',
