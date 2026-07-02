@@ -936,7 +936,26 @@ class OrchestrationEngine {
   // See _resumeClarification, which reads this marker.
   // ─────────────────────────────
   _buildClarificationResponse({ sessionId, prompt, question, tripParams, intent, conversationHistory, awaitingClarification }) {
-    const taggedParams = { ...tripParams, _awaitingClarification: awaitingClarification };
+    // BUG FIX (found via HotelBeds cert prep testing, 2026-07-02):
+    // previously the intent object (carrying productScope — e.g.
+    // "hotel only", needsTransport: false) was only returned as a
+    // sibling field on this response, never persisted onto
+    // tripParams itself. Since tripParams IS what gets saved as
+    // previousParams for the next turn (see webhooks.js/widget.js),
+    // the original scope was silently lost the moment any
+    // clarification question was asked — _resumeClarification had
+    // no way to recover it and fell back to a hardcoded "everything
+    // needed" neutral intent, meaning a "hotel only" request that
+    // triggered a clarification question would search for flights/
+    // buses anyway once resumed. Stashing productScope here (only —
+    // not the whole intent object, which also carries adjustments
+    // that shouldn't leak across turns) lets _resumeClarification
+    // restore it correctly.
+    const taggedParams = {
+      ...tripParams,
+      _awaitingClarification: awaitingClarification,
+      _pendingProductScope: intent?.productScope || null,
+    };
     return {
       sessionId,
       text: question,
@@ -997,12 +1016,61 @@ class OrchestrationEngine {
     const marker = previousParams._awaitingClarification;
     const answer = String(prompt || '').trim().toLowerCase();
 
-    // A one-word/short-phrase clarification answer has no follow-up
-    // signal worth detecting (it's not "show me cheaper options", it's
-    // "Zanzibar") — use a neutral default intent rather than running
-    // _detectIntent on text that was never meant to carry trip-search
-    // semantics like budget/transport-mode preferences.
-    const neutralIntent = { isFollowUp: false, adjustments: {}, productScope: { needsTransport: true, needsHotel: true, needsTransfers: true } };
+    // BUG FIX (found via HotelBeds cert prep testing, 2026-07-02):
+    // a genuinely NEW, full trip prompt sent while a clarification
+    // was still pending (e.g. the traveler never saw the clarifying
+    // question — a real widget bug caused exactly this — and just
+    // resent their whole original message) was previously blindly
+    // treated as "the answer" to that one field. A short-answer
+    // handler expecting "8 and 10" or "Nairobi" instead received an
+    // entire sentence, and — since it only extracts digits/takes the
+    // text at face value with no sanity check — silently corrupted
+    // state in ways that are hard to detect downstream: e.g. the
+    // whole sentence became the ORIGIN CITY verbatim, or every digit
+    // in the sentence (including "7 months", "2 adults" etc.) got
+    // scooped up as if they were child ages.
+    //
+    // Heuristic: a real answer to a clarification question is
+    // essentially always short (a city name, a couple of ages, a
+    // brief phrase) — more than ~10 words, or a message that itself
+    // contains strong "this is a fresh trip request" signals (a
+    // destination-style word count combined with multiple number
+    // groups), is far more likely to be a new prompt than an answer.
+    // When triggered, discard the stale clarification entirely and
+    // re-parse this message as a brand new request — exactly what
+    // should have happened if the traveler had sent it as their
+    // first message.
+    const wordCount = answer.split(/\s+/).filter(Boolean).length;
+    const looksLikeFreshPrompt = wordCount > 10;
+
+    if (looksLikeFreshPrompt) {
+      logger.info('Clarification answer looks like a fresh prompt, not a short answer — re-parsing instead of treating as a fragment', {
+        wordCount, preview: answer.slice(0, 120),
+      });
+      const freshTripParams = await parsePrompt(prompt);
+      freshTripParams.agencyId = agencyId;
+      const freshIntent = this._detectIntent(prompt, null);
+      console.log('CLARIFICATION BYPASSED — treated as fresh prompt:', freshTripParams);
+      return this._continueOrchestration(freshTripParams, agencyId, prompt, conversationHistory, sessionId, freshIntent, channel, phone);
+    }
+
+    // BUG FIX (found via HotelBeds cert prep testing, 2026-07-02):
+    // this previously ALWAYS hardcoded productScope to "everything
+    // needed" (needsTransport/needsHotel/needsTransfers all true),
+    // regardless of what the ORIGINAL request actually asked for —
+    // a "hotel only" search that triggered a clarification question
+    // (e.g. missing child age) would silently start searching for
+    // flights/buses again once the traveler answered, since that
+    // original scope was never preserved anywhere. Restore it from
+    // _pendingProductScope (stashed by _buildClarificationResponse
+    // on the previous turn) when available, falling back to the old
+    // "everything needed" default only for older/stale sessions that
+    // predate this fix.
+    const neutralIntent = {
+      isFollowUp: false,
+      adjustments: {},
+      productScope: previousParams._pendingProductScope || { needsTransport: true, needsHotel: true, needsTransfers: true },
+    };
 
     if (!answer) {
       // Empty/unusable reply — ask again rather than guess. Word the
