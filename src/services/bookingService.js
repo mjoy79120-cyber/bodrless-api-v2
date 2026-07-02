@@ -170,7 +170,79 @@ class BookingService {
           type:      p.type === 'child' ? 'child' : 'adult',
           roomId:    1,
         }));
-        const effectiveRateKey = recon.rateKey || hotel.rateKey;
+        let effectiveRateKey = recon.rateKey || hotel.rateKey;
+
+        // BUG FIX (found via close reading of the HotelBeds
+        // certification "Best Practices" doc, 2026-07-02): checkRate()
+        // has existed in hotelbeds.js since earlier this session but
+        // was NEVER actually called anywhere — every booking skipped
+        // straight to book() regardless of rateType. Per the
+        // documented correct workflow ("if rateType == RECHECK then
+        // send ONE CheckRates Request... Send Booking request") and
+        // Best Practices ("DO NOT send a CheckRates together with a
+        // booking request... only if completion code was 200, then
+        // proceed"), a RECHECK-type rate MUST be re-validated via
+        // CheckRates before booking — skipping it isn't just a missed
+        // opportunity to fetch rateComments, it's a workflow
+        // violation the certification explicitly tests for.
+        //
+        // Only fires for rateType === 'RECHECK' — a BOOKABLE rate
+        // never calls this here (rateComments for those are captured
+        // directly from the booking response instead, see
+        // hotelbeds.js's book() — calling CheckRates for a BOOKABLE
+        // rate "just for extra info" without needing it is itself a
+        // Best Practices violation: "only send a CheckRates request
+        // if you need extra info like RateComments" — we don't need
+        // to, since book() already gets it).
+        //
+        // On failure, the booking does NOT proceed — matches "only
+        // if completion code was 200, then you can proceed to the
+        // confirmation" exactly.
+        if (hotel.rateType === 'RECHECK') {
+          logger.info('Hotel rate is RECHECK — calling CheckRates before booking', { bookingRef, rateKey: effectiveRateKey?.slice(0, 40) });
+          let checkRateResult;
+          try {
+            checkRateResult = await supplierAdapter.checkRate?.({ supplier: 'hotelbeds', rateKey: effectiveRateKey }) ?? null;
+          } catch (err) {
+            logger.error('CheckRates call failed — booking cannot proceed for a RECHECK rate', { bookingRef, error: err.message });
+            if (flightResult) {
+              await this._persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, 'failed', flightResult, null);
+            }
+            return {
+              success: false,
+              error: `This rate could no longer be verified with the hotel (${err.message}). Please search again for current availability.`,
+              code: 'RATE_RECHECK_FAILED',
+              flightHeld: !!flightResult,
+            };
+          }
+
+          if (!checkRateResult || !checkRateResult.rateKey) {
+            logger.error('CheckRates returned no usable rate — booking cannot proceed', { bookingRef });
+            if (flightResult) {
+              await this._persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, 'failed', flightResult, null);
+            }
+            return {
+              success: false,
+              error: 'This rate is no longer available. Please search again for current availability.',
+              code: 'RATE_RECHECK_FAILED',
+              flightHeld: !!flightResult,
+            };
+          }
+
+          // Use the (possibly updated) rateKey from CheckRates for
+          // the actual booking call — per "DO NOT parse or work in
+          // any way with the rateKey", it's copied through verbatim,
+          // never modified/reconstructed.
+          effectiveRateKey = checkRateResult.rateKey;
+          // Capture rateComments here too — CheckRates is the
+          // documented source for RECHECK rates specifically (the
+          // book()-response capture only covers BOOKABLE rates,
+          // which never go through this branch).
+          hotel.rateComments = checkRateResult.rateComments || hotel.rateComments || null;
+          hotel.cancellationPolicies = checkRateResult.cancellationPolicies?.length
+            ? checkRateResult.cancellationPolicies
+            : hotel.cancellationPolicies;
+        }
 
         hotelResult = await supplierAdapter.book({
           supplier:        'hotelbeds',
@@ -433,6 +505,29 @@ class BookingService {
       guestEmail:               booking.guest_email          || null,
       guestPhone:               booking.guest_phone          || null,
       passengers:               booking.passengers           || 1,
+      // CERT 4.3 FIX (found via close reading of the HotelBeds
+      // certification checklist, 2026-07-02): "At least one pax
+      // name per room... If children are present, children's ages
+      // should be informed" — MANDATORY. Previously `passengers`
+      // was only ever a bare count ("4 passengers"), no individual
+      // names, no ages anywhere on the voucher. booking.passenger_details
+      // (persisted by _persistStage from the real data collected at
+      // booking time) has everything needed — just was never passed
+      // through to the voucher before. Age is computed here (not
+      // trusted from whatever was typed at booking time) using the
+      // same _calculateAge logic already used for HotelBeds
+      // reconciliation, so the voucher always shows a REAL, current
+      // age from DOB, consistent with what was actually booked.
+      passengerList: (Array.isArray(booking.passenger_details) ? booking.passenger_details : []).map(p => {
+        const dob = p.dateOfBirth || p.date_of_birth || p.dob || null;
+        const age = this._calculateAge(dob);
+        const isChild = (p.type === 'child') || (age != null && age < 18);
+        return {
+          name: `${p.firstName || p.first_name || ''} ${p.lastName || p.last_name || ''}`.trim() || null,
+          type: isChild ? 'child' : 'adult',
+          age:  isChild ? age : null, // only surfaced for children per cert 4.3 — adults don't need an age shown
+        };
+      }).filter(p => p.name),
       totalAmount:              hotelDetails.totalRate       || booking.total_price || 0,
       currency:                 hotelDetails.currency        || booking.currency || 'EUR',
       rateComments:             hotelDetails.rateComments    || null,
@@ -480,6 +575,141 @@ class BookingService {
       hotel:     booking.hotel_details     || null,
       transfers: transferList,
     });
+  }
+
+  // ─────────────────────────────────────────────
+  // CANCEL A CONFIRMED BOOKING
+  // Distinct from failPayment() above — that method is for a
+  // booking that was HELD but never successfully paid (cancel the
+  // tentative hotel hold, no money was ever collected). This method
+  // is for a booking that IS confirmed and PAID, being cancelled
+  // afterward by the traveler (or ops) — a fundamentally different
+  // situation: HotelBeds' own cancellation policy may impose a fee,
+  // and a refund may be owed on money that was genuinely collected.
+  //
+  // REFUND HANDLING — INTENTIONALLY NOT AUTOMATED YET: paymentService.js
+  // (IntaSend) currently has no refund method — only triggerStkPush/
+  // checkStatus. This function correctly CALCULATES what's owed
+  // (per HotelBeds' real cancellationPolicies on the booking) and
+  // raises a tracked alert for manual processing, rather than
+  // either (a) silently claiming to have refunded money that was
+  // never actually sent back, or (b) blocking the cancellation
+  // itself on refund automation that doesn't exist. Add a real
+  // IntaSend refund call here once that capability exists.
+  // ─────────────────────────────────────────────
+  async cancelConfirmedBooking({ bookingRef, requestedBy = 'traveler' }) {
+    const { data: booking, error } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('booking_ref', bookingRef)
+      .single();
+
+    if (error || !booking) {
+      return { success: false, error: 'Booking not found.' };
+    }
+
+    if (booking.status === 'cancelled') {
+      return { success: false, error: 'This booking is already cancelled.', alreadyCancelled: true };
+    }
+
+    if (booking.status !== 'confirmed') {
+      return { success: false, error: 'This booking is not in a confirmed state and cannot be cancelled this way.' };
+    }
+
+    // Determine cancellation fee from HotelBeds' own real
+    // cancellationPolicies (persisted on hotel_details — each entry
+    // is { amount, from }: if cancelling on/after `from`, `amount`
+    // becomes chargeable). Multiple policy tiers are possible
+    // (increasing fees closer to check-in) — take the highest
+    // applicable fee, i.e. the most recent tier whose `from` date
+    // has already passed.
+    const policies = booking.hotel_details?.cancellationPolicies || [];
+    const now = new Date();
+    let feeApplies = false;
+    let feeAmount = 0;
+    let feeCurrency = booking.currency || 'KES';
+    for (const p of policies) {
+      if (p.from && now >= new Date(p.from)) {
+        const amt = Number(p.amount) || 0;
+        if (amt >= feeAmount) {
+          feeApplies = true;
+          feeAmount = amt;
+          feeCurrency = p.currencyId || feeCurrency;
+        }
+      }
+    }
+
+    // Same honest-reporting pattern as failPayment()'s fix — never
+    // silently claim the real supplier-side cancellation succeeded
+    // when it didn't.
+    let supplierCancelSucceeded = null;
+    let supplierCancelError = null;
+
+    if (booking.hotel_supplier_reference && supplierAdapter) {
+      try {
+        await supplierAdapter.cancel({ supplier: 'hotelbeds', bookingRef: booking.hotel_supplier_reference });
+        logger.info('Confirmed booking cancelled on HotelBeds', { bookingRef });
+        supplierCancelSucceeded = true;
+      } catch (err) {
+        logger.error('Failed to cancel confirmed booking on HotelBeds', { bookingRef, error: err.message });
+        supplierCancelSucceeded = false;
+        supplierCancelError = err.message;
+
+        tracking.alert({
+          type:     'hotel_cancel_failed',
+          severity: 'critical',
+          title:    `Confirmed-booking cancellation failed on HotelBeds' side — ${bookingRef}`,
+          detail:   `Traveler-requested cancellation recorded in Supabase, but the real HotelBeds booking (ref: ${booking.hotel_supplier_reference}) may still be CONFIRMED. Manual follow-up with HotelBeds support required.`,
+          context:  { bookingRef, hotelSupplierReference: booking.hotel_supplier_reference, error: err.message, requestedBy },
+          agencyId: booking.agency_id,
+          bookingRef,
+        });
+      }
+    }
+
+    await supabase
+      .from('bookings')
+      .update({
+        status: 'cancelled',
+        booking_stage: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancelled_by: requestedBy,
+      })
+      .eq('booking_ref', bookingRef);
+
+    const totalPaid = Number(booking.total_price || 0);
+    const refundAmount = feeApplies ? Math.max(0, totalPaid - feeAmount) : totalPaid;
+
+    // Flag for manual refund processing whenever money was actually
+    // collected (payment_status === 'paid') — see file-header note
+    // on why this isn't automated yet.
+    if (booking.payment_status === 'paid' && refundAmount > 0) {
+      tracking.alert({
+        type:     'manual_refund_needed',
+        severity: 'warning',
+        title:    `Refund needed for cancelled booking ${bookingRef}`,
+        detail:   `Traveler paid ${booking.currency || 'KES'} ${totalPaid.toLocaleString()}. Cancellation fee: ${feeCurrency} ${feeAmount.toLocaleString()}. Refund owed (manual processing required — no automated refund path exists yet): ${feeCurrency} ${refundAmount.toLocaleString()}.`,
+        context:  { bookingRef, totalPaid, feeAmount, refundAmount, guestPhone: booking.guest_phone, requestedBy },
+        agencyId: booking.agency_id,
+        bookingRef,
+      });
+    }
+
+    return {
+      success: true,
+      bookingRef,
+      status: 'cancelled',
+      supplierCancelSucceeded,
+      supplierCancelError,
+      feeApplies,
+      feeAmount,
+      feeCurrency,
+      refundAmount,
+      refundCurrency: feeCurrency,
+      refundNote: refundAmount > 0
+        ? 'Refund will be processed by our team — this is not yet automated, so allow some time for it to reach you.'
+        : null,
+    };
   }
 
   async failPayment({ bookingRef }) {

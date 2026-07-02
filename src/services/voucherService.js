@@ -185,6 +185,10 @@ class VoucherService {
       guestEmail:      booking.guestEmail || null,
       guestPhone:      booking.guestPhone || null,
       passengers:      booking.passengers || 1,
+      // CERT 4.3: real per-passenger names + child ages, not just a
+      // bare count — see bookingService.js's _fetchAgencyAndFireVoucher
+      // for where this is built from the real passenger_details data.
+      passengerList:   Array.isArray(booking.passengerList) ? booking.passengerList : [],
 
       // Outbound transport — despite the "flight" naming (kept for
       // backward compatibility with existing callers), this holds
@@ -436,9 +440,13 @@ class VoucherService {
 
   <!-- TRAVELER -->
   <div class="no-break" style="background:${C.WHITE};border:1px solid ${C.BORDER};border-radius:12px;padding:14px 18px;margin-bottom:10px">
-    <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:${C.GREY};margin-bottom:8px">Traveler</div>
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:${C.GREY};margin-bottom:8px">Traveler${v.passengerList.length > 1 ? 's' : ''}</div>
     <div style="font-size:14px;font-weight:600;color:${C.NAVY}">${v.holderName}</div>
-    <div style="font-size:12px;color:${C.GREY};margin-top:2px">
+    ${v.passengerList.length > 1 ? `
+    <div style="font-size:12px;color:${C.NAVY};margin-top:6px;line-height:1.6">
+      ${v.passengerList.map(p => `${p.name}${p.type === 'child' && p.age != null ? ` <span style="color:${C.GREY}">(child, age ${p.age})</span>` : ''}`).join('<br/>')}
+    </div>` : ''}
+    <div style="font-size:12px;color:${C.GREY};margin-top:6px">
       ${v.passengers} passenger${v.passengers > 1 ? 's' : ''}
       ${v.guestEmail ? ' · ' + v.guestEmail : ''}
       ${v.guestPhone ? ' · ' + v.guestPhone : ''}
@@ -645,7 +653,16 @@ class VoucherService {
       `✅ *Booking Confirmed*`,
       `*Ref:* ${v.bookingRef}${v.hotelRef ? `  |  Hotel ref: ${v.hotelRef}` : ''}`,
       '',
+      `*Traveler${v.passengerList?.length > 1 ? 's' : ''}:* ${v.holderName}`,
     ];
+    // CERT 4.3: same passenger-name/child-age surfacing as the HTML
+    // voucher — see bookingService.js's passengerList construction.
+    if (Array.isArray(v.passengerList) && v.passengerList.length > 1) {
+      v.passengerList.forEach(p => {
+        parts.push(`  • ${p.name}${p.type === 'child' && p.age != null ? ` (child, age ${p.age})` : ''}`);
+      });
+    }
+    parts.push('');
 
     if (v.flight) {
       parts.push(...transportBlock(v.flight, 'Outbound'));
