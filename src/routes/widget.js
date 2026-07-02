@@ -251,13 +251,6 @@ router.get('/', (req, res) => {
   '  }, 5000);\n' +
   '}\n' +
 
-  // ── PRICE-CHANGE APPROVAL ──────────────────────────────────
-  // Shown when book-init reports code: "PRICE_CHANGED" (HotelBeds
-  // re-priced the room once the real DOB-derived child age was
-  // applied). Renders inline in the chat — Approve re-calls book-init
-  // with priceApproved: true using the SAME passengers/phone/email
-  // already collected (never re-asks the form), Cancel just removes
-  // the alert and tells the traveler nothing was charged.
   'function showPriceApprovalAlert(priceInfo, bookCtx, bookBtn) {\n' +
   '  var existing = document.getElementById("et-price-alert");\n' +
   '  if (existing) existing.remove();\n' +
@@ -323,9 +316,6 @@ router.get('/', (req, res) => {
   '  };\n' +
   '}\n' +
 
-  // ── Shared "after a successful book-init" continuation ─────
-  // Factored out so both the normal Confirm Booking path AND the
-  // price-approval Approve path trigger payment identically.
   'function continueToPayment(data, bookCtx, bookBtn) {\n' +
   '  var bookingRef = data.bookingRef;\n' +
   '  var totalPrice = data.totalPrice;\n' +
@@ -545,11 +535,6 @@ router.get('/', (req, res) => {
   '    })\n' +
   '    .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })\n' +
   '    .then(function(result) {\n' +
-  // ── PRICE CHANGED — ask for approval instead of treating as a failure ──
-  // bookingService deliberately stopped short of booking/charging because
-  // a child's real DOB-derived age differed from what was searched.
-  // Show the new price inline and let the traveler decide, rather than
-  // surfacing this as a generic "booking failed" error.
   '      if (!result.ok && result.data && result.data.code === "PRICE_CHANGED") {\n' +
   '        form.remove();\n' +
   '        showPriceApprovalAlert(result.data, bookCtx, bookBtn);\n' +
@@ -840,9 +825,13 @@ router.get('/', (req, res) => {
   '    if (data.sessionId) sessionId = data.sessionId;\n' +
   '    if (data.tripParams) previousParams = data.tripParams;\n' +
   '    if (data.conversationHistory) conversationHistory = data.conversationHistory;\n' +
+  '    if (data.needsClarification) {\n' +
+  '      addMsg(data.text || "Could you give me a bit more detail about your trip?", "bot");\n' +
+  '      return;\n' +
+  '    }\n' +
   '    var packages = data && data.packages ? data.packages : [];\n' +
   '    if (!packages.length) {\n' +
-  '      addMsg("No packages found. Try specifying destination, number of people and nights.", "bot");\n' +
+  '      addMsg((data && data.text) ? data.text : "No packages found. Try specifying destination, number of people and nights.", "bot");\n' +
   '      return;\n' +
   '    }\n' +
   '    var isItinerary = packages.length === 1 && packages[0] && packages[0].isMultiDestination;\n' +
