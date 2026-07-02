@@ -353,6 +353,38 @@ class BookingService {
       logger.warn('Could not fetch agency for voucher', { agencyId: booking.agency_id, error: err.message });
     }
 
+    // Build the booking shape voucherService expects.
+    //
+    // BUG FIX: this previously never included a `flight_details` key
+    // at all — voucherService._buildVoucherData reads
+    // `booking.flight_details || hotel?.flight`, and neither existed
+    // here, so `flight` was ALWAYS null and NO transport info (flight,
+    // bus, or train — outbound or return) ever appeared on any
+    // voucher sent through this path. hotel info survived only
+    // because it's passed separately via the `hotel` param below,
+    // which _buildVoucherData happens to fall back to.
+    //
+    // Fix: package_snapshot (stored in full by _persistStage — see
+    // `package_snapshot: pkg || null`) is the complete original
+    // package, including pkg.transport (outbound, whatever mode:
+    // flight/bus/train) and pkg.returnTransport (return leg,
+    // independently searched — see engine.js's per-leg
+    // _searchFlights/_searchBuses/_searchTrain). Falls back to the
+    // flight_details column (outbound only, no return leg) if
+    // package_snapshot is somehow missing on an older row.
+    const packageSnapshot  = booking.package_snapshot || {};
+    const outboundTransport = packageSnapshot.transport       || booking.flight_details || null;
+    const returnTransport   = packageSnapshot.returnTransport || null;
+
+    // voucherService expects the return leg nested as `.returnLeg` on
+    // the outbound object (see its _buildVoucherData/HTML/WhatsApp
+    // rendering, all already mode-aware for flight/bus/train) — this
+    // is the one place that shape gets assembled from the two
+    // separately-searched leg objects.
+    const flightDetailsForVoucher = outboundTransport
+      ? { ...outboundTransport, returnLeg: returnTransport || null }
+      : null;
+
     // Build the booking shape voucherService expects from the persisted
     // bookings row — hotel_details and flight_details are the raw supplier
     // response objects stored in _persistStage.
@@ -362,10 +394,11 @@ class BookingService {
       clientReference:          booking.booking_ref,
       status:                   'CONFIRMED',
       confirmedAt:              new Date().toISOString(),
+      flight_details:           flightDetailsForVoucher,
       hotelName:                hotelDetails.name            || null,
       hotelAddress:             hotelDetails.address         || null,
       hotelPhone:               hotelDetails.phone           || null,
-      checkIn:                  hotelDetails.checkIn         || booking.flight_details?.departureTime || null,
+      checkIn:                  hotelDetails.checkIn         || outboundTransport?.departureTime || null,
       checkOut:                 hotelDetails.checkOut        || null,
       nights:                   booking.nights               || null,
       roomType:                 hotelDetails.roomType        || null,

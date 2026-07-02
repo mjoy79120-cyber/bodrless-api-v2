@@ -8,6 +8,20 @@ const destinationIntel = require("../services/destinationIntel");
 const tracking = require("../services/trackingService");
 const travelerIntelligence = require("../services/travelerIntelligence");
 
+// HBX Group's Transfer API (HolidayTaxis) — same account/auth as the
+// existing HotelBeds hotel adapters. Used for LIVE, real-priced
+// airport->hotel transfers (see _buildTransferLegs) instead of the
+// flat static rate table, wherever a real IATA airport + hotel GPS
+// coordinates are available. Wrapped in try/catch like supplierAdapter
+// below since it's a genuinely optional upgrade path — its absence
+// must never break transfer legs, only fall back to the static rate.
+let hotelbedsTransfers = null;
+try {
+  hotelbedsTransfers = require("../adapters/hotelbedsTransfers");
+} catch (e) {
+  logger.warn("HotelBeds Transfers adapter not loaded — falling back to static transfer rates only", { error: e.message });
+}
+
 // Supplier adapter layer — all external suppliers go through here
 let supplierAdapter = null;
 try {
@@ -718,7 +732,7 @@ class OrchestrationEngine {
           origin: transitions[i]?.from || tripParams.origin,
           destination: leg.destination,
         };
-        leg.transfers = await this._buildTransferLegs(legTripParams, transitions[i]?.transport);
+        leg.transfers = await this._buildTransferLegs(legTripParams, transitions[i]?.transport, leg.hotel);
       })
     );
 
@@ -2209,6 +2223,31 @@ class OrchestrationEngine {
 
   static SGR_FARES = { economy: 1500, first_class: 4500, premium: 12000 };
 
+  // Real, fixed infrastructure coordinates (sourced from Wikidata,
+  // confirmed 2026-07-02) — safe to hardcode, same category of fact
+  // as the schedule/fares above. Used to get LIVE, real transfer
+  // pricing for the SGR arrival leg via HotelBeds Transfers'
+  // GPS-type search (station -> hotel), the same mechanism already
+  // used for airport -> hotel — see _buildTransferLegs.
+  static SGR_STATION_COORDS = {
+    nairobi: { lat: -1.354561, lng: 36.898430 }, // Nairobi Terminus, Syokimau
+    mombasa: { lat: -4.025278, lng: 39.578333 }, // Mombasa Terminus, Miritini
+  };
+
+  // Bus terminal coordinates — confirmed 2026-07-02. Nairobi-Mombasa/
+  // Malindi buses (Buscar, Dreamline, Mash) all pick up along Mwembe
+  // Tayari Road, Mombasa Island — a GENERAL area point (not a specific
+  // operator's building), matching how the operators are clustered
+  // there in practice. Only the Mombasa side is set — the Nairobi
+  // pickup (Kagochi Building, River Rd — given as a Plus Code,
+  // "PR9H+523") still needs its decimal lat/lng before it can be
+  // wired in safely; a wrongly-decoded Plus Code risks sending a
+  // driver to the wrong street entirely, so it's left unset rather
+  // than guessed. Once provided, add it here as `nairobi`.
+  static BUS_TERMINAL_COORDS = {
+    mombasa: { lat: -4.0435, lng: 39.6682 }, // Mwembe Tayari, Mombasa Island (general area)
+  };
+
   async _searchTrain(tripParams, leg = 'outbound', destinationAccess = null) {
     const mode = leg === 'return'
       ? (tripParams.returnTransportMode || tripParams.outboundTransportMode || tripParams.transportMode || null)
@@ -2400,7 +2439,7 @@ class OrchestrationEngine {
   // agency_id IS NULL — see _getTransferRate below) — only the
   // pickup/dropoff LABELS are derived from the transport mode.
   // ─────────────────────────────
-  async _buildTransferLegs(tripParams, transport) {
+  async _buildTransferLegs(tripParams, transport, hotel = null) {
     if (!transport) return [];
 
     const mode = (transport.transportType || 'flight').toLowerCase();
@@ -2431,6 +2470,106 @@ class OrchestrationEngine {
 
     const rate = await this._getTransferRate(tripParams);
 
+    // LIVE PRICING — HBX Group Transfer API (HolidayTaxis), airport
+    // (IATA) -> hotel (GPS). Only attempted for the ARRIVAL leg, only
+    // when we have a real airport code AND real hotel coordinates —
+    // both genuinely available today for any flight arrival, since
+    // TravelDuqa/Duffel already return destIata and HotelBeds hotel
+    // search already returns latitude/longitude. This gives a REAL,
+    // route-specific price (like a real Westlands->JKIA fare would
+    // need) instead of the flat per-agency/per-destination rate —
+    // and works for ANY country HolidayTaxis covers, not just Kenya.
+    //
+    // NOT attempted: the DEPARTURE leg (origin city -> origin
+    // airport) — Bodrless doesn't yet capture the traveler's exact
+    // pickup point (e.g. "Westlands" specifically) anywhere in
+    // tripParams, only the origin CITY. Once promptParser captures a
+    // specific pickup location, this same live-pricing call can
+    // cover that leg too, GPS(pickup) -> IATA(origin airport).
+    //
+    // Falls back to the static rate (`rate`, from _getTransferRate)
+    // whenever live pricing isn't attempted or fails — same
+    // graceful-degradation contract as every other supplier call in
+    // this file.
+    //
+    // Determine the "from" location for live pricing:
+    //   - flight: real IATA airport code (already on every
+    //     TravelDuqa/Duffel result via destIata).
+    //   - train: the real SGR station serving hubCity, via fixed
+    //     verified coordinates (SGR_STATION_COORDS) — there's no
+    //     IATA/HotelBeds STATION code for it, so GPS is the only
+    //     way to price this leg live.
+    //   - bus: only Mombasa-arriving buses (Nairobi<->Mombasa
+    //     corridor) — via a GENERAL area coordinate for Mwembe
+    //     Tayari Road, where Buscar/Dreamline/Mash all pick up
+    //     (confirmed 2026-07-02; explicitly authorized as
+    //     area-level, not per-operator precision). Kilifi/Watamu
+    //     through-routes and the Nairobi-side pickup (River Rd,
+    //     Kagochi Building) aren't covered yet — the Nairobi Plus
+    //     Code still needs decoding to a verified decimal lat/lng
+    //     before it can be added to BUS_TERMINAL_COORDS safely.
+    let fromType = null, fromCode = null;
+    if (mode === 'flight' && transport.destIata) {
+      fromType = 'IATA';
+      fromCode = transport.destIata;
+    } else if (mode === 'train') {
+      const stationCoords = OrchestrationEngine.SGR_STATION_COORDS[(hubCity || '').toLowerCase()];
+      if (stationCoords) {
+        fromType = 'GPS';
+        fromCode = `${stationCoords.lat},${stationCoords.lng}`;
+      }
+    } else if (mode === 'bus') {
+      // Only Mombasa-arriving buses get live pricing right now — see
+      // BUS_TERMINAL_COORDS comment above. Kilifi/Watamu through-
+      // routes (no hubLanding, arrival IS the real destination) and
+      // any Nairobi-side pickup aren't covered yet, so this only
+      // fires for the specific Nairobi<->Mombasa corridor.
+      const terminalCoords = OrchestrationEngine.BUS_TERMINAL_COORDS[(hubCity || '').toLowerCase()];
+      if (terminalCoords) {
+        fromType = 'GPS';
+        fromCode = `${terminalCoords.lat},${terminalCoords.lng}`;
+      }
+    }
+
+    let liveArrival = null;
+    let liveArrivalPriceKES = null;
+    if (hotelbedsTransfers && fromType && fromCode && hotel?.latitude != null && hotel?.longitude != null) {
+      try {
+        const outbound = this._toTransferDateTime(transport.arrivalTime) || this._toTransferDateTime(tripParams.departureDate);
+        if (outbound) {
+          const results = await hotelbedsTransfers.search({
+            fromType, fromCode,
+            toType:   'GPS',  toCode:   `${hotel.latitude},${hotel.longitude}`,
+            outbound,
+            adults:   tripParams.adults != null ? tripParams.adults : (tripParams.passengers || 1),
+            children: tripParams.children || 0,
+            infants:  0,
+          });
+          const picked = hotelbedsTransfers.pickCheapest(results);
+          if (picked) {
+            // CRITICAL: HolidayTaxis returns EUR (confirmed in the
+            // documented example response), while the static rate
+            // table and every other price in a Bodrless package is
+            // KES. _buildPackages sums transfer leg prices as raw
+            // numbers assuming a single shared currency — leaving
+            // this unconverted would silently add a EUR amount into
+            // a KES total (e.g. "45.5" treated as 45.5 KES instead
+            // of ~45.5 EUR, or worse, summed as if both were the
+            // same unit). Convert to the canonical currency HERE,
+            // once, so every consumer downstream (package total,
+            // voucher, WhatsApp display) can keep treating all
+            // transfer prices as directly summable KES, unchanged.
+            liveArrivalPriceKES = await toKES(picked.price, picked.currency || 'EUR');
+            liveArrival = picked;
+          }
+        }
+      } catch (err) {
+        logger.warn('Live transfer pricing attempt failed — falling back to static rate', { error: err.message });
+        liveArrival = null;
+        liveArrivalPriceKES = null;
+      }
+    }
+
     // HUB-LANDING TRANSFER: when this transport was booked to a
     // nearby hub instead of the traveler's real destination (see
     // hubLanding, set in _searchFlights via destinationIntel — e.g.
@@ -2458,24 +2597,68 @@ class OrchestrationEngine {
       },
       {
         legType:     'arrival',
-        provider:    rate?.provider || 'Bodrless Standard Transfer',
+        provider:    liveArrival ? `HolidayTaxis${liveArrival.vehicle ? ' — ' + liveArrival.vehicle : ''}` : (rate?.provider || 'Bodrless Standard Transfer'),
         description: arrivalDescription,
         pickup:      destHub,
         dropoff:     arrivalDropoff,
-        price:       rate?.price ?? 1500,
-        currency:    rate?.currency || 'KES',
-        // NOTE (known follow-up): pricing here still uses the same
-        // generic agency/default transfer rate lookup as every other
-        // transfer leg (_getTransferRate, matched by
-        // tripParams.destination) — it does NOT yet reflect that a
-        // hub transfer like Malindi->Kilifi (~60km) is a materially
-        // longer/costlier drive than a typical airport->hotel
-        // transfer. Add dedicated transfer rate rows keyed to the
-        // hub->town pair (or a distance-based pricing rule) rather
-        // than reusing whatever generic rate happens to match.
+        price:       liveArrival ? liveArrivalPriceKES : (rate?.price ?? 1500),
+        // Always KES once liveArrivalPriceKES has been computed (see
+        // the conversion above) — every transfer leg price is kept
+        // in the canonical currency so _buildPackages can keep
+        // summing leg prices as raw numbers safely.
+        currency:    'KES',
+        // NEW — present only when live pricing succeeded. Carries
+        // the real supplier's rateKey/cancellation/luggage/duration
+        // data through to the package, for future booking and for
+        // richer display than the static rate ever had. Original
+        // (pre-conversion) price/currency kept here for transparency/
+        // debugging — the `price`/`currency` fields above are always
+        // the converted KES values actually used in totals.
+        live: liveArrival ? {
+          supplier: liveArrival.supplier,
+          rateKey: liveArrival.rateKey,
+          transferType: liveArrival.transferType,
+          estimatedMinutes: liveArrival.estimatedMinutes,
+          luggageAllowance: liveArrival.luggageAllowance,
+          cancellationPolicies: liveArrival.cancellationPolicies,
+          originalPrice: liveArrival.price,
+          originalCurrency: liveArrival.currency,
+        } : null,
+        // NOTE (known follow-up, only applies when `live` is null —
+        // i.e. live pricing wasn't available for this leg): pricing
+        // falls back to the same generic agency/default transfer
+        // rate lookup as every other transfer leg (_getTransferRate,
+        // matched by tripParams.destination) — it does NOT reflect
+        // that a hub transfer like Malindi->Kilifi (~60km) is a
+        // materially longer/costlier drive than a typical airport->
+        // hotel transfer. Add dedicated transfer rate rows keyed to
+        // the hub->town pair, or extend live pricing to cover this
+        // case too (it's the same IATA->GPS shape, just needs the
+        // hub's own IATA rather than the destination's).
       },
     ];
   }
+
+  // ─────────────────────────────────────────────
+  // FORMAT A DATETIME FOR THE TRANSFER API
+  // HBX Group's Transfer API wants "YYYY-MM-DDTHH:mm:ss" (per the
+  // documented example: "2021-08-17T12:15:00") — strips
+  // milliseconds/timezone offset from a full ISO string, or builds a
+  // same-format string from a bare "YYYY-MM-DD" date (defaulting to
+  // noon, since we don't always have a real time to work with).
+  // ─────────────────────────────────────────────
+  _toTransferDateTime(value) {
+    if (!value) return null;
+    try {
+      const d = new Date(value);
+      if (isNaN(d.getTime())) return null;
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    } catch {
+      return null;
+    }
+  }
+
 
   _titleCase(str) {
     if (!str) return '';
@@ -2805,7 +2988,7 @@ class OrchestrationEngine {
         // selected for THIS package (ob), so they're built per-package
         // rather than pre-fetched once for the whole search.
         const transferLegs = scope.needsTransfers
-          ? await this._buildTransferLegs(tripParams, ob)
+          ? await this._buildTransferLegs(tripParams, ob, hotel)
           : [];
         const transferTotal = transferLegs.reduce((sum, leg) => sum + (leg.price || 0), 0);
         const transferCurrency = transferLegs[0]?.currency || 'KES';
