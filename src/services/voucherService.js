@@ -558,10 +558,23 @@ class VoucherService {
   // SEND EMAIL via Resend
   // ─────────────────────────────────────────────
   async _sendEmail({ vd: v, html, pdfBuffer, isResend }) {
-    if (!resendClient) return { success: false, error: 'RESEND_API_KEY not set' };
+    // BUG FIX (found via HotelBeds cert dry-run testing, 2026-07-02):
+    // none of these failure paths ever called logger.error/warn —
+    // a real failure just silently became `email: false` in the
+    // "delivery complete" summary log with zero indication of why.
+    // _sendWhatsApp already logged its failures explicitly; email
+    // never did, which is exactly why a real WhatsApp OAuth error
+    // was visible in logs but an email failure was completely silent.
+    if (!resendClient) {
+      logger.warn('VoucherService: email skipped — RESEND_API_KEY not set');
+      return { success: false, error: 'RESEND_API_KEY not set' };
+    }
 
     const recipients = [v.guestEmail, v.agencyEmail].filter(Boolean);
-    if (!recipients.length) return { success: false, error: 'No email recipients' };
+    if (!recipients.length) {
+      logger.warn('VoucherService: email skipped — no recipients', { bookingRef: v.bookingRef, guestEmail: v.guestEmail, agencyEmail: v.agencyEmail });
+      return { success: false, error: 'No email recipients' };
+    }
 
     const subject = isResend
       ? `Payment confirmed — your voucher for ${v.hotel?.name || v.bookingRef}`
@@ -576,7 +589,10 @@ class VoucherService {
       from: FROM, to: recipients, subject, html, attachments,
     });
 
-    if (error) return { success: false, error: error.message || String(error) };
+    if (error) {
+      logger.error('VoucherService: email send failed', { error: error.message || String(error), recipients, bookingRef: v.bookingRef });
+      return { success: false, error: error.message || String(error) };
+    }
     logger.info('VoucherService: email sent', { emailId: data?.id, recipients });
     return { success: true, emailId: data?.id, recipients };
   }
