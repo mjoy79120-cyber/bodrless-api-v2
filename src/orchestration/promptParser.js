@@ -169,6 +169,34 @@ async function parsePrompt(prompt) {
   try {
     const parsed = await _parseWithGemini(prompt);
 
+    // SAFETY NET (found via cert prep testing, 2026-07-02): Groq can
+    // succeed overall but still miss child ages for some phrasings,
+    // even with a worked example in the prompt covering that exact
+    // pattern — LLM extraction isn't deterministic, one example
+    // doesn't guarantee every real-world variation gets caught. This
+    // was confirmed happening live: "2 children of ages 5 and 8"
+    // came back with childAges: [] despite Groq completing normally
+    // (no fallback-to-rules warning logged). Rather than keep
+    // patching the LLM prompt and hoping, run the SAME local
+    // regex-based extractor used by the rule-based fallback (already
+    // directly tested and confirmed correct against this exact
+    // phrasing) as a supplementary check whenever children are
+    // stated but Groq's ages are missing or incomplete. Only fills
+    // in what's missing — never overrides ages Groq DID find
+    // correctly, and never runs at all when Groq already got it right.
+    if ((parsed.children || 0) > 0) {
+      const groqAges = Array.isArray(parsed.childAges) ? parsed.childAges : [];
+      if (groqAges.length < parsed.children) {
+        const localAges = _extractOccupancy(prompt).childAges || [];
+        if (localAges.length > groqAges.length) {
+          logger.info('parsePrompt: Groq missed child age(s) — local regex extractor found more, merging', {
+            groqAges, localAges, prompt: prompt.slice(0, 150),
+          });
+          parsed.childAges = localAges;
+        }
+      }
+    }
+
     if (parsed.isMultiDestination && Array.isArray(parsed.legs) && parsed.legs.length >= 2) {
       return _enrichMultiDestinationParams(parsed);
     }
