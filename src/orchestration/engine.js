@@ -1153,7 +1153,15 @@ class OrchestrationEngine {
 
     if (tripParams.isMultiDestination) {
 
-      if (tripParams.needsOriginClarification) {
+      // BUG FIX (found via HotelBeds cert dry-run testing, 2026-07-02):
+      // this check never consulted intent.productScope — a "hotel
+      // only" request (needsTransport: false, set correctly by
+      // _detectIntent's hotelExclusive check) still got asked "where
+      // will you be departing from?" despite that answer never being
+      // used for anything, since no flight/bus search runs at all
+      // for a hotel-only scope. Skip the question entirely when
+      // transport isn't needed.
+      if (tripParams.needsOriginClarification && intent?.productScope?.needsTransport !== false) {
         const question = `Where will you be departing from for your trip?`;
         return this._buildClarificationResponse({
           sessionId, prompt, question, tripParams, intent, conversationHistory,
@@ -1281,7 +1289,12 @@ class OrchestrationEngine {
       });
     }
 
-    if (tripParams.needsOriginClarification) {
+    // BUG FIX (found via HotelBeds cert dry-run testing, 2026-07-02):
+    // same fix as the multi-destination branch above — a "hotel only"
+    // request (needsTransport: false) shouldn't be asked where the
+    // traveler is departing from, since that answer is never used
+    // for anything when no flight/bus search runs at all.
+    if (tripParams.needsOriginClarification && intent?.productScope?.needsTransport !== false) {
       const question = `Where will you be departing from for ${tripParams.destination ? this._titleCase(tripParams.destination) : 'your trip'}?`;
       return this._buildClarificationResponse({
         sessionId, prompt, question, tripParams, intent, conversationHistory,

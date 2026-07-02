@@ -34,42 +34,32 @@ const CITY_CODES = {
   'nairobi': 'NBO', 'nbo': 'NBO', 'nai': 'NBO',
   'mombasa': 'MBA', 'mba': 'MBA',
   'zanzibar': 'ZNZ', 'znz': 'ZNZ',
-  // NOTE: 'zan' removed — too short and causes false matches against
-  // country names like 'tanzania'. Use full 'zanzibar' instead.
   'dar es salaam': 'DAR', 'dar': 'DAR', 'dar es': 'DAR',
   'kigali': 'KGL', 'kgl': 'KGL',
   'kampala': 'EBB', 'entebbe': 'EBB',
   'addis ababa': 'ADD', 'addis': 'ADD', 'add': 'ADD',
   'arusha': 'ARK',
 
-  // COUNTRY NAMES → PRIMARY GATEWAY AIRPORT
-  // Added here (not just in COUNTRY_TO_CITY) so the rule-based
-  // parser finds the full country name as a direct map hit before
-  // a shorter substring like 'zan' in 'tanzania' triggers first.
-  // Full-word map lookups are checked before substring scanning in
-  // the rule parser, so this prevents the greedy-substring bug.
-  'rwanda':        'KGL',  // Kigali
-  'tanzania':      'DAR',  // Dar es Salaam (most common gateway)
-  'uganda':        'EBB',  // Entebbe/Kampala
-  'ethiopia':      'ADD',  // Addis Ababa
-  'kenya':         'NBO',  // Nairobi
-  'south africa':  'JNB',  // Johannesburg
-  'nigeria':       'LOS',  // Lagos
-  'ghana':         'ACC',  // Accra
-  'egypt':         'CAI',  // Cairo
-  'morocco':       'CMN',  // Casablanca (Mohammed V)
+  'rwanda':        'KGL',
+  'tanzania':      'DAR',
+  'uganda':        'EBB',
+  'ethiopia':      'ADD',
+  'kenya':         'NBO',
+  'south africa':  'JNB',
+  'nigeria':       'LOS',
+  'ghana':         'ACC',
+  'egypt':         'CAI',
+  'morocco':       'CMN',
   'mauritius':     'MRU',
   'seychelles':    'SEZ',
   'maldives':      'MLE',
 
-  // WEST AFRICA
   'lagos': 'LOS', 'los': 'LOS',
   'accra': 'ACC', 'acc': 'ACC',
   'dakar': 'DKR',
   'abidjan': 'ABJ',
   'douala': 'DLA',
 
-  // SOUTHERN AFRICA
   'johannesburg': 'JNB', 'jnb': 'JNB', 'joburg': 'JNB', 'jozi': 'JNB', 'jhb': 'JNB',
   'cape town': 'CPT', 'cpt': 'CPT', 'capetown': 'CPT', 'cape': 'CPT',
   'victoria falls': 'VFA', 'vic falls': 'VFA',
@@ -78,7 +68,6 @@ const CITY_CODES = {
   'harare': 'HRE',
   'durban': 'DUR',
 
-  // NORTH AFRICA
   'cairo': 'CAI', 'cai': 'CAI',
   'casablanca': 'CMN', 'cmn': 'CMN', 'casa': 'CMN',
   'marrakech': 'RAK', 'marrakesh': 'RAK',
@@ -86,7 +75,6 @@ const CITY_CODES = {
   'sharm el sheikh': 'SSH', 'sharm': 'SSH',
   'hurghada': 'HRG',
 
-  // MIDDLE EAST
   'dubai': 'DXB', 'dxb': 'DXB',
   'abu dhabi': 'AUH',
   'doha': 'DOH',
@@ -94,7 +82,6 @@ const CITY_CODES = {
   'muscat': 'MCT',
   'istanbul': 'IST',
 
-  // ASIA
   'bangkok': 'BKK', 'bkk': 'BKK',
   'bali': 'DPS', 'denpasar': 'DPS',
   'tokyo': 'NRT', 'nrt': 'NRT',
@@ -109,7 +96,6 @@ const CITY_CODES = {
   'chiang mai': 'CNX',
   'phuket': 'HKT',
 
-  // EUROPE
   'london': 'LHR', 'lhr': 'LHR',
   'paris': 'CDG', 'cdg': 'CDG',
   'amsterdam': 'AMS', 'ams': 'AMS',
@@ -125,7 +111,6 @@ const CITY_CODES = {
   'athens': 'ATH',
   'prague': 'PRG',
 
-  // AMERICAS
   'new york': 'JFK', 'nyc': 'JFK', 'jfk': 'JFK',
   'miami': 'MIA', 'mia': 'MIA',
   'los angeles': 'LAX', 'lax': 'LAX',
@@ -137,10 +122,6 @@ const CITY_CODES = {
   'bogota': 'BOG',
 };
 
-// Destinations that are NOT airports themselves — used only by the
-// rules-based multi-destination fallback to recognize leg names
-// when Gemini is unavailable. Resolution of HOW to actually reach
-// them is destinationIntel.js's job, not this list's.
 const KNOWN_NON_AIRPORT_DESTINATIONS = [
   'maasai mara', 'masai mara', 'mara',
   'amboseli', 'ol pejeta', 'samburu', 'tsavo', 'lake nakuru',
@@ -188,31 +169,20 @@ async function parsePrompt(prompt) {
   try {
     const parsed = await _parseWithGemini(prompt);
 
-    // ─────────────────────────────────────────────
-    // MULTI-DESTINATION BRANCH
-    // Gemini returns isMultiDestination + legs[] in the same
-    // call as the normal single-destination shape. If it set
-    // this flag, return early with the multi-destination shape
-    // — none of the single-destination detection below applies
-    // to a multi-leg itinerary.
-    // ─────────────────────────────────────────────
     if (parsed.isMultiDestination && Array.isArray(parsed.legs) && parsed.legs.length >= 2) {
       return _enrichMultiDestinationParams(parsed);
     }
 
-    // Always run local detection on top of LLM result
     parsed.accessibility = _detectAccessibility(prompt);
     parsed.seatPreference = parsed.seatPreference || _detectSeatPreference(prompt);
     parsed.mealPlan = parsed.mealPlan || _detectMealPlan(prompt);
     parsed.trainClass = parsed.trainClass || _detectTrainClass(prompt);
     parsed.timePreference = parsed.timePreference || _detectTimePreference(prompt);
 
-    // Multi-modal fallback overlay
     const { outbound, returnLeg } = _detectMultiModalTransport(prompt);
     parsed.outboundTransportMode = parsed.outboundTransportMode || outbound;
     parsed.returnTransportMode = parsed.returnTransportMode || returnLeg;
 
-    // Legacy mapping for generic searches
     if (!parsed.outboundTransportMode && parsed.transportMode) {
         parsed.outboundTransportMode = parsed.transportMode;
         parsed.returnTransportMode = parsed.transportMode;
@@ -230,12 +200,6 @@ async function parsePrompt(prompt) {
     parsed._originalPrompt = prompt;
     return _enrichParams(parsed);
   } catch (error) {
-    // Surface the ACTUAL provider error, not just "Request failed with
-    // status code 400". axios puts the API's JSON error body on
-    // error.response.data — without logging it you're blind to the real
-    // cause (e.g. a decommissioned model, an unsupported param). This is
-    // what would have shown the llama-3.1-8b-instant deprecation
-    // immediately instead of via a week of bad parses.
     logger.warn('LLM (Groq) parsing failed, falling back to rule-based parser', {
       error: error.message,
       status: error.response?.status,
@@ -243,9 +207,6 @@ async function parsePrompt(prompt) {
       model: process.env.GROQ_MODEL || 'openai/gpt-oss-20b',
     });
 
-    // Alert when the LLM fails — repeated fallbacks mean the rule
-    // parser is handling real traffic, which is much weaker and was
-    // the root cause of the "deline" bug. Better to know early.
     tracking.alert({
       type:     'llm_fallback',
       severity: error.response?.status === 400 ? 'error' : 'warning',
@@ -258,10 +219,6 @@ async function parsePrompt(prompt) {
       },
     });
 
-    // Rule-based multi-destination check runs first — if Gemini is
-    // down, a multi-destination prompt should still be recognized
-    // as one, not silently collapsed into a broken single-destination
-    // parse.
     const multiDest = _detectMultiDestinationRules(prompt);
     if (multiDest) {
       return _enrichMultiDestinationParams(multiDest);
@@ -272,10 +229,6 @@ async function parsePrompt(prompt) {
     return _enrichParams(parsed);
   }
 }
-
-// ─────────────────────────────────────────────
-// DETECTION FUNCTIONS
-// ─────────────────────────────────────────────
 
 function _detectAccessibility(prompt) {
   const lower = prompt.toLowerCase();
@@ -306,42 +259,20 @@ function _detectMealPlan(prompt) {
   return null;
 }
 
-// ─────────────────────────────────────────────
-// ROOM COUNT DETECTION
-// "two single rooms", "3 rooms", "separate rooms" etc.
-// Returns the number of rooms as an integer, or null if not stated.
-// A traveler saying "two single rooms" wants 2 rooms booked —
-// different from 2 travelers sharing one room. This matters for
-// HotelBeds occupancy: rooms=2 means two separate bookings with
-// 1 adult each, not 1 booking with 2 adults in one room.
-// ─────────────────────────────────────────────
 function _detectRooms(prompt) {
   const lower = prompt.toLowerCase();
-
-  // "two single rooms", "3 double rooms", "two rooms"
   const explicit = lower.match(/\b(one|two|three|four|five|1|2|3|4|5)\s+(?:single|double|twin|triple|family|deluxe|standard)?\s*rooms?\b/i);
   if (explicit) {
     const word = explicit[1].toLowerCase();
     const wordMap = { one:1, two:2, three:3, four:4, five:5 };
     return wordMap[word] || parseInt(word, 10) || null;
   }
-
-  // "separate rooms", "own rooms", "different rooms"
   if (lower.match(/\bseparate\s+rooms?\b|\bown\s+rooms?\b|\bdifferent\s+rooms?\b/)) {
-    // Can't determine exact count from "separate rooms" alone —
-    // will be inferred from passenger count (1 room per person)
     return null;
   }
-
   return null;
 }
 
-// ─────────────────────────────────────────────
-// ROOM TYPE DETECTION
-// "single room", "double room", "twin room" etc.
-// Single = 1 bed for 1 person. Double = 1 large bed for 2.
-// Twin = 2 separate beds for 2 people. Important distinction.
-// ─────────────────────────────────────────────
 function _detectRoomType(prompt) {
   const lower = prompt.toLowerCase();
   if (lower.match(/\bsingle\s+room|\bsingle\s+bed|\bsingle\s+occupancy/)) return 'single';
@@ -367,10 +298,6 @@ function _detectTimePreference(prompt) {
   if (lower.match(/morning|early|asubuhi|alfajiri|6am|7am|8am|9am|10am|11am/)) return 'morning';
   if (lower.match(/afternoon|mchana|alasiri|12pm|1pm|2pm|3pm|4pm/)) return 'afternoon';
   if (lower.match(/evening|jioni|5pm|6pm|7pm|8pm/)) return 'evening';
-  // FIX: word boundary on "night" — without it, "3 nights" (a duration)
-  // was matching as a "night" time-of-day preference, which then made
-  // _filterByTime() in travelduqa.js silently reject every flight that
-  // didn't depart between 21:00-05:00 EAT, even normal daytime flights.
   if (lower.match(/\bnight\b|usiku|late|9pm|10pm|11pm|midnight/)) return 'night';
   return null;
 }
@@ -409,12 +336,6 @@ function _resolveBusSeatPosition(seatPreference) {
   return BUS_SEAT_POSITIONS[seatPreference] || null;
 }
 
-// ─────────────────────────────────────────────
-// FUZZY CITY MATCHING
-// Tolerates typos ("zanibar" -> "zanzibar", "mombsa" -> "mombasa")
-// using Levenshtein distance, so a small spelling mistake doesn't
-// silently fail a search the way an unrecognized city name would.
-// ─────────────────────────────────────────────
 function _levenshtein(a, b) {
   const m = a.length, n = b.length;
   const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
@@ -463,20 +384,6 @@ function _resolveCityFuzzy(rawToken, sortedCities) {
   return _fuzzyMatchCity(cleaned, sortedCities);
 }
 
-// ─────────────────────────────────────────────
-// LLM PARSER (Groq — OpenAI-compatible chat completions)
-// NOTE: this function is historically named _parseWithGemini and the
-// fallback log still says "Gemini" — the actual provider is Groq
-// (https://api.groq.com), called via its OpenAI-compatible endpoint.
-// The model is set by GROQ_MODEL (default openai/gpt-oss-20b). Groq's
-// response_format: json_object returns clean JSON, but we still parse
-// defensively via _safeParseJson in case a reasoning model wraps it.
-// ─────────────────────────────────────────────
-
-// Tolerant JSON extraction: returns the parsed object, pulling the
-// first balanced {...} block out of any surrounding prose or ```json
-// fences a model might add. Throws if no valid JSON object is found,
-// so the caller falls back to the rule-based parser as before.
 function _safeParseJson(raw) {
   if (typeof raw !== 'string') throw new Error('LLM content not a string');
   const text = raw.trim();
@@ -493,12 +400,6 @@ function _safeParseJson(raw) {
 }
 
 async function _parseWithGemini(prompt) {
-  // Model is env-configurable so a Groq model deprecation never again
-  // silently breaks parsing without a code change. Default is
-  // openai/gpt-oss-20b — Groq's official replacement for
-  // llama-3.1-8b-instant, which Groq decommissioned on 2026-06-17
-  // (that decommission is what caused every request to 400 and fall
-  // back to the rule-based parser). Override via GROQ_MODEL on Render.
   const model = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
 
   const requestBody = {
@@ -592,7 +493,7 @@ OTHERWISE (single destination), return ONLY this shape:
 CRITICAL OUTPUT RULE: every field above describing a choice between options (e.g. "choose exactly ONE: A or B or C") means you must output ONE of those literal values (e.g. just "mid", not the word "or" or any list). NEVER output a field's full list of possible values joined together — that is always wrong. If genuinely unsure which single value applies, use the stated default or null, never the full option list.
 
 RULES:
-- CRITICAL occupancy rule: passengers = adults + children (the total headcount). Count "adults" and "children" separately. A "child", "kid", "toddler", "baby", "infant", "son", "daughter", or anyone given an age under 18 is a CHILD, not an adult. Examples: "2 adults and a child" -> passengers 3, adults 2, children 1, childAges []. "me my wife and our 7 year old" -> passengers 3, adults 2, children 1, childAges [7]. "family of 4 with kids aged 5 and 8" -> passengers 4, adults 2, children 2, childAges [5,8]. "2 people" with no children mentioned -> passengers 2, adults 2, children 0, childAges []. Only put an age in childAges if it was actually stated; if a child is mentioned with no age, leave childAges shorter than children (e.g. children 1, childAges []).
+- CRITICAL occupancy rule: passengers = adults + children (the total headcount). Count "adults" and "children" separately. A "child", "kid", "toddler", "baby", "infant", "son", "daughter", or anyone given an age under 18 is a CHILD, not an adult. Examples: "2 adults and a child" -> passengers 3, adults 2, children 1, childAges []. "me my wife and our 7 year old" -> passengers 3, adults 2, children 1, childAges [7]. "family of 4 with kids aged 5 and 8" -> passengers 4, adults 2, children 2, childAges [5,8]. "2 adults and 2 children of ages 8 and 10" -> passengers 4, adults 2, children 2, childAges [8,10]. "2 people" with no children mentioned -> passengers 2, adults 2, children 0, childAges []. CRITICAL: child ages appear in MANY phrasings, not just "X year old" — "aged 8 and 10", "ages 8 and 10", "of ages 8 and 10", "8 and 10 years old", "8yo and 10yo" all mean the SAME thing: extract every number in that phrase into childAges regardless of which of these exact wordings is used. Only put an age in childAges if it was actually stated; if a child is mentioned with no age, leave childAges shorter than children (e.g. children 1, childAges []).
 - CRITICAL: Pay attention to directional transport. If a user says "bus going and flight coming back", set outboundTransportMode="bus" and returnTransportMode="flight".
 - If only one transport mode is mentioned (e.g. "fly to Mombasa"), apply it to both outbound and return.
 - CRITICAL tripType rule: if the traveler mentions a number of nights or days (e.g. "4 nights", "3 days"), that means they want to come back — set tripType="round_trip". Only use tripType="one_way" if the traveler explicitly says "one way", "single trip", "not coming back", or gives no return timeframe of any kind. A stated nights/days duration is ALWAYS a round-trip signal, never one-way.
@@ -610,10 +511,6 @@ RULES:
       }]
   };
 
-  // gpt-oss models are reasoning models — keep the reasoning overhead
-  // minimal so this stays fast (we have a tight latency budget) while
-  // still returning clean JSON. Only sent for gpt-oss models, since
-  // other models reject an unknown reasoning_effort param with a 400.
   if (/gpt-oss/i.test(model)) {
     requestBody.reasoning_effort = 'low';
   }
@@ -634,43 +531,14 @@ RULES:
   if (!content) {
     throw new Error('LLM returned no content');
   }
-  // response_format json_object should return a bare JSON object, but
-  // some reasoning models occasionally wrap it in prose or ```json
-  // fences. Extract the first {...} block defensively before parsing
-  // so a stray wrapper doesn't force a fallback to the rule parser.
   const parsed = _safeParseJson(content);
-
-  // NOTE: no longer defaulting origin to 'nairobi' here — a missing
-  // origin is now a real signal (needsOriginClarification, set in
-  // _enrichParams) rather than a silently guessed value. A traveler
-  // could genuinely be coming from Kigali, London, or anywhere else.
 
   return parsed;
 }
 
-// ─────────────────────────────────────────────
-// RULE-BASED MULTI-DESTINATION FALLBACK
-// Only used if the Gemini call fails entirely. Recognizes simple
-// "<N> days/nights in <place> then/and <N> days/nights in <place>"
-// patterns using the known-place list, so a Gemini outage doesn't
-// silently downgrade a multi-destination prompt into a broken
-// single-destination parse.
-//
-// Per-leg origin extraction here is intentionally conservative —
-// it only looks for an explicit "from <city>" immediately preceding
-// a fragment's place name. Anything it can't confidently extract is
-// left null (same "don't guess" rule as the Groq path), which is
-// the safe default since the engine treats null as "ask the
-// traveler" rather than silently assuming continuity.
-// ─────────────────────────────────────────────
 function _detectMultiDestinationRules(prompt) {
   const lower = prompt.toLowerCase().trim();
 
-  // Needs at least two "<N> nights/days ... <place>" fragments,
-  // joined by then/and/followed by, to count as multi-destination.
-  // Captures an optional leading "from <city> to" so per-leg origin
-  // can be extracted (group 1), separate from the place name itself
-  // (group 3).
   const fragmentPattern = /(?:from\s+([a-z\s]+?)\s+to\s+)?(\d+)\s*(?:days?|nights?)\s*(?:in|at|to)?\s*([a-z\s]+?)(?=\s*(?:,|\.|then|and|followed by|after that|next|$))/g;
   const fragments = [...lower.matchAll(fragmentPattern)];
 
@@ -692,11 +560,6 @@ function _detectMultiDestinationRules(prompt) {
 
   if (legs.length < 2) return null;
 
-  // Top-level origin: look for "from <city>" preceding the FIRST
-  // fragment specifically (not anywhere in the prompt, since a later
-  // "from <city>" belongs to that leg, not leg 1). Falls back to
-  // leg[0]'s own extracted origin if the fragment pattern already
-  // captured one.
   const origin = legs[0].origin || null;
 
   const passengerMatch = lower.match(/(\d+)\s*(people|persons|passengers|adults|pax|travelers?)/);
@@ -727,23 +590,8 @@ function _detectMultiDestinationRules(prompt) {
   };
 }
 
-// ─────────────────────────────────────────────
-// PLACE-LIKE TOKEN GUARD
-// The rule-based extractors below grab loose text around "to"/"from"
-// keywords. Conversational phrasing means those captures are often
-// NOT places — e.g. "I'd like to visit X" leaves "d like" before the
-// "to", "fly to X" leaves "fly", "I want to go to X" leaves "i want".
-// Previously such garbage was kept verbatim as the origin/destination
-// (the "deline"/"d like" bug). _looksLikePlace lets a capture through
-// only if it contains at least one substantive, non-filler word — so
-// real non-hub places ("meru", "watamu", "kilifi") still pass, but
-// filler fragments are rejected, leaving origin null so the engine
-// asks "where are you departing from?" instead of inventing a city.
-// ─────────────────────────────────────────────
 const _PLACE_FILLER_WORDS = new Set([
-  // pronoun/contraction fragments (apostrophes are stripped upstream)
   'i', 'id', 'im', 'ill', 'd', 'll', 'm', 're', 've', 's', 't', 'we', 'us', 'my', 'our',
-  // intent verbs / politeness / filler
   'like', 'want', 'wanna', 'love', 'would', 'will', 'can', 'could', 'please', 'help',
   'me', 'go', 'going', 'goin', 'travel', 'travelling', 'traveling', 'fly', 'flying',
   'visit', 'visiting', 'trip', 'holiday', 'vacation', 'need', 'gonna', 'looking',
@@ -755,22 +603,9 @@ function _looksLikePlace(token) {
   if (!token) return false;
   const words = String(token).trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return false;
-  // A plausible place has at least one word that is reasonably long
-  // AND not a known filler word. "meru"/"watamu" pass; "d like",
-  // "i want", "fly", "visit" do not.
   return words.some(w => w.length >= 3 && !_PLACE_FILLER_WORDS.has(w));
 }
 
-// ─────────────────────────────────────────────
-// OCCUPANCY EXTRACTION (rule-based fallback)
-// Best-effort adults/children/childAges parsing for when Groq is
-// unavailable. Groq is the primary (and far more capable) path; this
-// just needs to catch the common shapes ("2 adults and a child",
-// "family of 4 with a 7 year old") and never crash. Anything it
-// can't determine is left for the engine's child-age clarification.
-// Returns { adults, children, childAges, passengers } where any of
-// adults/passengers may be null (caller applies defaults).
-// ─────────────────────────────────────────────
 function _extractOccupancy(text) {
   const lower = String(text || '').toLowerCase();
 
@@ -783,20 +618,21 @@ function _extractOccupancy(text) {
     children = parseInt(childCountMatch[1], 10);
   }
 
-  // child ages: "7 year old", "7-year-old", "7yo", then "aged 5 and 8"
   const childAges = [];
   const yearOldRe = /(\d{1,2})\s*(?:-|\s)?(?:years?|yrs?|y\/o|yo)\b(?:[\s-]*old)?/gi;
   let m;
   while ((m = yearOldRe.exec(lower)) !== null) childAges.push(parseInt(m[1], 10));
   if (childAges.length === 0) {
-    const agedMatch = lower.match(/\bage[ds]?\s+([\d,\sand&]+)/);
+    // Handles "aged 8 and 10", "ages 8 and 10", AND "ages of 8 and 10"
+    // — the optional "of\s+" covers the exact phrasing that prompted
+    // this fix ("children of ages 8 and 10").
+    const agedMatch = lower.match(/\bage[ds]?\s+(?:of\s+)?([\d,\sand&]+)/);
     if (agedMatch) {
       const nums = agedMatch[1].match(/\d{1,2}/g);
       if (nums) nums.forEach(n => childAges.push(parseInt(n, 10)));
     }
   }
 
-  // If no explicit child count but a child word or ages appeared, infer it.
   if (children === 0) {
     if (childAges.length > 0) children = childAges.length;
     else if (/\b(?:child|kids?|children|toddler|infant|baby|son|daughter)\b/.test(lower)) children = 1;
@@ -806,16 +642,12 @@ function _extractOccupancy(text) {
   const paxMatch = lower.match(/(\d+)\s*(?:people|persons|passengers|pax|travel?ers?|of us)\b/);
   let passengers = paxMatch ? parseInt(paxMatch[1], 10) : null;
 
-  // Reconcile: passengers = adults + children.
   if (passengers === null && adults !== null) passengers = adults + children;
   if (adults === null && passengers !== null) adults = Math.max(0, passengers - children);
 
   return { adults, children, childAges: cappedAges, passengers };
 }
 
-// ─────────────────────────────────────────────
-// RULE-BASED FALLBACK
-// ─────────────────────────────────────────────
 function _parseWithRules(prompt) {
   let lower = prompt.toLowerCase().trim();
 
@@ -830,9 +662,6 @@ function _parseWithRules(prompt) {
       : lower.includes('familia') || lower.includes('family') ? 4
       : 1;
 
-  // Occupancy breakdown (adults/children/ages). Falls back to treating
-  // everyone as adults when no children are mentioned, so existing
-  // adult-only behaviour is unchanged.
   const occ = _extractOccupancy(lower);
   const children = occ.children || 0;
   const childAges = occ.childAges || [];
@@ -854,28 +683,12 @@ function _parseWithRules(prompt) {
       : lower.includes('week') && !lower.includes('next week') ? 7
       : 3;
 
-  // Places (airport cities + known non-airport destinations) used
-  // for fuzzy matching in the single-destination rules path. Using
-  // the combined list here (not just CITY_CODES) so a prompt like
-  // "kilifi" or "watamu" with no Gemini available still resolves
-  // to the right destination NAME — _resolveToCode() below is what
-  // decides whether that name maps to a real airport code or needs
-  // destinationIntel resolution downstream in the engine.
   const sortedCities = [...KNOWN_NON_AIRPORT_DESTINATIONS, ...Object.keys(CITY_CODES)]
     .sort((a, b) => b.length - a.length);
 
   let origin = null;
   let destination = null;
 
-  // ── Explicit "from <origin>" FIRST ─────────────────────────
-  // The strongest, least ambiguous origin signal, and word-order
-  // independent — it works whether the traveler writes "from Nairobi
-  // to Mombasa", "visit Zanzibar from Nairobi" (destination stated
-  // first), or buries "from Nairobi" at the end of a sentence. We
-  // capture it and REMOVE the clause from the working string so a
-  // trailing "from <city>" can't pollute destination extraction
-  // below — that pollution is what turned "fly to mombasa from
-  // nairobi" into a trip whose DESTINATION resolved to nairobi.
   let work = lower;
   const fromMatch = lower.match(/\bfrom\s+([a-z][a-z\s]*?)(?=\s*(?:,|\.|\bto\b|\bon\b|\bfor\b|\bnext\b|\bthis\b|\bdeparting\b|\bleaving\b|\bvia\b|\d|$))/);
   if (fromMatch) {
@@ -884,12 +697,6 @@ function _parseWithRules(prompt) {
     work = lower.replace(fromMatch[0], ' ');
   }
 
-  // ── "X to Y" on the cleaned string ─────────────────────────
-  // Guarded so the conversational "to" in "like to visit" / "want
-  // to go" / "fly to" can't hijack the match: a captured token is
-  // accepted as origin/destination only if it resolves to a known
-  // city OR _looksLikePlace() (a plausible non-hub place name like
-  // "meru"/"watamu") — never raw filler like "d like"/"i want"/"fly".
   const fromToMatch = work.match(/(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
   if (fromToMatch) {
     const t1 = fromToMatch[1].trim();
@@ -897,28 +704,22 @@ function _parseWithRules(prompt) {
     const c1 = _resolveCityFuzzy(t1, sortedCities) || (_looksLikePlace(t1) ? t1 : null);
     const c2 = _resolveCityFuzzy(t2, sortedCities) || (_looksLikePlace(t2) ? t2 : null);
     if (c1 && c2) {
-      // Genuine "origin to destination" (both sides are real places).
       if (!origin)      origin = c1;
       if (!destination) destination = c2;
     } else if (c2 && !destination) {
-      // "<filler> to <place>" e.g. "fly to mombasa" — only the
-      // destination side is real; origin stays whatever "from" found
-      // (or null -> clarification).
       destination = c2;
     }
   }
 
-  // ── Destination via "visit / go to / travel to <dest>" ─────
   const kwendaMatch = work.match(/(?:nataka\s+kwenda|kwenda|going\s+to|go\s+to|travel\s+to|trip\s+to|fly\s+to|visit)\s+([a-z\s]+?)(?:\s*[,\d]|$)/);
   if (kwendaMatch && !destination) {
     const cand = kwendaMatch[1].trim();
     destination = _resolveCityFuzzy(cand, sortedCities) || (_looksLikePlace(cand) ? cand : null);
   }
 
-  // ── Last resort: scan the cleaned string for any known place ──
   if (!destination) {
     const words = work.split(/\s+/).filter(w => w.length > 2);
-    const scanOrigin = origin; // remember whether origin pre-existed (e.g. from "from")
+    const scanOrigin = origin;
     for (const word of words) {
       const match = _fuzzyMatchCity(word, sortedCities) ||
         sortedCities.find(city => word.includes(city) || city.includes(word));
@@ -927,15 +728,8 @@ function _parseWithRules(prompt) {
         else if (match !== origin) { destination = match; break; }
       }
     }
-    // Reinterpret a lone SCAN-found place as the destination — but
-    // NEVER reassign an origin that came from an explicit "from <city>",
-    // or "from nairobi" alone would wrongly become the destination.
     if (!scanOrigin && origin && !destination) { destination = origin; origin = null; }
   }
-
-  // CHANGED: no longer silently defaulting origin to 'nairobi'. A missing
-  // origin is now left as null and surfaced as a clarification need in
-  // _enrichParams, since the traveler could be coming from anywhere.
 
   const preferences = [];
   if (lower.match(/beach|coast|ocean|bahari|pwani/)) preferences.push('beach');
@@ -983,9 +777,6 @@ function _parseWithRules(prompt) {
   };
 }
 
-// ─────────────────────────────────────────────
-// DATE HELPERS
-// ─────────────────────────────────────────────
 function _addDaysStr(days) {
   const date = new Date();
   date.setDate(date.getDate() + days);
@@ -1017,17 +808,6 @@ function _extractDate(prompt) {
   const isoMatch = prompt.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return isoMatch[0];
 
-  // FIX: day + month with NO year (e.g. "28th of June", "28 June",
-  // "June 28th"). Previously the fallback parser only understood a
-  // full 4-digit year, so the exact natural phrasing travelers use
-  // most ("28th of June") returned null whenever Groq was down,
-  // silently degrading date handling on the highest-traffic pattern.
-  // The (?!\d) guard stops the day group from swallowing the first
-  // digits of a year ("June 2026" must not parse as day 20). Year is
-  // inferred as the current year, rolled to next year if that date
-  // has already passed ("June 28" said in July means next June).
-  // Runs only AFTER the 4-digit-year branches above have failed, so
-  // explicit-year prompts are never affected.
   const dayMonth = prompt.match(/(\d{1,2})(?!\d)(?:st|nd|rd|th)?\s+(?:of\s+)?(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b/i);
   const monthDay = prompt.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(?!\d)(?:st|nd|rd|th)?\b/i);
   const noYear = dayMonth || monthDay;
@@ -1039,7 +819,6 @@ function _extractDate(prompt) {
       const now = new Date();
       let year = now.getFullYear();
       const candidate = new Date(`${year}-${month}-${day}`);
-      // Roll to next year only if the date is valid AND already past.
       if (!isNaN(candidate.getTime()) && candidate < now) year += 1;
       return `${year}-${month}-${day}`;
     }
@@ -1075,20 +854,6 @@ function _resolveRelativeDate(prompt) {
   return null;
 }
 
-// ─────────────────────────────────────────────
-// NORMALIZE OCCUPANCY
-// Produces a consistent { adults, children, childAges, passengers }
-// from whatever the parser captured, enforcing the invariants the
-// rest of the system (and HotelBeds) rely on:
-//   - passengers === adults + children, always
-//   - at least 1 adult (HotelBeds rejects child-only with
-//     E_REQUEST_ATLEASTONEADULT)
-//   - childAges holds only valid <18 ages and never exceeds children
-//     (a shorter childAges than children is the signal that an age is
-//     still missing — the engine asks for it before searching hotels)
-// Backward compatible: when no children are present, adults =
-// passengers exactly as before, so adult-only trips are unchanged.
-// ─────────────────────────────────────────────
 function _normalizeOccupancy(parsed) {
   let children = Number.isFinite(parsed.children) ? Math.max(0, Math.floor(parsed.children)) : 0;
 
@@ -1103,19 +868,13 @@ function _normalizeOccupancy(parsed) {
   if (adults == null) {
     adults = totalStated != null ? Math.max(1, totalStated - children) : 1;
   }
-  if (adults < 1) adults = 1; // HotelBeds requires at least one adult
+  if (adults < 1) adults = 1;
 
   const passengers = adults + children;
   return { adults, children, childAges, passengers };
 }
 
-// ─────────────────────────────────────────────
-// ENRICH PARAMS — SINGLE DESTINATION
-// ─────────────────────────────────────────────
 function _enrichParams(parsed) {
-  // Origin is now allowed to be genuinely unknown — surfaced as a flag
-  // the engine checks before running any supplier search, so it can
-  // ask "Where are you traveling from?" instead of silently guessing.
   const needsOriginClarification = !parsed.origin;
 
   const resolvedOrigin      = _resolveCountryToCity(parsed.origin);
@@ -1128,38 +887,14 @@ function _enrichParams(parsed) {
 
   const nights = parsed.nights || _defaultNights(parsed.departureDate, parsed.returnDate);
 
-  // FIX: returnDate previously only computed when departureDate was
-  // already present — if the traveler gave a nights count but no
-  // specific date ("4 nights" with no date), departureDate stayed
-  // null, so returnDate ALSO stayed null regardless of tripType,
-  // which silently skipped the entire return-leg search in
-  // engine.js (gated on tripParams.returnDate being truthy). Default
-  // departureDate here too, mirroring the [FLIGHT FALLBACK] used in
-  // engine.js's _searchFlights, so returnDate always computes
-  // correctly whenever a nights count is known.
   const departureDate = parsed.departureDate || _defaultDepartureDate();
 
-  // Defensive backstop: a stated nights/days duration is a strong,
-  // unambiguous round-trip signal — if the LLM said tripType
-  // "one_way" despite the traveler explicitly giving a nights
-  // value (e.g. "4 nights"), that's a self-contradiction. Correct
-  // it here rather than relying solely on prompt wording, since
-  // smaller models don't always follow instructions reliably.
   const explicitOneWaySignal = /\bone[\s-]?way\b|\bsingle\s+trip\b|\bnot\s+coming\s+back\b/i.test(String(parsed._originalPrompt || ''));
   const sanitizedTripType = _sanitizeEnum(parsed.tripType, ['round_trip', 'one_way'], 'round_trip');
   const correctedTripType = (parsed.nights && sanitizedTripType === 'one_way' && !explicitOneWaySignal)
     ? 'round_trip'
     : sanitizedTripType;
 
-  // FIX: returnDate is only computed for genuine round trips. Before,
-  // it was set unconditionally, so a real one-way ("Nairobi to Mombasa
-  // one way") still got a returnDate — and engine.js's return-leg
-  // search is gated on tripParams.returnDate being truthy, so it
-  // searched, priced, and displayed a return leg the traveler never
-  // asked for. Now a one-way (AFTER the round-trip-when-nights-stated
-  // correction above) gets null, correctly skipping the return search.
-  // Hotels are unaffected: _searchHotels falls back to checkIn + nights
-  // when returnDate is null, so accommodation still spans the full stay.
   const returnDate = correctedTripType === 'one_way'
     ? null
     : (parsed.returnDate || _addDays(departureDate, nights));
@@ -1193,48 +928,22 @@ function _enrichParams(parsed) {
     preferredHotel: _sanitizeFreeText(parsed.preferredHotel),
     preferences: _sanitizePreferences(parsed.preferences),
     busSeatPosition: parsed.busSeatPosition || null,
-    _originalPrompt: undefined, // internal scratch field, not part of tripParams
+    _originalPrompt: undefined,
   };
 }
 
-// ─────────────────────────────────────────────
-// SANITIZE ENUM VALUE
-// Defensive guard against any LLM provider returning something
-// other than a single valid value for a constrained field — e.g.
-// echoing the schema's option list back literally ("low|mid|high
-// |luxury" or "low, mid, high, luxury") instead of picking one.
-// Falls back to the given default rather than letting a malformed
-// value flow downstream into supplier searches/pricing logic.
-// ─────────────────────────────────────────────
 function _sanitizeEnum(value, allowed, fallback) {
   if (typeof value !== 'string') return fallback;
   const normalized = value.trim().toLowerCase();
   return allowed.includes(normalized) ? normalized : fallback;
 }
 
-// ─────────────────────────────────────────────
-// SANITIZE FREE-TEXT VALUE
-// For fields like preferredTransportProvider/preferredHotel that
-// aren't a fixed enum (any airline/bus company/train operator or
-// hotel name is valid) — just guards against non-string garbage and
-// trims whitespace, no allowed-value list to check against. A
-// genuinely empty string after trimming is treated the same as null
-// (no preference stated), since "" and null mean the same thing to
-// every downstream consumer of this field.
-// ─────────────────────────────────────────────
 function _sanitizeFreeText(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
 
-// ─────────────────────────────────────────────
-// SANITIZE PREFERENCES ARRAY
-// Same defensive intent as _sanitizeEnum, but for the preferences
-// array — keeps only values that are actually in the allowed set,
-// so a malformed response (e.g. the full option list returned
-// regardless of relevance) doesn't silently bias ranking/recommendations.
-// ─────────────────────────────────────────────
 function _sanitizePreferences(value) {
   const allowed = ['beach', 'safari', 'culture', 'adventure', 'family', 'honeymoon', 'business', 'accessible'];
   if (!Array.isArray(value)) return [];
@@ -1244,13 +953,6 @@ function _sanitizePreferences(value) {
     .map(v => v.trim().toLowerCase())
     .filter(v => allowed.includes(v));
 
-  // If every single allowed value is present, that's the same
-  // failure pattern as the enum-echo bug — a model returning the
-  // whole option list rather than genuinely selecting relevant
-  // ones (it is extremely unlikely a real prompt implies beach
-  // AND safari AND culture AND business AND honeymoon all at
-  // once). Treat this as malformed and reset to empty rather
-  // than letting it silently bias ranking toward every category.
   const uniqueValues = new Set(cleaned);
   if (allowed.every(a => uniqueValues.has(a))) {
     return [];
@@ -1259,22 +961,6 @@ function _sanitizePreferences(value) {
   return cleaned;
 }
 
-// ─────────────────────────────────────────────
-// ENRICH PARAMS — MULTI-DESTINATION
-// Mirrors _enrichParams's defaulting/clarification behavior, but
-// for the legs[] shape. Per-leg destination-to-airport resolution
-// is intentionally NOT done here — that's destinationIntel.js's
-// job inside engine.js, since it needs the validated, per-mode
-// access data (charter vs flight vs transfer), not just a code.
-//
-// Per-leg origin is passed through as-is (null or a stated city) —
-// classifying what a leg's origin MEANS (continuous vs. independent
-// trip vs. needs clarification) is engine.js's job in
-// _classifyLegTransitions, since that decision also depends on the
-// PREVIOUS leg's destination, which this function doesn't have
-// visibility into on a per-field basis the way the engine's
-// sequential loop does.
-// ─────────────────────────────────────────────
 function _enrichMultiDestinationParams(parsed) {
   const topLevelDepartureDate = parsed.departureDate || _defaultDepartureDate();
 
@@ -1282,24 +968,9 @@ function _enrichMultiDestinationParams(parsed) {
     destination: _resolveCountryToCity(leg.destination),
     nights: leg.nights || 1,
     origin: leg.origin ? _resolveCountryToCity(leg.origin) : null,
-    // Leg 1's date IS the top-level departureDate (same field,
-    // covered already — see the origin defensive backfill below for
-    // the analogous situation). Leg 2+ keep whatever the model
-    // returned: null if genuinely unstated (engine.js calculates a
-    // sensible date for these — see _classifyMultiDestinationLegs/
-    // _continueOrchestration's independent-leg handling), or the
-    // explicit date if the traveler gave one for that specific leg.
     departureDate: i === 0 ? topLevelDepartureDate : (leg.departureDate || null),
   }));
 
-  // DEFENSIVE BACKFILL: a known misparse pattern (seen in production
-  // logs) has the model put the traveler's stated origin on LEG 1's
-  // own "origin" field instead of the top-level "origin" field the
-  // schema asks for — e.g. top-level origin comes back null, but
-  // legs[0].origin comes back "nairobi". Per the schema, leg 1 never
-  // needs its own origin (the top-level field covers it), so if we
-  // see this shape, recover the value rather than silently losing it
-  // and forcing an unnecessary clarification question.
   let origin = parsed.origin || null;
   if (!origin && legs[0]?.origin) {
     origin = legs[0].origin;
@@ -1320,8 +991,6 @@ function _enrichMultiDestinationParams(parsed) {
     preferredHotel: _sanitizeFreeText(parsed.preferredHotel),
     preferences: _sanitizePreferences(parsed.preferences),
     needsOriginClarification,
-    // Destination, for logging/display purposes only — engine.js
-    // builds the real route label from resolved leg data.
     destination: legs.map(l => l.destination).join(' + '),
   };
 }
@@ -1332,28 +1001,7 @@ function _resolveToCode(city) {
   return CITY_CODES[lower] || city.toUpperCase().slice(0, 3);
 }
 
-// ─────────────────────────────────────────────
-// COUNTRY → PRIMARY CITY RESOLUTION
-// Travelers frequently say "Rwanda" meaning Kigali, "Tanzania"
-// meaning Dar es Salaam, etc. Country names have no IATA code and
-// no HotelBeds destination code — every adapter rejects them, so
-// a country-name destination produces zero results for all suppliers.
-//
-// This map resolves a country name to the most commonly-booked
-// gateway city for that country from an East Africa travel context:
-//   - Rwanda → Kigali (only major international airport, KGL)
-//   - Tanzania → Dar es Salaam (primary gateway, though Kilimanjaro/
-//     Zanzibar also exist — these are handled separately if the
-//     traveler names them explicitly)
-//   - Uganda → Kampala/Entebbe (EBB is the actual airport)
-//   etc.
-//
-// Applied at parse time so the resolved city flows through to all
-// adapters (TravelDuqa, Duffel, HotelBeds) correctly, rather than
-// needing to be handled in each adapter independently.
-// ─────────────────────────────────────────────
 const COUNTRY_TO_CITY = {
-  // East Africa (primary travel markets)
   'rwanda':       'kigali',
   'uganda':       'kampala',
   'tanzania':     'dar es salaam',
@@ -1362,7 +1010,6 @@ const COUNTRY_TO_CITY = {
   'eritrea':      'asmara',
   'djibouti':     'djibouti',
   'somalia':      'mogadishu',
-  // Southern Africa
   'south africa': 'johannesburg',
   'zimbabwe':     'harare',
   'zambia':       'lusaka',
@@ -1371,23 +1018,19 @@ const COUNTRY_TO_CITY = {
   'botswana':     'gaborone',
   'namibia':      'windhoek',
   'angola':       'luanda',
-  // West Africa
   'nigeria':      'lagos',
   'ghana':        'accra',
   'senegal':      'dakar',
   'ivory coast':  'abidjan',
   'cote divoire': 'abidjan',
-  // North Africa / Middle East
   'egypt':        'cairo',
   'morocco':      'casablanca',
   'algeria':      'algiers',
   'tunisia':      'tunis',
-  // Indian Ocean islands (common EA travel destinations)
   'mauritius':    'port louis',
   'seychelles':   'mahe',
   'madagascar':   'antananarivo',
   'maldives':     'male',
-  // Asia / Europe (common long-haul from EA)
   'india':        'delhi',
   'china':        'beijing',
   'japan':        'tokyo',
@@ -1407,11 +1050,6 @@ const COUNTRY_TO_CITY = {
   'australia':    'sydney',
 };
 
-/**
- * If the given string is a known country name, returns its primary
- * gateway city instead. Otherwise returns the input unchanged.
- * Case-insensitive, trim-safe.
- */
 function _resolveCountryToCity(name) {
   if (!name) return name;
   const key = name.toLowerCase().trim();
