@@ -324,6 +324,18 @@ class HotelBedsAdapter {
         }
       }
 
+      // BUG FIX (found via HotelBeds cert dry-run testing, 2026-07-02):
+      // the confirmed booking response carries the REAL rateComments
+      // text (Cert 3.9/4.4 — e.g. "Car park YES..., Check-in hour
+      // 13:00..., Minimum check-in age 18.") right on
+      // booking.hotel.rooms[0].rates[0].rateComments, but this was
+      // never captured here at all — meaning it silently never
+      // reached any voucher for a BOOKABLE-rate booking (RECHECK
+      // rates got it via checkRate() instead, so this only affected
+      // the BOOKABLE path). This is a MANDATORY voucher field per
+      // certification, not optional — capture it now.
+      const rateComments = booking.hotel?.rooms?.[0]?.rates?.[0]?.rateComments || null;
+
       return {
         supplier:                 this.supplier,
         supplierBookingReference: booking.reference,
@@ -334,6 +346,10 @@ class HotelBedsAdapter {
         hotelEmail,
         checkIn:                  booking.hotel?.checkIn,
         checkOut:                 booking.hotel?.checkOut,
+        roomType:                 booking.hotel?.rooms?.[0]?.name || null,
+        boardType:                booking.hotel?.rooms?.[0]?.rates?.[0]?.boardName || null,
+        rateComments,
+        cancellationPolicies:     booking.hotel?.rooms?.[0]?.rates?.[0]?.cancellationPolicies || [],
         totalAmount:              Number(booking.totalNet || 0),
         currency:                 booking.currency || 'EUR',
         holder:                   booking.holder,

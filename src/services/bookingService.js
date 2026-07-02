@@ -186,6 +186,32 @@ class BookingService {
           if (recon.newPrice) hotel.totalRate = recon.newPrice;
         }
 
+        // BUG FIX (found via HotelBeds cert dry-run testing, 2026-07-02):
+        // hotelResult (the CONFIRMED booking response) carries
+        // authoritative data the search-time `hotel` object never
+        // had — real checkIn/checkOut dates, and the mandatory
+        // rateComments text (Cert 3.9/4.4). Neither was ever merged
+        // back into `hotel` before, so a voucher built from
+        // pkg.hotel showed blank dates and no rate comments even
+        // though HotelBeds genuinely returned both at booking time.
+        // `hotel` here is the SAME object reference as pkg.hotel (see
+        // `const hotel = pkg.hotel || {}` above — no copy is made
+        // when pkg.hotel is truthy), so mutating it here flows
+        // through automatically to _persistStage's hotel_details and
+        // package_snapshot, and from there to the voucher.
+        if (hotelResult) {
+          hotel.checkIn        = hotelResult.checkIn        || hotel.checkIn        || null;
+          hotel.checkOut       = hotelResult.checkOut       || hotel.checkOut       || null;
+          hotel.rateComments   = hotelResult.rateComments   || hotel.rateComments   || null;
+          hotel.address        = hotel.address              || hotelResult.hotelAddress || null;
+          hotel.phone          = hotel.phone                || hotelResult.hotelPhone   || null;
+          hotel.email          = hotel.email                || hotelResult.hotelEmail   || null;
+          hotel.cancellationPolicies = hotel.cancellationPolicies?.length
+            ? hotel.cancellationPolicies
+            : (hotelResult.cancellationPolicies || []);
+          hotel.supplier_tag   = hotelResult.supplier_tag   || null;
+        }
+
         stage = 'hotel_confirmed';
         logger.info('Hotel confirmed', { bookingRef, supplierRef: hotelResult?.supplierBookingReference });
 
@@ -398,8 +424,8 @@ class BookingService {
       hotelName:                hotelDetails.name            || null,
       hotelAddress:             hotelDetails.address         || null,
       hotelPhone:               hotelDetails.phone           || null,
-      checkIn:                  hotelDetails.checkIn         || outboundTransport?.departureTime || null,
-      checkOut:                 hotelDetails.checkOut        || null,
+      checkIn:                  hotelDetails.checkIn         || packageSnapshot.summary?.occupancy?.checkIn  || outboundTransport?.departureTime || null,
+      checkOut:                 hotelDetails.checkOut        || packageSnapshot.summary?.occupancy?.checkOut || null,
       nights:                   booking.nights               || null,
       roomType:                 hotelDetails.roomType        || null,
       boardType:                hotelDetails.mealPlan        || hotelDetails.boardType || null,
@@ -638,9 +664,24 @@ class BookingService {
         hotel_rate_key: hotel.rateKey || null,
         flight_hold_expires_at: transport.expiresAt || null,
         channel: channel || 'widget',
-        flight_details: transport || null,
+        // BUG FIX (found via HotelBeds cert dry-run testing,
+        // 2026-07-02): persisting the locally-coerced `transport`/
+        // `transfers` variables (which are `pkg.transport || {}`,
+        // used above ONLY for safe property access like
+        // transport.destination) meant a genuinely absent flight/
+        // transfer (null, e.g. a hotel-only booking) got stored as
+        // an empty object `{}` instead — which is TRUTHY. Downstream,
+        // bookingService._fetchAgencyAndFireVoucher checks
+        // `booking.flight_details` as a signal for "is there a
+        // flight to show" — `{}` passed that check, producing a
+        // voucher with a broken "Outbound Flight" section showing
+        // "— → — undefined stop" for bookings that never had a
+        // flight at all. Persist pkg.transport/pkg.transfers
+        // directly instead, preserving real null when there
+        // genuinely is none.
+        flight_details: pkg.transport || null,
         hotel_details: hotel || null,
-        transfer_details: transfers || null,
+        transfer_details: pkg.transfers || null,
         package_snapshot: pkg || null,
       }, { onConflict: 'booking_ref' });
     } catch (err) {
