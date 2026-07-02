@@ -463,12 +463,44 @@ class BookingService {
       .eq('booking_ref', bookingRef)
       .single();
 
+    // BUG FIX (found via HotelBeds cert dry-run testing, 2026-07-02):
+    // this previously always returned success:true regardless of
+    // whether the real HotelBeds cancellation actually succeeded —
+    // a genuine supplier-side failure (e.g. a 500 from HotelBeds)
+    // was silently swallowed, leaving Supabase saying "cancelled"
+    // while the real hotel booking could still be CONFIRMED on
+    // HotelBeds' own system. That's exactly the kind of mismatch a
+    // certification reviewer (or a real guest showing up to a
+    // "cancelled" reservation) would catch.
+    //
+    // Fix: still transition the internal Supabase state regardless
+    // (a booking must never get stuck in limbo just because the
+    // supplier call failed) — but now honestly report whether the
+    // supplier-side cancel actually worked, and raise a CRITICAL
+    // alert when it didn't, so it's visible and actionable (manual
+    // follow-up with HotelBeds support) rather than silently lost.
+    let supplierCancelSucceeded = null; // null = not attempted (no hotel_supplier_reference on this booking)
+    let supplierCancelError = null;
+
     if (booking?.hotel_supplier_reference && supplierAdapter) {
       try {
         await supplierAdapter.cancel({ supplier: 'hotelbeds', bookingRef: booking.hotel_supplier_reference });
         logger.info('Hotel cancelled after payment failure', { bookingRef });
+        supplierCancelSucceeded = true;
       } catch (err) {
         logger.error('Failed to cancel hotel after payment failure', { bookingRef, error: err.message });
+        supplierCancelSucceeded = false;
+        supplierCancelError = err.message;
+
+        tracking.alert({
+          type:     'hotel_cancel_failed',
+          severity: 'critical',
+          title:    `Hotel cancellation failed on HotelBeds' side — ${bookingRef}`,
+          detail:   `Supabase now shows this booking as cancelled, but the real HotelBeds booking (ref: ${booking.hotel_supplier_reference}) may still be CONFIRMED. Manual follow-up with HotelBeds support may be required.`,
+          context:  { bookingRef, hotelSupplierReference: booking.hotel_supplier_reference, error: err.message },
+          agencyId: booking.agency_id,
+          bookingRef,
+        });
       }
     }
 
@@ -477,7 +509,13 @@ class BookingService {
       .update({ booking_stage: 'failed', status: 'cancelled', payment_status: 'failed' })
       .eq('booking_ref', bookingRef);
 
-    return { success: true, bookingRef, status: 'cancelled' };
+    return {
+      success: true, // internal state transition always completes
+      bookingRef,
+      status: 'cancelled',
+      supplierCancelSucceeded, // the actually-honest signal — check this, not just `success`
+      supplierCancelError,
+    };
   }
 
   _calculateAge(dob) {
