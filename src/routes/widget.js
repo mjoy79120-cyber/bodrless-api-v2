@@ -635,6 +635,19 @@ router.get('/', (req, res) => {
   '    if (hotel.rating) hSub += " | Rating: " + hotel.rating + "/5";\n' +
   '    if (hotel.mealPlan) hSub += " | " + hotel.mealPlan;\n' +
   '    hSub += " | " + (hotel.policySummary || (hotel.isRefundable === false ? "\u26a0\ufe0f Non-refundable" : "Refund terms confirmed at booking"));\n' +
+  '    if (hotel.images && hotel.images.length > 0) {\n' +
+  '      var hotelImg = document.createElement("img");\n' +
+  '      hotelImg.src = hotel.images[0];\n' +
+  '      hotelImg.alt = hotel.name || "Hotel";\n' +
+  '      hotelImg.style.width = "100%";\n' +
+  '      hotelImg.style.height = "140px";\n' +
+  '      hotelImg.style.objectFit = "cover";\n' +
+  '      hotelImg.style.borderRadius = "10px";\n' +
+  '      hotelImg.style.marginBottom = "8px";\n' +
+  '      hotelImg.style.display = "block";\n' +
+  '      hotelImg.onerror = function() { this.style.display = "none"; };\n' +
+  '      pkgBody.appendChild(hotelImg);\n' +
+  '    }\n' +
   '    pkgBody.appendChild(makeRow("Hotel", hName, hSub));\n' +
   '  }\n' +
 

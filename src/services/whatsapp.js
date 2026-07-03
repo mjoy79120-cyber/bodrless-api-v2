@@ -32,6 +32,39 @@ class WhatsAppService {
     });
   }
 
+  // ─────────────────────────────────────────────
+  // SEND IMAGE
+  // WhatsApp Business API's 'image' message type accepts either a
+  // direct public URL ({link: ...}) or a pre-uploaded media ID —
+  // using `link` since HotelBeds' hotel.images URLs are already
+  // public HTTPS URLs, no separate upload-to-Meta step needed.
+  // NOT YET VERIFIED against a real WhatsApp send — same "test
+  // before trusting" rule as every other new integration this
+  // session. Caption is optional; WhatsApp limits it to 1024 chars.
+  // ─────────────────────────────────────────────
+  async sendImage(phoneNumberId, to, imageUrl, caption = null) {
+    if (!imageUrl) return null;
+    try {
+      return await this._send(phoneNumberId, {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'image',
+        image: {
+          link: imageUrl,
+          ...(caption ? { caption: caption.slice(0, 1024) } : {}),
+        },
+      });
+    } catch (err) {
+      // Image delivery failing (bad URL, WhatsApp couldn't fetch it,
+      // unsupported format) must NEVER block the actual package
+      // text from sending — this is a nice-to-have, not core
+      // functionality. Log and continue silently.
+      logger.warn('WhatsApp sendImage failed — continuing without it', { error: err.message, imageUrl });
+      return null;
+    }
+  }
+
   /**
    * Send trip packages as formatted WhatsApp messages
    * Each package is sent as a separate message.
@@ -119,6 +152,14 @@ class WhatsAppService {
     const hotel           = pkg.hotel           || null;
     const transfers       = pkg.transfers       || null;
     const summary         = pkg.summary         || {};
+
+    // Send the hotel photo first (if available) so it appears above
+    // the text card in the chat — same "picture then details" flow
+    // as the widget. Never blocks the text card if it fails (see
+    // sendImage's own try/catch).
+    if (hotel?.images?.length > 0) {
+      await this.sendImage(phoneNumberId, to, hotel.images[0], `Option ${index}: ${hotel.name || ''}`.trim());
+    }
 
     const totalCurrency = summary.currency || 'KES';
 
