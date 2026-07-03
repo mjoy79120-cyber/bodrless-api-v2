@@ -170,9 +170,7 @@ router.post('/whatsapp', async (req, res) => {
       }
     }
 
-    await whatsappService.sendText(phoneNumberId, from,
-      "Got it! Give me a moment while I check the options for you..."
-    );
+    await whatsappService.sendText(phoneNumberId, from, _pickAcknowledgment());
 
     const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
       conversationHistory: contact.conversation_history || [],
@@ -306,6 +304,28 @@ async function _getOrCreateContact(phone, agencyId) {
   }
 
   return { justCreated: true, awaiting_name: true, name: null };
+}
+
+// ─────────────────────────────────────────────
+// PICK ACKNOWLEDGMENT MESSAGE
+// Replaces a single robotic "Got it! Give me a moment..." line with
+// a small rotating set, matching the same "personal travel guy"
+// warmth already established in the welcome message
+// (_getOrCreateContact's justCreated branch). Picked at random each
+// time so back-to-back searches in one conversation don't feel like
+// the same canned bot line repeating.
+// ─────────────────────────────────────────────
+const ACKNOWLEDGMENT_MESSAGES = [
+  "On it! 🔍 Let me pull together some great options for you...",
+  "Say less — searching now, one moment...",
+  "Great, let me see what I can find for you...",
+  "Got it! Give me a second to line up some options...",
+  "Alright, let's find you something good — one moment...",
+  "Perfect, searching now — won't be long...",
+];
+
+function _pickAcknowledgment() {
+  return ACKNOWLEDGMENT_MESSAGES[Math.floor(Math.random() * ACKNOWLEDGMENT_MESSAGES.length)];
 }
 
 function _extractName(text) {

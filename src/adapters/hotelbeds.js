@@ -585,7 +585,31 @@ class HotelBedsAdapter {
         promotions,
         rateCommentsId,
         cancellationPolicies: bestRate?.cancellationPolicies || [],
-        images:               (hotel.images || []).slice(0, 3).map(img => img.path),
+        // BUG FIX (found via a real "why does it just say 'confirmed
+        // at booking' instead of the real policy" question,
+        // 2026-07-02): cancellationPolicies (the real amount/date
+        // data) was already captured above, but nothing ever turned
+        // it into readable text at SEARCH time — only the voucher
+        // (post-booking) formatted it. Package options shown before
+        // booking always fell through to a generic "confirmed at
+        // booking" placeholder despite the real policy already being
+        // known. Built here now from the same real data.
+        policySummary:        this._buildHotelPolicySummary(bestRate?.cancellationPolicies, bestRate?.rateClass),
+        // BUG FIX (found via a real "images still not showing"
+        // report, 2026-07-02): two separate bugs here. (1) HotelBeds'
+        // Availability response doesn't actually carry image data in
+        // this account (confirmed empty across every real response
+        // seen this session) — hotelbedsContent.js's Content API sync
+        // already has real images with correctly-built full CDN URLs,
+        // but this was never wired to use them. (2) even if the raw
+        // response DID have hotel.images, `.map(img => img.path)`
+        // only produces a bare relative path (e.g. "12345_h.jpg"), not
+        // a usable URL — hotelbedsContent.js's own imageBaseUrl
+        // handling was the correct pattern, just never applied here.
+        // Content API data (content?.images, already full URLs) is
+        // now preferred; the raw response is only used as a fallback,
+        // with the same CDN base URL hotelbedsContent.js defaults to.
+        images:               this._resolveHotelImages(hotel.images, content?.images),
         reviews:              hotel.reviews || [],
         amenities:            (hotel.facilities || []).map(f => f.facilityName).filter(Boolean).slice(0, 10),
       };
@@ -617,6 +641,67 @@ class HotelBedsAdapter {
   _boardName(code) {
     const map = { RO: 'Room Only', BB: 'Bed & Breakfast', HB: 'Half Board', FB: 'Full Board', AI: 'All Inclusive' };
     return map[code] || code || null;
+  }
+
+  // ─────────────────────────────────────────────
+  // BUILD HOTEL POLICY SUMMARY (search-time, real data)
+  // Turns the real cancellationPolicies array (already captured from
+  // HotelBeds' own response) into a specific, readable line at
+  // SEARCH time — the same real data the voucher already formats
+  // post-booking, just surfaced earlier so the traveler can see it
+  // before committing, not just after.
+  //
+  // rateClass 'NRF' = non-refundable rate, no cancellation window at
+  // all — straightforward. Otherwise, cancellationPolicies[0] is the
+  // EARLIEST tier (the "from" date closest to now) — the one that
+  // matters most for "when does this stop being free to cancel".
+  // ─────────────────────────────────────────────
+  _buildHotelPolicySummary(cancellationPolicies, rateClass) {
+    if (rateClass === 'NRF') {
+      return 'Non-refundable — full amount charged if cancelled';
+    }
+
+    const policies = Array.isArray(cancellationPolicies) ? cancellationPolicies : [];
+    if (policies.length === 0) {
+      return 'Refundable — free cancellation';
+    }
+
+    const first = policies[0];
+    const amount = Number(first.amount || 0);
+    const dateStr = first.from
+      ? new Date(first.from).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+      : null;
+
+    if (dateStr && amount > 0) {
+      return `Free cancellation until ${dateStr} — after that, a fee of ${first.currencyId || 'EUR'} ${amount.toLocaleString()} applies`;
+    }
+    if (amount > 0) {
+      return `Cancellation fee of ${first.currencyId || 'EUR'} ${amount.toLocaleString()} may apply`;
+    }
+    return 'Refundable — free cancellation';
+  }
+
+  // ─────────────────────────────────────────────
+  // RESOLVE HOTEL IMAGES
+  // Content API sync data (contentImages) is preferred — it already
+  // has full, correct CDN URLs built by hotelbedsContent.js's own
+  // imageBaseUrl handling. The raw Availability response's own
+  // `images` field is only used as a last-resort fallback (and is
+  // confirmed usually absent entirely in this account's real
+  // responses) — its entries only ever carry a relative `path`, so a
+  // full URL is built here using the same default CDN base URL
+  // hotelbedsContent.js defaults to, rather than returning an
+  // unusable bare filename.
+  // ─────────────────────────────────────────────
+  _resolveHotelImages(rawImages, contentImages) {
+    if (Array.isArray(contentImages) && contentImages.length > 0) {
+      return contentImages.slice(0, 3).map(img => img.url).filter(Boolean);
+    }
+    if (Array.isArray(rawImages) && rawImages.length > 0) {
+      const base = process.env.HOTELBEDS_IMAGE_BASE_URL || 'https://photos.hotelbeds.com/giata/bigger/';
+      return rawImages.slice(0, 3).map(img => img.path ? `${base}${img.path}` : null).filter(Boolean);
+    }
+    return [];
   }
 
   _budgetMinRate(budget) {
