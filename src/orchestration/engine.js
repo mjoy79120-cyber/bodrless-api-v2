@@ -1707,12 +1707,29 @@ class OrchestrationEngine {
       productScope.needsTransport  = false;
       productScope.needsTransfers  = false;
     } else {
-      // No exclusivity language — still capture transport mode preference
-      // (e.g. "fly to Mombasa" vs "bus to Mombasa") without narrowing scope
-      if (lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)) {
-        adjustments.transportMode = 'flight';
-      } else if (lower.match(/\bbus(es)?\b/i)) {
-        adjustments.transportMode = 'bus';
+      // BUG FIX (found via a real "include bus option" follow-up
+      // silently dropping the flight option entirely, 2026-07-02):
+      // any bare mention of "flight" or "bus" here — even in
+      // genuinely ADDITIVE phrasing like "include bus option" or
+      // "also show buses" — was being treated as "narrow to this
+      // ONE mode", which then made _searchFlights skip flights
+      // entirely on the follow-up (`if (mode === 'bus') return []`).
+      // The traveler asked to ADD an option, not replace what was
+      // already there. Detect that additive phrasing first and, if
+      // present, deliberately do NOT set transportMode — leaving it
+      // untouched lets the next search naturally search flight+bus+
+      // train in parallel again, exactly like the original
+      // unspecified-mode search did.
+      const additivePhrase = /\b(include|also|add|as well|too|alongside)\b/i.test(lower);
+
+      if (!additivePhrase) {
+        // No exclusivity language — still capture transport mode preference
+        // (e.g. "fly to Mombasa" vs "bus to Mombasa") without narrowing scope
+        if (lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)) {
+          adjustments.transportMode = 'flight';
+        } else if (lower.match(/\bbus(es)?\b/i)) {
+          adjustments.transportMode = 'bus';
+        }
       }
     }
 
