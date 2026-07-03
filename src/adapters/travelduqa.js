@@ -631,6 +631,24 @@ class TravelDuqaAdapter {
         emissions: offer.total_emmissions_kg || null,
         canBook: offer.offer_terms?.create_booking === 'true',
         canHold: offer.offer_terms?.hold === 'true',
+        // BUG FIX (found via a real "make refund policy clear as day"
+        // request, 2026-07-02): same structural gap as duffel.js —
+        // `conditions` was only ever captured in the unused
+        // _normalizeSingleOffer path, never on real search results.
+        // Carried through here now, RAW/unparsed — TravelDuqa's own
+        // terms of service ("Travelduqa can manage your request with
+        // your travel supplier(s) and assist you to find out whether
+        // your fare allows changes or cancellation") suggest this
+        // isn't necessarily a simple universal flag the way Duffel's
+        // refund_before_departure.allowed is, and no public schema
+        // for this field was found to verify against. Deliberately
+        // NOT interpreted into isRefundable here — guessing wrong
+        // would show a FALSE refund status, worse than the honest
+        // "not confirmed" fallback engine.js already uses. Once a
+        // real example of this field's actual shape is available
+        // (e.g. from a live sandbox search), the same clear ✅/❌
+        // treatment built for Duffel can be added here correctly.
+        conditions: offer.conditions || null,
         passengerIds: offer.passengers || [],
         slices,
         supplierBookingReference: null,
@@ -641,7 +659,6 @@ class TravelDuqaAdapter {
   _normalizeSingleOffer(offer) {
     if (!offer) return null;
     const normalized = this._normalizeOffers([offer], null)[0];
-    normalized.conditions     = offer.conditions || [];
     normalized.originTerminal = offer.slices?.[0]?.segments?.[0]?.origin_terminal      || null;
     normalized.destTerminal   = offer.slices?.[0]?.segments?.[0]?.destination_terminal || null;
     return normalized;
