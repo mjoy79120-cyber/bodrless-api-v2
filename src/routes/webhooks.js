@@ -12,6 +12,11 @@
  *   on this message
  * → If we're awaiting a name reply from this number, capture it (or
  *   skip gracefully if it doesn't look like a name) before anything else
+ * → If this message looks like a cancellation request (or is a
+ *   yes/no reply to a pending cancellation confirmation), the
+ *   cancel flow handles it — checked BEFORE the normal booking flow,
+ *   since a traveler cancelling should never accidentally get routed
+ *   into passenger-detail collection or option selection instead.
  * → If an active booking conversation exists for this phone number,
  *   the message is handled by whatsappBookingFlow instead of search
  * → Otherwise, if the message looks like a package selection ("1",
@@ -33,6 +38,7 @@ const supabase = require('../utils/supabase');
 const orchestrationEngine = require('../orchestration/engine');
 const whatsappService = require('../services/whatsapp');
 const whatsappBookingFlow = require('../services/whatsappBooking');
+const whatsappCancelFlow = require('../services/whatsappCancelFlow');
 const { logger } = require('../utils/logger');
 
 const recentPackagesByPhone = new Map();
@@ -68,6 +74,36 @@ router.post('/whatsapp', async (req, res) => {
 
     logger.info('Incoming WhatsApp message', { from, type: message.type });
 
+    // TAP-TO-REVEAL PHOTO — traveler tapped the "📷 View Photo"
+    // button sent alongside a package card (see whatsapp.js's
+    // _sendPackageCard/sendButtons). The button's id was set to
+    // `photo_<index>` where index matches directly into the SAME
+    // recentPackagesByPhone cache already used for "reply with the
+    // option number to book" — no separate correlation table needed.
+    // Checked BEFORE the generic non-text fallback below, since an
+    // interactive button reply has message.type === 'interactive',
+    // not 'text', and would otherwise fall into the generic
+    // "Hi! I can help you plan a trip..." message instead of
+    // actually revealing the photo.
+    if (message.type === 'interactive' && message.interactive?.type === 'button_reply') {
+      const buttonId = message.interactive.button_reply.id || '';
+      const photoMatch = buttonId.match(/^photo_(\d+)$/);
+      if (photoMatch) {
+        const idx = parseInt(photoMatch[1], 10);
+        const cached = recentPackagesByPhone.get(from);
+        const pkg = cached?.packages?.[idx];
+        const imageUrl = pkg?.hotel?.images?.[0];
+        if (imageUrl) {
+          await whatsappService.sendImage(phoneNumberId, from, imageUrl, pkg.hotel.name || null);
+        } else {
+          await whatsappService.sendText(phoneNumberId, from,
+            "Sorry, that photo isn't available anymore — try searching again."
+          );
+        }
+      }
+      return;
+    }
+
     if (message.type !== 'text') {
       await whatsappService.sendText(phoneNumberId, from,
         "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
@@ -98,6 +134,15 @@ router.post('/whatsapp', async (req, res) => {
       }
       await _clearAwaitingName(from);
     }
+
+    // CANCELLATION FLOW — checked before the normal booking flow.
+    // Covers both a fresh cancel request ("cancel my booking") and a
+    // yes/no reply to a cancellation confirmation already in
+    // progress for this number. Returns true if it handled the
+    // message (either case), false if this message has nothing to
+    // do with cancelling and normal handling should continue.
+    const handledByCancel = await whatsappCancelFlow.handleMessage({ phoneNumberId, from, text: prompt });
+    if (handledByCancel) return;
 
     const handledByBooking = await whatsappBookingFlow.handleMessage({ phoneNumberId, from, text: prompt });
     if (handledByBooking) return;
