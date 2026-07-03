@@ -1186,29 +1186,30 @@ function togglePkgDetail(id){
 }
 
 function renderPackageDetail(pkg){
-  const summary = pkg.summary || {};
-  const transport = pkg.transport || null;
-  const returnTransport = pkg.returnTransport || null;
-  const hotel = pkg.hotel || null;
+  // BUG FIX (found via a real "why does it still say not stored"
+  // report, 2026-07-02): trackingService.js writes a TRIMMED summary
+  // to a column called packages_shown — not the full nested package
+  // object this function originally expected. Rewritten to match
+  // the real shape: { packageId, route, totalPrice, currency,
+  // nights, passengers, hotelName, airline, destination, rateKey }.
   const parts = [];
 
-  if (transport) {
-    parts.push('<div class="pkg-detail-row"><span class="k">'+(transport.transportType==='bus'?'Bus':'Flight')+'</span><span class="v">'+(transport.airline||transport.provider||'TBC')+' — '+(transport.origin||'?')+' → '+(transport.destination||'?')+'</span></div>');
+  if (pkg.airline) {
+    parts.push('<div class="pkg-detail-row"><span class="k">Transport</span><span class="v">'+pkg.airline+(pkg.destination?' → '+pkg.destination:'')+'</span></div>');
   }
-  if (returnTransport) {
-    parts.push('<div class="pkg-detail-row"><span class="k">Return</span><span class="v">'+(returnTransport.airline||returnTransport.provider||'TBC')+' — '+(returnTransport.origin||'?')+' → '+(returnTransport.destination||'?')+'</span></div>');
+  if (pkg.hotelName) {
+    parts.push('<div class="pkg-detail-row"><span class="k">Hotel</span><span class="v">'+pkg.hotelName+'</span></div>');
   }
-  if (hotel) {
-    parts.push('<div class="pkg-detail-row"><span class="k">Hotel</span><span class="v">'+(hotel.name||'TBC')+(hotel.stars?' ('+hotel.stars+'★)':'')+'</span></div>');
-    if (hotel.mealPlan) parts.push('<div class="pkg-detail-row"><span class="k">Board</span><span class="v">'+hotel.mealPlan+'</span></div>');
+  if (pkg.nights) {
+    parts.push('<div class="pkg-detail-row"><span class="k">Nights</span><span class="v">'+pkg.nights+'</span></div>');
   }
 
-  const price = summary.totalPrice ? (summary.currency||'KES')+' '+Math.round(summary.totalPrice).toLocaleString('en-KE') : null;
+  const price = pkg.totalPrice ? (pkg.currency||'KES')+' '+Math.round(pkg.totalPrice).toLocaleString('en-KE') : null;
 
   return '<div class="pkg-detail-card">' +
-    (summary.route ? '<div style="font-weight:600;margin-bottom:4px">'+summary.route+'</div>' : '') +
+    (pkg.route ? '<div style="font-weight:600;margin-bottom:4px">'+pkg.route+'</div>' : '') +
     parts.join('') +
-    (price ? '<div class="pkg-detail-price">'+price+(summary.passengers?' · '+summary.passengers+' traveller(s)':'')+'</div>' : '') +
+    (price ? '<div class="pkg-detail-price">'+price+(pkg.passengers?' · '+pkg.passengers+' traveller(s)':'')+'</div>' : '') +
   '</div>';
 }
 
@@ -1246,26 +1247,21 @@ function renderConversations(convs){
         </div>
         \${bookingRef?'<div style="font-size:12px;margin-bottom:10px;padding:6px 10px;background:#f8f9fb;border-radius:6px;font-family:var(--mono)">Booking ref: <strong>'+bookingRef+'</strong></div>':''}
         \${[...turns].reverse().map(t=>{
-          // BUG FIX (found via a real "I want to see exactly what
-          // was returned" request, 2026-07-02): the conversations
-          // table already carries the full packages array (engine.js
-          // passes it to tracking.logTurn as "packages"), but this
-          // view only ever rendered packages_count — a bare number —
-          // discarding the actual package contents entirely. Now
-          // shows a "View packages" toggle with real hotel/transport/
-          // price detail per package WHEN the data is present on the
-          // row. If t.packages is missing/empty despite
-          // packages_count > 0, that means trackingService.js isn't
-          // actually persisting the array yet — a separate, backend
-          // fix, not a display bug.
+          // BUG FIX (found via a real "why does it still say not
+          // stored" report, 2026-07-02): confirmed against the real
+          // trackingService.js — the column is called packages_shown
+          // (a trimmed summary: route/totalPrice/hotelName/airline/
+          // destination — not the full raw package object), not
+          // "packages" as originally guessed. renderPackageDetail
+          // above is rewritten to match this real flat shape.
           let pkgSection = '';
           if (t.packages_count > 0) {
-            if (Array.isArray(t.packages) && t.packages.length > 0) {
+            if (Array.isArray(t.packages_shown) && t.packages_shown.length > 0) {
               pkgDetailCounter++;
               const detailId = 'pkg-detail-'+pkgDetailCounter;
               pkgSection = '<span class="pkg-detail-toggle" id="'+detailId+'-toggle" onclick="togglePkgDetail(\\''+detailId+'\\')">View packages ▼</span>' +
                 '<div class="pkg-detail-list" id="'+detailId+'">' +
-                t.packages.map(renderPackageDetail).join('') +
+                t.packages_shown.map(renderPackageDetail).join('') +
                 '</div>';
             } else {
               pkgSection = '<div style="font-size:11px;color:var(--muted);font-style:italic;margin-top:4px">'+t.packages_count+' packages shown (details not stored for this turn)</div>';
