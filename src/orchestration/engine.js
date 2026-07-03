@@ -2912,11 +2912,18 @@ class OrchestrationEngine {
       passengerIds: t.passengerIds || [],
       originIata:   t.originIata   || null,
       destIata:     t.destIata     || null,
+      // NEW — real refund data from Duffel's conditions object (see
+      // duffel.js). null when the supplier didn't return this at
+      // all (e.g. TravelDuqa never provides it) — genuinely unknown
+      // is a different, honest signal from "confirmed non-refundable".
+      isRefundable:          t.isRefundable          ?? null,
+      refundPenalty:         t.refundPenalty          ?? null,
+      refundPenaltyCurrency: t.refundPenaltyCurrency  ?? null,
       // NEW — derived purely from fields TravelDuqa already gives
       // us (checkedBags/carryOn/canBook/canHold). See
       // _formatBaggageSummary/_formatFlightPolicySummary below.
       baggageSummary: this._formatBaggageSummary(t.checkedBags, t.carryOn),
-      policySummary:  this._formatFlightPolicySummary(t.canBook, t.canHold),
+      policySummary:  this._formatFlightPolicySummary(t.canBook, t.canHold, t.isRefundable, t.refundPenalty, t.refundPenaltyCurrency),
       // NEW — set by _searchFlights when this flight was booked to a
       // nearby hub instead of the traveler's real destination (e.g.
       // Malindi for a Kilifi/Watamu trip) via destinationIntel's
@@ -2947,18 +2954,37 @@ class OrchestrationEngine {
 
   // ─────────────────────────────
   // POLICY SUMMARY (flights)
-  // TravelDuqa doesn't return real cancellation/change-fee terms
-  // in this adapter — only canBook/canHold. We surface those facts
-  // honestly plus a disclaimer, rather than inventing refund terms
-  // we don't actually have.
+  // BUG FIX (found via a real "make the refund status extremely
+  // clear" request, 2026-07-02): previously ALWAYS returned the same
+  // vague "Subject to airline fare rules" line for every flight,
+  // regardless of whether real refund data existed — TravelDuqa
+  // never provides it (genuinely unknown), but Duffel DOES via its
+  // conditions.refund_before_departure object (see duffel.js), and
+  // that real data was being silently discarded. Now builds an
+  // explicit ✅/❌ refundable statement with the real penalty amount
+  // when available, and only falls back to the honest "not
+  // confirmed" language when the supplier genuinely didn't tell us.
   // ─────────────────────────────
-  _formatFlightPolicySummary(canBook, canHold) {
+  _formatFlightPolicySummary(canBook, canHold, isRefundable = null, refundPenalty = null, refundPenaltyCurrency = null) {
     const bookingNote = canHold
       ? 'Hold available'
       : canBook
         ? 'Instant booking only'
         : 'Booking availability unconfirmed';
-    return `${bookingNote} · Subject to airline fare rules`;
+
+    if (isRefundable === true) {
+      const penaltyNote = (refundPenalty != null && refundPenalty > 0)
+        ? ` (${refundPenaltyCurrency || ''} ${refundPenalty.toLocaleString()} penalty applies)`.replace('  ', ' ')
+        : ' (no penalty)';
+      return `✅ Refundable${penaltyNote} · ${bookingNote}`;
+    }
+    if (isRefundable === false) {
+      return `❌ Non-refundable · ${bookingNote}`;
+    }
+    // Genuinely unknown — supplier didn't provide refund conditions
+    // (e.g. TravelDuqa). Honest about the uncertainty rather than
+    // implying a status we don't actually have.
+    return `${bookingNote} · Refund status not confirmed by the airline — check before booking if this matters to you`;
   }
 
   // ─────────────────────────────

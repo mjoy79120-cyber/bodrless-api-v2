@@ -221,6 +221,27 @@ router.get('/', (req, res) => {
   '  return row;\n' +
   '}\n' +
 
+  // Prominent, unambiguous callout — used for refund status and
+  // board type, which need to be immediately visible, not buried
+  // inside a long pipe-separated line the traveler has to parse.
+  // tone: "good" (green, e.g. refundable) | "warn" (amber, e.g.
+  // non-refundable) | "neutral" (blue-grey, e.g. board type, or
+  // refund status genuinely not confirmed by the supplier).
+  'function makeHighlightRow(text, tone) {\n' +
+  '  var div = document.createElement("div");\n' +
+  '  var bg = tone === "good" ? "#E8F8EE" : tone === "warn" ? "#FFF3E0" : "#EEF1F8";\n' +
+  '  var fg = tone === "good" ? "#1B7A3D" : tone === "warn" ? "#B05A00" : "#3A4A7A";\n' +
+  '  div.style.background = bg;\n' +
+  '  div.style.color = fg;\n' +
+  '  div.style.padding = "7px 10px";\n' +
+  '  div.style.borderRadius = "8px";\n' +
+  '  div.style.fontSize = "11px";\n' +
+  '  div.style.fontWeight = "700";\n' +
+  '  div.style.marginTop = "6px";\n' +
+  '  div.innerText = text;\n' +
+  '  return div;\n' +
+  '}\n' +
+
   'function pollBookingStatus(bookingRef, bookBtn) {\n' +
   '  var attempts = 0;\n' +
   '  var maxAttempts = 40;\n' +
@@ -607,10 +628,18 @@ router.get('/', (req, res) => {
   '    if (transport.stops) tSub += " | " + transport.stops;\n' +
   '    if (transport.cabinClass) tSub += " | " + transport.cabinClass;\n' +
   '    if (!isbus && transport.baggageSummary) tSub += " | " + transport.baggageSummary;\n' +
-  '    if (transport.policySummary) tSub += " | " + transport.policySummary;\n' +
-  '    else if (isbus && transport.cancellationPolicy) tSub += " | " + transport.cancellationPolicy;\n' +
   '    tSub += " | " + fmtPrice(transport.price, transport.currency);\n' +
   '    pkgBody.appendChild(makeRow(tLabel, tName, tSub));\n' +
+  // Refund/cancellation status as its own prominent, color-coded
+  // callout — never buried in the combined line above. tone reflects
+  // real isRefundable data when available (flights via Duffel);
+  // falls back to neutral for genuinely unconfirmed status or bus
+  // cancellationPolicy text.
+  '    var tPolicyText = transport.policySummary || (isbus ? transport.cancellationPolicy : null);\n' +
+  '    if (tPolicyText) {\n' +
+  '      var tTone = transport.isRefundable === true ? "good" : transport.isRefundable === false ? "warn" : "neutral";\n' +
+  '      pkgBody.appendChild(makeHighlightRow(tPolicyText, tTone));\n' +
+  '    }\n' +
   '  }\n' +
 
   '  if (returnTransport) {\n' +
@@ -621,10 +650,13 @@ router.get('/', (req, res) => {
   '                  " | " + fmtTime(returnTransport.departureTime) + " - " + fmtTime(returnTransport.arrivalTime);\n' +
   '    if (returnTransport.stops) rtSub += " | " + returnTransport.stops;\n' +
   '    if (!isRetBus && returnTransport.baggageSummary) rtSub += " | " + returnTransport.baggageSummary;\n' +
-  '    if (returnTransport.policySummary) rtSub += " | " + returnTransport.policySummary;\n' +
-  '    else if (isRetBus && returnTransport.cancellationPolicy) rtSub += " | " + returnTransport.cancellationPolicy;\n' +
   '    rtSub += " | " + fmtPrice(returnTransport.price, returnTransport.currency);\n' +
   '    pkgBody.appendChild(makeRow(rtLabel, rtName, rtSub));\n' +
+  '    var rtPolicyText = returnTransport.policySummary || (isRetBus ? returnTransport.cancellationPolicy : null);\n' +
+  '    if (rtPolicyText) {\n' +
+  '      var rtTone = returnTransport.isRefundable === true ? "good" : returnTransport.isRefundable === false ? "warn" : "neutral";\n' +
+  '      pkgBody.appendChild(makeHighlightRow(rtPolicyText, rtTone));\n' +
+  '    }\n' +
   '  }\n' +
 
   '  if (hotel) {\n' +
@@ -633,8 +665,6 @@ router.get('/', (req, res) => {
   '    var hSub  = (hotel.location || "TBC");\n' +
   '    if (nights > 0) hSub += " | " + nights + " nights | " + fmtPrice(hotel.pricePerNight, hotel.currency) + "/night";\n' +
   '    if (hotel.rating) hSub += " | Rating: " + hotel.rating + "/5";\n' +
-  '    if (hotel.mealPlan) hSub += " | " + hotel.mealPlan;\n' +
-  '    hSub += " | " + (hotel.policySummary || (hotel.isRefundable === false ? "\u26a0\ufe0f Non-refundable" : "Refund terms confirmed at booking"));\n' +
   '    if (hotel.images && hotel.images.length > 0) {\n' +
   '      var hotelImg = document.createElement("img");\n' +
   '      hotelImg.src = hotel.images[0];\n' +
@@ -649,6 +679,12 @@ router.get('/', (req, res) => {
   '      pkgBody.appendChild(hotelImg);\n' +
   '    }\n' +
   '    pkgBody.appendChild(makeRow("Hotel", hName, hSub));\n' +
+  '    if (hotel.mealPlan) {\n' +
+  '      pkgBody.appendChild(makeHighlightRow("\ud83c\udf7d\ufe0f Board: " + hotel.mealPlan, "neutral"));\n' +
+  '    }\n' +
+  '    var hPolicyTone = hotel.isRefundable === false ? "warn" : hotel.isRefundable === true || hotel.policySummary ? "good" : "neutral";\n' +
+  '    var hPolicyText = hotel.policySummary || (hotel.isRefundable === false ? "\u26a0\ufe0f Non-refundable" : "Refund terms confirmed at booking");\n' +
+  '    pkgBody.appendChild(makeHighlightRow(hPolicyText, hPolicyTone));\n' +
   '  }\n' +
 
   '  var transferList = Array.isArray(transfers) ? transfers : (transfers ? [transfers] : []);\n' +

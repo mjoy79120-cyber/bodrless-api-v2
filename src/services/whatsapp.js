@@ -65,6 +65,45 @@ class WhatsAppService {
     }
   }
 
+  // ─────────────────────────────────────────────
+  // SEND REPLY BUTTONS
+  // WhatsApp Business API's 'interactive' message type, 'button'
+  // subtype — up to 3 quick-reply buttons, each with an id (returned
+  // verbatim in the traveler's next message as
+  // message.interactive.button_reply.id — see webhooks.js) and a
+  // title (WhatsApp hard-limits this to 20 characters, enforced here
+  // so a longer title doesn't silently get rejected by the API).
+  // NOT YET VERIFIED against a real WhatsApp send — same "test
+  // before trusting" rule as every other new integration this
+  // session.
+  // ─────────────────────────────────────────────
+  async sendButtons(phoneNumberId, to, bodyText, buttons) {
+    if (!Array.isArray(buttons) || buttons.length === 0) return null;
+    try {
+      return await this._send(phoneNumberId, {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: String(bodyText || '').slice(0, 1024) },
+          action: {
+            buttons: buttons.slice(0, 3).map(b => ({
+              type: 'reply',
+              reply: { id: b.id, title: String(b.title || '').slice(0, 20) },
+            })),
+          },
+        },
+      });
+    } catch (err) {
+      // Same posture as sendImage — an optional interactive prompt
+      // failing must never block the core package/text flow.
+      logger.warn('WhatsApp sendButtons failed — continuing without it', { error: err.message, bodyText });
+      return null;
+    }
+  }
+
   /**
    * Send trip packages as formatted WhatsApp messages
    * Each package is sent as a separate message.
@@ -153,14 +192,6 @@ class WhatsAppService {
     const transfers       = pkg.transfers       || null;
     const summary         = pkg.summary         || {};
 
-    // Send the hotel photo first (if available) so it appears above
-    // the text card in the chat — same "picture then details" flow
-    // as the widget. Never blocks the text card if it fails (see
-    // sendImage's own try/catch).
-    if (hotel?.images?.length > 0) {
-      await this.sendImage(phoneNumberId, to, hotel.images[0], `Option ${index}: ${hotel.name || ''}`.trim());
-    }
-
     const totalCurrency = summary.currency || 'KES';
 
     const lines = [
@@ -194,7 +225,8 @@ class WhatsAppService {
         if (transport.cabinClass) lines.push(`  Class: ${transport.cabinClass}`);
         if (meta.type === 'flight' && transport.baggageSummary) lines.push(`  Baggage: ${transport.baggageSummary}`);
         if (transport.policySummary || transport.cancellationPolicy) {
-          lines.push(`  Cancellation: ${transport.policySummary || (meta.type === 'bus' ? transport.cancellationPolicy : null) || 'Confirmed at booking'}`);
+          const icon = transport.isRefundable === true ? '✅' : transport.isRefundable === false ? '❌' : 'ℹ️';
+          lines.push(`  ${icon} *${transport.policySummary || (meta.type === 'bus' ? transport.cancellationPolicy : null) || 'Confirmed at booking'}*`);
         }
       }
 
@@ -225,7 +257,8 @@ class WhatsAppService {
         if (returnTransport.stops) lines.push(`  Stops: ${returnTransport.stops}`);
         if (meta.type === 'flight' && returnTransport.baggageSummary) lines.push(`  Baggage: ${returnTransport.baggageSummary}`);
         if (returnTransport.policySummary || returnTransport.cancellationPolicy) {
-          lines.push(`  Cancellation: ${returnTransport.policySummary || (meta.type === 'bus' ? returnTransport.cancellationPolicy : null) || 'Confirmed at booking'}`);
+          const rtIcon = returnTransport.isRefundable === true ? '✅' : returnTransport.isRefundable === false ? '❌' : 'ℹ️';
+          lines.push(`  ${rtIcon} *${returnTransport.policySummary || (meta.type === 'bus' ? returnTransport.cancellationPolicy : null) || 'Confirmed at booking'}*`);
         }
       }
 
@@ -243,8 +276,9 @@ class WhatsAppService {
       lines.push(`  ${hotel.name || 'TBC'} ${stars}`.trim());
       if (hotel.location) lines.push(`  Location: ${hotel.location}`);
       if (hotel.rating)   lines.push(`  Rating: ${hotel.rating}/5`);
-      if (hotel.mealPlan) lines.push(`  Meal plan: ${hotel.mealPlan}`);
-      lines.push(`  Cancellation: ${hotel.policySummary || (hotel.isRefundable === false ? 'Non-refundable rate' : 'Confirmed at booking')}`);
+      if (hotel.mealPlan) lines.push(`  🍽️ *Board: ${hotel.mealPlan}*`);
+      const hIcon = hotel.isRefundable === false ? '❌' : '✅';
+      lines.push(`  ${hIcon} *${hotel.policySummary || (hotel.isRefundable === false ? 'Non-refundable rate' : 'Refundable — confirmed at booking')}*`);
       lines.push(`  ${hCurrency} ${(hotel.pricePerNight || 0).toLocaleString()}/night × ${summary.nights || 1} nights`);
     }
 
@@ -289,13 +323,30 @@ class WhatsAppService {
       lines.push(`⚠️ _${summary.priceCaveat}_`);
     }
 
-    return this._send(phoneNumberId, {
+    const result = await this._send(phoneNumberId, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to,
       type: 'text',
       text: { body: lines.join('\n') },
     });
+
+    // TAP-TO-REVEAL PHOTO — button ID encodes the package's index
+    // (0-based) so the webhook handler can look it up directly from
+    // the SAME recentPackagesByPhone cache already used for "reply
+    // with the option number to book" — no separate correlation
+    // table needed. Never sent automatically; this is a deliberate
+    // opt-in tap, since auto-sending an image per option can be
+    // heavy on a limited data bundle (a real, common constraint in
+    // this market) — see webhooks.js for the reply handler.
+    if (hotel?.images?.length > 0) {
+      await this.sendButtons(phoneNumberId, to,
+        `Want to see a photo of ${hotel.name || 'this hotel'}?`,
+        [{ id: `photo_${index - 1}`, title: '📷 View Photo' }]
+      );
+    }
+
+    return result;
   }
 
   /**

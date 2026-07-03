@@ -583,6 +583,26 @@ class DuffelAdapter {
         currency:  offer.total_currency || 'KES',
         canBook:   true,  // Duffel offers are bookable unless expired; no separate flag like TravelDuqa's offer_terms
         canHold:   false, // Duffel doesn't have a TravelDuqa-style "hold" payment type in this adapter
+        // BUG FIX (found via a real "make the refund status clear"
+        // request, 2026-07-02): Duffel's real conditions object
+        // (refund_before_departure.allowed + penalty_amount) was
+        // previously only captured in the separate, unused
+        // _normalizeSingleOffer path — never on actual search
+        // results. Every flight's refund status was completely
+        // invisible to the traveler, papered over with a vague
+        // "Subject to airline fare rules" line that told them
+        // nothing actionable. Captured here now so every real
+        // search result carries an explicit, honest refund status.
+        // null (not false) when Duffel simply didn't return
+        // conditions for this offer — genuinely unknown is a
+        // different signal from "confirmed non-refundable".
+        isRefundable:          offer.conditions?.refund_before_departure
+          ? !!offer.conditions.refund_before_departure.allowed
+          : null,
+        refundPenalty:         offer.conditions?.refund_before_departure?.penalty_amount != null
+          ? Number(offer.conditions.refund_before_departure.penalty_amount)
+          : null,
+        refundPenaltyCurrency: offer.conditions?.refund_before_departure?.penalty_currency || null,
         passengerIds: (offer.passengers || []).map(p => p.id),
         slices,
         supplierBookingReference: null,
