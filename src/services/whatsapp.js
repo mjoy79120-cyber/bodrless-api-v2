@@ -104,6 +104,48 @@ class WhatsAppService {
     }
   }
 
+  // ─────────────────────────────────────────────
+  // SEND LIST MESSAGE
+  // WhatsApp Business API's 'interactive' message type, 'list'
+  // subtype — up to 10 options in a single tappable scrollable menu
+  // (vs sendButtons' hard 3-option limit). Used for combined
+  // Gender+Traveler-type selection during booking (see
+  // whatsappBooking.js) so a passenger only needs ONE tap instead of
+  // two separate button rounds. Title max 24 chars, description max
+  // 72 chars per WhatsApp's real limits — enforced here.
+  // NOT YET VERIFIED against a real WhatsApp send — same "test
+  // before trusting" rule as every other new integration this
+  // session.
+  // ─────────────────────────────────────────────
+  async sendList(phoneNumberId, to, bodyText, buttonLabel, options) {
+    if (!Array.isArray(options) || options.length === 0) return null;
+    try {
+      return await this._send(phoneNumberId, {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'list',
+          body: { text: String(bodyText || '').slice(0, 1024) },
+          action: {
+            button: String(buttonLabel || 'Select').slice(0, 20),
+            sections: [{
+              rows: options.slice(0, 10).map(o => ({
+                id:          o.id,
+                title:       String(o.title || '').slice(0, 24),
+                ...(o.description ? { description: String(o.description).slice(0, 72) } : {}),
+              })),
+            }],
+          },
+        },
+      });
+    } catch (err) {
+      logger.warn('WhatsApp sendList failed — continuing without it', { error: err.message, bodyText });
+      return null;
+    }
+  }
+
   /**
    * Send trip packages as formatted WhatsApp messages
    * Each package is sent as a separate message.

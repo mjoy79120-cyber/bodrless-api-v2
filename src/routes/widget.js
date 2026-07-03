@@ -382,6 +382,11 @@ router.get('/', (req, res) => {
   '  } else {\n' +
   '    needsFlightDetails = !!(p.transport && (p.transport.transportType || "flight") === "flight");\n' +
   '  }\n' +
+  // Seat selection is a Duffel-specific integration (see
+  // seatSelection.js) — only offered when the flight actually came
+  // from that supplier. Silently absent for TravelDuqa flights
+  // rather than showing a control that would just fail.
+  '  var offersSeatSelection = !p.isMultiDestination && !!(p.transport && p.transport.supplier === "duffel");\n' +
 
   '  var form = document.createElement("div");\n' +
   '  form.className = "name-form";\n' +
@@ -471,13 +476,26 @@ router.get('/', (req, res) => {
   '    pBlock.appendChild(idInput);\n' +
   '    childCheckbox.onchange = function(inp) { return function() { inp.placeholder = inp.parentNode.parentNode.querySelector("input[type=checkbox]").checked ? "Passport / ID number (optional for children)" : "Passport / ID number"; }; }(idInput);\n' +
 
+  '    var seatSelect = null;\n' +
+  '    if (offersSeatSelection) {\n' +
+  '      var seatLabel = document.createElement("div");\n' +
+  '      seatLabel.className = "field-label";\n' +
+  '      seatLabel.innerText = "Seat preference (optional)";\n' +
+  '      pBlock.appendChild(seatLabel);\n' +
+  '      seatSelect = document.createElement("select");\n' +
+  '      seatSelect.className = "name-input";\n' +
+  '      seatSelect.innerHTML = "<option value=\\"\\">No preference</option><option value=\\"window\\">Window</option><option value=\\"aisle\\">Aisle</option><option value=\\"exit_row\\">Exit row (extra legroom, may cost more)</option>";\n' +
+  '      pBlock.appendChild(seatSelect);\n' +
+  '    }\n' +
+
   '    passengerInputs.push({\n' +
   '      firstNameInput: firstNameInput,\n' +
   '      lastNameInput: lastNameInput,\n' +
   '      daySel: dob.daySel, monthSel: dob.monthSel, yearSel: dob.yearSel,\n' +
   '      genderSelect: genderSelect,\n' +
   '      childCheckbox: childCheckbox,\n' +
-  '      idInput: idInput\n' +
+  '      idInput: idInput,\n' +
+  '      seatSelect: seatSelect\n' +
   '    });\n' +
   '    form.appendChild(pBlock);\n' +
   '  }\n' +
@@ -530,7 +548,8 @@ router.get('/', (req, res) => {
   '        firstName: fn, lastName: ln, dateOfBirth: dob,\n' +
   '        gender: pin.genderSelect.value,\n' +
   '        type: isChild ? "child" : "adult",\n' +
-  '        idNumber: idNum || null\n' +
+  '        idNumber: idNum || null,\n' +
+  '        seatPreference: (pin.seatSelect && pin.seatSelect.value) ? pin.seatSelect.value : null\n' +
   '      });\n' +
   '    }\n' +
   '    var phone = phoneInput.value.trim();\n' +
