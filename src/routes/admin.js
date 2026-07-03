@@ -649,6 +649,18 @@ tr:last-child td{border-bottom:none}
 .loading{padding:60px 0;text-align:center;color:var(--muted)}
 .err{padding:16px;background:#fef2f2;border-radius:8px;color:var(--red);font-size:13px;border:1px solid #fecaca}
 .empty{font-size:12px;color:var(--muted);padding:20px 0;text-align:center}
+
+/* Package details (conversations) */
+.pkg-detail-toggle{font-size:11px;color:var(--accent);cursor:pointer;margin-top:4px;display:inline-block;user-select:none}
+.pkg-detail-toggle:hover{text-decoration:underline}
+.pkg-detail-list{margin-top:8px;display:none}
+.pkg-detail-list.open{display:block}
+.pkg-detail-card{background:#f8f9fb;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:12px}
+.pkg-detail-card:last-child{margin-bottom:0}
+.pkg-detail-row{display:flex;justify-content:space-between;gap:10px;padding:3px 0}
+.pkg-detail-row .k{color:var(--muted);flex-shrink:0}
+.pkg-detail-row .v{text-align:right;font-weight:500}
+.pkg-detail-price{font-size:13px;font-weight:600;color:var(--text);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)}
 </style>
 </head>
 <body>
@@ -1165,6 +1177,41 @@ async function loadConversations(){
   }
 }
 
+function togglePkgDetail(id){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.classList.toggle('open');
+  const toggle = document.getElementById(id+'-toggle');
+  if(toggle) toggle.textContent = el.classList.contains('open') ? 'Hide packages ▲' : 'View packages ▼';
+}
+
+function renderPackageDetail(pkg){
+  const summary = pkg.summary || {};
+  const transport = pkg.transport || null;
+  const returnTransport = pkg.returnTransport || null;
+  const hotel = pkg.hotel || null;
+  const parts = [];
+
+  if (transport) {
+    parts.push('<div class="pkg-detail-row"><span class="k">'+(transport.transportType==='bus'?'Bus':'Flight')+'</span><span class="v">'+(transport.airline||transport.provider||'TBC')+' — '+(transport.origin||'?')+' → '+(transport.destination||'?')+'</span></div>');
+  }
+  if (returnTransport) {
+    parts.push('<div class="pkg-detail-row"><span class="k">Return</span><span class="v">'+(returnTransport.airline||returnTransport.provider||'TBC')+' — '+(returnTransport.origin||'?')+' → '+(returnTransport.destination||'?')+'</span></div>');
+  }
+  if (hotel) {
+    parts.push('<div class="pkg-detail-row"><span class="k">Hotel</span><span class="v">'+(hotel.name||'TBC')+(hotel.stars?' ('+hotel.stars+'★)':'')+'</span></div>');
+    if (hotel.mealPlan) parts.push('<div class="pkg-detail-row"><span class="k">Board</span><span class="v">'+hotel.mealPlan+'</span></div>');
+  }
+
+  const price = summary.totalPrice ? (summary.currency||'KES')+' '+Math.round(summary.totalPrice).toLocaleString('en-KE') : null;
+
+  return '<div class="pkg-detail-card">' +
+    (summary.route ? '<div style="font-weight:600;margin-bottom:4px">'+summary.route+'</div>' : '') +
+    parts.join('') +
+    (price ? '<div class="pkg-detail-price">'+price+(summary.passengers?' · '+summary.passengers+' traveller(s)':'')+'</div>' : '') +
+  '</div>';
+}
+
 function renderConversations(convs){
   const el = document.getElementById('conversations-body');
   if(!convs||!convs.length){
@@ -1177,6 +1224,7 @@ function renderConversations(convs){
     if(!sessions[c.session_id]) sessions[c.session_id]=[];
     sessions[c.session_id].push(c);
   }
+  let pkgDetailCounter = 0;
   el.innerHTML = Object.entries(sessions).map(([sid,turns])=>{
     const first = turns[turns.length-1];
     const last  = turns[0];
@@ -1197,16 +1245,42 @@ function renderConversations(convs){
           </div>
         </div>
         \${bookingRef?'<div style="font-size:12px;margin-bottom:10px;padding:6px 10px;background:#f8f9fb;border-radius:6px;font-family:var(--mono)">Booking ref: <strong>'+bookingRef+'</strong></div>':''}
-        \${[...turns].reverse().map(t=>\`
-          <div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #f1f5f9">
-            <div style="background:#f1f5f9;border-radius:8px;padding:8px 12px;margin-bottom:6px;font-size:12px">
-              <div style="font-size:10px;color:var(--muted);margin-bottom:3px">\${ago(t.created_at)} · \${t.destination||'no destination'}\${t.used_llm===false?'<span class="pill" style="background:#fef9c3;color:#92400e;margin-left:6px">Rule parser</span>':''}</div>
-              \${t.user_message}
-            </div>
-            \${t.engine_response?'<div style="font-size:12px;color:var(--muted);padding:0 4px">'+t.engine_response.slice(0,200)+(t.engine_response.length>200?'...':'')+'</div>':''}
-            \${t.packages_count>0?'<div style="font-size:11px;color:var(--accent);margin-top:4px">'+t.packages_count+' packages shown</div>':''}
-            \${t.needs_clarification?'<div style="font-size:11px;color:#d97706;margin-top:4px">Asked clarification</div>':''}
-          </div>\`).join('')}
+        \${[...turns].reverse().map(t=>{
+          // BUG FIX (found via a real "I want to see exactly what
+          // was returned" request, 2026-07-02): the conversations
+          // table already carries the full packages array (engine.js
+          // passes it to tracking.logTurn as "packages"), but this
+          // view only ever rendered packages_count — a bare number —
+          // discarding the actual package contents entirely. Now
+          // shows a "View packages" toggle with real hotel/transport/
+          // price detail per package WHEN the data is present on the
+          // row. If t.packages is missing/empty despite
+          // packages_count > 0, that means trackingService.js isn't
+          // actually persisting the array yet — a separate, backend
+          // fix, not a display bug.
+          let pkgSection = '';
+          if (t.packages_count > 0) {
+            if (Array.isArray(t.packages) && t.packages.length > 0) {
+              pkgDetailCounter++;
+              const detailId = 'pkg-detail-'+pkgDetailCounter;
+              pkgSection = '<span class="pkg-detail-toggle" id="'+detailId+'-toggle" onclick="togglePkgDetail(\\''+detailId+'\\')">View packages ▼</span>' +
+                '<div class="pkg-detail-list" id="'+detailId+'">' +
+                t.packages.map(renderPackageDetail).join('') +
+                '</div>';
+            } else {
+              pkgSection = '<div style="font-size:11px;color:var(--muted);font-style:italic;margin-top:4px">'+t.packages_count+' packages shown (details not stored for this turn)</div>';
+            }
+          }
+          return '<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #f1f5f9">' +
+            '<div style="background:#f1f5f9;border-radius:8px;padding:8px 12px;margin-bottom:6px;font-size:12px">' +
+              '<div style="font-size:10px;color:var(--muted);margin-bottom:3px">'+ago(t.created_at)+' · '+(t.destination||'no destination')+(t.used_llm===false?'<span class="pill" style="background:#fef9c3;color:#92400e;margin-left:6px">Rule parser</span>':'')+'</div>' +
+              t.user_message +
+            '</div>' +
+            (t.engine_response?'<div style="font-size:12px;color:var(--muted);padding:0 4px">'+t.engine_response.slice(0,200)+(t.engine_response.length>200?'...':'')+'</div>':'') +
+            pkgSection +
+            (t.needs_clarification?'<div style="font-size:11px;color:#d97706;margin-top:4px">Asked clarification</div>':'') +
+          '</div>';
+        }).join('')}
       </div>\`;
   }).join('');
 }
