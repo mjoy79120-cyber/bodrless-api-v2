@@ -81,9 +81,15 @@ class HotelBedsAdapter {
     rooms = 1,
     roomType = null,   // 'single'|'double'|'twin'|'triple'|'family'|'suite'|null
     hotelCode = null,
+    // NEW — real field confirmed from HotelBeds' Modification API
+    // docs, 2026-07-03. Set to 'CANCELLATION_POLICY_CHANGE' when
+    // this search is happening in the context of modifying an
+    // EXISTING booking (see bookingService.requestHotelChange) —
+    // signals to HotelBeds that this isn't a fresh/unrelated search.
+    bookingChangeCode = null,
   }) {
     try {
-      logger.info('HotelBeds: searching hotels', { destination, checkIn, checkOut, passengers, children, rooms, roomType, hotelCode });
+      logger.info('HotelBeds: searching hotels', { destination, checkIn, checkOut, passengers, children, rooms, roomType, hotelCode, bookingChangeCode });
 
       const checkInDate  = this._formatDate(checkIn);
       const checkOutDate = checkOut
@@ -111,6 +117,10 @@ class HotelBedsAdapter {
         },
         occupancies: [occupancy],
       };
+
+      if (bookingChangeCode) {
+        payload.bookingChangeCode = bookingChangeCode;
+      }
 
       if (hotelCode) {
         payload.hotels = { hotel: [Number(hotelCode) || hotelCode] };

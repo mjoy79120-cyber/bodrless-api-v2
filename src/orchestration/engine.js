@@ -2936,6 +2936,15 @@ class OrchestrationEngine {
       isRefundable:          t.isRefundable          ?? null,
       refundPenalty:         t.refundPenalty          ?? null,
       refundPenaltyCurrency: t.refundPenaltyCurrency  ?? null,
+      // NEW — whether this Duffel offer can be held and paid for
+      // later, or requires payment at booking time (see duffel.js).
+      // null for suppliers that don't have this concept (TravelDuqa
+      // always uses hold-then-pay). Needed by bookingService.js
+      // BEFORE attempting to book, since Bodrless's whole flow is
+      // built around hold-then-pay and can't front real money for
+      // an instant-payment-required offer.
+      requiresInstantPayment: t.requiresInstantPayment ?? null,
+      paymentRequiredBy:       t.paymentRequiredBy      ?? null,
       // NEW — derived purely from fields TravelDuqa already gives
       // us (checkedBags/carryOn/canBook/canHold). See
       // _formatBaggageSummary/_formatFlightPolicySummary below.

@@ -252,31 +252,86 @@ class DuffelAdapter {
   // your own airline relationships) that's a different payment type,
   // not something this method should silently assume.
   // ─────────────────────────────────────────────
-  async book({ offerId, offerRequestId, passengers, totalAmount, totalCurrency }) {
+  // ─────────────────────────────────────────────
+  // BOOK (create order)
+  // BUG FIX (found via a real "build Duffel flight booking" request,
+  // 2026-07-03): this previously ALWAYS included `payments` (paying
+  // immediately from Duffel's account balance) and never specified
+  // the REQUIRED `type` field at all. That meant every booking
+  // attempt would pay Duffel's real balance for the flight BEFORE
+  // the traveler had paid Bodrless anything via M-Pesa — backwards
+  // from the hold-now/pay-after-traveler-pays pattern used
+  // everywhere else in this codebase (see travelduqa.js's
+  // paymentType: 'hold' + completeHoldBooking()).
+  //
+  // Now defaults to `type: 'hold'` (payments key OMITTED entirely,
+  // per Duffel's own validation rule) whenever the offer supports
+  // it. Only uses `type: 'instant'` (payments included, paid
+  // immediately) when explicitly requested — callers should only do
+  // this for offers where offer.payment_requirements
+  // .requires_instant_payment is true, since those can't be held at
+  // all (see the new paymentRequirements field on search results).
+  //
+  // SEAT SELECTION CAVEAT — GENUINELY UNRESOLVED, FLAG THIS:
+  // Duffel's current Orders documentation lists
+  // `services_not_allowed_for_order_type` as an active validation
+  // error for hold orders, but a 2023 Duffel changelog claims hold
+  // orders WITH services (seats) were explicitly enabled. These two
+  // sources contradict each other and I could not resolve which is
+  // current without a real sandbox test. `services` is included
+  // here when provided regardless — if Duffel's sandbox rejects it
+  // for a hold order, the error will surface clearly via the normal
+  // error handling below (not silently swallowed), telling us
+  // definitively which is true. Do not assume this works until
+  // confirmed against a real response.
+  // ─────────────────────────────────────────────
+  async book({ offerId, passengers, totalAmount, totalCurrency, type = 'hold', services = null }) {
     try {
-      logger.info('Duffel: creating order', { offerId, passengers: passengers.length });
+      logger.info('Duffel: creating order', { offerId, passengers: passengers.length, type });
 
-      const payload = {
-        data: {
-          selected_offers: [offerId],
-          payments: [{
-            type:     'balance',
-            currency: totalCurrency,
-            amount:   String(totalAmount),
-          }],
-          passengers: passengers.map(p => ({
-            id:          p.duffelPassengerId, // from the offer request's echoed passengers[].id
-            title:       (p.title || 'mr').toLowerCase(),
-            gender:      (p.gender || 'm').toLowerCase().charAt(0), // Duffel wants 'm'/'f'
+      const data = {
+        type,
+        selected_offers: [offerId],
+        passengers: passengers.map(p => {
+          const genderChar = (p.gender || 'm').toLowerCase().charAt(0); // Duffel wants 'm'/'f'
+          // FIX: previously defaulted to 'mr' unconditionally when no
+          // explicit title was given — meaning a female passenger with
+          // no title supplied would incorrectly get "mr". Derive a
+          // reasonable default from gender instead ('ms' is used
+          // rather than 'mrs' since marital status isn't something
+          // Bodrless collects or should assume).
+          const title = p.title || (genderChar === 'f' ? 'ms' : 'mr');
+          return {
+            id:          p.duffelPassengerId, // REQUIRED — the real passenger_id echoed back on the offer, not invented
+            title:       title.toLowerCase(),
+            gender:      genderChar,
             given_name:  p.firstName,
             family_name: p.lastName,
             born_on:     p.dateOfBirth,
             email:       p.email,
             phone_number: p.phone,
             ...(p.infantPassengerId ? { infant_passenger_id: p.infantPassengerId } : {}),
-          })),
-        },
+          };
+        }),
       };
+
+      // `payments` is REQUIRED for instant orders, and must be
+      // OMITTED ENTIRELY for hold orders (Duffel rejects a hold
+      // order that includes it — validation code
+      // payments_not_allowed_for_order_type).
+      if (type === 'instant') {
+        data.payments = [{
+          type:     'balance',
+          currency: totalCurrency,
+          amount:   String(totalAmount),
+        }];
+      }
+
+      if (Array.isArray(services) && services.length > 0) {
+        data.services = services.map(s => ({ id: s.serviceId, quantity: 1 }));
+      }
+
+      const payload = { data };
 
       console.log('DUFFEL ORDER REQUEST:', JSON.stringify(payload, null, 2));
 
@@ -302,16 +357,369 @@ class DuffelAdapter {
   // ─────────────────────────────────────────────
   // CANCEL — via order cancellations resource
   // ─────────────────────────────────────────────
-  async cancel(orderId) {
+  // ─────────────────────────────────────────────
+  // CANCEL (order cancellation — two real steps, per Duffel's docs)
+  // BUG FIX (found via a real Duffel Order Cancellation doc share,
+  // 2026-07-03): this previously only ever created a PENDING
+  // cancellation (step 1) and returned it — it never confirmed it
+  // (step 2, POST .../actions/confirm). Per Duffel's own docs, the
+  // booking is NOT actually cancelled with the airline until that
+  // confirm call succeeds — the earlier version would report a
+  // "successful" cancellation that never actually took effect on
+  // Duffel's side.
+  //
+  // Mirrors TravelDuqa's own existing multi-step cancellation
+  // pattern in this codebase (cancel -> getCancellationStatus ->
+  // confirmCancellation) — split into two real methods here too, so
+  // a caller CAN inspect refund_amount before confirming for a paid/
+  // ticketed order. cancel() itself auto-confirms immediately,
+  // which is safe for Bodrless's actual use case (cancelling unpaid
+  // HOLD orders, where Duffel's docs confirm refund_amount is always
+  // 0.00) — for a paid order needing refund review first, call
+  // createOrderCancellation/confirmOrderCancellation separately
+  // instead of this convenience wrapper.
+  // ─────────────────────────────────────────────
+  async createOrderCancellation(orderId) {
     try {
       const response = await axios.post(
         `${this.baseUrl}/air/order_cancellations`,
         { data: { order_id: orderId } },
         { headers: this._headers(), timeout: this.timeout }
       );
+      const c = response.data?.data;
+      return c ? {
+        cancellationId:  c.id,
+        orderId:         c.order_id,
+        refundAmount:    c.refund_amount != null ? Number(c.refund_amount) : null,
+        refundCurrency:  c.refund_currency || null,
+        refundTo:        c.refund_to || null,
+        expiresAt:       c.expires_at || null,
+        confirmedAt:     c.confirmed_at || null,
+      } : null;
+    } catch (err) {
+      logger.error('Duffel createOrderCancellation failed', { orderId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  async confirmOrderCancellation(cancellationId) {
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/air/order_cancellations/${cancellationId}/actions/confirm`,
+        {},
+        { headers: this._headers(), timeout: this.timeout }
+      );
+      const c = response.data?.data;
+      return c ? {
+        cancellationId:  c.id,
+        orderId:         c.order_id,
+        refundAmount:    c.refund_amount != null ? Number(c.refund_amount) : null,
+        refundCurrency:  c.refund_currency || null,
+        refundTo:        c.refund_to || null,
+        confirmedAt:     c.confirmed_at || null,
+      } : null;
+    } catch (err) {
+      logger.error('Duffel confirmOrderCancellation failed', { cancellationId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  async cancel(orderId) {
+    const pending = await this.createOrderCancellation(orderId);
+    if (!pending?.cancellationId) {
+      throw new Error('Duffel did not return a usable cancellation ID.');
+    }
+    logger.info('Duffel: order cancellation created, confirming now', {
+      orderId, cancellationId: pending.cancellationId, refundAmount: pending.refundAmount,
+    });
+    return this.confirmOrderCancellation(pending.cancellationId);
+  }
+
+  // ─────────────────────────────────────────────
+  // GET ORDER (fetch current state/price)
+  // Duffel's own documented best practice: "Before paying, you
+  // should always get the latest price by retrieving the order to
+  // minimise the risk that the price you have is different from the
+  // latest price" — a stale amount/currency on the payment call
+  // fails with a price_changed validation error. Always call this
+  // immediately before payHoldOrder() rather than trusting whatever
+  // total was captured at booking time.
+  // ─────────────────────────────────────────────
+  async getOrder(orderId) {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}/air/orders/${orderId}`,
+        { headers: this._headers(), timeout: this.timeout }
+      );
+      return this._normalizeOrder(response.data?.data);
+    } catch (err) {
+      logger.error('Duffel getOrder failed', { orderId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // REQUEST AN ORDER CHANGE (change flight dates/route on an
+  // existing PAID order) — real endpoint/payload confirmed from
+  // Duffel's own docs, 2026-07-03.
+  //
+  // This only CREATES the change request and returns whatever
+  // order_change_offers the airline is willing to offer (may be
+  // empty — a real, valid outcome meaning no change is possible for
+  // the requested new dates/route). Nothing is booked or charged
+  // yet. Only the summary fields actually needed for display are
+  // extracted here — the full response includes complete airport/
+  // city/segment detail for every offer, which isn't needed to show
+  // a traveler "here's what changing costs."
+  //
+  // Full flow (all real, all confirmed as of 2026-07-03):
+  //   1. requestOrderChange() — see real offers and their cost
+  //   2. createOrderChange(offer.offerId) — create a pending change
+  //   3. confirmOrderChange({...}) — actually apply it and pay/refund
+  // ─────────────────────────────────────────────
+  async requestOrderChange({ orderId, removeSliceId, addOrigin, addDestination, addDepartureDate, cabinClass = 'economy' }) {
+    try {
+      logger.info('Duffel: requesting order change', { orderId, removeSliceId, addOrigin, addDestination, addDepartureDate });
+
+      const response = await axios.post(
+        `${this.baseUrl}/air/order_change_requests`,
+        {
+          data: {
+            order_id: orderId,
+            slices: {
+              remove: [{ slice_id: removeSliceId }],
+              add: [{
+                origin: addOrigin,
+                destination: addDestination,
+                departure_date: addDepartureDate,
+                cabin_class: cabinClass,
+              }],
+            },
+          },
+        },
+        { headers: this._headers(), timeout: this.timeout }
+      );
+
+      return this._normalizeOrderChangeRequest(response.data?.data);
+    } catch (err) {
+      logger.error('Duffel requestOrderChange failed', { orderId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  async getOrderChangeRequest(changeRequestId) {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}/air/order_change_requests/${changeRequestId}`,
+        { headers: this._headers(), timeout: this.timeout }
+      );
+      return this._normalizeOrderChangeRequest(response.data?.data);
+    } catch (err) {
+      logger.error('Duffel getOrderChangeRequest failed', { changeRequestId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  _normalizeOrderChangeRequest(data) {
+    if (!data) return null;
+    const offers = Array.isArray(data.order_change_offers) ? data.order_change_offers : [];
+    return {
+      changeRequestId: data.id,
+      orderId:         data.order_id,
+      createdAt:       data.created_at,
+      // Sorted cheapest-change-cost first — the most likely one a
+      // traveler would want to see first, though the caller can
+      // re-sort if a different priority makes more sense (e.g.
+      // soonest expiring).
+      offers: offers.map(o => this._normalizeOrderChangeOffer(o))
+        .sort((a, b) => a.changeTotalAmount - b.changeTotalAmount),
+    };
+  }
+
+  _normalizeOrderChangeOffer(o) {
+    if (!o) return null;
+    return {
+      // CORRECTED (2026-07-03, once createOrderChange's real payload
+      // was confirmed): offerId (this offer's own id, oco_...) is
+      // what gets passed to createOrderChange as
+      // selected_order_change_offer — NOT orderChangeId below, which
+      // is a different field only populated if a change was already
+      // created from this offer previously.
+      offerId:            o.id,
+      orderChangeId:      o.order_change_id,
+      newTotalAmount:     Number(o.new_total_amount || 0),
+      newTotalCurrency:   o.new_total_currency || null,
+      changeTotalAmount:  Number(o.change_total_amount || 0), // what's actually charged/refunded (may be negative = refund)
+      changeTotalCurrency: o.change_total_currency || null,
+      penaltyAmount:      Number(o.penalty_total_amount || 0),
+      penaltyCurrency:    o.penalty_total_currency || null,
+      expiresAt:          o.expires_at || null,
+      refundAllowed:      o.conditions?.refund_before_departure?.allowed ?? null,
+      changeAllowed:      o.conditions?.change_before_departure?.allowed ?? null,
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // LIST ORDER CHANGE OFFERS — real endpoint confirmed 2026-07-03.
+  // Mostly redundant with the offers already embedded in
+  // requestOrderChange()'s response, but useful if you already have
+  // a changeRequestId and want a fresh/differently-sorted list
+  // without recreating the whole request. sort: 'change_total_amount'
+  // | 'total_duration' (prefix with '-' for descending, per Duffel's
+  // own convention — passed through as-is).
+  // ─────────────────────────────────────────────
+  async listOrderChangeOffers(changeRequestId, { sort = null, maxConnections = null } = {}) {
+    try {
+      const params = { order_change_request_id: changeRequestId };
+      if (sort) params.sort = sort;
+      if (maxConnections != null) params.max_connections = maxConnections;
+
+      const response = await axios.get(
+        `${this.baseUrl}/air/order_change_offers`,
+        { params, headers: this._headers(), timeout: this.timeout }
+      );
+      const offers = Array.isArray(response.data?.data) ? response.data.data : [];
+      return offers.map(o => this._normalizeOrderChangeOffer(o));
+    } catch (err) {
+      logger.error('Duffel listOrderChangeOffers failed', { changeRequestId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  async getOrderChangeOffer(offerId) {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}/air/order_change_offers/${offerId}`,
+        { headers: this._headers(), timeout: this.timeout }
+      );
+      return this._normalizeOrderChangeOffer(response.data?.data);
+    } catch (err) {
+      logger.error('Duffel getOrderChangeOffer failed', { offerId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // CREATE A PENDING ORDER CHANGE
+  // This is the step that was genuinely missing before — real
+  // endpoint/payload confirmed 2026-07-03. Takes the OFFER's own id
+  // (the oco_... id returned by requestOrderChange/
+  // getOrderChangeOffer — NOT orderChangeId/order_change_id, which
+  // is a different field only present if a change was already
+  // created from this offer previously). Nothing is charged yet —
+  // this only creates a pending change, same create->confirm shape
+  // as order cancellations.
+  // ─────────────────────────────────────────────
+  async createOrderChange(selectedOrderChangeOfferId) {
+    try {
+      logger.info('Duffel: creating pending order change', { selectedOrderChangeOfferId });
+      const response = await axios.post(
+        `${this.baseUrl}/air/order_changes`,
+        { data: { selected_order_change_offer: selectedOrderChangeOfferId } },
+        { headers: this._headers(), timeout: this.timeout }
+      );
+      return this._normalizeOrderChange(response.data?.data);
+    } catch (err) {
+      logger.error('Duffel createOrderChange failed', { selectedOrderChangeOfferId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // CONFIRM AN ORDER CHANGE
+  // The step that actually applies the change with the airline and
+  // charges/refunds the difference. Per Duffel's own documented
+  // rule: payment is ONLY included when change_total_amount > 0 —
+  // omitted entirely for a zero or negative (refund) amount. Uses
+  // the same 'balance' payment type as payHoldOrder (Bodrless's
+  // funded Duffel account balance), consistent with every other
+  // real charge in this codebase.
+  // ─────────────────────────────────────────────
+  async confirmOrderChange({ changeId, changeTotalAmount, changeTotalCurrency }) {
+    try {
+      const data = {};
+      if (Number(changeTotalAmount) > 0) {
+        data.payment = {
+          type: 'balance',
+          currency: changeTotalCurrency,
+          amount: String(changeTotalAmount),
+        };
+      }
+      logger.info('Duffel: confirming order change', { changeId, changeTotalAmount, changeTotalCurrency, paymentIncluded: !!data.payment });
+
+      const response = await axios.post(
+        `${this.baseUrl}/air/order_changes/${changeId}/actions/confirm`,
+        { data },
+        { headers: this._headers(), timeout: this.timeout }
+      );
+      return this._normalizeOrderChange(response.data?.data);
+    } catch (err) {
+      logger.error('Duffel confirmOrderChange failed', { changeId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  async getOrderChange(changeId) {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}/air/order_changes/${changeId}`,
+        { headers: this._headers(), timeout: this.timeout }
+      );
+      return this._normalizeOrderChange(response.data?.data);
+    } catch (err) {
+      logger.error('Duffel getOrderChange failed', { changeId, error: err.message, detail: err.response?.data });
+      throw err;
+    }
+  }
+
+  _normalizeOrderChange(data) {
+    if (!data) return null;
+    return {
+      changeId:            data.id,
+      orderId:             data.order_id,
+      confirmedAt:         data.confirmed_at || null,
+      expiresAt:           data.expires_at || null,
+      newTotalAmount:      Number(data.new_total_amount || 0),
+      newTotalCurrency:    data.new_total_currency || null,
+      changeTotalAmount:   Number(data.change_total_amount || 0),
+      changeTotalCurrency: data.change_total_currency || null,
+      penaltyAmount:       Number(data.penalty_total_amount || 0),
+      penaltyCurrency:     data.penalty_total_currency || null,
+      refundTo:            data.refund_to || null,
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // PAY FOR A HOLD ORDER
+  // Called once the traveler's M-Pesa payment has actually
+  // succeeded — the Duffel-side equivalent of travelduqa.js's
+  // completeHoldBooking(). Real payload confirmed from Duffel's own
+  // docs (developers.duffel.com/docs/api/payments/create-payment).
+  // amount/currency MUST match the order's CURRENT total_amount/
+  // total_currency exactly (see getOrder above) or this fails with
+  // payment_amount_does_not_match_order_amount /
+  // payment_currency_does_not_match_order_currency.
+  // ─────────────────────────────────────────────
+  async payHoldOrder({ orderId, amount, currency }) {
+    try {
+      logger.info('Duffel: paying for hold order', { orderId, amount, currency });
+      const response = await axios.post(
+        `${this.baseUrl}/air/payments`,
+        {
+          data: {
+            order_id: orderId,
+            payment: {
+              type:     'balance',
+              currency,
+              amount:   String(amount),
+            },
+          },
+        },
+        { headers: this._headers(), timeout: this.timeout }
+      );
       return response.data?.data;
     } catch (err) {
-      logger.error('Duffel cancel failed', { error: err.message, detail: err.response?.data });
+      logger.error('Duffel payHoldOrder failed', { orderId, error: err.message, detail: err.response?.data });
       throw err;
     }
   }
@@ -603,6 +1011,18 @@ class DuffelAdapter {
           ? Number(offer.conditions.refund_before_departure.penalty_amount)
           : null,
         refundPenaltyCurrency: offer.conditions?.refund_before_departure?.penalty_currency || null,
+        // NEW (found while building real Duffel order creation,
+        // 2026-07-03): whether this specific offer can be held and
+        // paid for later, or requires payment at booking time.
+        // Bodrless's whole architecture is "hold now, collect M-Pesa
+        // payment, pay the supplier after" — an offer with
+        // requiresInstantPayment: true genuinely cannot go through
+        // that flow (Duffel will reject type: 'hold' for it). Needed
+        // BEFORE attempting to book, not discovered via a failed
+        // booking call — see bookingService.js's handling.
+        requiresInstantPayment: offer.payment_requirements?.requires_instant_payment ?? null,
+        paymentRequiredBy:      offer.payment_requirements?.payment_required_by || null,
+        priceGuaranteeExpiresAt: offer.payment_requirements?.price_guarantee_expires_at || null,
         passengerIds: (offer.passengers || []).map(p => p.id),
         slices,
         supplierBookingReference: null,
@@ -625,7 +1045,22 @@ class DuffelAdapter {
       supplier:                 this.supplier,
       supplierBookingReference: order.booking_reference,
       orderId:                  order.id,
-      status:                   order.status || 'confirmed',
+      // BUG FIX: order.status doesn't exist in Duffel's real order
+      // schema — this always silently fell back to 'confirmed'
+      // regardless of real payment state, which is actively
+      // misleading for a hold order that hasn't been paid yet.
+      // Duffel's real signal is payment_status.awaiting_payment.
+      type:              order.type || null, // 'hold' | 'instant'
+      awaitingPayment:   order.payment_status?.awaiting_payment ?? null,
+      paymentRequiredBy: order.payment_status?.payment_required_by || null,
+      priceGuaranteeExpiresAt: order.payment_status?.price_guarantee_expires_at || null,
+      // NEW — needed to specify removeSliceId when requesting a
+      // flight change (see requestOrderChange). Always fetch this
+      // fresh via getOrder() rather than trusting a stored value,
+      // since it's the authoritative current state of the order.
+      sliceId:       slice.id || null,
+      originIata:    slice.origin?.iata_code || null,
+      destIata:      slice.destination?.iata_code || null,
       origin:        slice.origin?.city_name,
       destination:   slice.destination?.city_name,
       departureTime: segment.departing_at,

@@ -112,7 +112,7 @@ class SupplierAdapterLayer {
   // bookingService._reconcileHotelOccupancy — it searches one specific
   // hotel at the corrected DOB-derived child age to get a valid rateKey.
   // ─────────────────────────────────────────────
-  async searchHotels({ destination, checkIn, checkOut, passengers, adults, children, childAges, nights, budget, rooms, hotelCode }) {
+  async searchHotels({ destination, checkIn, checkOut, passengers, adults, children, childAges, nights, budget, rooms, hotelCode, bookingChangeCode }) {
     try {
       const results = await this.adapters.hotelbeds.search({
         destination,
@@ -126,6 +126,7 @@ class SupplierAdapterLayer {
         budget,
         rooms,
         hotelCode,
+        bookingChangeCode,
       });
       console.log('HOTELBEDS HOTELS:', results.length);
       return results;
@@ -224,10 +225,15 @@ class SupplierAdapterLayer {
       // which seat/fare on the offer.
       return adapter.book({
         offerId:        params.offerId,
-        offerRequestId: params.offerRequestId,
         passengers:     params.passengerDetails || params.passengers,
         totalAmount:    params.totalAmount,
         totalCurrency:  params.currency || params.totalCurrency || 'KES',
+        // NEW — required by the fixed book() signature (2026-07-03):
+        // type defaults to 'hold' (Bodrless's whole flow is hold-now/
+        // pay-after-traveler-pays), services carries any resolved
+        // seat selections (see seatSelection.js/bookingService.js).
+        type:     params.type || 'hold',
+        services: params.services || null,
       });
     }
 
@@ -305,6 +311,78 @@ class SupplierAdapterLayer {
     if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
     if (supplier === 'travelduqa') return adapter.getStatus(orderId || bookingRef);
     return adapter.getStatus(bookingRef);
+  }
+
+  // ─────────────────────────────────────────────
+  // GET ORDER (Duffel — fetch current order state/price before
+  // paying for a hold order; see duffel.js's getOrder)
+  // ─────────────────────────────────────────────
+  async getOrder({ supplier, orderId }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.getOrder(orderId);
+  }
+
+  // ─────────────────────────────────────────────
+  // PAY HOLD ORDER (Duffel — the hold-then-pay completion step,
+  // called once M-Pesa payment has succeeded; see duffel.js's
+  // payHoldOrder and bookingService.js's _completeDuffelPayment)
+  // ─────────────────────────────────────────────
+  async payHoldOrder({ supplier, orderId, amount, currency }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.payHoldOrder({ orderId, amount, currency });
+  }
+
+  // ─────────────────────────────────────────────
+  // ORDER CHANGE REQUEST (Duffel — "change flight" feature; see
+  // duffel.js's requestOrderChange/getOrderChangeRequest)
+  // ─────────────────────────────────────────────
+  async requestOrderChange({ supplier, orderId, removeSliceId, addOrigin, addDestination, addDepartureDate, cabinClass }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.requestOrderChange({ orderId, removeSliceId, addOrigin, addDestination, addDepartureDate, cabinClass });
+  }
+
+  async getOrderChangeRequest({ supplier, changeRequestId }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.getOrderChangeRequest(changeRequestId);
+  }
+
+  async listOrderChangeOffers({ supplier, changeRequestId, sort, maxConnections }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.listOrderChangeOffers(changeRequestId, { sort, maxConnections });
+  }
+
+  async getOrderChangeOffer({ supplier, offerId }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.getOrderChangeOffer(offerId);
+  }
+
+  // ─────────────────────────────────────────────
+  // CREATE/CONFIRM ORDER CHANGE (Duffel — completes the "change
+  // flight" feature; see duffel.js's createOrderChange/
+  // confirmOrderChange/getOrderChange)
+  // ─────────────────────────────────────────────
+  async createOrderChange({ supplier, selectedOrderChangeOfferId }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.createOrderChange(selectedOrderChangeOfferId);
+  }
+
+  async confirmOrderChange({ supplier, changeId, changeTotalAmount, changeTotalCurrency }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.confirmOrderChange({ changeId, changeTotalAmount, changeTotalCurrency });
+  }
+
+  async getOrderChange({ supplier, changeId }) {
+    const adapter = this.adapters[supplier || 'duffel'];
+    if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
+    return adapter.getOrderChange(changeId);
   }
 
   // ─────────────────────────────────────────────
