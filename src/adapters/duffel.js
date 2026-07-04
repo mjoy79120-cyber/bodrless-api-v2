@@ -245,6 +245,61 @@ class DuffelAdapter {
   }
 
   // ─────────────────────────────────────────────
+  // NORMALIZE PHONE NUMBER TO E.164
+  // BUG FIX (found via a real WhatsApp sandbox booking, 2026-07-04):
+  // Duffel's API requires phone_number in strict E.164 format
+  // (e.g. "+254712345678") and rejects anything else with a 422
+  // invalid_phone_number error. Bodrless's WhatsApp booking flow
+  // (whatsappBooking.js) takes the traveler's typed phone number at
+  // face value — a Kenyan traveler will naturally type a local
+  // format like "0712345678", not E.164 — and this was passed
+  // straight through unchanged, so every real Duffel booking
+  // attempt with a locally-formatted phone number would fail at the
+  // book() step, right after a flight was successfully offered.
+  //
+  // Handles the formats a real Kenyan traveler is likely to type:
+  //   "0712345678"     -> "+254712345678"  (local, leading 0)
+  //   "254712345678"    -> "+254712345678"  (country code, no +)
+  //   "+254712345678"   -> unchanged        (already E.164)
+  //   anything else     -> returned unchanged, and Duffel's own
+  //                        validation is left to catch genuine
+  //                        garbage rather than guessing wrong and
+  //                        silently sending a malformed number.
+  //
+  // Deliberately conservative: this only transforms patterns it can
+  // be confident about for this platform's primary market (Kenya).
+  // A number from a different country typed in local format (e.g.
+  // a UK "07...") would NOT be safely convertible without knowing
+  // the traveler's actual country, so those are left untouched and
+  // will still surface Duffel's own clear validation error rather
+  // than being silently mis-converted to a wrong country code.
+  // ─────────────────────────────────────────────
+  _normalizePhoneNumber(raw) {
+    if (!raw) return raw;
+    const trimmed = String(raw).trim();
+
+    if (trimmed.startsWith('+')) return trimmed; // already E.164 — leave as-is
+
+    const digitsOnly = trimmed.replace(/[^\d]/g, '');
+
+    // Local Kenyan format: 07xxxxxxxx or 01xxxxxxxx (10 digits, leading 0)
+    if (/^0\d{9}$/.test(digitsOnly)) {
+      return `+254${digitsOnly.slice(1)}`;
+    }
+
+    // Country code without the leading +: 254712345678 (12 digits)
+    if (/^254\d{9}$/.test(digitsOnly)) {
+      return `+${digitsOnly}`;
+    }
+
+    // Unrecognized shape — don't guess. Return unchanged so Duffel's
+    // own validation surfaces a clear error rather than us silently
+    // sending a malformed number.
+    logger.warn('Duffel: phone number did not match a recognized normalizable format, sending as-is', { raw });
+    return trimmed;
+  }
+
+  // ─────────────────────────────────────────────
   // BOOK (create order)
   // payments.type: 'balance' requires Duffel Managed Content/wallet
   // balance — same model as Duffel's own getting-started guide. If
@@ -284,6 +339,12 @@ class DuffelAdapter {
   // error handling below (not silently swallowed), telling us
   // definitively which is true. Do not assume this works until
   // confirmed against a real response.
+  //
+  // BUG FIX (found via a real WhatsApp sandbox booking, 2026-07-04):
+  // phone_number now goes through _normalizePhoneNumber() before
+  // being sent — see that method's comment for why. Previously the
+  // raw, possibly-local-format phone string was sent unchanged and
+  // Duffel rejected it with a 422 invalid_phone_number error.
   // ─────────────────────────────────────────────
   async book({ offerId, passengers, totalAmount, totalCurrency, type = 'hold', services = null }) {
     try {
@@ -309,7 +370,7 @@ class DuffelAdapter {
             family_name: p.lastName,
             born_on:     p.dateOfBirth,
             email:       p.email,
-            phone_number: p.phone,
+            phone_number: this._normalizePhoneNumber(p.phone),
             ...(p.infantPassengerId ? { infant_passenger_id: p.infantPassengerId } : {}),
           };
         }),
