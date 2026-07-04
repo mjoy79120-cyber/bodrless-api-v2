@@ -411,6 +411,31 @@ class DuffelAdapter {
         data:    err.response?.data,
       }, null, 2));
       logger.error('Duffel book failed', { error: err.message, detail: err.response?.data });
+
+      // BUG FIX (found via a real WhatsApp sandbox booking, 2026-07-04):
+      // Duffel's invalid_order_create_type error means this specific
+      // offer genuinely requires instant payment and cannot be held —
+      // even when the pre-booking check couldn't tell, because
+      // offer.payment_requirements.requires_instant_payment came back
+      // null/unconfirmed at search time rather than an explicit true
+      // (see _normalizeOffers). Since Bodrless's whole architecture is
+      // hold-then-collect-via-M-Pesa, we do NOT retry with
+      // type: 'instant' here — that would pay Duffel's real balance
+      // immediately, before the traveler has paid Bodrless anything,
+      // which is the exact backwards pattern already fixed elsewhere
+      // this session. Instead, surface a structured, identifiable
+      // error so bookingService.js can show the same clean "this fare
+      // requires instant payment, please choose a different flight"
+      // message the pre-check was meant to produce, rather than a raw
+      // supplier error reaching the traveler.
+      const errorCode = err.response?.data?.errors?.[0]?.code;
+      if (errorCode === 'invalid_order_create_type' && type === 'hold') {
+        const structuredErr = new Error('This fare requires instant payment and cannot be held.');
+        structuredErr.code = 'REQUIRES_INSTANT_PAYMENT';
+        structuredErr.duffelResponse = err.response?.data;
+        throw structuredErr;
+      }
+
       throw err;
     }
   }

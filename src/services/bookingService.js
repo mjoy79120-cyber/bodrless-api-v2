@@ -186,6 +186,25 @@ class BookingService {
         logger.info('Duffel flight held', { bookingRef, orderId: flightResult?.orderId });
 
       } catch (err) {
+        // BUG FIX (found via a real WhatsApp sandbox booking,
+        // 2026-07-04): duffel.js throws this structured error when
+        // Duffel's own invalid_order_create_type response reveals the
+        // offer genuinely requires instant payment — something the
+        // earlier validatePackage() check couldn't catch because
+        // requiresInstantPayment came back null/unconfirmed at search
+        // time rather than an explicit true. Surface the SAME clean,
+        // honest message/code the pre-check produces, rather than
+        // letting this fall through to the generic FLIGHT_HOLD_FAILED
+        // path below with a raw supplier error the traveler can't act on.
+        if (err.code === 'REQUIRES_INSTANT_PAYMENT') {
+          logger.warn('Duffel offer required instant payment (discovered at booking time, not pre-validated)', { bookingRef, offerId: transport.offerId });
+          return {
+            success: false,
+            error: 'This fare requires payment at the time of booking and is not currently supported. Please choose a different flight.',
+            code: 'INSTANT_PAYMENT_NOT_SUPPORTED',
+          };
+        }
+
         const supplierMessage = err.response?.data?.errors?.[0]?.message || err.message;
 
         const looksLikeServicesRejection = /service/i.test(supplierMessage || '') && seatSelectionResult?.resolved?.length > 0;
