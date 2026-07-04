@@ -11,6 +11,7 @@ const { logger } = require('./utils/logger');
 const tripRoutes = require('./routes/trips');
 const webhookRoutes = require('./routes/webhooks');
 const intasendWebhookRoutes = require('./routes/intasend');
+const duffelWebhookRoutes = require('./routes/duffelWebhooks');
 const agencyRoutes = require('./routes/agencies');
 const healthRoutes = require('./routes/health');
 const uploadRoutes = require('./routes/uploads');
@@ -39,9 +40,35 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'x-api-key', 'Authorization'],
 }));
 
-app.use(express.json());
+// JSON parsing with raw-body capture.
+// The `verify` callback runs on every JSON request BEFORE the body
+// is parsed, and stashes the exact raw bytes (as a UTF-8 string) on
+// req.rawBody. The Duffel webhook route needs this for HMAC
+// signature verification — a re-stringified req.body would not
+// reliably match the bytes Duffel actually signed. Everything else
+// in the app still sees req.body as parsed JSON, unchanged.
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}));
 
-// Rate limiting
+app.set('trust proxy', 1);
+
+// ── Public Webhook Routes (no auth, no rate limit) ────
+// Mounted BEFORE the /api/ rate limiter on purpose: webhooks
+// authenticate themselves (HMAC signatures / provider tokens), and
+// rate-limiting them risks silently dropping signed provider
+// notifications during a burst — e.g. a mass flight-disruption
+// event pushing many Duffel airline-initiated-change events at
+// once. Express matches middleware in registration order, so these
+// routes are simply never seen by the limiter below.
+app.use('/api/webhooks', webhookRoutes);
+app.use('/api/webhooks', intasendWebhookRoutes);
+app.use('/api/webhooks', duffelWebhookRoutes);
+
+// Rate limiting (everything under /api/ EXCEPT the webhook routes
+// mounted above)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -54,7 +81,6 @@ const apiLimiter = rateLimit({
   message: { error: 'Rate limit exceeded. Max 30 requests per minute.' },
 });
 
-app.set('trust proxy', 1);
 app.use('/api/', limiter);
 app.use('/api/v1/', apiLimiter);
 
@@ -64,9 +90,7 @@ app.use('/widget.js', (req, res, next) => {
   next();
 });
 
-// ── Public Routes (no auth) ──────────────────────────
-app.use('/api/webhooks', webhookRoutes);
-app.use('/api/webhooks', intasendWebhookRoutes);
+// ── Other Public Routes (no auth) ─────────────────────
 app.use('/health', healthRoutes);
 app.use('/widget.js', widgetRoutes);
 
@@ -101,6 +125,7 @@ app.get('/', (req, res) => {
       widget:      '/widget.js?key=YOUR_AGENCY_ID',
       webhooks:    '/api/webhooks/whatsapp',
       intasend_webhook: '/api/webhooks/intasend',
+      duffel_webhook:   '/api/webhooks/duffel',
       health:      '/health',
       signup:      'POST /api/agencies/signup',
       register:    'POST /api/agencies/register',

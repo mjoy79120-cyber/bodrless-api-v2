@@ -721,6 +721,28 @@ class BookingService {
   // the caller for how that's presented/collected before this is
   // invoked. Updates the booking record with the new flight details
   // on success.
+  //
+  // BUG FIX (found via real sandbox test, 2026-07-04): confirmOrderChange's
+  // own response field `newTotalAmount` does NOT reliably match the
+  // order's real, authoritative total. A live sandbox run showed
+  // confirmOrderChange reporting newTotalAmount: 317.85 for a change
+  // with a $25 penalty, while immediately re-fetching the order via
+  // getOrder() showed the REAL total was 342.85 — exactly
+  // changeTotalAmount (125) higher than the pre-change total
+  // (217.85), i.e. correctly including the penalty. confirmOrderChange's
+  // own newTotalAmount appears to omit the penalty and cannot be
+  // trusted as the source of truth for what Duffel actually charged
+  // and now holds as the order's total.
+  //
+  // Fix: after confirmOrderChange succeeds, re-fetch the order via
+  // getOrder() — the same "always trust a fresh fetch, never a
+  // stale/self-reported total" pattern already used correctly for
+  // payHoldOrder (see _completeDuffelPayment) — and persist THAT
+  // total, not confirmedChange's own fields. If the re-fetch itself
+  // fails, the change has already been applied and charged with the
+  // airline (this must never be undone or reported as a failure to
+  // the traveler at this point) — log loudly and alert for manual
+  // reconciliation of the stored total instead.
   // ─────────────────────────────────────────────
   async confirmFlightChange({ bookingRef, offerId, changeTotalAmount, changeTotalCurrency }) {
     const { data: booking, error } = await supabase
@@ -771,27 +793,70 @@ class BookingService {
       return { success: false, error: `We couldn't finalize this change with the airline (${err.message}). Our team has been notified — please contact support.` };
     }
 
+    // Re-fetch the order for its authoritative total — see the
+    // BUG FIX note above. The change itself is already applied and
+    // charged/refunded with the airline at this point regardless of
+    // what happens next; a failure here is a reporting problem, not
+    // a booking failure, and must never be surfaced to the traveler
+    // as the change having failed.
+    let authoritativeTotalAmount = confirmedChange.newTotalAmount;
+    let authoritativeCurrency = confirmedChange.newTotalCurrency;
+
+    try {
+      const freshOrder = await supplierAdapter.getOrder({ supplier: 'duffel', orderId: booking.supplier_order_id });
+      if (freshOrder?.totalAmount != null) {
+        if (freshOrder.totalAmount !== confirmedChange.newTotalAmount) {
+          logger.warn('confirmFlightChange: confirmOrderChange.newTotalAmount did not match freshly re-fetched order total — using the re-fetched value as authoritative', {
+            bookingRef,
+            changeId: pendingChange.changeId,
+            confirmOrderChangeNewTotalAmount: confirmedChange.newTotalAmount,
+            freshOrderTotalAmount: freshOrder.totalAmount,
+          });
+        }
+        authoritativeTotalAmount = freshOrder.totalAmount;
+        authoritativeCurrency = freshOrder.currency || authoritativeCurrency;
+      }
+    } catch (err) {
+      // The change is already confirmed and charged with the airline —
+      // this only means we couldn't verify/refresh the total to store.
+      // Fall back to confirmedChange's own (possibly-short) figures,
+      // but flag it loudly so someone reconciles the real total
+      // manually rather than it silently being wrong forever.
+      logger.error('confirmFlightChange: could not re-fetch order after a successfully confirmed change — stored total may not reflect the real charge', {
+        bookingRef, changeId: pendingChange.changeId, error: err.message,
+      });
+      tracking.alert({
+        type:     'flight_change_total_unverified',
+        severity: 'warning',
+        title:    `Flight change confirmed but total could not be verified — ${bookingRef}`,
+        detail:   `The change with the airline succeeded (changeId: ${pendingChange.changeId}), but re-fetching the order to confirm its real total failed: ${err.message}. The booking record was updated using confirmOrderChange's own reported total, which sandbox testing has shown can be understated by the penalty amount. Please verify the real order total in Duffel's dashboard and correct the booking record if needed.`,
+        context:  { bookingRef, changeId: pendingChange.changeId, orderId: booking.supplier_order_id, storedTotalAmount: authoritativeTotalAmount, error: err.message },
+        agencyId: booking.agency_id,
+        bookingRef,
+      });
+    }
+
     // Update the booking record with the new flight details.
     try {
       await supabase
         .from('bookings')
         .update({
-          total_price: confirmedChange.newTotalAmount || booking.total_price,
-          currency: confirmedChange.newTotalCurrency || booking.currency,
+          total_price: authoritativeTotalAmount || booking.total_price,
+          currency: authoritativeCurrency || booking.currency,
         })
         .eq('booking_ref', bookingRef);
     } catch (err) {
       logger.error('confirmFlightChange: booking record update failed (change itself succeeded)', { bookingRef, error: err.message });
     }
 
-    logger.info('Flight change confirmed', { bookingRef, changeId: confirmedChange.changeId, changeTotalAmount: confirmedChange.changeTotalAmount });
+    logger.info('Flight change confirmed', { bookingRef, changeId: confirmedChange.changeId, changeTotalAmount: confirmedChange.changeTotalAmount, authoritativeTotalAmount });
 
     return {
       success: true,
       changeTotalAmount: confirmedChange.changeTotalAmount,
       changeTotalCurrency: confirmedChange.changeTotalCurrency,
-      newTotalAmount: confirmedChange.newTotalAmount,
-      newTotalCurrency: confirmedChange.newTotalCurrency,
+      newTotalAmount: authoritativeTotalAmount,
+      newTotalCurrency: authoritativeCurrency,
     };
   }
 
