@@ -195,6 +195,15 @@ class OrchestrationEngine {
 
     const resolvedIntent = intent || this._detectIntent(prompt, null);
 
+    // NEW (2026-07-05): thread the explicit "cheapest" signal onto
+    // tripParams itself, since that's what gets passed to
+    // rankPackages() below — packageRanker.js checks
+    // tripParams.wantsCheapest to bypass its normal composite score
+    // entirely and sort strictly by price instead. See
+    // _detectIntent for how this gets set.
+    tripParams.wantsCheapest = !!resolvedIntent.wantsCheapest;
+    tripParams.wantsAffordableSort = !!resolvedIntent.wantsAffordableSort;
+
     // [TIMING] Wall-clock around the parallel supplier-search phase. These
     // logs show up in Render and tell you exactly where the seconds go on
     // real traffic — search phase vs package-build phase. Remove or lower
@@ -233,6 +242,23 @@ class OrchestrationEngine {
     let outboundTransport = [...outboundResult.results, ...outboundBuses, ...outboundTrains];
     let returnTransport   = [...returnResult.results,   ...returnBuses,   ...returnTrains];
     let hotels = hotelResults;
+
+    // ─────────────────────────────
+    // CROSS-SUPPLIER FLIGHT DEDUPLICATION
+    // NEW (2026-07-05): TravelDuqa and Duffel run in parallel and can
+    // both legitimately return the SAME real-world flight (e.g. the
+    // same Jambojet service) at two different prices — both are
+    // genuine GDS/NDC resellers of the same airline inventory, not a
+    // data error. Without this, a traveler would see the identical
+    // flight listed twice as if they were different options, and
+    // could easily pick the more expensive listing by accident. Keep
+    // only the cheaper of any two flights confidently identified as
+    // the same physical service (see _dedupeEquivalentFlights) —
+    // applied per-leg, after merging both suppliers' results, before
+    // any package is built.
+    // ─────────────────────────────
+    outboundTransport = this._dedupeEquivalentFlights(outboundTransport);
+    returnTransport    = this._dedupeEquivalentFlights(returnTransport);
 
     console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length, outboundResult.connectsVia ? `(via ${outboundResult.connectsVia})` : '');
     console.log("FINAL RETURN TRANSPORT:",   returnTransport.length, returnResult.connectsVia ? `(via ${returnResult.connectsVia})` : '');
@@ -334,6 +360,103 @@ class OrchestrationEngine {
     }
 
     return { text: responseText, packages: rankedPackages };
+  }
+
+  // ─────────────────────────────
+  // DEDUPE EQUIVALENT FLIGHTS ACROSS SUPPLIERS
+  // NEW (2026-07-05): TravelDuqa and Duffel are run in parallel and
+  // can legitimately both return the same real-world flight (e.g.
+  // the same Jambojet service resold via two different GDS/NDC
+  // channels) at two different prices. Groups flights by a
+  // confident "same physical flight" signature and keeps only the
+  // cheaper of each group.
+  //
+  // Signature priority:
+  //   1. airline + flight number + exact departure timestamp — the
+  //      most reliable identifier when both suppliers echo back a
+  //      real flight number (the normal case for a scheduled
+  //      commercial flight).
+  //   2. airline + route + exact departure timestamp — fallback for
+  //      the rare case a flight number is missing/blank from one
+  //      supplier, still requires an exact departure time match so
+  //      this never merges two genuinely different flights that
+  //      simply share an airline and route.
+  //
+  // Deliberately conservative: anything that can't be confidently
+  // keyed (no departure time, no airline) is passed through
+  // untouched rather than guessed at — never drops a flight based on
+  // an uncertain match. Only ever applied to flight entries — buses
+  // and trains in this codebase only ever come from a single
+  // supplier each, so no cross-supplier duplication is possible for
+  // those modes today.
+  // ─────────────────────────────
+  _dedupeEquivalentFlights(transportList) {
+    if (!Array.isArray(transportList) || transportList.length === 0) return transportList;
+
+    const bestByKey = new Map();
+    const passthrough = [];
+
+    for (const item of transportList) {
+      const isFlight = (item.transportType || 'flight') === 'flight';
+      if (!isFlight) {
+        passthrough.push(item);
+        continue;
+      }
+
+      const key = this._flightDedupeKey(item);
+      if (!key) {
+        passthrough.push(item);
+        continue;
+      }
+
+      const existing = bestByKey.get(key);
+      if (!existing) {
+        bestByKey.set(key, item);
+        continue;
+      }
+
+      const existingPrice = Number(existing.price ?? Infinity);
+      const itemPrice = Number(item.price ?? Infinity);
+
+      if (itemPrice < existingPrice) {
+        logger.info('Deduped equivalent flight across suppliers — kept cheaper', {
+          key,
+          keptSupplier: item.supplier, keptPrice: itemPrice,
+          droppedSupplier: existing.supplier, droppedPrice: existingPrice,
+        });
+        bestByKey.set(key, item);
+      } else {
+        logger.info('Deduped equivalent flight across suppliers — kept cheaper', {
+          key,
+          keptSupplier: existing.supplier, keptPrice: existingPrice,
+          droppedSupplier: item.supplier, droppedPrice: itemPrice,
+        });
+      }
+    }
+
+    return [...bestByKey.values(), ...passthrough];
+  }
+
+  _flightDedupeKey(flight) {
+    if (!flight.departureTime) return null;
+
+    const airline = String(flight.airlineCode || flight.airline || '').toLowerCase().trim();
+    if (!airline) return null;
+
+    const flightNumber = String(flight.flightNumber || '').trim();
+    if (flightNumber) {
+      return `${airline}|${flightNumber}|${flight.departureTime}`;
+    }
+
+    // Fallback: no flight number from either supplier — still
+    // require an exact departure timestamp match plus the same
+    // route, so this can never merge two genuinely different
+    // flights that just happen to share an airline.
+    const origin = String(flight.originIata || flight.origin || '').toLowerCase().trim();
+    const dest    = String(flight.destIata   || flight.destination || '').toLowerCase().trim();
+    if (!origin || !dest) return null;
+
+    return `${airline}|${origin}-${dest}|${flight.departureTime}`;
   }
 
   // ─────────────────────────────
@@ -888,7 +1011,7 @@ class OrchestrationEngine {
         `transition ${fromCity}->${toCity}`
       );
 
-      return this._pickCheapest(results, r => r.price);
+      return this._pickCheapest(this._dedupeEquivalentFlights(results), r => r.price);
     } catch (err) {
       logger.error('MultiDest: transition search failed', { from: fromCity, to: toCity, error: err.message });
       return null;
@@ -1680,13 +1803,49 @@ class OrchestrationEngine {
       needsTransfers:  true,
     };
 
+    // ─────────────────────────────
+    // NEW (2026-07-05): EXPLICIT "CHEAPEST" INTENT
+    // A traveler asking for the cheapest/lowest-price option wants a
+    // STRICT price sort, not the usual budget-fit composite score —
+    // see packageRanker.js's rankPackages(), which bypasses its
+    // normal scoring entirely when tripParams.wantsCheapest is set
+    // (threaded through in engine.js's _runSingleDestinationSearch).
+    // Deliberately separate from the existing budget adjustments
+    // below ("cheaper", "budget option" etc. nudge toward the LOW
+    // budget BAND) — "cheapest" is a stronger, unambiguous signal
+    // that means "sort by price, full stop."
+    // ─────────────────────────────
+    const wantsCheapest = /\b(cheapest|lowest[\s-]?price|lowest[\s-]?fare|best[\s-]?price)\b/i.test(lower);
+
+    // ─────────────────────────────
+    // NEW (2026-07-05): "AFFORDABLE"/"CHEAP" — DIFFERENT FROM "CHEAPEST"
+    // Confirmed directly: "cheap flight"/"affordable option" is NOT
+    // the same request as "cheapest flight". "Cheapest" means the
+    // single absolute lowest price, ignoring everything else.
+    // "Cheap"/"affordable" means reasonably-priced options, led with
+    // the cheapest among those — see packageRanker.js's
+    // wantsAffordableSort branch, which filters to the relevant
+    // budget band THEN sorts that filtered set by price, rather than
+    // either a strict global cheapest-only sort or the normal
+    // composite score. \bcheap\b uses a word boundary so it does NOT
+    // also match "cheapest" (no boundary exists between "cheap" and
+    // "est" mid-word) — the two signals are mutually exclusive by
+    // construction, and wantsCheapest is checked first in the ranker
+    // regardless, so an explicit "cheapest" always wins if somehow
+    // both fired.
+    // ─────────────────────────────
+    const wantsAffordableSort = /\bcheap\b|cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/i.test(lower);
+
     // Only narrow scope to a single product when the prompt signals EXCLUSIVITY
     // (e.g. "only flights", "just a flight", "flight only") — a bare mention of
     // "flight" in a general trip request ("flight to Mombasa") should still
     // return the full package (flight + hotel + transfer), since that's the
     // default expectation when someone names a route without qualifying it.
+    // "cheapest flight"/"cheapest fare" is ALSO treated as an implicit
+    // flight-exclusive signal — asking for the cheapest FLIGHT doesn't
+    // imply wanting a hotel bundled in.
     const flightExclusive = lower.match(
-      /\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only/i
+      /\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only|\bcheapest\s+flight(s)?\b|\bcheapest\s+fare\b/i
     );
     const busExclusive = lower.match(
       /\bonly\s+(a\s+)?bus(es)?\b|bus(es)?\s+only|just\s+(a\s+)?bus(es)?\b/i
@@ -1747,7 +1906,36 @@ class OrchestrationEngine {
     const passMatch = lower.match(/(\d+)\s*(people|persons|passengers|of us|travelers?)/);
     if (passMatch) adjustments.passengers = parseInt(passMatch[1]);
 
-    return { isFollowUp, adjustments, productScope };
+    // ─────────────────────────────
+    // NEW (2026-07-05): DESTINATION CHANGE MID-CONVERSATION
+    // BUG FIX (confirmed real, found via a real "we've decided on X
+    // instead" review): "instead" is already one of the
+    // followUpSignals matched above, so a message like "actually
+    // let's do Zanzibar instead" WAS being routed into the follow-up
+    // path (_adjustParams) rather than a fresh search — but
+    // _adjustParams only ever patched budget/nights/passengers/
+    // transportMode. It had NO destination-handling branch at all,
+    // so the new destination was silently dropped and the search
+    // re-ran against the OLD destination from previousParams. This
+    // extracts a new destination from phrasing like "X instead",
+    // "actually X", "let's do X instead", "change it to X" so
+    // _adjustParams (see below) can actually apply it.
+    // ─────────────────────────────
+    let newDestination = null;
+    const insteadMatch = lower.match(/\b(?:let'?s do|do|go to|make it|change (?:it|that) to|switch to)\s+([a-z\s]{2,30}?)\s+instead\b/i)
+      || lower.match(/\binstead\s+(?:of\s+[a-z\s]{2,30}?,?\s*)?(?:let'?s do|do|go to|make it)\s+([a-z\s]{2,30}?)(?:\s*[.,]|$)/i)
+      || lower.match(/\bactually,?\s+(?:let'?s do|do|go to|make it)\s+([a-z\s]{2,30}?)(?:\s+instead)?(?:\s*[.,]|$)/i);
+    if (insteadMatch && insteadMatch[1]) {
+      const candidate = insteadMatch[1].trim();
+      // Guard against accidentally capturing filler ("instead of that")
+      // or something too short/generic to be a real place name.
+      if (candidate.length >= 3 && !/^(that|this|it|there|here)$/i.test(candidate)) {
+        newDestination = candidate;
+      }
+    }
+    if (newDestination) adjustments.destination = newDestination;
+
+    return { isFollowUp, adjustments, productScope, wantsCheapest, wantsAffordableSort };
   }
 
   _adjustParams(previousParams, intent) {
@@ -1758,6 +1946,25 @@ class OrchestrationEngine {
     if (adjustments.nights        !== undefined) adjusted.nights        = adjustments.nights;
     if (adjustments.passengers    !== undefined) adjusted.passengers    = adjustments.passengers;
     if (adjustments.transportMode !== undefined) adjusted.transportMode = adjustments.transportMode;
+
+    // BUG FIX (found via a real "we've decided on X instead" review,
+    // 2026-07-05): previously had NO branch for a changed
+    // destination at all, even though "instead"/"change"/"switch"
+    // phrasing already routes here via followUpSignals in
+    // _detectIntent — meaning a genuine "let's do Zanzibar instead"
+    // request silently kept searching the OLD destination. Applies
+    // the new destination (extracted in _detectIntent) and clears
+    // origin-clarification/needsOriginClarification flags that were
+    // scoped to the OLD destination, so nothing stale leaks through
+    // (the new destination goes through the same country->city
+    // resolution as any fresh prompt — see orchestrate()'s caller).
+    if (adjustments.destination !== undefined) {
+      adjusted.destination = adjustments.destination;
+      // A destination change is a big enough shift that any
+      // previously-resolved hotel/hub/corridor-specific fields for
+      // the OLD destination should not silently carry over.
+      adjusted.destinationCode = undefined;
+    }
 
     return adjusted;
   }
@@ -2671,11 +2878,13 @@ class OrchestrationEngine {
     // HUB-LANDING TRANSFER: when this transport was booked to a
     // nearby hub instead of the traveler's real destination (see
     // hubLanding, set in _searchFlights via destinationIntel — e.g.
-    // a flight to Malindi for a Kilifi/Watamu trip), the arrival leg
-    // must say so honestly — "Malindi Airport → Kilifi (road
-    // transfer)" — rather than the generic "Airport → Hotel" label,
-    // which would otherwise wrongly imply the flight landed at the
-    // real destination itself.
+    // a flight to Malindi for a Kilifi/Watamu flight, or Mombasa for
+    // Kilifi/Watamu/Diani SGR train — via destinationIntel corridor
+    // knowledge in _searchFlights/_searchTrain). Unlike
+    // connectionAdvisory above, this is NOT "arrange your own way" —
+    // the transfer leg IS booked and included below; this note just
+    // makes plain to the traveler why an airport/station other than
+    // the destination itself shows up in the itinerary.
     const arrivalDescription = transport.hubLanding
       ? `${destHub} → ${this._titleCase(transport.hubLanding.realDestination)} (road transfer${transport.hubLanding.distanceKm ? `, ~${transport.hubLanding.distanceKm}km` : ''})`
       : `${destHub} → Hotel`;
@@ -2700,18 +2909,7 @@ class OrchestrationEngine {
         pickup:      destHub,
         dropoff:     arrivalDropoff,
         price:       liveArrival ? liveArrivalPriceKES : (rate?.price ?? 1500),
-        // Always KES once liveArrivalPriceKES has been computed (see
-        // the conversion above) — every transfer leg price is kept
-        // in the canonical currency so _buildPackages can keep
-        // summing leg prices as raw numbers safely.
         currency:    'KES',
-        // NEW — present only when live pricing succeeded. Carries
-        // the real supplier's rateKey/cancellation/luggage/duration
-        // data through to the package, for future booking and for
-        // richer display than the static rate ever had. Original
-        // (pre-conversion) price/currency kept here for transparency/
-        // debugging — the `price`/`currency` fields above are always
-        // the converted KES values actually used in totals.
         live: liveArrival ? {
           supplier: liveArrival.supplier,
           rateKey: liveArrival.rateKey,
@@ -2722,17 +2920,6 @@ class OrchestrationEngine {
           originalPrice: liveArrival.price,
           originalCurrency: liveArrival.currency,
         } : null,
-        // NOTE (known follow-up, only applies when `live` is null —
-        // i.e. live pricing wasn't available for this leg): pricing
-        // falls back to the same generic agency/default transfer
-        // rate lookup as every other transfer leg (_getTransferRate,
-        // matched by tripParams.destination) — it does NOT reflect
-        // that a hub transfer like Malindi->Kilifi (~60km) is a
-        // materially longer/costlier drive than a typical airport->
-        // hotel transfer. Add dedicated transfer rate rows keyed to
-        // the hub->town pair, or extend live pricing to cover this
-        // case too (it's the same IATA->GPS shape, just needs the
-        // hub's own IATA rather than the destination's).
       },
     ];
   }
@@ -2851,30 +3038,11 @@ class OrchestrationEngine {
         cancellationPolicy: t.cancellationPolicy,
         currency:           t.currency           || 'KES',
         isDelayed:          t.isDelayed          || false,
-        // NEW — static bus operator catalog entries (see
-        // _searchStaticBusOperators) set canBook: false explicitly;
-        // real IABIRI results never set this field, so default to
-        // true for those — same "no data = assume normal" posture
-        // as everywhere else in this file.
         canBook:            t.canBook !== undefined ? t.canBook : true,
-        // NEW — surfaces the existing cancellationPolicy in the
-        // same policySummary slot whatsapp.js/widget.js read from,
-        // UNLESS this is a priceOnRequest static catalog entry, in
-        // which case the honest "not yet bookable" note takes
-        // priority — a real cancellationPolicy string doesn't exist
-        // for these yet either. Buses have no baggage data anywhere
-        // upstream (IABIRI doesn't return any), so baggageSummary
-        // stays null here rather than guessing.
         policySummary:  t.priceOnRequest
           ? 'Not yet bookable through Bodrless \u2014 contact the operator directly to confirm schedule, fare, and seat availability.'
           : (t.cancellationPolicy || 'Cancellation policy not specified'),
         baggageSummary: null,
-        // NEW — set by _searchBuses for through-routes like Kilifi/
-        // Watamu (searched under Malindi's route name since IABIRI
-        // has no distinct route for those towns) — tells the
-        // traveler this is a stop on a longer route, not a
-        // dedicated service, and to request that drop-off when
-        // boarding.
         routeNote:      t.routeNote || null,
       };
     }
@@ -2890,11 +3058,6 @@ class OrchestrationEngine {
         currency:      t.currency    || 'KES',
         canBook:       t.canBook     || false,
         hubLanding:    t.hubLanding  || null,
-        // Honest, train-specific policy text — the generic flight
-        // policySummary below would otherwise say "Subject to
-        // airline fare rules", which is simply wrong for a train and
-        // would be misleading given SGR isn't bookable through
-        // Bodrless yet at all (see SGR_SCHEDULE comment above).
         policySummary: t.canBook
           ? 'Bookable via SGR'
           : 'Not yet bookable through Bodrless — purchase directly via SGR (Madaraka Express) at the station or their booking portal. Price shown is the standard published fare.',
@@ -2911,11 +3074,6 @@ class OrchestrationEngine {
       cabinClass:   t.cabinClass   || null,
       checkedBags:  t.checkedBags  || null,
       carryOn:      t.carryOn      || null,
-      // FIX: ?? not || — a real 0 (non-stop) was being turned into
-      // null by `t.stops || null` (since 0 is falsy), so the ranker's
-      // `stops === 0` direct-flight bonus never fired and non-stop
-      // flights silently lost their +10. ?? only falls back on
-      // null/undefined, preserving a genuine 0.
       stops:        t.stops        ?? null,
       duration:     t.duration     || null,
       currency:     t.currency     || 'KES',
@@ -2929,42 +3087,19 @@ class OrchestrationEngine {
       passengerIds: t.passengerIds || [],
       originIata:   t.originIata   || null,
       destIata:     t.destIata     || null,
-      // NEW — real refund data from Duffel's conditions object (see
-      // duffel.js). null when the supplier didn't return this at
-      // all (e.g. TravelDuqa never provides it) — genuinely unknown
-      // is a different, honest signal from "confirmed non-refundable".
       isRefundable:          t.isRefundable          ?? null,
       refundPenalty:         t.refundPenalty          ?? null,
       refundPenaltyCurrency: t.refundPenaltyCurrency  ?? null,
-      // NEW — whether this Duffel offer can be held and paid for
-      // later, or requires payment at booking time (see duffel.js).
-      // null for suppliers that don't have this concept (TravelDuqa
-      // always uses hold-then-pay). Needed by bookingService.js
-      // BEFORE attempting to book, since Bodrless's whole flow is
-      // built around hold-then-pay and can't front real money for
-      // an instant-payment-required offer.
       requiresInstantPayment: t.requiresInstantPayment ?? null,
       paymentRequiredBy:       t.paymentRequiredBy      ?? null,
-      // NEW — derived purely from fields TravelDuqa already gives
-      // us (checkedBags/carryOn/canBook/canHold). See
-      // _formatBaggageSummary/_formatFlightPolicySummary below.
       baggageSummary: this._formatBaggageSummary(t.checkedBags, t.carryOn),
       policySummary:  this._formatFlightPolicySummary(t.canBook, t.canHold, t.isRefundable, t.refundPenalty, t.refundPenaltyCurrency),
-      // NEW — set by _searchFlights when this flight was booked to a
-      // nearby hub instead of the traveler's real destination (e.g.
-      // Malindi for a Kilifi/Watamu trip) via destinationIntel's
-      // corridor knowledge. Read by _buildTransferLegs to build an
-      // honest "hub -> real destination" transfer label.
       hubLanding:   t.hubLanding   || null,
     };
   }
 
   // ─────────────────────────────
   // BAGGAGE SUMMARY (flights)
-  // checkedBags/carryOn are quantities from TravelDuqa's baggage
-  // array (see adapters/travelduqa.js _normalizeOffers) — both
-  // default to 0 there, not null, so 0 is a real "none included"
-  // answer, not a missing-data signal.
   // ─────────────────────────────
   _formatBaggageSummary(checkedBags, carryOn) {
     const checked = Number(checkedBags) || 0;
@@ -2980,16 +3115,6 @@ class OrchestrationEngine {
 
   // ─────────────────────────────
   // POLICY SUMMARY (flights)
-  // BUG FIX (found via a real "make the refund status extremely
-  // clear" request, 2026-07-02): previously ALWAYS returned the same
-  // vague "Subject to airline fare rules" line for every flight,
-  // regardless of whether real refund data existed — TravelDuqa
-  // never provides it (genuinely unknown), but Duffel DOES via its
-  // conditions.refund_before_departure object (see duffel.js), and
-  // that real data was being silently discarded. Now builds an
-  // explicit ✅/❌ refundable statement with the real penalty amount
-  // when available, and only falls back to the honest "not
-  // confirmed" language when the supplier genuinely didn't tell us.
   // ─────────────────────────────
   _formatFlightPolicySummary(canBook, canHold, isRefundable = null, refundPenalty = null, refundPenaltyCurrency = null) {
     const bookingNote = canHold
@@ -3007,19 +3132,11 @@ class OrchestrationEngine {
     if (isRefundable === false) {
       return `❌ Non-refundable · ${bookingNote}`;
     }
-    // Genuinely unknown — supplier didn't provide refund conditions
-    // (e.g. TravelDuqa). Honest about the uncertainty rather than
-    // implying a status we don't actually have.
     return `${bookingNote} · Refund status not confirmed by the airline — check before booking if this matters to you`;
   }
 
   // ─────────────────────────────
   // BUILD PACKAGES
-  // All cross-supplier prices are converted to KES (canonical
-  // currency) before being summed, since TravelDuqa/Supabase
-  // return KES but HotelBeds returns EUR. Each line item also
-  // keeps its original price + currency for transparent display
-  // ("flight: KES 5,900 | hotel: €450 → KES 67,950").
   // ─────────────────────────────
   async _buildPackages({ outboundTransport, returnTransport, hotels, tripParams, intent, connectionInfo }) {
     const scope = intent?.productScope || { needsTransport: true, needsHotel: true, needsTransfers: true };
@@ -3094,19 +3211,6 @@ class OrchestrationEngine {
 
     const startIndex = tripParams.showAlternatives ? 1 : 0;
 
-    // Build every package CONCURRENTLY rather than one at a time. Each
-    // iteration independently does a transfer-rate lookup (Supabase) and
-    // currency conversion (sumToKES) — running them sequentially meant N
-    // packages = N round-trips back-to-back. Order doesn't matter here
-    // since rankPackages re-sorts by score downstream. Skipped slots
-    // (no transport AND no hotel) return null and are filtered out, exactly
-    // mirroring the old `continue`.
-    // NOTE: _buildTransferLegs re-queries the same agency transfer rate on
-    // every package even though that rate is constant across packages in a
-    // single search — a future win is to fetch it once and pass it in, but
-    // that touches the shared _buildTransferLegs signature (also called by
-    // multi-dest), so it's left for a deliberate follow-up rather than this
-    // latency pass.
     const built = await Promise.all(
       Array.from({ length: maxItems }, (_, i) => i).map(async (i) => {
         const ob    = hasOutbound && scope.needsTransport ? outboundTransport[(i + startIndex) % outboundTransport.length] : null;
@@ -3117,22 +3221,12 @@ class OrchestrationEngine {
 
         const nights = tripParams.nights || 1;
 
-        // Transfer legs depend on which transport mode was actually
-        // selected for THIS package (ob), so they're built per-package
-        // rather than pre-fetched once for the whole search.
         const transferLegs = scope.needsTransfers
           ? await this._buildTransferLegs(tripParams, ob, hotel)
           : [];
         const transferTotal = transferLegs.reduce((sum, leg) => sum + (leg.price || 0), 0);
         const transferCurrency = transferLegs[0]?.currency || 'KES';
 
-        // priceOnRequest legs (static bus operator catalog — see
-        // _searchStaticBusOperators) have no real fare to sum — using
-        // `ob?.price` directly would silently coerce their `null`
-        // price to 0 inside sumToKES, making the package look like
-        // that leg is free. Exclude it from the total instead, and
-        // surface a visible caveat so nobody mistakes the shown total
-        // for a complete price.
         const obAmount  = ob?.priceOnRequest  ? 0 : ob?.price;
         const retAmount = ret?.priceOnRequest ? 0 : ret?.price;
         const hasPriceOnRequestLeg = !!(ob?.priceOnRequest || ret?.priceOnRequest);
@@ -3156,17 +3250,9 @@ class OrchestrationEngine {
             mealPlan:       tripParams.mealPlan  || hotel?.mealPlan || null,
             seatPreference: tripParams.seatPreference || null,
             transportType:  ob?.transportType    || 'none',
-            // NEW — set when either leg is a priceOnRequest static
-            // catalog entry (see obAmount/retAmount above). The total
-            // shown DOES NOT include that leg's fare — this makes
-            // that fact visible to the traveler/agency rather than
-            // letting a missing price silently look like KES 0.
             priceCaveat: hasPriceOnRequestLeg
               ? "This total excludes the fare for the bus operator shown below \u2014 contact them directly to confirm price, then add it to this total."
               : null,
-            // Occupancy actually searched — carried so bookingService can
-            // detect a DOB/age drift at booking time and re-fetch a valid
-            // rateKey (see the HotelBeds search/booking age-match rules).
             occupancy: {
               adults:    tripParams.adults != null ? tripParams.adults : (tripParams.passengers || 1),
               children:  tripParams.children || 0,
@@ -3180,23 +3266,7 @@ class OrchestrationEngine {
           returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),
           hotel,
           transfers: transferLegs,
-          // Connection advisory — only present when the outbound/return
-          // leg required connecting via a regional hub AND that
-          // connecting leg (origin -> hub) has no real supplier
-          // behind it (e.g. Meru -> Nairobi is matatu-only). Never
-          // silently implies Bodrless arranged a leg it didn't.
           connectionAdvisory: this._buildConnectionAdvisory(tripParams, connectionInfo),
-          // HUB TRANSFER NOTE — present when the outbound transport
-          // (flight OR train) was booked to a nearby hub instead of
-          // the real destination (e.g. Malindi for a Kilifi/Watamu
-          // flight, or Mombasa for a Kilifi/Watamu/Diani SGR train —
-          // via destinationIntel corridor knowledge in _searchFlights/
-          // _searchTrain). Unlike connectionAdvisory above, this is
-          // NOT "arrange your own way" — the transfer leg IS booked
-          // and included below (see transferLegs / _buildTransferLegs);
-          // this note just makes plain to the traveler why a "trip to
-          // Kilifi" shows a Malindi airport or Mombasa train station
-          // in the itinerary.
           hubTransferNote: ob?.hubLanding
             ? `This trip ${ob.transportType === 'train' ? 'arrives at' : 'flies into'} ${this._titleCase(ob.hubLanding.name)} — the road transfer to ${this._titleCase(ob.hubLanding.realDestination)} is included below.`
             : null,

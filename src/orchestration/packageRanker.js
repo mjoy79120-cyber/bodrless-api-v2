@@ -16,7 +16,47 @@ const BUDGET_RANGES = {
   luxury: { min: 80000,  max: 9999999 },
 };
 
+// ─────────────────────────────────────────────
+// AFFORDABLE / REASONABLE-PRICED SORT MODE
+// NEW (2026-07-05): "cheap flight" / "affordable option" is a
+// DIFFERENT request from "cheapest flight" — confirmed directly.
+// "Cheapest" means the single absolute lowest price, full stop,
+// regardless of quality. "Cheap"/"affordable" means something
+// different: reasonably-priced options, but led with the cheapest
+// among those — not a random composite-scored order that could
+// still put a pricier-but-nicer-hotel package first just because it
+// also happens to sit "in range." Filters to packages within the
+// relevant budget band (BUDGET_RANGES; defaults to 'low' since that's
+// what accompanies this phrasing — see engine.js's _detectIntent),
+// then sorts that filtered set ascending by price. Falls back to
+// sorting the FULL unfiltered list by price if the filter would
+// otherwise return nothing — a traveler asking for something
+// affordable should never see zero results just because every
+// available option happens to sit slightly outside the band.
+// ─────────────────────────────────────────────
 function rankPackages(packages, tripParams, travelerProfile = null) {
+  if (tripParams?.wantsCheapest) {
+    return [...packages].sort((a, b) => {
+      const priceA = a.summary?.pricePerPerson ?? a.summary?.totalPrice ?? Infinity;
+      const priceB = b.summary?.pricePerPerson ?? b.summary?.totalPrice ?? Infinity;
+      return priceA - priceB;
+    });
+  }
+
+  if (tripParams?.wantsAffordableSort) {
+    const budget = tripParams.budget || 'low';
+    const range = BUDGET_RANGES[budget] || BUDGET_RANGES.low;
+    const priceOf = (pkg) => pkg.summary?.pricePerPerson ?? pkg.summary?.totalPrice ?? Infinity;
+
+    const inRange = packages.filter(pkg => {
+      const price = priceOf(pkg);
+      return price !== Infinity && price >= range.min && price <= range.max;
+    });
+
+    const pool = inRange.length > 0 ? inRange : packages;
+    return [...pool].sort((a, b) => priceOf(a) - priceOf(b));
+  }
+
   const scored = packages.map(pkg => ({
     ...pkg,
     score: _scorePackage(pkg, tripParams, travelerProfile),
@@ -84,7 +124,7 @@ function _scorePackage(pkg, tripParams, travelerProfile) {
   // completely unchanged (existing single-destination search is the
   // only current caller; it always passes one).
   if (travelerProfile) {
-    score += _travelerIntelligenceBonus(pkg, travelerProfile);
+    score += _travelerIntelligenceBonus(pkg, travelerProfile, tripParams);
   }
 
   return score;
@@ -94,7 +134,7 @@ function _scorePackage(pkg, tripParams, travelerProfile) {
 // capped contribution — if you're debugging "why did this package
 // rank where it did," each line here is a legible, single-purpose
 // reason, not a black-box multiplier.
-function _travelerIntelligenceBonus(pkg, profile) {
+function _travelerIntelligenceBonus(pkg, profile, tripParams) {
   let bonus = 0;
   const hints = profile.orchestrationHints || {};
   const weights = profile.scoringWeights || {};
@@ -128,13 +168,24 @@ function _travelerIntelligenceBonus(pkg, profile) {
     bonus += 4;
   }
 
-  // High budget sensitivity + this package is genuinely cheap
-  // relative to its own budget band (bottom half of the range).
-  // Small and capped at 2 — budget fit is already the single
-  // largest base-scale category (40 points), this only nudges
-  // among options that are already within range.
+  // BUG FIX (found via a real "make the ranker better" review,
+  // 2026-07-05): this previously only checked
+  // `pkg.summary.pricePerPerson > 0` — true for virtually every
+  // real package — so it fired UNCONDITIONALLY whenever
+  // weights.price >= 9, regardless of whether the package was
+  // actually cheap. The comment always claimed this rewards a
+  // package "genuinely cheap relative to its own budget band
+  // (bottom half of the range)" but the code never implemented that
+  // check at all. Now actually verifies the package sits in the
+  // BOTTOM HALF of its own budget band before awarding the bonus —
+  // matching what this was always supposed to do.
   if (weights.price >= 9 && pkg.summary?.pricePerPerson != null && pkg.summary.pricePerPerson > 0) {
-    bonus += 2;
+    const budget = tripParams?.budget || 'mid';
+    const range = BUDGET_RANGES[budget];
+    const bandMidpoint = range.min + (range.max - range.min) / 2;
+    if (pkg.summary.pricePerPerson <= bandMidpoint) {
+      bonus += 2;
+    }
   }
 
   return Math.min(bonus, 20);
