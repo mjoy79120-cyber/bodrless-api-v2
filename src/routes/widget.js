@@ -17,6 +17,79 @@ router.get('/', (req, res) => {
   'var previousParams = null;\n' +
   'var sessionId = null;\n' +
 
+  // ─────────────────────────────────────────────
+  // DURABLE CONVERSATION STATE (2026-07-05)
+  // BUG FIX (found via a real "does this reach the widget too"
+  // review): previously conversationHistory/previousParams/sessionId
+  // lived ONLY as plain in-memory JS variables in this one open
+  // browser tab — a page refresh, an accidental tab close, or
+  // switching devices wiped the entire conversation with no
+  // recovery at all. This is arguably a bigger gap than WhatsApp had
+  // before its own durable-cache fix, since WhatsApp at least
+  // persisted state server-side already. Uses localStorage (NOT a
+  // restriction here — that only applies to Claude.ai's own Artifact
+  // preview environment, not real code shipped to a client's site)
+  // scoped per-agency so multiple Bodrless-powered widgets on
+  // different sites never collide. STORAGE_KEY is a container for
+  // storing widget stat.
+  //
+  // Stores a lightweight TRANSCRIPT (not just backend context) so a
+  // returning visitor sees their actual prior messages AND package
+  // cards redrawn with fully working "Book Now" buttons — addPackage/
+  // addItinerary only need the same plain data object `p` whether it
+  // came from a live fetch response or a restored transcript entry,
+  // so replaying is exactly as functional as the original render.
+  //
+  // 24-HOUR CUTOFF: same honest staleness posture as the WhatsApp
+  // package cache (services/packageCache.js) — restored state older
+  // than 24 hours is NOT trusted silently (prices/availability/dates
+  // could be entirely stale by then); the visitor just starts fresh,
+  // same as a new visitor would.
+  // ─────────────────────────────────────────────
+  'var STORAGE_KEY = "bodrless_widget_' + agencyKey + '";\n' +
+  'var transcript = [];\n' +
+  'var hasRestoredHistory = false;\n' +
+
+  'function persistState() {\n' +
+  '  try {\n' +
+  '    var payload = {\n' +
+  '      v: 1,\n' +
+  '      savedAt: Date.now(),\n' +
+  '      transcript: transcript.slice(-20),\n' +
+  '      conversationHistory: conversationHistory,\n' +
+  '      previousParams: previousParams,\n' +
+  '      sessionId: sessionId\n' +
+  '    };\n' +
+  '    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));\n' +
+  '  } catch (e) {\n' +
+  '    /* localStorage unavailable (private browsing, quota exceeded, etc.) —\n' +
+  '       conversation simply will not persist; never breaks the widget itself. */\n' +
+  '  }\n' +
+  '}\n' +
+
+  'function loadPersistedState() {\n' +
+  '  try {\n' +
+  '    var raw = localStorage.getItem(STORAGE_KEY);\n' +
+  '    if (!raw) return null;\n' +
+  '    var parsed = JSON.parse(raw);\n' +
+  '    if (!parsed || parsed.v !== 1) return null;\n' +
+  '    var ageMs = Date.now() - (parsed.savedAt || 0);\n' +
+  '    if (ageMs > 24 * 60 * 60 * 1000) return null;\n' +
+  '    return parsed;\n' +
+  '  } catch (e) {\n' +
+  '    return null;\n' +
+  '  }\n' +
+  '}\n' +
+
+  'var __restored = loadPersistedState();\n' +
+  'if (__restored) {\n' +
+  '  conversationHistory = __restored.conversationHistory || [];\n' +
+  '  previousParams = __restored.previousParams || null;\n' +
+  '  sessionId = __restored.sessionId || null;\n' +
+  '  transcript = __restored.transcript || [];\n' +
+  '  hasRestoredHistory = transcript.length > 0;\n' +
+  '}\n' +
+
   'var style = document.createElement("style");\n' +
   'style.innerHTML = [":root{--et-navy:#1E2A5E;--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F8F9FC;--et-border:#E4E8F0;--et-muted:#8892A4;--et-green:#27ae60;}",\n' +
   '"#bodrless-chat{position:fixed;bottom:90px;right:24px;width:390px;height:630px;background:var(--et-cream);z-index:999999;display:none;flex-direction:column;border-radius:20px;overflow:hidden;box-shadow:0 20px 60px rgba(30,42,94,0.18);font-family:Arial,sans-serif;}",\n' +
@@ -137,7 +210,7 @@ router.get('/', (req, res) => {
   'triggerBtn.innerText = "Plan Your Trip";\n' +
   'document.body.appendChild(triggerBtn);\n' +
   'var welcomeShown = false;\n' +
-  'triggerBtn.onclick = function() { chatDiv.classList.add("open"); input.focus(); if (!welcomeShown) { welcomeShown = true; showWelcome(); } };\n' +
+  'triggerBtn.onclick = function() { chatDiv.classList.add("open"); input.focus(); if (!welcomeShown) { welcomeShown = true; if (hasRestoredHistory) { replayTranscript(); } else { showWelcome(); } } };\n' +
   'closeBtn.onclick = function() { chatDiv.classList.remove("open"); };\n' +
 
   'function showWelcome() {\n' +
@@ -161,6 +234,39 @@ router.get('/', (req, res) => {
   '  div.appendChild(p);\n' +
   '  div.appendChild(suggestionsDiv);\n' +
   '  messages.appendChild(div);\n' +
+  '}\n' +
+
+  // ─────────────────────────────────────────────
+  // REPLAY TRANSCRIPT
+  // Rebuilds the visible conversation from a restored localStorage
+  // transcript on the widget's first open after a page reload — a
+  // short italic divider marks where the restored history begins.
+  // addPackage/addItinerary need nothing special to work here: they
+  // just take a plain data object `p` and build fresh DOM + event
+  // handlers each call, exactly the same whether `p` came from a
+  // live fetch response or a restored transcript entry — so "Book
+  // Now" buttons on restored package cards are fully functional, not
+  // a static readonly replay.
+  // ─────────────────────────────────────────────
+  'function replayTranscript() {\n' +
+  '  var note = document.createElement("div");\n' +
+  '  note.className = "msg bot";\n' +
+  '  note.style.fontStyle = "italic";\n' +
+  '  note.style.opacity = "0.7";\n' +
+  '  note.innerText = "\u2014 Continuing where you left off \u2014";\n' +
+  '  messages.appendChild(note);\n' +
+  '  for (var ri = 0; ri < transcript.length; ri++) {\n' +
+  '    var entry = transcript[ri];\n' +
+  '    if (!entry || !entry.type) continue;\n' +
+  '    if (entry.type === "user" || entry.type === "bot") {\n' +
+  '      addMsg(entry.text || "", entry.type);\n' +
+  '    } else if (entry.type === "packages" && Array.isArray(entry.packages)) {\n' +
+  '      entry.packages.slice(0, 4).forEach(function(p, i) { addPackage(p, i); });\n' +
+  '    } else if (entry.type === "itinerary" && entry.pkg) {\n' +
+  '      addItinerary(entry.pkg);\n' +
+  '    }\n' +
+  '  }\n' +
+  '  messages.scrollTop = messages.scrollHeight;\n' +
   '}\n' +
 
   'function addMsg(text, type) {\n' +
@@ -382,10 +488,6 @@ router.get('/', (req, res) => {
   '  } else {\n' +
   '    needsFlightDetails = !!(p.transport && (p.transport.transportType || "flight") === "flight");\n' +
   '  }\n' +
-  // Seat selection is a Duffel-specific integration (see
-  // seatSelection.js) — only offered when the flight actually came
-  // from that supplier. Silently absent for TravelDuqa flights
-  // rather than showing a control that would just fail.
   '  var offersSeatSelection = !p.isMultiDestination && !!(p.transport && p.transport.supplier === "duffel");\n' +
 
   '  var form = document.createElement("div");\n' +
@@ -649,11 +751,6 @@ router.get('/', (req, res) => {
   '    if (!isbus && transport.baggageSummary) tSub += " | " + transport.baggageSummary;\n' +
   '    tSub += " | " + fmtPrice(transport.price, transport.currency);\n' +
   '    pkgBody.appendChild(makeRow(tLabel, tName, tSub));\n' +
-  // Refund/cancellation status as its own prominent, color-coded
-  // callout — never buried in the combined line above. tone reflects
-  // real isRefundable data when available (flights via Duffel);
-  // falls back to neutral for genuinely unconfirmed status or bus
-  // cancellationPolicy text.
   '    var tPolicyText = transport.policySummary || (isbus ? transport.cancellationPolicy : null);\n' +
   '    if (tPolicyText) {\n' +
   '      var tTone = transport.isRefundable === true ? "good" : transport.isRefundable === false ? "warn" : "neutral";\n' +
@@ -873,6 +970,8 @@ router.get('/', (req, res) => {
   '  var text = input.value.trim();\n' +
   '  if (!text) return;\n' +
   '  addMsg(text, "user");\n' +
+  '  transcript.push({ type: "user", text: text });\n' +
+  '  persistState();\n' +
   '  input.value = "";\n' +
   '  showTyping();\n' +
   '  fetch("' + apiBase + '/api/trips/orchestrate", {\n' +
@@ -894,12 +993,18 @@ router.get('/', (req, res) => {
   '    if (data.tripParams) previousParams = data.tripParams;\n' +
   '    if (data.conversationHistory) conversationHistory = data.conversationHistory;\n' +
   '    if (data.needsClarification) {\n' +
-  '      addMsg(data.text || "Could you give me a bit more detail about your trip?", "bot");\n' +
+  '      var clarifyText = data.text || "Could you give me a bit more detail about your trip?";\n' +
+  '      addMsg(clarifyText, "bot");\n' +
+  '      transcript.push({ type: "bot", text: clarifyText });\n' +
+  '      persistState();\n' +
   '      return;\n' +
   '    }\n' +
   '    var packages = data && data.packages ? data.packages : [];\n' +
   '    if (!packages.length) {\n' +
-  '      addMsg((data && data.text) ? data.text : "No packages found. Try specifying destination, number of people and nights.", "bot");\n' +
+  '      var noneText = (data && data.text) ? data.text : "No packages found. Try specifying destination, number of people and nights.";\n' +
+  '      addMsg(noneText, "bot");\n' +
+  '      transcript.push({ type: "bot", text: noneText });\n' +
+  '      persistState();\n' +
   '      return;\n' +
   '    }\n' +
   '    var isItinerary = packages.length === 1 && packages[0] && packages[0].isMultiDestination;\n' +
@@ -921,11 +1026,16 @@ router.get('/', (req, res) => {
   '      else responseMsg = "Here are the updated options:";\n' +
   '    }\n' +
   '    addMsg(responseMsg, "bot");\n' +
+  '    transcript.push({ type: "bot", text: responseMsg });\n' +
   '    if (isItinerary) {\n' +
   '      addItinerary(packages[0]);\n' +
+  '      transcript.push({ type: "itinerary", pkg: packages[0] });\n' +
   '    } else {\n' +
-  '      packages.slice(0, 4).forEach(function(p, i) { addPackage(p, i); });\n' +
+  '      var limitedPackages = packages.slice(0, 4);\n' +
+  '      limitedPackages.forEach(function(p, i) { addPackage(p, i); });\n' +
+  '      transcript.push({ type: "packages", packages: limitedPackages });\n' +
   '    }\n' +
+  '    persistState();\n' +
   '  })\n' +
   '  .catch(function(e) {\n' +
   '    hideTyping();\n' +
