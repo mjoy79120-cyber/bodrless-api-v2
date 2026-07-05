@@ -81,17 +81,60 @@ async function _resolveStaleBooking(booking) {
   await _notifyIfWhatsApp(bookingRef);
 }
 
+// ─────────────────────────────────────────────
+// NOTIFY IF WHATSAPP
+// BUG FIX (found via a real sandbox test, 2026-07-04): this
+// previously sent to a hardcoded process.env.WHATSAPP_PHONE_NUMBER_ID
+// — a single global env var left over from before multi-agency
+// support existed. Every other real notification path in this
+// codebase (intasend.js's _notifyPaymentFailed, bookingService.js's
+// _fetchAgencyAndFireVoucher) correctly resolves the agency-specific
+// whatsapp_phone_number_id from the `agencies` table via the
+// booking's agency_id — this was the one place still using the
+// stale global fallback, and it was WRONG for real bookings, not
+// just imprecise: Meta rejected it outright with a real
+// GraphMethodException ("Object with ID '...' does not exist"),
+// meaning every sweeper-triggered cancellation notice for a real
+// agency booking silently failed to reach the traveler. Now resolves
+// the same way every other notification path does, with the old
+// env var kept ONLY as a last-resort fallback if an agency genuinely
+// has no whatsapp_phone_number_id set (rather than assuming one
+// global ID is correct for every agency).
+// ─────────────────────────────────────────────
 async function _notifyIfWhatsApp(bookingRef) {
   try {
     const { data: booking } = await supabase
       .from('bookings')
-      .select('channel, guest_phone')
+      .select('channel, guest_phone, agency_id')
       .eq('booking_ref', bookingRef)
       .single();
 
     if (!booking || booking.channel !== 'whatsapp' || !booking.guest_phone) return;
 
-    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    let phoneNumberId = null;
+    if (booking.agency_id) {
+      try {
+        const { data: agency } = await supabase
+          .from('agencies')
+          .select('whatsapp_phone_number_id')
+          .eq('id', booking.agency_id)
+          .single();
+        phoneNumberId = agency?.whatsapp_phone_number_id || null;
+      } catch (err) {
+        logger.warn('Sweeper: could not resolve agency whatsapp_phone_number_id', { bookingRef, agencyId: booking.agency_id, error: err.message });
+      }
+    }
+
+    // Last-resort fallback only — should rarely fire for a real
+    // booking with a real agency_id, and is NOT assumed correct for
+    // any given agency the way it previously was used unconditionally.
+    if (!phoneNumberId) {
+      phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || null;
+      if (phoneNumberId) {
+        logger.warn('Sweeper: falling back to global WHATSAPP_PHONE_NUMBER_ID — agency-specific ID was not found', { bookingRef, agencyId: booking.agency_id });
+      }
+    }
+
     if (!phoneNumberId) return;
 
     const to = booking.guest_phone.replace(/^\+/, '').replace(/^0/, '254');
