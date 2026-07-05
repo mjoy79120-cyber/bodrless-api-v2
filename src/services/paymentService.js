@@ -162,18 +162,30 @@ class PaymentService {
 
   // ─────────────────────────────────────────────
   // CHECK PAYMENT STATUS (poll fallback if webhook is delayed/missed)
-  // Endpoint per IntaSend docs: GET /v1/payment/status/{invoice_id}/
-  // NOT independently verified against a real call — same caveat as
-  // triggerStkPush above. Confirm the exact path/response shape with
-  // a real test before relying on this for production polling.
+  //
+  // BUG FIX (found via a real sandbox test, 2026-07-04): this
+  // previously called GET /v1/payment/status/{invoice_id}/ — that
+  // endpoint does not exist on IntaSend's real API. The real,
+  // documented endpoint (developers.intasend.com/docs/payment-status)
+  // is a POST to /v1/payment/status/ with invoice_id in the JSON
+  // body, not the URL path. The old (wrong) call was silently
+  // returning IntaSend's generic 404 HTML page rather than a JSON
+  // error, which meant the payment sweeper could NEVER successfully
+  // verify a real payment via this fallback path — any booking whose
+  // webhook was delayed or missed would be wrongly auto-cancelled
+  // after the payment window expired, even if the customer's payment
+  // had genuinely succeeded. This was a real, active bug, not just a
+  // cosmetic one — confirmed by the raw 404 HTML in production logs
+  // where a JSON error or real status should have appeared.
   // ─────────────────────────────────────────────
   async checkStatus(invoiceId) {
     if (!this.secretKey) {
       throw new Error('IntaSend is not configured (missing INTASEND_SECRET_KEY).');
     }
     try {
-      const response = await axios.get(
-        `${this.baseUrl}/v1/payment/status/${invoiceId}/`,
+      const response = await axios.post(
+        `${this.baseUrl}/v1/payment/status/`,
+        { invoice_id: invoiceId },
         { headers: this._headers(), timeout: 15000 }
       );
       return response.data;
