@@ -29,6 +29,12 @@
  *   parse trip params out of passenger text and corrupt the booking)
  * → Otherwise, run normal orchestration with persistent memory
  * → Bodrless replies dynamically via WhatsApp
+ *
+ * PACKAGE CACHE (2026-07-05): the "which packages did option '2'
+ * refer to" cache now lives in Supabase (see services/packageCache.js)
+ * instead of an in-memory Map — survives a Render restart, so a
+ * traveler who paused mid-conversation to show a friend the options
+ * and comes back later can still reply with a number successfully.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -40,9 +46,8 @@ const whatsappService = require('../services/whatsapp');
 const whatsappBookingFlow = require('../services/whatsappBooking');
 const whatsappCancelFlow = require('../services/whatsappCancelFlow');
 const whatsappChangeFlow = require('../services/whatsappChangeFlow');
+const packageCache = require('../services/packageCache');
 const { logger } = require('../utils/logger');
-
-const recentPackagesByPhone = new Map();
 
 const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|phone|email|dob|date of birth)\s*:/im;
 
@@ -87,14 +92,14 @@ router.post('/whatsapp', async (req, res) => {
       // button sent alongside a package card (see whatsapp.js's
       // _sendPackageCard/sendButtons). The button's id was set to
       // `photo_<index>` where index matches directly into the SAME
-      // recentPackagesByPhone cache already used for "reply with
-      // the option number to book" — no separate correlation table
+      // durable package cache already used for "reply with the
+      // option number to book" — no separate correlation table
       // needed. Not tied to any booking session, so checked first.
       if (buttonId) {
         const photoMatch = buttonId.match(/^photo_(\d+)$/);
         if (photoMatch) {
           const idx = parseInt(photoMatch[1], 10);
-          const cached = recentPackagesByPhone.get(from);
+          const cached = await packageCache.get(from);
           const pkg = cached?.packages?.[idx];
           const imageUrl = pkg?.hotel?.images?.[0];
           if (imageUrl) {
@@ -174,15 +179,40 @@ router.post('/whatsapp', async (req, res) => {
 
     const selectionMatch = prompt.trim().match(/^(?:option\s*)?([1-4])$/i);
     if (selectionMatch) {
-      const cached = recentPackagesByPhone.get(from);
+      const cached = await packageCache.get(from);
       if (cached && cached.packages && cached.packages.length > 0) {
         const idx = parseInt(selectionMatch[1], 10) - 1;
         const selectedPackage = cached.packages[idx];
         if (selectedPackage) {
+          // BUG FIX (found via a real "conversation memory" review,
+          // 2026-07-05): if the cached list is more than an hour
+          // old, say so honestly before proceeding — real prices/
+          // availability can move on, same as an agent re-confirming
+          // before booking. Booking-time re-verification (Duffel
+          // offer expiry, HotelBeds rate re-check) already exists
+          // downstream regardless — this is about setting honest
+          // expectations, not a new safety mechanism.
+          if (cached.isStale) {
+            await whatsappService.sendText(phoneNumberId, from,
+              "One moment — just double-checking that's still available before we begin..."
+            );
+          }
           await whatsappBookingFlow.startBooking({ phoneNumberId, from, agencyId, selectedPackage });
           return;
         }
       }
+      // BUG FIX (found via a real "conversation memory" review,
+      // 2026-07-05): previously, a bare "3"/"option 3" with no
+      // matching cache (e.g. after a Render restart wiped the old
+      // in-memory Map, or the cache genuinely expired) silently fell
+      // through into normal orchestration below, which tried to
+      // parse "3" as a brand-new trip search — producing a
+      // confusing, unrelated response. Now tells the traveler
+      // plainly what happened instead.
+      await whatsappService.sendText(phoneNumberId, from,
+        "I don't have a recent list of options for you anymore — could you search again? For example: \"Nairobi to Zanzibar, 3 nights\"."
+      );
+      return;
     }
 
     if (PASSENGER_DETAIL_LINE.test(prompt.trim())) {
@@ -231,7 +261,7 @@ router.post('/whatsapp', async (req, res) => {
       }
 
       if (allPackagesInOrder.length > 0) {
-        recentPackagesByPhone.set(from, { packages: allPackagesInOrder, cachedAt: Date.now() });
+        await packageCache.save(from, allPackagesInOrder, result.tripParams);
         await whatsappService.sendText(phoneNumberId, from,
           `Reply with the option number (1-${allPackagesInOrder.length}) to book one of the options above.`
         );
@@ -243,7 +273,7 @@ router.post('/whatsapp', async (req, res) => {
 
     if (result.packages && result.packages.length > 0) {
       await whatsappService.sendPackages(phoneNumberId, from, result.packages);
-      recentPackagesByPhone.set(from, { packages: result.packages, cachedAt: Date.now() });
+      await packageCache.save(from, result.packages, result.tripParams);
 
       await whatsappService.sendText(phoneNumberId, from,
         `Reply with the option number (1-${result.packages.length}) to book that option.`

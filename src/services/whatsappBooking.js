@@ -34,12 +34,38 @@
  * State (including the in-progress passenger list before Gender/Type
  * is fully collected) lives in whatsapp_booking_sessions so the
  * conversation survives across separate webhook calls.
+ *
+ * MID-BOOKING PIVOT (2026-07-05): previously, ANY message that
+ * didn't match the exact expected format for the current step (a
+ * details block, a gender/type tap, yes/no) was just re-prompted for
+ * that same format again — even a clear "actually, can I get a
+ * different flight" got treated as an invalid answer to whatever
+ * question was pending, not as what it actually was. Now detects
+ * this kind of "I want something different" message before the
+ * step-specific handlers run, cancels the current session, and
+ * re-shows the traveler's cached package list (see
+ * services/packageCache.js) so they can pick something else
+ * immediately instead of being stuck re-answering a question they
+ * no longer want to answer.
+ *
+ * WELCOME-BACK RESUME (2026-07-05): if a traveler returns to an
+ * in-progress booking after a real gap (20+ minutes — e.g. they
+ * paused to think it over, or got distracted), a short "welcome
+ * back" note is sent before continuing normal step handling, so the
+ * conversation doesn't just silently pick up as if no time passed.
+ *
+ * REQUIRES A MIGRATION — whatsapp_booking_sessions needs a new
+ * column for this to work (defaults to null on old rows, which is
+ * treated as "no gap check possible", so this fails safe):
+ *   alter table whatsapp_booking_sessions
+ *     add column if not exists last_activity_at timestamptz;
  * ─────────────────────────────────────────────────────────────
  */
 
 const supabase = require('../utils/supabase');
 const bookingService = require('./bookingService');
 const whatsappService = require('./whatsapp');
+const packageCache = require('./packageCache');
 const { logger } = require('../utils/logger');
 
 const FORMAT_TEMPLATE =
@@ -67,6 +93,19 @@ const GENDER_TYPE_OPTIONS = [
   { id: 'gt_male_child',   title: 'Male, Child' },
   { id: 'gt_female_child', title: 'Female, Child' },
 ];
+
+// ─────────────────────────────────────────────
+// MID-BOOKING PIVOT DETECTION
+// Deliberately conservative — must NOT fire on genuine answers to
+// the current step's question (a passenger-details block, "male
+// adult", "yes"/"no"). See _looksLikeExpectedAnswer, checked first;
+// this pattern is only consulted when that check fails.
+// ─────────────────────────────────────────────
+const WANTS_SOMETHING_DIFFERENT = /\b(actually|change (my|the)?\s*(flight|hotel|option|mind)|different (flight|hotel|option)|start over|restart|pick (a )?different|go back|never ?mind|not this one|wait,? (actually|i)|can i (get|have) a different)\b/i;
+
+const PASSENGER_DETAIL_LINE_LOCAL = /^(name|id\/passport no|id\/passport|id|passport|gender|phone|email|dob|date of birth)\s*:/im;
+
+const RESUME_GAP_MS = 20 * 60 * 1000; // 20 minutes
 
 class WhatsAppBookingFlow {
 
@@ -170,6 +209,7 @@ class WhatsAppBookingFlow {
       passenger_count: selectedPackage.summary?.passengers || 1,
       current_step: 'awaiting_details_message',
       passengers_collected: [],
+      last_activity_at: new Date().toISOString(),
     });
 
     const passengerCount = selectedPackage.summary?.passengers || 1;
@@ -204,6 +244,31 @@ class WhatsAppBookingFlow {
       return true;
     }
 
+    // ─────────────────────────────────────────────
+    // WELCOME-BACK RESUME
+    // Only fires when we have a real prior timestamp AND the gap
+    // since it exceeds the threshold — a brand-new session (no
+    // last_activity_at yet, or a very recent one) never triggers
+    // this. Fails safe on old rows predating the migration (null
+    // last_activity_at simply skips the check, same as before).
+    // ─────────────────────────────────────────────
+    const lastActivityMs = session.last_activity_at ? new Date(session.last_activity_at).getTime() : null;
+    if (lastActivityMs && (Date.now() - lastActivityMs) > RESUME_GAP_MS) {
+      await whatsappService.sendText(phoneNumberId, from, "Welcome back! Picking up your booking where we left off...");
+    }
+    await this._touchActivity(from);
+
+    // ─────────────────────────────────────────────
+    // MID-BOOKING PIVOT
+    // Only consulted when the message does NOT look like a valid
+    // answer to whatever is currently being asked — a real "yes"/
+    // "no", a real passenger-details block, or a real gender/type
+    // reply always takes priority and is handled normally below.
+    // ─────────────────────────────────────────────
+    if (text && WANTS_SOMETHING_DIFFERENT.test(text.trim()) && !this._looksLikeExpectedAnswer(text, session)) {
+      return this._handlePivotAway({ phoneNumberId, from });
+    }
+
     if (session.current_step === 'awaiting_details_message') {
       if (!text) return false;
       return this._handleDetailsMessage({ phoneNumberId, from, text, session });
@@ -219,6 +284,63 @@ class WhatsAppBookingFlow {
     }
 
     return false;
+  }
+
+  // ─────────────────────────────────────────────
+  // Does this text look like a genuine answer to the CURRENT step's
+  // question, rather than a "wants something different" pivot?
+  // Checked before the pivot pattern is allowed to fire — a real
+  // answer always wins even if it happens to also contain a word
+  // like "actually" somewhere in a passenger's details.
+  // ─────────────────────────────────────────────
+  _looksLikeExpectedAnswer(text, session) {
+    const t = text.trim();
+    if (session.current_step === 'awaiting_price_approval') {
+      return /^(yes|yeah|y|ok|okay|approve|confirmed?|sure|proceed|go ahead|no|nope|n|decline|reject|don'?t)$/i.test(t);
+    }
+    if (session.current_step === 'awaiting_gender_type') {
+      return /\b(male|female|\bm\b|\bf\b)\b/i.test(t) || /\b(adult|child|kid|minor)\b/i.test(t);
+    }
+    if (session.current_step === 'awaiting_details_message') {
+      return PASSENGER_DETAIL_LINE_LOCAL.test(t);
+    }
+    return false;
+  }
+
+  // ─────────────────────────────────────────────
+  // HANDLE A MID-BOOKING PIVOT
+  // Cancels the current session, then re-shows the traveler's
+  // cached package list (see services/packageCache.js) so they can
+  // pick something else immediately — rather than making them
+  // explicitly type "cancel" first and then search all over again.
+  // ─────────────────────────────────────────────
+  async _handlePivotAway({ phoneNumberId, from }) {
+    await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
+
+    const cached = await packageCache.get(from);
+    if (cached && cached.packages?.length > 0) {
+      await whatsappService.sendText(phoneNumberId, from, "No problem — here are your saved options again:");
+      await whatsappService.sendPackages(phoneNumberId, from, cached.packages);
+      await whatsappService.sendText(phoneNumberId, from,
+        `Reply with the option number (1-${cached.packages.length}) to book a different one, or search again for something new.`
+      );
+    } else {
+      await whatsappService.sendText(phoneNumberId, from,
+        "No problem — that booking's been cancelled. Go ahead and search again whenever you're ready."
+      );
+    }
+    return true;
+  }
+
+  async _touchActivity(phone) {
+    try {
+      await supabase
+        .from('whatsapp_booking_sessions')
+        .update({ last_activity_at: new Date().toISOString() })
+        .eq('phone', phone);
+    } catch (err) {
+      logger.warn('Could not update last_activity_at', { phone, error: err.message });
+    }
   }
 
   _parseDetailsMessage(text, expectedCount) {
