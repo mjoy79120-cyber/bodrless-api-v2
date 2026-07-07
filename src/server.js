@@ -6,22 +6,28 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const https = require('https');
-const { logger } = require('./utils/logger');
+const { logger } = require('./src/utils/logger');
 
-const tripRoutes = require('./routes/trips');
-const webhookRoutes = require('./routes/webhooks');
-const intasendWebhookRoutes = require('./routes/intasend');
-const duffelWebhookRoutes = require('./routes/duffelWebhooks');
-const agencyRoutes = require('./routes/agencies');
-const healthRoutes = require('./routes/health');
-const uploadRoutes = require('./routes/uploads');
-const widgetRoutes = require('./routes/widget');
-const apiV1Routes = require('./routes/api');
-const adminRoutes = require('./routes/admin');
-const { startSweeper } = require('./services/paymentSweeper');
-const tracking = require('./services/trackingService');
-const insightsEngine = require('./services/insightsEngine');
-const hotelbedsContent = require('./services/hotelbedsContent');
+const tripRoutes = require('./src/routes/trips');
+const webhookRoutes = require('./src/routes/webhooks');
+const intasendWebhookRoutes = require('./src/routes/intasend');
+const duffelWebhookRoutes = require('./src/routes/duffelWebhooks');
+const agencyRoutes = require('./src/routes/agencies');
+const healthRoutes = require('./src/routes/health');
+const uploadRoutes = require('./src/routes/uploads');
+const widgetRoutes = require('./src/routes/widget');
+const apiV1Routes = require('./src/routes/api');
+const adminRoutes = require('./src/routes/admin');
+const { startSweeper } = require('./src/services/paymentSweeper');
+const tracking = require('./src/services/trackingService');
+const insightsEngine = require('./src/services/insightsEngine');
+const hotelbedsContent = require('./src/services/hotelbedsContent');
+
+// ── Hotel direct ──────────────────────────────────────────────
+const cookieParser  = require('cookie-parser');
+const hotelRoutes   = require('./src/routes/hotelRoutes');
+const hotelAdminRouter = require('./src/routes/hotelAdmin');
+// ─────────────────────────────────────────────────────────────
 
 const app = express();
 
@@ -37,38 +43,27 @@ app.use(helmet({
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-api-key', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'x-api-key', 'x-hotel-key', 'Authorization'],
 }));
 
 // JSON parsing with raw-body capture.
-// The `verify` callback runs on every JSON request BEFORE the body
-// is parsed, and stashes the exact raw bytes (as a UTF-8 string) on
-// req.rawBody. The Duffel webhook route needs this for HMAC
-// signature verification — a re-stringified req.body would not
-// reliably match the bytes Duffel actually signed. Everything else
-// in the app still sees req.body as parsed JSON, unchanged.
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf.toString('utf8');
   }
 }));
 
+// Cookie parser — required for hotel admin panel session cookies
+app.use(cookieParser());
+
 app.set('trust proxy', 1);
 
 // ── Public Webhook Routes (no auth, no rate limit) ────
-// Mounted BEFORE the /api/ rate limiter on purpose: webhooks
-// authenticate themselves (HMAC signatures / provider tokens), and
-// rate-limiting them risks silently dropping signed provider
-// notifications during a burst — e.g. a mass flight-disruption
-// event pushing many Duffel airline-initiated-change events at
-// once. Express matches middleware in registration order, so these
-// routes are simply never seen by the limiter below.
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/webhooks', intasendWebhookRoutes);
 app.use('/api/webhooks', duffelWebhookRoutes);
 
-// Rate limiting (everything under /api/ EXCEPT the webhook routes
-// mounted above)
+// Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -90,21 +85,35 @@ app.use('/widget.js', (req, res, next) => {
   next();
 });
 
-// ── Other Public Routes (no auth) ─────────────────────
+// ── Public Routes ─────────────────────────────────────
 app.use('/health', healthRoutes);
 app.use('/widget.js', widgetRoutes);
+
+// ── Hotel Direct API routes ───────────────────────────
+// Auth via x-hotel-key header (= hotel_groups.slug).
+// Completely separate from agency auth (x-api-key).
+// M-Pesa webhook at /api/hotel/webhook/mpesa needs no auth
+// (IntaSend calls it directly) — handled inside hotelRoutes.
+app.use('/api/hotel', hotelRoutes);
+
+// ── Hotel Admin Panel ─────────────────────────────────
+// Token-based auth stored in cookie. Each hotel group logs in
+// with their own admin_token from hotel_groups table.
+// Scope: hotels.bodrless.com can CNAME to the same Render instance
+// and hit this path, or it's accessible at /hotel-admin directly.
+app.use('/hotel-admin', hotelAdminRouter);
 
 // ── Public API v1 (OTA/partner API) ──────────────────
 app.use('/api/v1', apiV1Routes);
 
-// ── Agency routes (auth handled inside the router) ───
+// ── Agency routes ─────────────────────────────────────
 app.use('/api/agencies', agencyRoutes);
 
-// ── Admin dashboard (protected by BODRLESS_ADMIN_KEY) ─
+// ── Admin dashboard ───────────────────────────────────
 app.use('/admin', adminRoutes);
 
-// ── Other Protected Routes ────────────────────────────
-const { authenticateAgency } = require('./middleware/auth');
+// ── Protected Routes ──────────────────────────────────
+const { authenticateAgency } = require('./src/middleware/auth');
 app.use('/api/trips',   authenticateAgency, tripRoutes);
 app.use('/api/uploads', authenticateAgency, uploadRoutes);
 
@@ -121,14 +130,17 @@ app.get('/', (req, res) => {
     version: '1.0',
     description: 'Trip planning and booking infrastructure for travel agents and OTAs',
     endpoints: {
-      public_api:  '/api/v1',
-      widget:      '/widget.js?key=YOUR_AGENCY_ID',
-      webhooks:    '/api/webhooks/whatsapp',
-      intasend_webhook: '/api/webhooks/intasend',
-      duffel_webhook:   '/api/webhooks/duffel',
-      health:      '/health',
-      signup:      'POST /api/agencies/signup',
-      register:    'POST /api/agencies/register',
+      public_api:         '/api/v1',
+      widget:             '/widget.js?key=YOUR_AGENCY_ID',
+      hotel_widget:       '/widget.js?key=YOUR_HOTEL_SLUG&mode=hotel_direct',
+      hotel_api:          '/api/hotel/orchestrate',
+      hotel_admin:        '/hotel-admin/login',
+      webhooks:           '/api/webhooks/whatsapp',
+      hotel_mpesa_webhook:'/api/hotel/webhook/mpesa',
+      intasend_webhook:   '/api/webhooks/intasend',
+      duffel_webhook:     '/api/webhooks/duffel',
+      health:             '/health',
+      signup:             'POST /api/agencies/signup',
     },
     docs: 'https://bodrless-api-v2.onrender.com/api/v1',
   });
@@ -148,32 +160,18 @@ app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Bodrless API running on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV}`);
 
-  // Start the payment sweeper — auto-cancels stale unpaid HotelBeds
-  // bookings past their payment deadline (the Option C safety net).
   startSweeper();
 
-  // Check every 5 minutes for bookings stuck in awaiting_payment
-  // for more than 30 minutes and write a critical alert.
   setInterval(() => tracking.checkStuckPayments(), 5 * 60 * 1000);
   logger.info('Stuck payment checker started (every 5 min)');
 
-  // Refresh pattern-detection insights every hour (dead-end
-  // destinations, parser struggle, conversion gaps, channel
-  // friction, repeat-no-booking travelers, supplier drift). Read-
-  // only analysis over existing data — never changes live search/
-  // ranking behavior. Also run once on startup so the dashboard
-  // isn't empty for up to an hour after a fresh deploy.
   insightsEngine.refreshAll().catch(err => logger.error('Initial insights refresh failed', { error: err.message }));
   setInterval(() => insightsEngine.refreshAll(), 60 * 60 * 1000);
   logger.info('Insights engine scheduled (hourly, plus on startup)');
 
-   // HotelBeds Content sync — disabled unless explicitly enabled.
-  // Set ENABLE_HOTELBEDS_CONTENT_SYNC=true to turn it on.
   if (process.env.ENABLE_HOTELBEDS_CONTENT_SYNC === 'true') {
     hotelbedsContent.syncAll().catch(err =>
-      logger.error('Initial HotelBeds content sync failed', {
-        error: err.message
-      })
+      logger.error('Initial HotelBeds content sync failed', { error: err.message })
     );
 
     const HOTELBEDS_CONTENT_SYNC_INTERVAL_MS =
@@ -181,12 +179,9 @@ app.listen(PORT, '0.0.0.0', () => {
       24 * 60 * 60 * 1000;
 
     setInterval(
-      () =>
-        hotelbedsContent.syncAll().catch(err =>
-          logger.error('Scheduled HotelBeds content sync failed', {
-            error: err.message
-          })
-        ),
+      () => hotelbedsContent.syncAll().catch(err =>
+        logger.error('Scheduled HotelBeds content sync failed', { error: err.message })
+      ),
       HOTELBEDS_CONTENT_SYNC_INTERVAL_MS
     );
 
