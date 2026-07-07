@@ -6,27 +6,27 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const https = require('https');
-const { logger } = require('./src/utils/logger');
+const { logger } = require('./utils/logger');
 
-const tripRoutes = require('./src/routes/trips');
-const webhookRoutes = require('./src/routes/webhooks');
-const intasendWebhookRoutes = require('./src/routes/intasend');
-const duffelWebhookRoutes = require('./src/routes/duffelWebhooks');
-const agencyRoutes = require('./src/routes/agencies');
-const healthRoutes = require('./src/routes/health');
-const uploadRoutes = require('./src/routes/uploads');
-const widgetRoutes = require('./src/routes/widget');
-const apiV1Routes = require('./src/routes/api');
-const adminRoutes = require('./src/routes/admin');
-const { startSweeper } = require('./src/services/paymentSweeper');
-const tracking = require('./src/services/trackingService');
-const insightsEngine = require('./src/services/insightsEngine');
-const hotelbedsContent = require('./src/services/hotelbedsContent');
+const tripRoutes = require('./routes/trips');
+const webhookRoutes = require('./routes/webhooks');
+const intasendWebhookRoutes = require('./routes/intasend');
+const duffelWebhookRoutes = require('./routes/duffelWebhooks');
+const agencyRoutes = require('./routes/agencies');
+const healthRoutes = require('./routes/health');
+const uploadRoutes = require('./routes/uploads');
+const widgetRoutes = require('./routes/widget');
+const apiV1Routes = require('./routes/api');
+const adminRoutes = require('./routes/admin');
+const { startSweeper } = require('./services/paymentSweeper');
+const tracking = require('./services/trackingService');
+const insightsEngine = require('./services/insightsEngine');
+const hotelbedsContent = require('./services/hotelbedsContent');
 
 // ── Hotel direct ──────────────────────────────────────────────
 const cookieParser  = require('cookie-parser');
-const hotelRoutes   = require('./src/routes/hotelRoutes');
-const hotelAdminRouter = require('./src/routes/hotelAdmin');
+const hotelRoutes   = require('./routes/hotelRoutes');
+const hotelAdminRouter = require('./routes/hotelAdmin');
 // ─────────────────────────────────────────────────────────────
 
 const app = express();
@@ -113,7 +113,7 @@ app.use('/api/agencies', agencyRoutes);
 app.use('/admin', adminRoutes);
 
 // ── Protected Routes ──────────────────────────────────
-const { authenticateAgency } = require('./src/middleware/auth');
+const { authenticateAgency } = require('./middleware/auth');
 app.use('/api/trips',   authenticateAgency, tripRoutes);
 app.use('/api/uploads', authenticateAgency, uploadRoutes);
 
