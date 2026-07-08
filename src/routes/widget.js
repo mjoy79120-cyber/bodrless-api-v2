@@ -201,11 +201,8 @@ router.get('/', (req, res) => {
   'headerLeft.id = "et-header-left";\n' +
   'var logoWrap = document.createElement("div");\n' +
   'logoWrap.id = "et-logo-wrap";\n' +
-  'var logoImg = document.createElement("img");\n' +
-  'logoImg.src = "https://epictravels.co.ke/apple-touch-icon.png";\n' +
-  'logoImg.alt = "' + agencyName + '";\n' +
-  'logoImg.onerror = function() { this.parentNode.innerText = "' + agencyName.charAt(0) + '"; };\n' +
-  'logoWrap.appendChild(logoImg);\n' +
+  'logoWrap.innerText = "S";\n' +
+  'logoWrap.style.cssText += ";display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#0F4C3A;color:#fff;font-family:Playfair Display,serif;font-size:22px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.18);flex-shrink:0;";\n' +
   'var headerText = document.createElement("div");\n' +
   'headerText.id = "et-header-text";\n' +
   'headerText.innerHTML = "<h3>' + agencyName + '</h3><p>" + (isHotelMode ? "Concierge" : "Travel Specialist") + "</p>";\n' +
