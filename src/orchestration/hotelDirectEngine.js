@@ -1,18 +1,14 @@
 /**
- * HOTEL DIRECT ENGINE — v2
- * Hotel groups are independent tenants — no agency_id dependency.
- * Uses its own hotel-specific prompt parser (no flights, no origin).
+ * HOTEL DIRECT ENGINE — v3
+ * Refactored to return individual leg packages for multi-destination trips
+ * so the frontend renders separate cards for each property.
  */
 
 const { v4: uuidv4 } = require('uuid');
 const supabase        = require('../utils/supabase');
 const { logger }      = require('../utils/logger');
 
-// ─────────────────────────────────────────────────────────────
-// HOTEL PROMPT PARSER
-// Self-contained — no Groq, no flight fields, no IATA codes.
-// Only extracts what a hotel booking needs.
-// ─────────────────────────────────────────────────────────────
+// [Keep parseHotelPrompt the same as before]
 function parseHotelPrompt(prompt) {
   const lower = (prompt || '').toLowerCase().trim();
 
@@ -276,17 +272,13 @@ class HotelDirectEngine {
 
   async _orchestrateMultiProperty(tripParams, group, sessionId, prompt, conversationHistory) {
     const legs = tripParams.legs || [];
-    const legResults = [];
+    const packages = [];
 
+    // Orchestrate each leg as its own package so the UI renders separate cards
     for (const leg of legs) {
       const properties = await this._findProperties(group.id, leg.destination);
-      if (!properties.length) {
-        return this._buildResponse(
-          sessionId, tripParams, conversationHistory,
-          `We don't have a property in ${leg.destination}. Let me know if you'd like to adjust your itinerary.`,
-          []
-        );
-      }
+      if (!properties.length) continue; // Skip or handle error
+
       const property = properties[0];
       const rooms = await this._searchRooms(property, {
         checkIn:   leg.departureDate || tripParams.departureDate,
@@ -299,15 +291,21 @@ class HotelDirectEngine {
       });
       const ancillaries = await this._getAncillaryServices(property.id, tripParams);
       
-      // Store all found rooms (up to 3) so the frontend can choose
-      legResults.push({ leg, property, rooms: rooms.slice(0, 3), ancillaries });
+      // Add each room option as a "package" for this leg
+      for (const room of rooms.slice(0, 3)) {
+        const pkg = this._buildRoomPackage(room, property, ancillaries, tripParams, group);
+        // Mark as part of a multi-destination itinerary
+        pkg.isMultiDestination = true;
+        pkg.legIndex = legs.indexOf(leg);
+        pkg.totalLegs = legs.length;
+        packages.push(pkg);
+      }
     }
 
-    const itinerary = this._buildMultiPropertyItinerary(legResults, tripParams, group);
     const totalNights = legs.reduce((sum, l) => sum + (l.nights || 1), 0);
-    const text = `Here are the available room options for your ${totalNights}-night itinerary across our properties:`;
+    const text = `I've found availability for your ${totalNights}-night itinerary. Please select a room for each leg:`;
     
-    return this._buildResponse(sessionId, tripParams, conversationHistory, text, [itinerary]);
+    return this._buildResponse(sessionId, tripParams, conversationHistory, text, packages);
   }
 
   async _searchRooms(property, params) {
@@ -554,59 +552,6 @@ class HotelDirectEngine {
         images:          a.images || [],
       })),
 
-      status: 'available',
-    };
-  }
-
-  _buildMultiPropertyItinerary(legResults, tripParams, group) {
-    const passengers  = tripParams.passengers || tripParams.adults || 1;
-    const totalNights = legResults.reduce((sum, l) => sum + (l.leg.nights || 1), 0);
-    const currency    = legResults[0]?.rooms[0]?.currency || group.currency || 'KES';
-    const commissionRate = group.commission_rate || 0.05;
-    
-    // Calculate a default base total for the whole trip (using first room option per leg)
-    let grandTotal = legResults.reduce((sum, l) => {
-      if (!l.rooms[0]) return sum;
-      return sum + l.rooms[0].totalPrice;
-    }, 0);
-
-    const legs = legResults.map(l => {
-      // Map all room options (with ancillaries already calculated in the package builder)
-      const roomOptions = l.rooms.map(room => {
-          return this._buildRoomPackage(room, l.property, l.ancillaries, tripParams, group).hotel;
-      });
-
-      return {
-        destination: l.leg.destination,
-        nights:      l.leg.nights,
-        checkIn:     l.leg.departureDate || tripParams.departureDate,
-        checkOut:    this._addDays(l.leg.departureDate || tripParams.departureDate, l.leg.nights || 1),
-        roomOptions: roomOptions, // The array of choices for the UI
-        ancillaryServices: (l.ancillaries || []).map(a => ({
-          id: a.id, name: a.name, category: a.category,
-          price: a.price, currency: a.currency,
-          priceBasis: a.price_basis, requiresBooking: a.requires_booking,
-        })),
-      };
-    });
-
-    return {
-      packageId:          require('crypto').randomUUID(),
-      isMultiDestination: true,
-      isHotelDirect:      true,
-      groupSlug:          group.slug,
-      groupId:            group.id,
-      summary: {
-        route:           legResults.map(l => l.property.name).join(' → '),
-        totalNights,
-        totalPrice:      grandTotal,
-        pricePerPerson:  Math.round(grandTotal / passengers),
-        currency,
-        passengers,
-        commissionRate,
-        commissionAmount: Math.round(grandTotal * commissionRate * 100) / 100,
-      },
-      legs,
       status: 'available',
     };
   }
