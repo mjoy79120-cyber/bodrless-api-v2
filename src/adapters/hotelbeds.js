@@ -65,7 +65,7 @@ class HotelBedsAdapter {
 
   constructor() {
     this.apiKey    = process.env.HOTELBEDS_API_KEY;
-    this.apiSecret = process.env.HOTELBEDS_API_SECRET;
+    this.apiSecret = process.env.HOTELBEDS_API_SECRET || process.env.HOTELBEDS_SECRET;
     this.baseUrl   = process.env.HOTELBEDS_BASE_URL || 'https://api.test.hotelbeds.com';
     this.timeout   = Number(process.env.HOTELBEDS_TIMEOUT_MS) || 20000;
     this.searchTimeout = Number(process.env.HOTELBEDS_SEARCH_TIMEOUT_MS) || 18000;

@@ -28,30 +28,6 @@ const STATIC_IATA_CODES = require('../data/staticIataList');
 
 // ─────────────────────────────────────────────
 // STATIC CORRIDOR OVERRIDES
-// Hand-verified real East African access geography, checked
-// BEFORE the cache/Groq path in resolve() below — same
-// philosophy as REGIONAL_HUBS/CITY_CODES elsewhere in this
-// codebase: this kind of fact doesn't change often enough to
-// justify an LLM call (or risk a bad one) every time a known
-// destination comes up, and getting Kilifi/Watamu/Diani WRONG
-// means a traveler is sold a package that doesn't actually get
-// them there.
-//
-// Real facts confirmed for these corridors:
-//   - Kilifi/Watamu: no airport of their own. Reached via (a) a
-//     flight to Malindi (MYD) — the shortest option — plus a road
-//     transfer, (b) the SGR train to Mombasa plus a road transfer,
-//     or (c) a direct bus — the Nairobi–Malindi route physically
-//     passes through and stops at both towns, so no transfer is
-//     needed on that mode.
-//   - Diani: has its own airport (Ukunda/Diani, UKA) with direct
-//     flight service — no transfer needed for air. Train/bus both
-//     route via Mombasa plus a road transfer.
-//
-// Extend this list as more corridor destinations are confirmed.
-// Anything NOT listed here still falls through to the Supabase
-// cache -> Groq resolution path unchanged, so this is purely
-// additive — unlisted destinations are handled exactly as before.
 // ─────────────────────────────────────────────
 const STATIC_DESTINATION_OVERRIDES = {
   kilifi: {
@@ -68,13 +44,6 @@ const STATIC_DESTINATION_OVERRIDES = {
         hubName: 'mombasa', hubCode: null,
         directService: false, transferRequired: true, transferDistanceKm: 60,
       },
-      // IABIRI has no distinct Kilifi route of its own — the bus
-      // that reaches Kilifi is the Nairobi-Malindi service, which
-      // physically stops there en route. Search IABIRI under the
-      // Malindi route name (searchAs) rather than "kilifi" (which
-      // has no city ID in IABIRI's system) — since the bus itself
-      // makes this stop, no separate transfer leg is needed, unlike
-      // the air/train hub-transfer cases above.
       bus: {
         hubName: null, hubCode: null,
         directService: true, transferRequired: false, transferDistanceKm: null,
@@ -96,8 +65,6 @@ const STATIC_DESTINATION_OVERRIDES = {
         hubName: 'mombasa', hubCode: null,
         directService: false, transferRequired: true, transferDistanceKm: 100,
       },
-      // Same Nairobi-Malindi through-route stops at Watamu too —
-      // see the Kilifi comment above, identical reasoning.
       bus: {
         hubName: null, hubCode: null,
         directService: true, transferRequired: false, transferDistanceKm: null,
@@ -126,7 +93,7 @@ const STATIC_DESTINATION_OVERRIDES = {
     },
   },
 };
-// Aliases — same destination, different names a traveler might use.
+
 STATIC_DESTINATION_OVERRIDES['diani beach'] = STATIC_DESTINATION_OVERRIDES['diani'];
 STATIC_DESTINATION_OVERRIDES['ukunda']      = STATIC_DESTINATION_OVERRIDES['diani'];
 
@@ -139,10 +106,6 @@ class DestinationIntel {
     if (!destinationName) return null;
     const normalized = destinationName.toLowerCase().trim();
 
-    // Static overrides win immediately — no cache lookup, no LLM
-    // call, no validation cascade needed. These are hand-verified,
-    // so 'static_override' is trusted at the same level as
-    // 'manual'/'travelduqa' validation sources below.
     const staticOverride = STATIC_DESTINATION_OVERRIDES[normalized];
     if (staticOverride) {
       return {
@@ -156,7 +119,7 @@ class DestinationIntel {
     const cached = await this._lookupCache(normalized);
     if (cached) return cached;
 
-    logger.info('DestinationIntel: cache miss, resolving via Gemini', { destination: normalized });
+    logger.info('DestinationIntel: cache miss, resolving via Groq', { destination: normalized });
 
     const geminiResult = await this._resolveViaGemini(normalized);
     if (!geminiResult) {
@@ -191,7 +154,6 @@ class DestinationIntel {
 
     if (aliasMatch) return this._toResultShape(aliasMatch);
 
-    // fuzzy via pg_trgm similarity — catches typos without a fresh Gemini call
     const { data: fuzzyMatches } = await supabase.rpc('match_destination_fuzzy', {
       input_name: normalized,
       min_similarity: 0.6,
@@ -206,15 +168,10 @@ class DestinationIntel {
   }
 
   // ─────────────────────────────────────────────
-  // GROQ RESOLUTION (llama-3.1-8b-instant) — direct REST call,
-  // strict JSON via response_format, per-mode shape. Switched
-  // from Gemini due to persistent billing/quota issues that
-  // blocked production use entirely despite a linked billing
-  // account — same prompt and schema, only the transport layer
-  // changed (endpoint, auth, response shape).
+  // GROQ RESOLUTION (llama-3.1-8b-instant)
   // ─────────────────────────────────────────────
   async _resolveViaGemini(destinationName) {
-    const prompt = `You are a travel logistics expert for East Africa. For the destination "${destinationName}", return ONLY a JSON object, no markdown fences, no preamble, in exactly this shape:
+    const prompt = `You are a travel logistics expert for East Africa and global routes. For the destination "${destinationName}", return ONLY a JSON object, no markdown fences, no preamble, in exactly this shape:
 
 {
   "destination": "string, normalized lowercase",
@@ -229,11 +186,11 @@ class DestinationIntel {
 }
 
 Rules:
-- If the destination IS itself a major airport city (e.g. Nairobi, Mombasa), set directService true for air and transferRequired false.
-- If the destination is reached via a nearby airport/station with a road transfer (e.g. Watamu via Malindi, Diani via Mombasa), set hubName/hubCode to that hub and transferRequired true.
-- If a mode has no reasonable route (e.g. no rail line serves the area), set hubName null and directService false.
-- For safari/wilderness destinations served by small aircraft (e.g. Maasai Mara), set isAirstripDestination true, list real named airstrips in airstripCodes, and leave air.hubCode null (airstrips are not standard IATA-validated codes).
-- Real, geographically accurate East African transport facts only. Do not invent airport codes.`;
+- If the destination IS itself a major airport city (e.g. Nairobi, Mombasa, Mumbai, Mahe), set directService true for air and transferRequired false.
+- If the destination does not have a major airport and is reached via a nearby hub with a road transfer (e.g. Watamu via Malindi), set hubName/hubCode to that airport hub and transferRequired true.
+- If a mode has no reasonable route, set hubName null and directService false.
+- For safari/wilderness destinations served by small aircraft (e.g. Maasai Mara), set isAirstripDestination true, list real named airstrips in airstripCodes, and leave air.hubCode null.
+- Real, geographically accurate transport facts only. Do not invent airport codes.`;
 
     try {
       const response = await axios.post(
@@ -264,22 +221,22 @@ Rules:
 
   // ─────────────────────────────────────────────
   // VALIDATION CASCADE
-  // Airstrip destinations skip IATA validation entirely.
-  // Standard air hubs: TravelDuqa network first, then
-  // static IATA list as a softer fallback.
   // ─────────────────────────────────────────────
   async _validate(geminiResult) {
     const result = { ...geminiResult, validationStatus: 'validated', validationSource: null };
 
     if (geminiResult.isAirstripDestination) {
       result.requiresCharter = true;
-      result.validationSource = 'manual'; // airstrips trusted as their own category, not IATA-checked
+      result.validationSource = 'manual';
       return result;
     }
 
     const airHub = geminiResult.accessByMode?.air;
     if (airHub?.hubCode) {
-      const inTravelDuqa = await travelDuqa.isAirportSupported(airHub.hubCode);
+      const cleanCode = airHub.hubCode.toUpperCase().trim();
+
+      // 1. Check TravelDuqa support
+      const inTravelDuqa = await travelDuqa.isAirportSupported(cleanCode);
       if (inTravelDuqa) {
         result.accessByMode.air.bookable = true;
         result.accessByMode.air.supplier = 'travelduqa';
@@ -287,27 +244,31 @@ Rules:
         return result;
       }
 
-      const inStaticList = STATIC_IATA_CODES.has(airHub.hubCode.toUpperCase());
+      // 2. Check Static List
+      const inStaticList = STATIC_IATA_CODES.has(cleanCode);
       if (inStaticList) {
-        result.accessByMode.air.bookable = false; // real airport, just not bookable via Bodrless yet
+        result.accessByMode.air.bookable = false;
         result.validationSource = 'iata_list';
         return result;
       }
 
-      // Gemini gave a hub code that's neither in TravelDuqa nor a real IATA list — don't trust it
+      // 3. Fallback: If it's a valid 3-letter code, trust it for concurrent/Duffel routing
+      if (/^[A-Z]{3}$/.test(cleanCode)) {
+        result.accessByMode.air.bookable = true;
+        result.accessByMode.air.supplier = 'duffel';
+        result.validationSource = 'global_fallback_match';
+        return result;
+      }
+
       result.validationStatus = 'needs_clarification';
       return result;
     }
 
-    // No air hub claimed at all (pure train/bus destination) — nothing to validate against IATA
     return result;
   }
 
   // ─────────────────────────────────────────────
-  // CACHE WRITE — only validated/needs_clarification rows,
-  // never silently overwrite a previously validated row
-  // with a worse result. Static overrides never reach this
-  // (resolve() returns them before any cache write happens).
+  // CACHE WRITE
   // ─────────────────────────────────────────────
   async _cacheResult(normalized, result) {
     const { error } = await supabase

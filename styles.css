@@ -1,0 +1,393 @@
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+
+html{
+    scroll-behavior:smooth;
+}
+
+body{
+    font-family:'Inter',sans-serif;
+    background:#f8f6f2;
+    color:#222;
+    line-height:1.6;
+}
+
+/* HERO */
+
+.hero{
+    position:relative;
+    min-height:100vh;
+
+    background-image:url("https://images.unsplash.com/photo-1566073771259-6a8506099945?q=80&w=2070&auto=format&fit=crop");
+
+    background-size:cover;
+    background-position:center;
+
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+.overlay{
+    position:absolute;
+    inset:0;
+    background:rgba(0,0,0,.55);
+}
+
+.hero-content{
+    position:relative;
+    z-index:2;
+
+    max-width:850px;
+    text-align:center;
+    color:white;
+    padding:30px;
+}
+
+.logo{
+
+    letter-spacing:8px;
+    font-size:14px;
+    margin-bottom:30px;
+    color:#d4af37;
+}
+
+.hero h1{
+
+    font-family:'Playfair Display',serif;
+
+    font-size:70px;
+    line-height:1.1;
+    margin-bottom:25px;
+}
+
+.hero p{
+
+    max-width:700px;
+    margin:auto;
+
+    font-size:22px;
+    color:#ececec;
+}
+
+.hero-btn{
+
+    display:inline-block;
+
+    margin-top:45px;
+
+    padding:18px 42px;
+
+    background:#b28a2e;
+
+    color:white;
+
+    text-decoration:none;
+
+    border-radius:40px;
+
+    transition:.3s;
+}
+
+.hero-btn:hover{
+
+    background:#8f6b1d;
+
+    transform:translateY(-3px);
+
+}
+
+/* SECTION */
+
+.concierge{
+
+    max-width:1200px;
+
+    margin:auto;
+
+    padding:100px 20px;
+
+}
+
+.section-title{
+
+    text-align:center;
+
+    margin-bottom:60px;
+
+}
+
+.section-title h2{
+
+    font-family:'Playfair Display',serif;
+
+    font-size:48px;
+
+    margin-bottom:15px;
+
+}
+
+.section-title p{
+
+    font-size:20px;
+
+    color:#666;
+
+}
+
+/* CARD */
+
+.widget-card{
+
+    background:white;
+
+    border-radius:22px;
+
+    overflow:hidden;
+
+    box-shadow:0 30px 70px rgba(0,0,0,.08);
+
+}
+
+.widget-header{
+
+    background:#114B43;
+
+    color:white;
+
+    padding:18px 24px;
+
+    display:flex;
+
+    align-items:center;
+
+}
+
+.dot{
+
+    width:12px;
+
+    height:12px;
+
+    border-radius:50%;
+
+    margin-right:8px;
+
+}
+
+.red{background:#ff605c;}
+.yellow{background:#ffbd44;}
+.green{background:#00ca4e;}
+
+.widget-header span{
+
+    margin-left:12px;
+
+    font-weight:600;
+
+}
+
+.widget-body{
+
+    padding:40px;
+
+}
+
+.welcome{
+
+    font-size:20px;
+
+    margin-bottom:30px;
+
+}
+
+/* PROMPTS */
+
+.prompt-grid{
+
+    display:grid;
+
+    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+
+    gap:18px;
+
+    margin-bottom:35px;
+
+}
+
+.prompt{
+
+    padding:20px;
+
+    border:none;
+
+    cursor:pointer;
+
+    border-radius:14px;
+
+    background:#f5f5f5;
+
+    text-align:left;
+
+    transition:.25s;
+
+    font-size:15px;
+
+}
+
+.prompt:hover{
+
+    background:#114B43;
+
+    color:white;
+
+    transform:translateY(-4px);
+
+}
+
+.widget-container{
+
+    margin-top:20px;
+
+    min-height:650px;
+
+}
+
+/* WHY */
+
+.why{
+
+    padding:0 20px 100px;
+
+}
+
+.why-card{
+
+    max-width:1200px;
+
+    margin:auto;
+
+}
+
+.why-card h3{
+
+    font-size:42px;
+
+    font-family:'Playfair Display',serif;
+
+    margin-bottom:45px;
+
+    text-align:center;
+
+}
+
+.features{
+
+    display:grid;
+
+    grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+
+    gap:25px;
+
+}
+
+.feature{
+
+    background:white;
+
+    padding:30px;
+
+    border-radius:18px;
+
+    box-shadow:0 15px 40px rgba(0,0,0,.06);
+
+}
+
+.feature h4{
+
+    color:#114B43;
+
+    margin-bottom:10px;
+
+}
+
+/* FOOTER */
+
+footer{
+
+    background:#114B43;
+
+    color:white;
+
+    padding:70px 20px;
+
+}
+
+.footer-inner{
+
+    max-width:1100px;
+
+    margin:auto;
+
+    text-align:center;
+
+}
+
+.footer-inner h3{
+
+    font-family:'Playfair Display',serif;
+
+    font-size:38px;
+
+    margin-bottom:10px;
+
+}
+
+.footer-inner span{
+
+    display:block;
+
+    margin-top:25px;
+
+    color:#c6c6c6;
+
+}
+
+/* MOBILE */
+
+@media(max-width:768px){
+
+.hero h1{
+
+font-size:44px;
+
+}
+
+.hero p{
+
+font-size:18px;
+
+}
+
+.section-title h2{
+
+font-size:34px;
+
+}
+
+.widget-body{
+
+padding:25px;
+
+}
+
+.welcome{
+
+font-size:18px;
+
+}
+
+}
