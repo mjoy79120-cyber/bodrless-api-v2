@@ -6,7 +6,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const https = require('https');
-const { logger } = require('./src/utils/logger');
+const { logger } = require('./utils/logger');
 
 const tripRoutes            = require('./src/routes/trips');
 const webhookRoutes         = require('./src/routes/webhooks');
