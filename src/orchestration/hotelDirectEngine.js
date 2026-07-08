@@ -90,16 +90,53 @@ function parseHotelPrompt(prompt) {
   // ── DESTINATION — strip filler, keep property/place name ──
   // Remove booking intent words, room type words, date words,
   // guest count phrases — what remains is the property or location.
+ // ── MULTI-PROPERTY DETECTION ─────────────────────────────
+  // Split on "and in/at", "then in/at", "and also" between two legs
+  // e.g. "sarova shaba 3 nights 10 august and in december whitesands 5 nights from 1st"
+  const legSplitMatch = lower.match(
+    /^(.*?)\s+(?:and(?:\s+also)?|then(?:\s+also)?)\s+(?:in\s+|at\s+)(.+)$/i
+  );
+  if (legSplitMatch) {
+    const p1 = parseHotelPrompt(legSplitMatch[1]);
+    const p2 = parseHotelPrompt(legSplitMatch[2]);
+    if (p1.destination && p2.destination) {
+      return {
+        destination:         null,
+        nights:              p1.nights,
+        adults:              p1.adults,
+        passengers:          p1.adults,
+        children:            p1.children,
+        childAges:           [],
+        mealPlan:            p1.mealPlan || p2.mealPlan,
+        departureDate:       p1.departureDate,
+        returnDate:          p1.returnDate,
+        budget:              p1.budget,
+        preferences:         [...new Set([...p1.preferences, ...p2.preferences])],
+        isMultiDestination:  true,
+        legs: [
+          { destination: p1.destination, nights: p1.nights, departureDate: p1.departureDate },
+          { destination: p2.destination, nights: p2.nights, departureDate: p2.departureDate },
+        ],
+        needsOriginClarification: false,
+        requiresFlight: false,
+        requiresBus:    false,
+        _parsedBy:      'hotel_rules_multi',
+      };
+    }
+  }
+
+  // ── DESTINATION — strip filler, keep property/place name ──
   const destRaw = prompt
     .replace(/\b(?:book(?:\s+me)?|reserve|i(?:'d|\s+would)\s+like(?:\s+to)?(?:\s+book)?|i\s+want(?:\s+to)?(?:\s+book)?|can\s+i\s+(?:get|have|book)|get\s+me|please|help\s+me)\b/gi, '')
     .replace(/\b(?:a\s+)?(?:room|suite|deluxe|standard|superior|junior|double|twin|single|king|queen|family\s+room)\b/gi, '')
     .replace(/\d+\s*nights?\b/gi, '')
+    .replace(/\bfrom\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december))?\b/gi, '')
     .replace(/\bfor\s+\d+\s*(?:people|adults?|guests?|of us|pax|persons?)\b/gi, '')
     .replace(/\b(?:bed\s+and\s+breakfast|all\s+inclusive|full\s+board|half\s+board|room\s+only|breakfast)\b/gi, '')
     .replace(/\b(?:this\s+weekend|next\s+week|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '')
     .replace(/\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?\b/gi, '')
-    .replace(/\d{1,2}(?:st|nd|rd|th)?\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?\b/gi, '')
-    .replace(/\b(?:for|at|in|the|a|an|me|us|with|and)\b/gi, '')
+    .replace(/\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?\b/gi, '')
+    .replace(/\b(?:in|for|at|the|a|an|me|us|with|and)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
 
