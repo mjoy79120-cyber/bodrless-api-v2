@@ -17,7 +17,6 @@ function parseHotelPrompt(prompt) {
   const lower = (prompt || '').toLowerCase().trim();
 
   // ── MULTI-PROPERTY DETECTION ─────────────────────────────
-  // Optimized to catch clean splits on 'and then', 'then', 'and also', or just 'and' between properties
   const legSplitMatch = lower.match(
     /^(.*?)\s+(?:and\s+then|then|and\s+also|followed\s+by|and)\s+(.+)$/i
   );
@@ -26,7 +25,6 @@ function parseHotelPrompt(prompt) {
     const p1 = parseHotelPrompt(legSplitMatch[1]);
     const p2 = parseHotelPrompt(legSplitMatch[2]);
     
-    // Ensure both segments actually managed to resolve a valid destination before declaring it a multi-destination stay
     if (p1.destination && p2.destination) {
       p1._originalPrompt = prompt; 
       
@@ -300,12 +298,15 @@ class HotelDirectEngine {
         budget:    tripParams.budget,
       });
       const ancillaries = await this._getAncillaryServices(property.id, tripParams);
-      legResults.push({ leg, property, room: rooms[0] || null, ancillaries });
+      
+      // Store all found rooms (up to 3) so the frontend can choose
+      legResults.push({ leg, property, rooms: rooms.slice(0, 3), ancillaries });
     }
 
     const itinerary = this._buildMultiPropertyItinerary(legResults, tripParams, group);
     const totalNights = legs.reduce((sum, l) => sum + (l.nights || 1), 0);
-    const text = `Here's a ${totalNights}-night itinerary across ${legResults.length} of our properties:`;
+    const text = `Here are the available room options for your ${totalNights}-night itinerary across our properties:`;
+    
     return this._buildResponse(sessionId, tripParams, conversationHistory, text, [itinerary]);
   }
 
@@ -560,49 +561,27 @@ class HotelDirectEngine {
   _buildMultiPropertyItinerary(legResults, tripParams, group) {
     const passengers  = tripParams.passengers || tripParams.adults || 1;
     const totalNights = legResults.reduce((sum, l) => sum + (l.leg.nights || 1), 0);
-    const currency    = legResults[0]?.room?.currency || group.currency || 'KES';
+    const currency    = legResults[0]?.rooms[0]?.currency || group.currency || 'KES';
     const commissionRate = group.commission_rate || 0.05;
-    let grandTotal = 0;
+    
+    // Calculate a default base total for the whole trip (using first room option per leg)
+    let grandTotal = legResults.reduce((sum, l) => {
+      if (!l.rooms[0]) return sum;
+      return sum + l.rooms[0].totalPrice;
+    }, 0);
 
     const legs = legResults.map(l => {
-      const roomTotal = l.room?.totalPrice || 0;
-      const ancTotal  = (l.ancillaries || [])
-        .filter(a => a.requires_booking)
-        .reduce((sum, a) => {
-          if (a.price_basis === 'per_person') return sum + (a.price * passengers);
-          if (a.price_basis === 'per_night')  return sum + (a.price * (l.leg.nights || 1));
-          return sum + a.price;
-        }, 0);
-      const legTotal = roomTotal + ancTotal;
-      grandTotal += legTotal;
+      // Map all room options (with ancillaries already calculated in the package builder)
+      const roomOptions = l.rooms.map(room => {
+          return this._buildRoomPackage(room, l.property, l.ancillaries, tripParams, group).hotel;
+      });
 
       return {
         destination: l.leg.destination,
         nights:      l.leg.nights,
         checkIn:     l.leg.departureDate || tripParams.departureDate,
         checkOut:    this._addDays(l.leg.departureDate || tripParams.departureDate, l.leg.nights || 1),
-        hotel: l.room ? {
-          name:           `${l.property.name} — ${l.room.roomType.name}`,
-          propertyName:   l.property.name,
-          stars:          l.property.stars,
-          location:       l.property.location,
-          pricePerNight:  l.room.pricePerNight,
-          totalRate:      l.room.totalPrice,
-          ancillaryTotal: ancTotal,
-          legTotal,
-          currency:       l.room.currency,
-          mealPlan:       l.room.mealPlan,
-          roomType:       l.room.roomType.name,
-          bedType:        l.room.roomType.bed_type,
-          view:           l.room.roomType.view,
-          isRefundable:   l.room.ratePlan.is_refundable,
-          policySummary:  this._formatCancellationNote(l.room.cancellationPolicy, l.room.ratePlan),
-          propertyId:     l.property.id,
-          roomTypeId:     l.room.roomType.id,
-          ratePlanId:     l.room.ratePlan.id,
-          groupId:        group.id,
-          groupSlug:      group.slug,
-        } : null,
+        roomOptions: roomOptions, // The array of choices for the UI
         ancillaryServices: (l.ancillaries || []).map(a => ({
           id: a.id, name: a.name, category: a.category,
           price: a.price, currency: a.currency,
