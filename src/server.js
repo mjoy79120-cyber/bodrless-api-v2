@@ -85,7 +85,7 @@ app.use('/api/uploads', authenticateAgency, uploadRoutes);
 
 app.get('/test-widget.html', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(__dirname, 'test-widget.html'));
+  res.sendFile(path.join(__dirname, '..', 'test-widget.html'));
 });
 
 // ─────────────────────────────────────────────────────────────
