@@ -145,8 +145,7 @@ router.get('/', (req, res) => {
   '"#bodrless-send:hover{background:var(--et-gold);}",\n' +
 
   // Floating trigger — only shown in floating mode
-  '"#bodrless-trigger { z-index: 999998; background: var(--et-navy); color: white; border: none; padding: 13px 20px; border-radius: 999px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 8px 24px rgba(30,42,94,0.35); }\\n" +'
-
+  '"#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:390px;height:640px;}",\n' +
   // Forms
   '".name-form{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:16px;margin-top:8px;}",\n' +
   '".name-form p{font-size:12px;color:var(--et-navy);margin:0 0 12px 0;font-weight:500;}",\n' +
