@@ -3,6 +3,7 @@
  * ─────────────────────────────────────────────────────────────
  * Fixed: Added Year-2026 enforcement to System Prompt and 
  * Post-Processing Sanitization Layer.
+ * Fixed: Universal destination normalizer for worldwide cities.
  */
 
 const Groq = require('groq-sdk');
@@ -68,6 +69,69 @@ const CITY_CODES = {
   'praslin': 'SEZ', 'grand baie': 'MRU', 'four seasons': null,
 };
 
+// ─────────────────────────────────────────────
+// DESTINATION NORMALIZER
+// Fixes concatenated/abbreviated/misspelled city
+// names worldwide before they reach HotelBeds.
+// Keyed by lowercase-no-spaces so "Cape Town",
+// "capetown", "cape-town" all resolve correctly.
+// ─────────────────────────────────────────────
+const DESTINATION_FIXES = {
+  // Africa
+  'capetown': 'Cape Town', 'cape-town': 'Cape Town', 'cpt': 'Cape Town',
+  'joburg': 'Johannesburg', 'jozi': 'Johannesburg', 'jhb': 'Johannesburg',
+  'johanesburg': 'Johannesburg', 'johannesberg': 'Johannesburg',
+  'daressalaam': 'Dar es Salaam', 'dares salaam': 'Dar es Salaam', 'dar': 'Dar es Salaam',
+  'addisababa': 'Addis Ababa', 'addis': 'Addis Ababa',
+  'nbi': 'Nairobi', 'msa': 'Mombasa',
+  'masaimara': 'Masai Mara', 'maasaimara': 'Masai Mara',
+  'sharmelsheikh': 'Sharm el Sheikh', 'sharmelshekh': 'Sharm el Sheikh', 'sharm': 'Sharm el Sheikh',
+  // Middle East
+  'abudhabi': 'Abu Dhabi', 'abu-dhabi': 'Abu Dhabi',
+  // Asia
+  'kualalumpur': 'Kuala Lumpur', 'kuala-lumpur': 'Kuala Lumpur', 'kl': 'Kuala Lumpur',
+  'hongkong': 'Hong Kong', 'hong-kong': 'Hong Kong', 'hk': 'Hong Kong',
+  'siemreap': 'Siem Reap', 'siem-reap': 'Siem Reap',
+  'hochiminhcity': 'Ho Chi Minh City', 'hochiminh': 'Ho Chi Minh City', 'hcmc': 'Ho Chi Minh City',
+  'phnompenh': 'Phnom Penh', 'phnom-penh': 'Phnom Penh',
+  'koalumpur': 'Kuala Lumpur',
+  // Americas
+  'newyork': 'New York', 'new-york': 'New York', 'nyc': 'New York',
+  'losangeles': 'Los Angeles', 'los-angeles': 'Los Angeles', 'la': 'Los Angeles',
+  'sanfrancisco': 'San Francisco', 'san-francisco': 'San Francisco', 'sf': 'San Francisco',
+  'saopaulo': 'Sao Paulo', 'são paulo': 'Sao Paulo',
+  'riodejaneiro': 'Rio de Janeiro', 'rio': 'Rio de Janeiro',
+  'buenosaires': 'Buenos Aires', 'buenos-aires': 'Buenos Aires',
+  'mexicocity': 'Mexico City', 'mexico-city': 'Mexico City', 'cdmx': 'Mexico City',
+  'costarica': 'San Jose',
+  // Europe
+  'newyorkcity': 'New York',
+  'kualalumpur': 'Kuala Lumpur',
+};
+
+function normalizeDestination(name) {
+  if (!name) return name;
+  // Strip spaces and hyphens for lookup key
+  const nospaces = name.toLowerCase().replace(/[\s-]/g, '');
+  if (DESTINATION_FIXES[nospaces]) return DESTINATION_FIXES[nospaces];
+  // Also try with original spacing lowercased
+  const lower = name.toLowerCase().trim();
+  if (DESTINATION_FIXES[lower]) return DESTINATION_FIXES[lower];
+  // Return original (preserves correct casing for known cities)
+  return name;
+}
+
+function resolveCountryToCity(name) {
+  if (!name) return name;
+  const lower = name.toLowerCase().trim();
+  const city = COUNTRY_TO_CITY[lower] || name;
+  // Always run through normalizer to fix concatenated names
+  return normalizeDestination(city);
+}
+
+// ─────────────────────────────────────────────
+// PLACE NAME SANITY CHECK
+// ─────────────────────────────────────────────
 const FILLER_WORDS = /\b(help|plan|me|us|vacation|trip|travel|book|want|need|would|like|going|visit|please|can|could|shall|lets|let's|arrange|organize|organise|find|sort|make|get|a|the|and|or|but|for|from|to|in|on|at|with|holiday|journey|getaway|adventure|safari|honeymoon|weekend|escape|tour|package|cheap|affordable|cheapest|best)\b/i;
 
 function _isPlausiblePlaceName(str) {
@@ -80,60 +144,6 @@ function _isPlausiblePlaceName(str) {
   if (/^(help|plan|book|find|get|arrange|organize|visit|travel|go|take|show|give|tell)$/.test(firstWord)) return false;
   return true;
 }
-
-// ─────────────────────────────────────────────
-// DESTINATION NORMALIZER
-// Fixes concatenated/abbreviated city names before
-// they reach HotelBeds. Covers common cases worldwide.
-// ─────────────────────────────────────────────
-const DESTINATION_FIXES = {
-  // South Africa
-  'capetown': 'Cape Town', 'cape-town': 'Cape Town',
-  'joburg': 'Johannesburg', 'jozi': 'Johannesburg', 'jhb': 'Johannesburg',
-  'johanesburg': 'Johannesburg', 'johannesberg': 'Johannesburg',
-  // East Africa
-  'dar': 'Dar es Salaam', 'dares salaam': 'Dar es Salaam', 'daressalaam': 'Dar es Salaam',
-  'addis': 'Addis Ababa', 'addisababa': 'Addis Ababa',
-  'nbi': 'Nairobi', 'msa': 'Mombasa',
-  'masaimara': 'Masai Mara', 'maasaimara': 'Masai Mara',
-  // Middle East
-  'sharmelshekh': 'Sharm el Sheikh', 'sharm': 'Sharm el Sheikh',
-  'abudhabi': 'Abu Dhabi', 'abu-dhabi': 'Abu Dhabi',
-  'kualalumpur': 'Kuala Lumpur', 'kl': 'Kuala Lumpur', 'kuala-lumpur': 'Kuala Lumpur',
-  // Europe
-  'newyork': 'New York', 'new-york': 'New York', 'nyc': 'New York',
-  'losangeles': 'Los Angeles', 'la': 'Los Angeles', 'los-angeles': 'Los Angeles',
-  'sanfrancisco': 'San Francisco', 'sf': 'San Francisco',
-  'saopaulo': 'Sao Paulo', 'rio': 'Rio de Janeiro',
-  'riodejaneiro': 'Rio de Janeiro',
-  // Asia
-  'hongkong': 'Hong Kong', 'hong-kong': 'Hong Kong', 'hk': 'Hong Kong',
-  'koalumpur': 'Kuala Lumpur',
-  'siemreap': 'Siem Reap', 'siem-reap': 'Siem Reap',
-  'hochiminh': 'Ho Chi Minh City', 'hochiminhcity': 'Ho Chi Minh City',
-  'phnompenh': 'Phnom Penh', 'phnom-penh': 'Phnom Penh',
-  'costarica': 'San Jose',
-  // General
-  'uk': 'London', 'uae': 'Dubai',
-};
-
-function normalizeDestination(name) {
-  if (!name) return name;
-  // Remove spaces and lowercase for lookup
-  const nospaces = name.toLowerCase().replace(/[\s-]/g, '');
-  if (DESTINATION_FIXES[nospaces]) return DESTINATION_FIXES[nospaces];
-  // Also try with original spacing lowercased
-  const lower = name.toLowerCase().trim();
-  if (DESTINATION_FIXES[lower]) return DESTINATION_FIXES[lower];
-  return name;
-}
-
-// ─────────────────────────────────────────────
-// DESTINATION NORMALIZER
-// Fixes concatenated/abbreviated city names before
-// they reach HotelBeds. Covers common cases worldwide.
-// ─────────────────────────────────────────────
-
 
 // ─────────────────────────────────────────────
 // RULE-BASED PARSER
@@ -200,14 +210,17 @@ function _parseWithRules(prompt) {
     nums.forEach(n => { const age = parseInt(n, 10); if (age < 18 && age >= 0) childAges.push(age); });
   });
 
-  // ── IMPROVED DATE PARSING ──────────────────
+  // ── DATE PARSING ──────────────────────────
   let departureDate = null;
-  const months = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12,
-    january:1, february:2, march:3, april:4, june:6, july:7, august:8, september:9, october:10, november:11, december:12 };
-  
+  const months = {
+    jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12,
+    january:1, february:2, march:3, april:4, june:6, july:7, august:8,
+    september:9, october:10, november:11, december:12,
+  };
+
   const dateMatch = lower.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s*(?:(\d{4})|(\d{2}))?/i)
     || lower.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?/i);
-  
+
   if (dateMatch) {
     let day, month, yr;
     if (/^\d/.test(dateMatch[1] || '')) {
@@ -275,7 +288,7 @@ function _parseWithRules(prompt) {
 
   const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only)\b/i.test(lower);
   const needsOriginClarification = !origin && !isHotelOnly;
-  
+
   return {
     destination, origin, nights: nights || null, passengers, children, childAges, budget,
     departureDate, returnDate, outboundTransportMode, returnTransportMode, mealPlan,
@@ -292,14 +305,29 @@ try {
   if (process.env.GROQ_API_KEY) groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
 } catch (e) { logger.warn('Groq client init failed', { error: e.message }); }
 
-const GROQ_SYSTEM_PROMPT = `You are a travel intent parser. Extract structured trip information. Return ONLY valid JSON. 
+const GROQ_SYSTEM_PROMPT = `You are a travel intent parser. Extract structured trip information. Return ONLY valid JSON.
 ALWAYS assume the current year is 2026. If a user says a date like "August 19th", resolve it to "2026-08-19".
+destination must be a real place name (1-4 words max). Never return a sentence as the destination.
 {
-  "destination": "city/place", "origin": "city", "nights": number, "passengers": number, "children": number, "childAges": [],
-  "budget": "low"|"mid"|"high"|"luxury", "departureDate": "YYYY-MM-DD", "returnDate": "YYYY-MM-DD",
-  "outboundTransportMode": "flight"|"bus"|"train", "returnTransportMode": "flight"|"bus"|"train",
-  "mealPlan": "all_inclusive"|... , "seatPreference": "window"|..., "timePreference": "morning"|...,
-  "needsOriginClarification": boolean
+  "destination": "city/place only - NOT a sentence",
+  "origin": "city",
+  "nights": number,
+  "passengers": number,
+  "children": number,
+  "childAges": [],
+  "budget": "low"|"mid"|"high"|"luxury",
+  "departureDate": "YYYY-MM-DD",
+  "returnDate": "YYYY-MM-DD",
+  "outboundTransportMode": "flight"|"bus"|"train"|null,
+  "returnTransportMode": "flight"|"bus"|"train"|null,
+  "mealPlan": "all_inclusive"|"full_board"|"half_board"|"bed_and_breakfast"|"room_only"|null,
+  "seatPreference": "window"|"aisle"|"exit_row"|null,
+  "timePreference": "morning"|"afternoon"|"evening"|null,
+  "needsOriginClarification": boolean,
+  "isMultiDestination": boolean,
+  "legs": [],
+  "preferredTransportProvider": null,
+  "preferredHotel": null
 }`;
 
 async function _parseWithGroq(prompt) {
@@ -314,48 +342,66 @@ async function _parseWithGroq(prompt) {
     if (!content) return null;
     const parsed = JSON.parse(content);
 
-    // ────────────────────────────────────────────────────────
-    // SANITIZATION LAYER: Force current/future year (2026+)
-    // ────────────────────────────────────────────────────────
+    // ── SANITIZATION: force current/future year ───────────
     const currentYear = new Date().getFullYear();
     const sanitizeDate = (dateStr) => {
-        if (!dateStr || typeof dateStr !== 'string') return dateStr;
-        const d = new Date(dateStr);
-        if (isNaN(d.getTime())) return dateStr;
-        if (d.getFullYear() < currentYear) {
-            d.setFullYear(currentYear);
-            return d.toISOString().split('T')[0];
-        }
-        return dateStr;
+      if (!dateStr || typeof dateStr !== 'string') return dateStr;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      if (d.getFullYear() < currentYear) { d.setFullYear(currentYear); return d.toISOString().split('T')[0]; }
+      return dateStr;
     };
-
     if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
-    if (parsed.returnDate) parsed.returnDate = sanitizeDate(parsed.returnDate);
+    if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
 
-    // Validate Place Name
-    if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) return null;
+    // ── SANITY CHECK: destination must be a place name ────
+    if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) {
+      logger.warn('Groq returned implausible destination — falling back to rule parser', {
+        returned: parsed.destination?.slice(0, 80),
+      });
+      return null;
+    }
 
+    // ── NORMALIZE destinations through full pipeline ──────
     if (parsed.destination) parsed.destination = resolveCountryToCity(parsed.destination);
-    if (parsed.origin) parsed.origin = resolveCountryToCity(parsed.origin);
+    if (parsed.origin)      parsed.origin      = resolveCountryToCity(parsed.origin);
 
+    // ── FILL MISSING ORIGIN from rule parser ─────────────
     if (!parsed.origin) {
       const ruleResult = _parseWithRules(prompt);
-      if (ruleResult.origin) parsed.origin = ruleResult.origin;
+      if (ruleResult.origin) {
+        parsed.origin = ruleResult.origin;
+        logger.info('Groq missed origin — filled from rule parser', { origin: parsed.origin });
+      }
     }
+    // ── FILL MISSING DESTINATION from rule parser ─────────
     if (!parsed.destination) {
       const ruleResult = _parseWithRules(prompt);
-      if (ruleResult.destination) parsed.destination = ruleResult.destination;
+      if (ruleResult.destination) {
+        parsed.destination = ruleResult.destination;
+        logger.info('Groq missed destination — filled from rule parser', { destination: parsed.destination });
+      }
     }
-    
+
     parsed._parsedBy = 'groq';
     return parsed;
-  } catch (err) { return null; }
+  } catch (err) {
+    logger.warn('Groq parsing failed — falling back to rule parser', { error: err.message });
+    return null;
+  }
 }
 
+// ─────────────────────────────────────────────
+// MAIN EXPORT
+// ─────────────────────────────────────────────
 async function parsePrompt(prompt) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return _parseWithRules('');
   const groqResult = await _parseWithGroq(prompt);
-  if (groqResult) return groqResult;
+  if (groqResult) {
+    logger.info('Prompt parsed via Groq', { destination: groqResult.destination, origin: groqResult.origin });
+    return groqResult;
+  }
+  logger.info('Falling back to rule-based parser', { prompt: prompt.slice(0, 80) });
   return _parseWithRules(prompt);
 }
 
