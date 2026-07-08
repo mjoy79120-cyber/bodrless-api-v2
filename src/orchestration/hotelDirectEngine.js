@@ -16,6 +16,46 @@ const { logger }      = require('../utils/logger');
 function parseHotelPrompt(prompt) {
   const lower = (prompt || '').toLowerCase().trim();
 
+  // ── MULTI-PROPERTY DETECTION ─────────────────────────────
+  // Optimized to catch clean splits on 'and then', 'then', 'and also', or just 'and' between properties
+  const legSplitMatch = lower.match(
+    /^(.*?)\s+(?:and\s+then|then|and\s+also|followed\s+by|and)\s+(.+)$/i
+  );
+  
+  if (legSplitMatch) {
+    const p1 = parseHotelPrompt(legSplitMatch[1]);
+    const p2 = parseHotelPrompt(legSplitMatch[2]);
+    
+    // Ensure both segments actually managed to resolve a valid destination before declaring it a multi-destination stay
+    if (p1.destination && p2.destination) {
+      p1._originalPrompt = prompt; 
+      
+      return {
+        destination:         null,
+        nights:              p1.nights,
+        adults:              p1.adults,
+        passengers:          p1.adults,
+        children:            p1.children,
+        childAges:           [],
+        mealPlan:            p1.mealPlan || p2.mealPlan,
+        departureDate:       p1.departureDate,
+        returnDate:          p1.returnDate,
+        budget:              p1.budget,
+        preferences:         [...new Set([...p1.preferences, ...p2.preferences])],
+        isMultiDestination:  true,
+        legs: [
+          { destination: p1.destination, nights: p1.nights, departureDate: p1.departureDate },
+          { destination: p2.destination, nights: p2.nights, departureDate: p2.departureDate },
+        ],
+        needsOriginClarification: false,
+        requiresFlight: false,
+        requiresBus:    false,
+        _parsedBy:      'hotel_rules_multi',
+        _originalPrompt: prompt
+      };
+    }
+  }
+
   // ── NIGHTS ────────────────────────────────────────────────
   let nights = 3;
   const nightsMatch = lower.match(/(\d+)\s*(?:night|nights|nts?)\b/i);
@@ -36,9 +76,9 @@ function parseHotelPrompt(prompt) {
 
   // ── MEAL PLAN ─────────────────────────────────────────────
   let mealPlan = null;
-  if (/all.?inclusive/i.test(lower))                        mealPlan = 'all_inclusive';
-  else if (/full.?board/i.test(lower))                      mealPlan = 'full_board';
-  else if (/half.?board/i.test(lower))                      mealPlan = 'half_board';
+  if (/all.?inclusive/i.test(lower))                     mealPlan = 'all_inclusive';
+  else if (/full.?board/i.test(lower))                    mealPlan = 'full_board';
+  else if (/half.?board/i.test(lower))                    mealPlan = 'half_board';
   else if (/bed.?and.?breakfast|b&b|\bbb\b/i.test(lower))  mealPlan = 'bed_and_breakfast';
   else if (/room.?only|no meals/i.test(lower))              mealPlan = 'room_only';
   else if (/\bbreakfast\b/i.test(lower))                    mealPlan = 'bed_and_breakfast';
@@ -78,7 +118,7 @@ function parseHotelPrompt(prompt) {
     else if (/\btomorrow\b/i.test(lower))      d.setDate(d.getDate() + 1);
     else if (/this\s+weekend/i.test(lower))    d.setDate(d.getDate() + (6 - d.getDay()));
     else if (/next\s+week/i.test(lower))       d.setDate(d.getDate() + 7);
-    else                                         d.setDate(d.getDate() + 1);
+    else                                       d.setDate(d.getDate() + 1);
     departureDate = d.toISOString().split('T')[0];
   }
 
@@ -87,45 +127,7 @@ function parseHotelPrompt(prompt) {
   dep.setDate(dep.getDate() + nights);
   const returnDate = dep.toISOString().split('T')[0];
 
-  // ── DESTINATION — strip filler, keep property/place name ──
-  // Remove booking intent words, room type words, date words,
-  // guest count phrases — what remains is the property or location.
- // ── MULTI-PROPERTY DETECTION ─────────────────────────────
-  // Split on "and in/at", "then in/at", "and also" between two legs
-  // e.g. "sarova shaba 3 nights 10 august and in december whitesands 5 nights from 1st"
-  const legSplitMatch = lower.match(
-    /^(.*?)\s+(?:and(?:\s+also)?|then(?:\s+also)?)\s+(?:in\s+|at\s+)(.+)$/i
-  );
-  if (legSplitMatch) {
-    const p1 = parseHotelPrompt(legSplitMatch[1]);
-    const p2 = parseHotelPrompt(legSplitMatch[2]);
-    if (p1.destination && p2.destination) {
-      return {
-        destination:         null,
-        nights:              p1.nights,
-        adults:              p1.adults,
-        passengers:          p1.adults,
-        children:            p1.children,
-        childAges:           [],
-        mealPlan:            p1.mealPlan || p2.mealPlan,
-        departureDate:       p1.departureDate,
-        returnDate:          p1.returnDate,
-        budget:              p1.budget,
-        preferences:         [...new Set([...p1.preferences, ...p2.preferences])],
-        isMultiDestination:  true,
-        legs: [
-          { destination: p1.destination, nights: p1.nights, departureDate: p1.departureDate },
-          { destination: p2.destination, nights: p2.nights, departureDate: p2.departureDate },
-        ],
-        needsOriginClarification: false,
-        requiresFlight: false,
-        requiresBus:    false,
-        _parsedBy:      'hotel_rules_multi',
-      };
-    }
-  }
-
-  // ── DESTINATION — strip filler, keep property/place name ──
+  // ── DESTINATION STRIPPING ─────────────────────────────────
   const destRaw = prompt
     .replace(/\b(?:book(?:\s+me)?|reserve|i(?:'d|\s+would)\s+like(?:\s+to)?(?:\s+book)?|i\s+want(?:\s+to)?(?:\s+book)?|can\s+i\s+(?:get|have|book)|get\s+me|please|help\s+me)\b/gi, '')
     .replace(/\b(?:a\s+)?(?:room|suite|deluxe|standard|superior|junior|double|twin|single|king|queen|family\s+room)\b/gi, '')
@@ -147,7 +149,7 @@ function parseHotelPrompt(prompt) {
   if (/luxury|premium|5.?star|five.?star/i.test(lower))  budget = 'luxury';
   else if (/cheap|budget|affordable/i.test(lower))         budget = 'low';
 
-  // ── PREFERENCES (for upsell tag matching) ─────────────────
+  // ── PREFERENCES ───────────────────────────────────────────
   const preferences = [];
   if (/honeymoon|romantic/i.test(lower))   preferences.push('honeymoon');
   if (/family|kids|children/i.test(lower)) preferences.push('family');
@@ -174,6 +176,7 @@ function parseHotelPrompt(prompt) {
     requiresFlight: false,
     requiresBus: false,
     _parsedBy: 'hotel_rules',
+    _originalPrompt: prompt
   };
 }
 
@@ -644,10 +647,8 @@ class HotelDirectEngine {
 
     return properties.filter(p => {
       if ((p.destination || '').toLowerCase().includes(search)) return true;
-      if ((p.name       || '').toLowerCase().includes(search)) return true;
-      if ((p.location   || '').toLowerCase().includes(search)) return true;
-      // Also check if the search contains the property name (reverse match)
-      // e.g. search = "sarova stanley nairobi" still matches name "sarova stanley"
+      if ((p.name         || '').toLowerCase().includes(search)) return true;
+      if ((p.location    || '').toLowerCase().includes(search)) return true;
       if (search.includes((p.name || '').toLowerCase())) return true;
       const aliases = Array.isArray(p.search_aliases) ? p.search_aliases : [];
       if (aliases.some(a => {
@@ -699,7 +700,7 @@ class HotelDirectEngine {
   _buildResponse(sessionId, tripParams, conversationHistory, text, packages) {
     const updatedHistory = [
       ...conversationHistory,
-      { role: 'user',      content: tripParams._originalPrompt || '' },
+      { role: 'user',       content: tripParams._originalPrompt || '' },
       { role: 'assistant', content: text, packageCount: packages.length },
     ].slice(-10);
 
