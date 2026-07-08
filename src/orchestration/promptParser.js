@@ -1,7 +1,8 @@
 /**
  * PROMPT PARSER
  * ─────────────────────────────────────────────────────────────
- * Fixed: Robust date normalization (force current/future years).
+ * Fixed: Added Year-2026 enforcement to System Prompt and 
+ * Post-Processing Sanitization Layer.
  */
 
 const Groq = require('groq-sdk');
@@ -13,11 +14,7 @@ const { logger } = require('../utils/logger');
 function _normalizeYear(yearInput) {
   const currentYear = new Date().getFullYear();
   let yr = parseInt(yearInput, 10);
-  
-  // If year is 2 digits (e.g. 24, 26), convert to 20xx
   if (yr < 100) yr += 2000;
-  
-  // If calculated year is in the past, or undefined, default to current/next
   if (yr < currentYear) return currentYear;
   return yr;
 }
@@ -231,18 +228,10 @@ function _parseWithRules(prompt) {
   const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only)\b/i.test(lower);
   const needsOriginClarification = !origin && !isHotelOnly;
   
-  let isMultiDestination = false;
-  let legs = [];
-  const multiMatch = lower.match(/(.+?)\s+(?:then|and then|followed by|before)\s+(.+)/i);
-  if (multiMatch && !simpleRoute) {
-    isMultiDestination = true;
-    legs = [];
-  }
-
   return {
     destination, origin, nights: nights || null, passengers, children, childAges, budget,
     departureDate, returnDate, outboundTransportMode, returnTransportMode, mealPlan,
-    seatPreference, timePreference, needsOriginClarification, isMultiDestination, legs,
+    seatPreference, timePreference, needsOriginClarification, isMultiDestination: false, legs: [],
     _parsedBy: 'rules',
   };
 }
@@ -255,13 +244,14 @@ try {
   if (process.env.GROQ_API_KEY) groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
 } catch (e) { logger.warn('Groq client init failed', { error: e.message }); }
 
-const GROQ_SYSTEM_PROMPT = `You are a travel intent parser. Extract structured trip information. Return ONLY valid JSON.
+const GROQ_SYSTEM_PROMPT = `You are a travel intent parser. Extract structured trip information. Return ONLY valid JSON. 
+ALWAYS assume the current year is 2026. If a user says a date like "August 19th", resolve it to "2026-08-19".
 {
   "destination": "city/place", "origin": "city", "nights": number, "passengers": number, "children": number, "childAges": [],
   "budget": "low"|"mid"|"high"|"luxury", "departureDate": "YYYY-MM-DD", "returnDate": "YYYY-MM-DD",
   "outboundTransportMode": "flight"|"bus"|"train", "returnTransportMode": "flight"|"bus"|"train",
   "mealPlan": "all_inclusive"|... , "seatPreference": "window"|..., "timePreference": "morning"|...,
-  "isMultiDestination": boolean, "legs": [], "preferredTransportProvider": null, "preferredHotel": null, "needsOriginClarification": boolean
+  "needsOriginClarification": boolean
 }`;
 
 async function _parseWithGroq(prompt) {
@@ -276,6 +266,25 @@ async function _parseWithGroq(prompt) {
     if (!content) return null;
     const parsed = JSON.parse(content);
 
+    // ────────────────────────────────────────────────────────
+    // SANITIZATION LAYER: Force current/future year (2026+)
+    // ────────────────────────────────────────────────────────
+    const currentYear = new Date().getFullYear();
+    const sanitizeDate = (dateStr) => {
+        if (!dateStr || typeof dateStr !== 'string') return dateStr;
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return dateStr;
+        if (d.getFullYear() < currentYear) {
+            d.setFullYear(currentYear);
+            return d.toISOString().split('T')[0];
+        }
+        return dateStr;
+    };
+
+    if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
+    if (parsed.returnDate) parsed.returnDate = sanitizeDate(parsed.returnDate);
+
+    // Validate Place Name
     if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) return null;
 
     if (parsed.destination) parsed.destination = resolveCountryToCity(parsed.destination);
@@ -289,6 +298,7 @@ async function _parseWithGroq(prompt) {
       const ruleResult = _parseWithRules(prompt);
       if (ruleResult.destination) parsed.destination = ruleResult.destination;
     }
+    
     parsed._parsedBy = 'groq';
     return parsed;
   } catch (err) { return null; }
