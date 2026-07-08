@@ -56,13 +56,6 @@ class OrchestrationEngine {
 
     logger.info(`[${sessionId}] Started`, { agencyId, prompt });
 
-    // ── Hotel direct routing ──────────────────────────────────
-    // If this agency row is a hotel group (mode === 'hotel_direct'),
-    // hand off to the hotel direct engine immediately.
-    // hotel groups are independent tenants — the api_key on the
-    // agency row equals the hotel_groups.slug identifier.
-    // This check runs BEFORE parsePrompt so hotel searches never
-    // touch the flight/bus/transfer logic at all.
     try {
       const { data: agencyRow } = await supabase
         .from('agencies')
@@ -75,13 +68,10 @@ class OrchestrationEngine {
         return hotelDirectEngine.orchestrate(prompt, agencyRow.api_key, context);
       }
     } catch (routingErr) {
-      // If the routing check itself fails (e.g. Supabase blip),
-      // fall through to normal agency engine rather than dead-ending.
       logger.warn('Hotel direct routing check failed — continuing as agency engine', {
         agencyId, error: routingErr.message,
       });
     }
-    // ── End hotel direct routing ──────────────────────────────
 
     try {
       if (previousParams?._awaitingClarification) {
@@ -870,6 +860,81 @@ class OrchestrationEngine {
 
   async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone = null) {
     tripParams.agencyId = agencyId;
+
+    // ── Multi-trip: independent separate trips ────────────────────────────────
+    // parsePrompt returns { trips: [...] } when the user asks for multiple
+    // completely separate trips (different origins, destinations, and dates).
+    // These are NOT multi-destination legs — run each as its own search.
+    if (Array.isArray(tripParams.trips) && tripParams.trips.length > 1) {
+      const tripResults = [];
+
+      for (const trip of tripParams.trips) {
+        const legParams = {
+          ...tripParams,
+          trips:              undefined,   // prevent recursion
+          isMultiDestination: false,
+          legs:               undefined,
+          destination:        trip.destination,
+          origin:             trip.origin || tripParams.origin,
+          departureDate:      trip.departureDate,
+          returnDate:         trip.returnDate,
+          nights:             trip.nights,
+        };
+
+        const result = await this._runSingleDestinationSearch(legParams, sessionId, prompt, intent);
+
+        tripResults.push({
+          text:     result.text,
+          packages: result.packages,
+          label:    `${legParams.origin} → ${trip.destination} (${trip.departureDate})`,
+        });
+      }
+
+      const updatedHistory = [
+        ...conversationHistory,
+        { role: 'user', content: prompt },
+        {
+          role:         'assistant',
+          content:      `Built ${tripResults.length} separate trip searches`,
+          params:       tripParams,
+          packageCount: tripResults.reduce((s, t) => s + t.packages.length, 0),
+        },
+      ].slice(-10);
+
+      this._logSearch({
+        sessionId,
+        agencyId,
+        prompt,
+        tripParams:       { ...tripParams, destination: tripResults.map(t => t.label).join(' + ') },
+        packagesReturned: tripResults.reduce((s, t) => s + t.packages.length, 0),
+        channel:          channel || 'widget',
+      }).catch(err => logger.error('Failed to log multi-trip search', { error: err.message }));
+
+      tracking.logTurn({
+        sessionId,
+        agencyId,
+        channel:            channel || 'widget',
+        phone:              phone || null,
+        userMessage:        prompt,
+        engineResponse:     `Found options for ${tripResults.length} trips`,
+        packagesCount:      tripResults.reduce((s, t) => s + t.packages.length, 0),
+        needsClarification: false,
+        tripParams,
+        packages:           tripResults.flatMap(t => t.packages),
+      });
+
+      return {
+        sessionId,
+        text:                `I found options for your ${tripResults.length} trips:`,
+        packages:            tripResults.flatMap(t => t.packages),
+        tripResults,
+        tripParams,
+        intent,
+        conversationHistory: updatedHistory,
+        generatedAt:         new Date().toISOString(),
+      };
+    }
+    // ── End multi-trip ────────────────────────────────────────────────────────
 
     if (tripParams.isMultiDestination) {
       try {
