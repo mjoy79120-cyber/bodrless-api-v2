@@ -24,7 +24,7 @@ const router   = express.Router();
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 const hotelDirectBookingService = require('../services/hotelDirectBookingService');
-const hotelDirectEngine         = require('../orchestration/hotelDirectEngine');
+const hotelDirectEngine         = require('../engine/hotelDirectEngine');
 
 // ─────────────────────────────
 // AUTH MIDDLEWARE
