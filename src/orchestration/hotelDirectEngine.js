@@ -1,14 +1,11 @@
-/**
- * HOTEL DIRECT ENGINE — v3
- * Refactored to return individual leg packages for multi-destination trips
- * so the frontend renders separate cards for each property.
+* HOTEL DIRECT ENGINE — v3
+ * Fixed: fuzzy property matching for typos, multi-property returns all legs.
  */
 
 const { v4: uuidv4 } = require('uuid');
 const supabase        = require('../utils/supabase');
 const { logger }      = require('../utils/logger');
 
-// [Keep parseHotelPrompt the same as before]
 function parseHotelPrompt(prompt) {
   const lower = (prompt || '').toLowerCase().trim();
 
@@ -16,14 +13,12 @@ function parseHotelPrompt(prompt) {
   const legSplitMatch = lower.match(
     /^(.*?)\s+(?:and\s+then|then|and\s+also|followed\s+by|and)\s+(.+)$/i
   );
-  
+
   if (legSplitMatch) {
     const p1 = parseHotelPrompt(legSplitMatch[1]);
     const p2 = parseHotelPrompt(legSplitMatch[2]);
-    
+
     if (p1.destination && p2.destination) {
-      p1._originalPrompt = prompt; 
-      
       return {
         destination:         null,
         nights:              p1.nights,
@@ -45,7 +40,7 @@ function parseHotelPrompt(prompt) {
         requiresFlight: false,
         requiresBus:    false,
         _parsedBy:      'hotel_rules_multi',
-        _originalPrompt: prompt
+        _originalPrompt: prompt,
       };
     }
   }
@@ -70,12 +65,12 @@ function parseHotelPrompt(prompt) {
 
   // ── MEAL PLAN ─────────────────────────────────────────────
   let mealPlan = null;
-  if (/all.?inclusive/i.test(lower))                     mealPlan = 'all_inclusive';
-  else if (/full.?board/i.test(lower))                    mealPlan = 'full_board';
-  else if (/half.?board/i.test(lower))                    mealPlan = 'half_board';
-  else if (/bed.?and.?breakfast|b&b|\bbb\b/i.test(lower))  mealPlan = 'bed_and_breakfast';
-  else if (/room.?only|no meals/i.test(lower))              mealPlan = 'room_only';
-  else if (/\bbreakfast\b/i.test(lower))                    mealPlan = 'bed_and_breakfast';
+  if (/all.?inclusive/i.test(lower))                        mealPlan = 'all_inclusive';
+  else if (/full.?board/i.test(lower))                      mealPlan = 'full_board';
+  else if (/half.?board/i.test(lower))                      mealPlan = 'half_board';
+  else if (/bed.?and.?breakfast|b&b|\bbb\b/i.test(lower))   mealPlan = 'bed_and_breakfast';
+  else if (/room.?only|no meals/i.test(lower))               mealPlan = 'room_only';
+  else if (/\bbreakfast\b/i.test(lower))                     mealPlan = 'bed_and_breakfast';
 
   // ── DATES ─────────────────────────────────────────────────
   let departureDate = null;
@@ -108,15 +103,14 @@ function parseHotelPrompt(prompt) {
 
   if (!departureDate) {
     const d = new Date();
-    if      (/\btoday\b/i.test(lower))        { /* use today as-is */ }
+    if      (/\btoday\b/i.test(lower))        { /* use today */ }
     else if (/\btomorrow\b/i.test(lower))      d.setDate(d.getDate() + 1);
     else if (/this\s+weekend/i.test(lower))    d.setDate(d.getDate() + (6 - d.getDay()));
     else if (/next\s+week/i.test(lower))       d.setDate(d.getDate() + 7);
-    else                                       d.setDate(d.getDate() + 1);
+    else                                        d.setDate(d.getDate() + 1);
     departureDate = d.toISOString().split('T')[0];
   }
 
-  // ── RETURN DATE ───────────────────────────────────────────
   const dep = new Date(departureDate);
   dep.setDate(dep.getDate() + nights);
   const returnDate = dep.toISOString().split('T')[0];
@@ -145,12 +139,12 @@ function parseHotelPrompt(prompt) {
 
   // ── PREFERENCES ───────────────────────────────────────────
   const preferences = [];
-  if (/honeymoon|romantic/i.test(lower))   preferences.push('honeymoon');
-  if (/family|kids|children/i.test(lower)) preferences.push('family');
-  if (/business|corporate/i.test(lower))   preferences.push('business');
+  if (/honeymoon|romantic/i.test(lower))    preferences.push('honeymoon');
+  if (/family|kids|children/i.test(lower))  preferences.push('family');
+  if (/business|corporate/i.test(lower))    preferences.push('business');
   if (/beach|ocean|sea|coast/i.test(lower)) preferences.push('beach');
-  if (/safari|game|wildlife/i.test(lower)) preferences.push('safari');
-  if (/spa|wellness|relax/i.test(lower))   preferences.push('spa');
+  if (/safari|game|wildlife/i.test(lower))  preferences.push('safari');
+  if (/spa|wellness|relax/i.test(lower))    preferences.push('spa');
 
   return {
     destination,
@@ -170,7 +164,7 @@ function parseHotelPrompt(prompt) {
     requiresFlight: false,
     requiresBus: false,
     _parsedBy: 'hotel_rules',
-    _originalPrompt: prompt
+    _originalPrompt: prompt,
   };
 }
 
@@ -273,38 +267,68 @@ class HotelDirectEngine {
   async _orchestrateMultiProperty(tripParams, group, sessionId, prompt, conversationHistory) {
     const legs = tripParams.legs || [];
     const packages = [];
+    const foundLegs = [];
 
-    // Orchestrate each leg as its own package so the UI renders separate cards
     for (const leg of legs) {
       const properties = await this._findProperties(group.id, leg.destination);
-      if (!properties.length) continue; // Skip or handle error
+
+      if (!properties.length) {
+        // Tell the user which property wasn't found
+        const allProps = await this._getAllProperties(group.id);
+        const propList = allProps.map(p => p.name).join(', ');
+        return this._buildResponse(
+          sessionId, tripParams, conversationHistory,
+          `I couldn't find a property matching "${leg.destination}". Available properties: ${propList}.`,
+          []
+        );
+      }
 
       const property = properties[0];
+      foundLegs.push({ leg, property });
+
+      const legTripParams = {
+        ...tripParams,
+        departureDate: leg.departureDate || tripParams.departureDate,
+        returnDate:    this._addDays(leg.departureDate || tripParams.departureDate, leg.nights || tripParams.nights || 1),
+        nights:        leg.nights || tripParams.nights || 1,
+      };
+
       const rooms = await this._searchRooms(property, {
-        checkIn:   leg.departureDate || tripParams.departureDate,
-        nights:    leg.nights,
+        checkIn:   legTripParams.departureDate,
+        checkOut:  legTripParams.returnDate,
+        nights:    legTripParams.nights,
         adults:    tripParams.adults || tripParams.passengers || 1,
         children:  tripParams.children || 0,
         childAges: tripParams.childAges || [],
         mealPlan:  tripParams.mealPlan,
         budget:    tripParams.budget,
       });
+
       const ancillaries = await this._getAncillaryServices(property.id, tripParams);
-      
-      // Add each room option as a "package" for this leg
+
+      // Up to 3 room options per leg
       for (const room of rooms.slice(0, 3)) {
-        const pkg = this._buildRoomPackage(room, property, ancillaries, tripParams, group);
-        // Mark as part of a multi-destination itinerary
-        pkg.isMultiDestination = true;
-        pkg.legIndex = legs.indexOf(leg);
+        const pkg = this._buildRoomPackage(room, property, ancillaries, legTripParams, group);
+        // Tag so widget knows which leg this belongs to
+        pkg.legIndex  = legs.indexOf(leg);
         pkg.totalLegs = legs.length;
+        pkg.legLabel  = `${property.name} — Leg ${legs.indexOf(leg) + 1} of ${legs.length}`;
         packages.push(pkg);
       }
     }
 
-    const totalNights = legs.reduce((sum, l) => sum + (l.nights || 1), 0);
-    const text = `I've found availability for your ${totalNights}-night itinerary. Please select a room for each leg:`;
-    
+    if (!packages.length) {
+      return this._buildResponse(
+        sessionId, tripParams, conversationHistory,
+        `No rooms are available for your requested dates. Please try different dates or contact us directly.`,
+        []
+      );
+    }
+
+    const propNames = foundLegs.map(l => l.property.name).join(' → ');
+    const totalNights = legs.reduce((sum, l) => sum + (l.nights || tripParams.nights || 1), 0);
+    const text = `I found ${packages.length} room options across your ${totalNights}-night itinerary: ${propNames}. Select a room for each leg:`;
+
     return this._buildResponse(sessionId, tripParams, conversationHistory, text, packages);
   }
 
@@ -341,7 +365,7 @@ class HotelDirectEngine {
         const ratePlans = await this._getRatePlans(roomType.id, checkIn, mealPlan, budget);
         if (!ratePlans.length) continue;
 
-        const bestRate = ratePlans.find(r => r.is_refundable) || ratePlans[0];
+        const bestRate    = ratePlans.find(r => r.is_refundable) || ratePlans[0];
         const extraAdults = Math.max(0, adults - bestRate.base_occupancy);
         const nightsCount = nights || 1;
 
@@ -387,12 +411,12 @@ class HotelDirectEngine {
   }
 
   async _searchRoomsOperaCloud(property, params) {
-    logger.warn('[HOTEL DIRECT] Opera Cloud adapter not yet implemented — falling back to Supabase', { propertyId: property.id });
+    logger.warn('[HOTEL DIRECT] Opera Cloud not yet implemented — falling back to Supabase', { propertyId: property.id });
     return this._searchRoomsSupabase(property, params);
   }
 
   async _searchRoomsOpera5(property, params) {
-    logger.warn('[HOTEL DIRECT] Opera 5 (OXI) adapter not yet implemented — falling back to Supabase', { propertyId: property.id });
+    logger.warn('[HOTEL DIRECT] Opera 5 not yet implemented — falling back to Supabase', { propertyId: property.id });
     return this._searchRoomsSupabase(property, params);
   }
 
@@ -556,6 +580,16 @@ class HotelDirectEngine {
     };
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // FIND PROPERTIES
+  // Multi-strategy matching so typos like "stanely" still find
+  // "Sarova Stanley". Strategy order:
+  //   1. Exact substring match (destination/name/location/aliases)
+  //   2. Reverse match (search string contains property name)
+  //   3. Word-level fuzzy — every word in the property name appears
+  //      somewhere in the search string (handles transpositions/
+  //      insertions like "stanely" ≈ "stanley")
+  // ─────────────────────────────────────────────────────────────
   async _findProperties(groupId, destination) {
     if (!destination) return this._getAllProperties(groupId);
 
@@ -568,17 +602,44 @@ class HotelDirectEngine {
     if (!properties?.length) return [];
 
     const search = destination.toLowerCase().trim();
+    const searchWords = search.split(/\s+/).filter(Boolean);
 
     return properties.filter(p => {
-      if ((p.destination || '').toLowerCase().includes(search)) return true;
-      if ((p.name         || '').toLowerCase().includes(search)) return true;
-      if ((p.location    || '').toLowerCase().includes(search)) return true;
-      if (search.includes((p.name || '').toLowerCase())) return true;
+      const name     = (p.name        || '').toLowerCase();
+      const dest     = (p.destination || '').toLowerCase();
+      const location = (p.location    || '').toLowerCase();
+
+      // 1. Direct substring matches
+      if (dest.includes(search))   return true;
+      if (name.includes(search))   return true;
+      if (location.includes(search)) return true;
+
+      // 2. Reverse match — search contains the property name
+      if (name && search.includes(name)) return true;
+
+      // 3. Alias matches
       const aliases = Array.isArray(p.search_aliases) ? p.search_aliases : [];
       if (aliases.some(a => {
         const al = String(a).toLowerCase();
         return al.includes(search) || search.includes(al);
       })) return true;
+
+      // 4. Word-level fuzzy — each word of the property name
+      //    has a close match in the search words.
+      //    "sarova stanely" → words ["sarova","stanely"]
+      //    property name "sarova stanley" → words ["sarova","stanley"]
+      //    "sarova" matches exactly; "stanely" vs "stanley" →
+      //    one starts-with the other (stanely⊂stanley prefix).
+      const nameWords = name.split(/\s+/).filter(Boolean);
+      if (nameWords.length > 0 && nameWords.every(nw =>
+        searchWords.some(sw =>
+          sw === nw ||
+          sw.startsWith(nw) ||
+          nw.startsWith(sw) ||
+          _levenshtein(sw, nw) <= 2   // tolerate up to 2 character edits
+        )
+      )) return true;
+
       return false;
     });
   }
@@ -624,7 +685,7 @@ class HotelDirectEngine {
   _buildResponse(sessionId, tripParams, conversationHistory, text, packages) {
     const updatedHistory = [
       ...conversationHistory,
-      { role: 'user',       content: tripParams._originalPrompt || '' },
+      { role: 'user',      content: tripParams._originalPrompt || '' },
       { role: 'assistant', content: text, packageCount: packages.length },
     ].slice(-10);
 
@@ -649,6 +710,26 @@ class HotelDirectEngine {
     d.setDate(d.getDate() + (days || 1));
     return d.toISOString().split('T')[0];
   }
+}
+
+// ─────────────────────────────────────────────
+// LEVENSHTEIN DISTANCE — for fuzzy name matching
+// Only used for short words (property name words
+// are typically 3-10 chars) so this is fast.
+// ─────────────────────────────────────────────
+function _levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i-1] === b[j-1]
+        ? dp[i-1][j-1]
+        : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    }
+  }
+  return dp[m][n];
 }
 
 module.exports = new HotelDirectEngine();
