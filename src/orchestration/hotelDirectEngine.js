@@ -1,6 +1,6 @@
 // HOTEL DIRECT ENGINE — v3
- * Fixed: fuzzy property matching for typos, multi-property returns all legs.
- */
+// Fixed: fuzzy property matching for typos, multi-property returns all legs.
+
 
 const { v4: uuidv4 } = require('uuid');
 const supabase        = require('../utils/supabase');
