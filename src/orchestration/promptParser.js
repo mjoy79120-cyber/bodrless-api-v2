@@ -4,6 +4,7 @@
  * Fixed: Added Year-2026 enforcement to System Prompt and 
  * Post-Processing Sanitization Layer.
  * Fixed: Universal destination normalizer for worldwide cities.
+ * Fixed: Multi-trip support — returns trips[] for independent trips.
  */
 
 const Groq = require('groq-sdk');
@@ -71,10 +72,6 @@ const CITY_CODES = {
 
 // ─────────────────────────────────────────────
 // DESTINATION NORMALIZER
-// Fixes concatenated/abbreviated/misspelled city
-// names worldwide before they reach HotelBeds.
-// Keyed by lowercase-no-spaces so "Cape Town",
-// "capetown", "cape-town" all resolve correctly.
 // ─────────────────────────────────────────────
 const DESTINATION_FIXES = {
   // Africa
@@ -106,18 +103,14 @@ const DESTINATION_FIXES = {
   'costarica': 'San Jose',
   // Europe
   'newyorkcity': 'New York',
-  'kualalumpur': 'Kuala Lumpur',
 };
 
 function normalizeDestination(name) {
   if (!name) return name;
-  // Strip spaces and hyphens for lookup key
   const nospaces = name.toLowerCase().replace(/[\s-]/g, '');
   if (DESTINATION_FIXES[nospaces]) return DESTINATION_FIXES[nospaces];
-  // Also try with original spacing lowercased
   const lower = name.toLowerCase().trim();
   if (DESTINATION_FIXES[lower]) return DESTINATION_FIXES[lower];
-  // Return original (preserves correct casing for known cities)
   return name;
 }
 
@@ -125,7 +118,6 @@ function resolveCountryToCity(name) {
   if (!name) return name;
   const lower = name.toLowerCase().trim();
   const city = COUNTRY_TO_CITY[lower] || name;
-  // Always run through normalizer to fix concatenated names
   return normalizeDestination(city);
 }
 
@@ -293,6 +285,7 @@ function _parseWithRules(prompt) {
     destination, origin, nights: nights || null, passengers, children, childAges, budget,
     departureDate, returnDate, outboundTransportMode, returnTransportMode, mealPlan,
     seatPreference, timePreference, needsOriginClarification, isMultiDestination: false, legs: [],
+    preferredTransportProvider: null, preferredHotel: null,
     _parsedBy: 'rules',
   };
 }
@@ -306,16 +299,20 @@ try {
 } catch (e) { logger.warn('Groq client init failed', { error: e.message }); }
 
 const GROQ_SYSTEM_PROMPT = `You are a travel intent parser. Extract structured trip information. Return ONLY valid JSON.
-ALWAYS assume the current year is 2026. If a user says a date like "August 19th", resolve it to "2026-08-19".
-destination must be a real place name (1-4 words max). Never return a sentence as the destination.
+ALWAYS assume the current year is 2026. If a user says "August 15th", resolve it to "2026-08-15".
+
+CRITICAL: If the user mentions MULTIPLE SEPARATE TRIPS (different destinations with different dates, e.g. "two trips", "first trip...second trip", "one to X and another to Y"), you MUST use the "trips" array to capture ALL of them. Never drop a trip.
+
+Return this shape for a SINGLE trip:
 {
-  "destination": "city/place only - NOT a sentence",
+  "trips": null,
+  "destination": "city only",
   "origin": "city",
   "nights": number,
   "passengers": number,
   "children": number,
   "childAges": [],
-  "budget": "low"|"mid"|"high"|"luxury",
+  "budget": "low"|"mid"|"high"|"luxury"|null,
   "departureDate": "YYYY-MM-DD",
   "returnDate": "YYYY-MM-DD",
   "outboundTransportMode": "flight"|"bus"|"train"|null,
@@ -323,12 +320,58 @@ destination must be a real place name (1-4 words max). Never return a sentence a
   "mealPlan": "all_inclusive"|"full_board"|"half_board"|"bed_and_breakfast"|"room_only"|null,
   "seatPreference": "window"|"aisle"|"exit_row"|null,
   "timePreference": "morning"|"afternoon"|"evening"|null,
-  "needsOriginClarification": boolean,
-  "isMultiDestination": boolean,
+  "needsOriginClarification": false,
+  "isMultiDestination": false,
   "legs": [],
   "preferredTransportProvider": null,
   "preferredHotel": null
-}`;
+}
+
+Return this shape for MULTIPLE SEPARATE TRIPS:
+{
+  "trips": [
+    {
+      "destination": "Zanzibar",
+      "origin": "Nairobi",
+      "nights": 5,
+      "departureDate": "2026-08-15",
+      "returnDate": "2026-08-20",
+      "needsOriginClarification": false
+    },
+    {
+      "destination": "Lagos",
+      "origin": "Nairobi",
+      "nights": 5,
+      "departureDate": "2026-09-12",
+      "returnDate": "2026-09-17",
+      "needsOriginClarification": false
+    }
+  ],
+  "destination": "Zanzibar",
+  "origin": "Nairobi",
+  "nights": 5,
+  "passengers": 1,
+  "children": 0,
+  "childAges": [],
+  "budget": null,
+  "departureDate": "2026-08-15",
+  "returnDate": "2026-08-20",
+  "outboundTransportMode": null,
+  "returnTransportMode": null,
+  "mealPlan": null,
+  "seatPreference": null,
+  "timePreference": null,
+  "needsOriginClarification": false,
+  "isMultiDestination": false,
+  "legs": [],
+  "preferredTransportProvider": null,
+  "preferredHotel": null
+}
+
+Rules:
+- destination must be a real place name (1-4 words max). Never a sentence.
+- When trips[] is present, it must contain ALL trips mentioned — never drop one.
+- Shared fields (passengers, budget, etc.) go at the top level.`;
 
 async function _parseWithGroq(prompt) {
   if (!groqClient) return null;
@@ -336,7 +379,7 @@ async function _parseWithGroq(prompt) {
     const completion = await groqClient.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       messages: [{ role: 'system', content: GROQ_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
-      temperature: 0.1, max_tokens: 500, response_format: { type: 'json_object' },
+      temperature: 0.1, max_tokens: 800, response_format: { type: 'json_object' },
     });
     const content = completion.choices[0]?.message?.content;
     if (!content) return null;
@@ -351,10 +394,39 @@ async function _parseWithGroq(prompt) {
       if (d.getFullYear() < currentYear) { d.setFullYear(currentYear); return d.toISOString().split('T')[0]; }
       return dateStr;
     };
+
+    // ── SANITIZE top-level dates ──────────────────────────
     if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
     if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
 
-    // ── SANITY CHECK: destination must be a place name ────
+    // ── SANITIZE trips[] dates ────────────────────────────
+    if (Array.isArray(parsed.trips)) {
+      parsed.trips = parsed.trips.map(t => ({
+        ...t,
+        departureDate: sanitizeDate(t.departureDate),
+        returnDate:    sanitizeDate(t.returnDate),
+        destination:   t.destination ? resolveCountryToCity(t.destination) : t.destination,
+        origin:        t.origin      ? resolveCountryToCity(t.origin)      : t.origin,
+      }));
+
+      // Guard: drop any trip missing a destination
+      parsed.trips = parsed.trips.filter(t => t.destination && _isPlausiblePlaceName(t.destination));
+
+      // If only one trip survived, fall back to single-trip shape
+      if (parsed.trips.length === 1) {
+        const sole = parsed.trips[0];
+        parsed.destination    = sole.destination;
+        parsed.origin         = sole.origin || parsed.origin;
+        parsed.departureDate  = sole.departureDate || parsed.departureDate;
+        parsed.returnDate     = sole.returnDate    || parsed.returnDate;
+        parsed.nights         = sole.nights        || parsed.nights;
+        parsed.trips = null;
+      } else if (parsed.trips.length === 0) {
+        parsed.trips = null;
+      }
+    }
+
+    // ── SANITY CHECK: top-level destination ───────────────
     if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) {
       logger.warn('Groq returned implausible destination — falling back to rule parser', {
         returned: parsed.destination?.slice(0, 80),
@@ -362,11 +434,11 @@ async function _parseWithGroq(prompt) {
       return null;
     }
 
-    // ── NORMALIZE destinations through full pipeline ──────
+    // ── NORMALIZE top-level destinations ──────────────────
     if (parsed.destination) parsed.destination = resolveCountryToCity(parsed.destination);
     if (parsed.origin)      parsed.origin      = resolveCountryToCity(parsed.origin);
 
-    // ── FILL MISSING ORIGIN from rule parser ─────────────
+    // ── FILL MISSING ORIGIN from rule parser ──────────────
     if (!parsed.origin) {
       const ruleResult = _parseWithRules(prompt);
       if (ruleResult.origin) {
@@ -374,14 +446,23 @@ async function _parseWithGroq(prompt) {
         logger.info('Groq missed origin — filled from rule parser', { origin: parsed.origin });
       }
     }
+
     // ── FILL MISSING DESTINATION from rule parser ─────────
-    if (!parsed.destination) {
+    if (!parsed.destination && !Array.isArray(parsed.trips)) {
       const ruleResult = _parseWithRules(prompt);
       if (ruleResult.destination) {
         parsed.destination = ruleResult.destination;
         logger.info('Groq missed destination — filled from rule parser', { destination: parsed.destination });
       }
     }
+
+    // ── ENSURE default fields present ─────────────────────
+    parsed.preferredTransportProvider = parsed.preferredTransportProvider ?? null;
+    parsed.preferredHotel             = parsed.preferredHotel             ?? null;
+    parsed.legs                       = parsed.legs                       ?? [];
+    parsed.isMultiDestination         = parsed.isMultiDestination         ?? false;
+    parsed.children                   = parsed.children                   ?? 0;
+    parsed.childAges                  = parsed.childAges                  ?? [];
 
     parsed._parsedBy = 'groq';
     return parsed;
@@ -398,7 +479,14 @@ async function parsePrompt(prompt) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return _parseWithRules('');
   const groqResult = await _parseWithGroq(prompt);
   if (groqResult) {
-    logger.info('Prompt parsed via Groq', { destination: groqResult.destination, origin: groqResult.origin });
+    if (Array.isArray(groqResult.trips) && groqResult.trips.length > 1) {
+      logger.info('Prompt parsed via Groq — multi-trip', {
+        tripCount: groqResult.trips.length,
+        destinations: groqResult.trips.map(t => t.destination).join(', '),
+      });
+    } else {
+      logger.info('Prompt parsed via Groq', { destination: groqResult.destination, origin: groqResult.origin });
+    }
     return groqResult;
   }
   logger.info('Falling back to rule-based parser', { prompt: prompt.slice(0, 80) });
