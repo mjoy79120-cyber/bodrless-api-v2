@@ -1,17 +1,83 @@
-// HOTEL DIRECT ENGINE — v3
-// Fixed: fuzzy property matching for typos, multi-property returns all legs.
-
+// HOTEL DIRECT ENGINE — v4
+// Fixed: destination extraction is now property-first (match raw prompt against
+// known property names/aliases/destinations before falling back to strip-based
+// extraction). Handles any prompt phrasing without needing exhaustive verb lists.
 
 const { v4: uuidv4 } = require('uuid');
 const supabase        = require('../utils/supabase');
 const { logger }      = require('../utils/logger');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// NOISE PATTERNS — everything that is NOT the property/destination name.
+// Order matters: strip longer phrases before single words.
+// ─────────────────────────────────────────────────────────────────────────────
+const NOISE_PATTERNS = [
+  // Intent verbs (all common phrasings)
+  /\b(?:can\s+(?:you\s+)?(?:please\s+)?)?(?:find|search|look\s+up|look\s+for|show|get|book|reserve|check|need|want|require|suggest|recommend)(?:\s+(?:me|us))?\b/gi,
+  /\bi(?:'d|\s+would)\s+like(?:\s+to)?(?:\s+(?:book|reserve|find|get))?\b/gi,
+  /\bi\s+(?:want|need)(?:\s+to)?(?:\s+(?:book|reserve|find|get))?\b/gi,
+  /\bplease\b/gi,
+  /\bhelp\s+(?:me|us)\b/gi,
+  /\bcan\s+(?:i|we)\s+(?:get|have|book|reserve)\b/gi,
+
+  // Room type words
+  /\b(?:a\s+)?(?:room|rooms|suite|suites|deluxe|standard|superior|junior|double|twin|single|king|queen|family\s+room|bed)\b/gi,
+
+  // Meal plans
+  /\b(?:all[\s-]inclusive|full[\s-]board|half[\s-]board|bed\s+and\s+breakfast|b&b|room\s+only|no\s+meals|with\s+breakfast|including\s+breakfast)\b/gi,
+
+  // Night/duration patterns
+  /\bfor\s+\d+\s*nights?\b/gi,
+  /\d+\s*(?:nights?|nts?)\b/gi,
+
+  // Guest patterns
+  /\bfor\s+\d+\s*(?:people|persons?|pax|adults?|guests?|of\s+us|travelers?)\b/gi,
+  /\b\d+\s*(?:people|persons?|pax|adults?|guests?|of\s+us|travelers?)\b/gi,
+  /\bcouple\b|\btwo\s+of\s+us\b|\b2\s+of\s+us\b|\bfor\s+two\b|\bfor\s+2\b/gi,
+
+  // Date patterns — full dates first
+  /\bfrom\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/gi,
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?\b/gi,
+  /\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/gi,
+  /\b\d{4}-\d{2}-\d{2}\b/g,
+  /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g,
+
+  // Relative date words
+  /\b(?:this\s+weekend|next\s+week(?:end)?|tomorrow|today|tonight)\b/gi,
+  /\b(?:next|this|coming)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,
+  /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,
+  /\b(?:starting|arriving?|check(?:ing)?[\s-]in|departure|from|on|by)\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?\b/gi,
+
+  // Budget/quality words
+  /\b(?:luxury|premium|budget|affordable|cheap|5[\s-]?star|five[\s-]?star|4[\s-]?star|four[\s-]?star|3[\s-]?star)\b/gi,
+
+  // Filler prepositions/articles that won't be property names
+  /\b(?:at\s+the|at\s+a|in\s+the|in\s+a|for\s+a|for\s+the)\b/gi,
+  /\b(?:^|\s)(?:in|at|the|a|an|for|us|me|with|of|from|some|any)\b/gi,
+
+  // Stray punctuation & excess whitespace (applied last)
+];
+
+function stripNoise(text) {
+  let s = text;
+  for (const pattern of NOISE_PATTERNS) {
+    s = s.replace(pattern, ' ');
+  }
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseHotelPrompt
+// Extracts all structured fields. Destination is left as the stripped residue;
+// the actual property resolution happens in _findProperties which does
+// property-first matching against the RAW prompt before using the stripped text.
+// ─────────────────────────────────────────────────────────────────────────────
 function parseHotelPrompt(prompt) {
   const lower = (prompt || '').toLowerCase().trim();
 
   // ── MULTI-PROPERTY DETECTION ─────────────────────────────
   const legSplitMatch = lower.match(
-    /^(.*?)\s+(?:and\s+then|then|and\s+also|followed\s+by|and)\s+(.+)$/i
+    /^(.*?)\s+(?:and\s+then|then|and\s+also|followed\s+by)\s+(.+)$/i
   );
 
   if (legSplitMatch) {
@@ -52,11 +118,11 @@ function parseHotelPrompt(prompt) {
 
   // ── GUESTS ────────────────────────────────────────────────
   let adults = 1;
-  const adultMatch = lower.match(/(\d+)\s*(?:people|persons|pax|adults?|guests?|of us|travelers?)\b/i);
+  const adultMatch = lower.match(/(\d+)\s*(?:people|persons?|pax|adults?|guests?|of\s+us|travelers?)\b/i);
   if (adultMatch) adults = Math.max(1, parseInt(adultMatch[1], 10));
-  if (/\bcouple\b|two of us|2 of us/i.test(lower)) adults = Math.max(adults, 2);
+  if (/\bcouple\b|two\s+of\s+us|2\s+of\s+us/i.test(lower)) adults = Math.max(adults, 2);
   if (/\bfamily\b/i.test(lower) && adults < 2) adults = 2;
-  if (/\bfor two\b|\bfor 2\b/i.test(lower)) adults = Math.max(adults, 2);
+  if (/\bfor\s+two\b|\bfor\s+2\b/i.test(lower)) adults = Math.max(adults, 2);
 
   // ── CHILDREN ──────────────────────────────────────────────
   let children = 0;
@@ -65,12 +131,12 @@ function parseHotelPrompt(prompt) {
 
   // ── MEAL PLAN ─────────────────────────────────────────────
   let mealPlan = null;
-  if (/all.?inclusive/i.test(lower))                        mealPlan = 'all_inclusive';
-  else if (/full.?board/i.test(lower))                      mealPlan = 'full_board';
-  else if (/half.?board/i.test(lower))                      mealPlan = 'half_board';
-  else if (/bed.?and.?breakfast|b&b|\bbb\b/i.test(lower))   mealPlan = 'bed_and_breakfast';
-  else if (/room.?only|no meals/i.test(lower))               mealPlan = 'room_only';
-  else if (/\bbreakfast\b/i.test(lower))                     mealPlan = 'bed_and_breakfast';
+  if      (/all[\s-]?inclusive/i.test(lower))               mealPlan = 'all_inclusive';
+  else if (/full[\s-]?board/i.test(lower))                  mealPlan = 'full_board';
+  else if (/half[\s-]?board/i.test(lower))                  mealPlan = 'half_board';
+  else if (/bed[\s-]?and[\s-]?breakfast|b&b|\bbb\b/i.test(lower)) mealPlan = 'bed_and_breakfast';
+  else if (/room[\s-]?only|no\s+meals/i.test(lower))        mealPlan = 'room_only';
+  else if (/\bbreakfast\b/i.test(lower))                    mealPlan = 'bed_and_breakfast';
 
   // ── DATES ─────────────────────────────────────────────────
   let departureDate = null;
@@ -79,20 +145,20 @@ function parseHotelPrompt(prompt) {
     january:1,february:2,march:3,april:4,june:6,july:7,august:8,
     september:9,october:10,november:11,december:12,
   };
-  const dateMatch = lower.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?/i)
-    || lower.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?/i);
+
+  const dateMatch =
+    lower.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?/i) ||
+    lower.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?/i);
 
   if (dateMatch) {
     const yr = new Date().getFullYear();
     let day, month, year;
     if (/^\d/.test(dateMatch[1] || '')) {
       day   = parseInt(dateMatch[1], 10);
-      const mk = (dateMatch[2] || '').toLowerCase().slice(0, 3);
-      month = months[mk];
+      month = months[(dateMatch[2] || '').toLowerCase().slice(0, 3)];
       year  = parseInt(dateMatch[3] || yr, 10);
     } else {
-      const mk = (dateMatch[1] || '').toLowerCase().slice(0, 3);
-      month = months[mk];
+      month = months[(dateMatch[1] || '').toLowerCase().slice(0, 3)];
       day   = parseInt(dateMatch[2], 10);
       year  = parseInt(dateMatch[3] || yr, 10);
     }
@@ -103,11 +169,11 @@ function parseHotelPrompt(prompt) {
 
   if (!departureDate) {
     const d = new Date();
-    if      (/\btoday\b/i.test(lower))        { /* use today */ }
-    else if (/\btomorrow\b/i.test(lower))      d.setDate(d.getDate() + 1);
-    else if (/this\s+weekend/i.test(lower))    d.setDate(d.getDate() + (6 - d.getDay()));
-    else if (/next\s+week/i.test(lower))       d.setDate(d.getDate() + 7);
-    else                                        d.setDate(d.getDate() + 1);
+    if      (/\btoday\b|\btonight\b/i.test(lower))     { /* use today */ }
+    else if (/\btomorrow\b/i.test(lower))               d.setDate(d.getDate() + 1);
+    else if (/this\s+weekend/i.test(lower))             d.setDate(d.getDate() + (6 - d.getDay()));
+    else if (/next\s+week/i.test(lower))                d.setDate(d.getDate() + 7);
+    else                                                 d.setDate(d.getDate() + 1);
     departureDate = d.toISOString().split('T')[0];
   }
 
@@ -115,27 +181,15 @@ function parseHotelPrompt(prompt) {
   dep.setDate(dep.getDate() + nights);
   const returnDate = dep.toISOString().split('T')[0];
 
-  // ── DESTINATION STRIPPING ─────────────────────────────────
-  const destRaw = prompt
-    .replace(/\b(?:book(?:\s+me)?|reserve|i(?:'d|\s+would)\s+like(?:\s+to)?(?:\s+book)?|i\s+want(?:\s+to)?(?:\s+book)?|can\s+i\s+(?:get|have|book)|get\s+me|please|help\s+me)\b/gi, '')
-    .replace(/\b(?:a\s+)?(?:room|suite|deluxe|standard|superior|junior|double|twin|single|king|queen|family\s+room)\b/gi, '')
-    .replace(/\d+\s*nights?\b/gi, '')
-    .replace(/\bfrom\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?(?:\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december))?\b/gi, '')
-    .replace(/\bfor\s+\d+\s*(?:people|adults?|guests?|of us|pax|persons?)\b/gi, '')
-    .replace(/\b(?:bed\s+and\s+breakfast|all\s+inclusive|full\s+board|half\s+board|room\s+only|breakfast)\b/gi, '')
-    .replace(/\b(?:this\s+weekend|next\s+week|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '')
-    .replace(/\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?\b/gi, '')
-    .replace(/\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{4})?\b/gi, '')
-    .replace(/\b(?:in|for|at|the|a|an|me|us|with|and)\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const destination = destRaw.toLowerCase() || null;
+  // ── DESTINATION (stripped residue) ────────────────────────
+  // This is used as a fallback hint only. _findProperties does
+  // property-first matching directly on the raw prompt.
+  const destination = stripNoise(prompt).toLowerCase() || null;
 
   // ── BUDGET ────────────────────────────────────────────────
   let budget = 'mid';
-  if (/luxury|premium|5.?star|five.?star/i.test(lower))  budget = 'luxury';
-  else if (/cheap|budget|affordable/i.test(lower))         budget = 'low';
+  if (/luxury|premium|5[\s-]?star|five[\s-]?star/i.test(lower)) budget = 'luxury';
+  else if (/cheap|budget|affordable/i.test(lower))               budget = 'low';
 
   // ── PREFERENCES ───────────────────────────────────────────
   const preferences = [];
@@ -218,7 +272,8 @@ class HotelDirectEngine {
     const mealPlan    = tripParams.mealPlan || null;
     const budget      = tripParams.budget || 'mid';
 
-    const properties = await this._findProperties(group.id, destination);
+    // Pass raw prompt so _findProperties can do property-first matching
+    const properties = await this._findProperties(group.id, destination, tripParams._originalPrompt);
 
     if (properties.length === 0) {
       const allProps = await this._getAllProperties(group.id);
@@ -265,7 +320,7 @@ class HotelDirectEngine {
   }
 
   async _orchestrateMultiProperty(tripParams, group, sessionId, prompt, conversationHistory) {
-    const legs = tripParams.legs || [];
+    const legs     = tripParams.legs || [];
     const packages = [];
     const foundLegs = [];
 
@@ -273,7 +328,6 @@ class HotelDirectEngine {
       const properties = await this._findProperties(group.id, leg.destination);
 
       if (!properties.length) {
-        // Tell the user which property wasn't found
         const allProps = await this._getAllProperties(group.id);
         const propList = allProps.map(p => p.name).join(', ');
         return this._buildResponse(
@@ -306,10 +360,8 @@ class HotelDirectEngine {
 
       const ancillaries = await this._getAncillaryServices(property.id, tripParams);
 
-      // Up to 3 room options per leg
       for (const room of rooms.slice(0, 3)) {
         const pkg = this._buildRoomPackage(room, property, ancillaries, legTripParams, group);
-        // Tag so widget knows which leg this belongs to
         pkg.legIndex  = legs.indexOf(leg);
         pkg.totalLegs = legs.length;
         pkg.legLabel  = `${property.name} — Leg ${legs.indexOf(leg) + 1} of ${legs.length}`;
@@ -325,7 +377,7 @@ class HotelDirectEngine {
       );
     }
 
-    const propNames = foundLegs.map(l => l.property.name).join(' → ');
+    const propNames   = foundLegs.map(l => l.property.name).join(' → ');
     const totalNights = legs.reduce((sum, l) => sum + (l.nights || tripParams.nights || 1), 0);
     const text = `I found ${packages.length} room options across your ${totalNights}-night itinerary: ${propNames}. Select a room for each leg:`;
 
@@ -580,18 +632,25 @@ class HotelDirectEngine {
     };
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // FIND PROPERTIES
-  // Multi-strategy matching so typos like "stanely" still find
-  // "Sarova Stanley". Strategy order:
-  //   1. Exact substring match (destination/name/location/aliases)
-  //   2. Reverse match (search string contains property name)
-  //   3. Word-level fuzzy — every word in the property name appears
-  //      somewhere in the search string (handles transpositions/
-  //      insertions like "stanely" ≈ "stanley")
-  // ─────────────────────────────────────────────────────────────
-  async _findProperties(groupId, destination) {
-    if (!destination) return this._getAllProperties(groupId);
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIND PROPERTIES — property-first matching
+  //
+  // Strategy (tried in order, stops at first hit per property):
+  //   0. RAW PROMPT match — check if the raw user prompt contains any known
+  //      property name, destination, location, or alias. This fires before
+  //      any stripping so phrasing like "find me a room at prideinn paradise"
+  //      matches "prideinn paradise" directly. This is the primary strategy.
+  //   1. Stripped destination substring match
+  //   2. Reverse match (stripped destination is contained in property name)
+  //   3. Alias match
+  //   4. Word-level fuzzy (Levenshtein ≤ 2 per word)
+  //
+  // rawPrompt is optional — passed from orchestrateSingleDestination so we
+  // can do strategy 0 there. For multi-property legs it isn't available and
+  // we fall through to strategies 1-4 on the leg destination string.
+  // ─────────────────────────────────────────────────────────────────────────
+  async _findProperties(groupId, destination, rawPrompt = null) {
+    if (!destination && !rawPrompt) return this._getAllProperties(groupId);
 
     const { data: properties } = await supabase
       .from('hotel_properties')
@@ -601,42 +660,65 @@ class HotelDirectEngine {
 
     if (!properties?.length) return [];
 
-    const search = destination.toLowerCase().trim();
-    const searchWords = search.split(/\s+/).filter(Boolean);
+    const raw          = (rawPrompt  || '').toLowerCase().trim();
+    const search       = (destination || '').toLowerCase().trim();
+    const searchWords  = search.split(/\s+/).filter(Boolean);
 
     return properties.filter(p => {
       const name     = (p.name        || '').toLowerCase();
       const dest     = (p.destination || '').toLowerCase();
       const location = (p.location    || '').toLowerCase();
+      const aliases  = Array.isArray(p.search_aliases) ? p.search_aliases : [];
 
-      // 1. Direct substring matches
-      if (dest.includes(search))   return true;
-      if (name.includes(search))   return true;
+      // ── Strategy 0: raw prompt contains known property identifiers ──────
+      // Only when we have the original unstripped prompt.
+      if (raw) {
+        if (name     && raw.includes(name))     return true;
+        if (dest     && raw.includes(dest))     return true;
+        if (location && raw.includes(location)) return true;
+        if (aliases.some(a => {
+          const al = String(a).toLowerCase();
+          return al && raw.includes(al);
+        })) return true;
+
+        // Fuzzy against raw prompt words for the property name words
+        const rawWords  = raw.split(/\s+/).filter(Boolean);
+        const nameWords = name.split(/\s+/).filter(Boolean);
+        if (nameWords.length >= 1 && nameWords.every(nw =>
+          rawWords.some(rw =>
+            rw === nw ||
+            rw.startsWith(nw) ||
+            nw.startsWith(rw) ||
+            (nw.length > 3 && _levenshtein(rw, nw) <= 2)
+          )
+        )) return true;
+      }
+
+      // ── Strategies 1-4: fall back to stripped destination string ────────
+      if (!search) return false;
+
+      // 1. Substring
+      if (dest.includes(search))     return true;
+      if (name.includes(search))     return true;
       if (location.includes(search)) return true;
 
-      // 2. Reverse match — search contains the property name
+      // 2. Reverse — search contains full property name
       if (name && search.includes(name)) return true;
 
-      // 3. Alias matches
-      const aliases = Array.isArray(p.search_aliases) ? p.search_aliases : [];
+      // 3. Alias
       if (aliases.some(a => {
         const al = String(a).toLowerCase();
         return al.includes(search) || search.includes(al);
       })) return true;
 
-      // 4. Word-level fuzzy — each word of the property name
-      //    has a close match in the search words.
-      //    "sarova stanely" → words ["sarova","stanely"]
-      //    property name "sarova stanley" → words ["sarova","stanley"]
-      //    "sarova" matches exactly; "stanely" vs "stanley" →
-      //    one starts-with the other (stanely⊂stanley prefix).
+      // 4. Word-level fuzzy on stripped search words
       const nameWords = name.split(/\s+/).filter(Boolean);
-      if (nameWords.length > 0 && nameWords.every(nw =>
+      if (nameWords.length >= 1 && nameWords.every(nw =>
         searchWords.some(sw =>
           sw === nw ||
           sw.startsWith(nw) ||
           nw.startsWith(sw) ||
-          _levenshtein(sw, nw) <= 2   // tolerate up to 2 character edits
+          (nw.length > 3 && _levenshtein(sw, nw) <= 2)
         )
       )) return true;
 
@@ -712,11 +794,9 @@ class HotelDirectEngine {
   }
 }
 
-// ─────────────────────────────────────────────
-// LEVENSHTEIN DISTANCE — for fuzzy name matching
-// Only used for short words (property name words
-// are typically 3-10 chars) so this is fast.
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// LEVENSHTEIN — only applied when word length > 3 to avoid false positives
+// ─────────────────────────────────────────────────────────────────────────────
 function _levenshtein(a, b) {
   const m = a.length, n = b.length;
   const dp = Array.from({ length: m + 1 }, (_, i) =>
