@@ -1,4 +1,4 @@
-* HOTEL DIRECT ENGINE — v3
+// HOTEL DIRECT ENGINE — v3
  * Fixed: fuzzy property matching for typos, multi-property returns all legs.
  */
 
