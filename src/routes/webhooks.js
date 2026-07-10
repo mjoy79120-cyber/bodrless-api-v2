@@ -2,39 +2,24 @@
  * WEBHOOK ROUTES
  * ─────────────────────────────────────────────────────────────
  * Handles incoming messages from WhatsApp Business API.
- * This is where traveler conversations enter Bodrless.
  *
  * Flow:
  * Traveler messages agency WhatsApp
  * → WhatsApp sends webhook to Bodrless
- * → If this is the traveler's first-ever message, send the welcome
- *   message and ask for their name, then stop — nothing else runs
- *   on this message
- * → If we're awaiting a name reply from this number, capture it (or
- *   skip gracefully if it doesn't look like a name) before anything else
- * → If this message looks like a cancellation request (or is a
- *   yes/no reply to a pending cancellation confirmation), the
- *   cancel flow handles it — checked BEFORE the normal booking flow,
- *   since a traveler cancelling should never accidentally get routed
- *   into passenger-detail collection or option selection instead.
- * → If an active booking conversation exists for this phone number,
- *   the message is handled by whatsappBookingFlow instead of search
- * → Otherwise, if the message looks like a package selection ("1",
- *   "2", "option 2", etc.) AND we have recent packages cached for this
- *   phone number, kick off the booking flow
- * → Otherwise, if the message looks like raw passenger details
- *   (Name:/ID:/Phone:/DOB: lines) but there's no active booking
- *   session, redirect the traveler to search first instead of letting
- *   it fall into normal orchestration (which would otherwise try to
- *   parse trip params out of passenger text and corrupt the booking)
- * → Otherwise, run normal orchestration with persistent memory
- * → Bodrless replies dynamically via WhatsApp
- *
- * PACKAGE CACHE (2026-07-05): the "which packages did option '2'
- * refer to" cache now lives in Supabase (see services/packageCache.js)
- * instead of an in-memory Map — survives a Render restart, so a
- * traveler who paused mid-conversation to show a friend the options
- * and comes back later can still reply with a number successfully.
+ * → First-ever message: send welcome, ask name, stop
+ * → Awaiting name: capture it, greet, stop
+ * → Drop-off recovery: returning traveler after 30+ min gap —
+ *   offer resume vs fresh start before anything else runs
+ * → Resume/fresh choice: re-show cached packages or clear and start over
+ * → Cancellation flow (post-booking cancel with ref)
+ * → Flight change flow
+ * → Active booking session (passenger detail collection)
+ * → Mid-booking cancel ("cancel" while in booking flow) —
+ *   clears session, preserves context, re-shows packages
+ * → Package selection (1/2/3/4) → start booking
+ * → Mid-conversation modify (change nights/budget/hotel while
+ *   a package is held) — patch in place or re-search
+ * → Normal orchestration with durable conversation memory
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -47,13 +32,23 @@ const whatsappBookingFlow = require('../services/whatsappBooking');
 const whatsappCancelFlow = require('../services/whatsappCancelFlow');
 const whatsappChangeFlow = require('../services/whatsappChangeFlow');
 const packageCache = require('../services/packageCache');
+const conversationMemory = require('../services/conversationMemoryService');
 const { logger } = require('../utils/logger');
 
 const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|phone|email|dob|date of birth)\s*:/im;
 
+// Short-lived in-memory map for the resume/fresh-start choice.
+// Low stakes: if Render restarts between the welcome-back message
+// and the reply, the traveler just gets a normal search instead —
+// not a broken experience.
+const _pendingResumeChoice = new Map();
+
+// ─────────────────────────────────────────────
+// VERIFY WEBHOOK
+// ─────────────────────────────────────────────
 router.get('/whatsapp', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
+  const mode      = req.query['hub.mode'];
+  const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
@@ -64,43 +59,33 @@ router.get('/whatsapp', (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// INCOMING MESSAGE
+// ─────────────────────────────────────────────
 router.post('/whatsapp', async (req, res) => {
   res.status(200).send('OK');
 
   try {
     const body = req.body;
+    if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) return;
 
-    if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) {
-      return;
-    }
-
-    const message = body.entry[0].changes[0].value.messages[0];
+    const message       = body.entry[0].changes[0].value.messages[0];
     const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
-    const from = message.from;
+    const from          = message.from;
 
     logger.info('Incoming WhatsApp message', { from, type: message.type });
 
-    // INTERACTIVE REPLIES (button taps and list-menu taps).
-    // Checked BEFORE the generic non-text fallback below, since
-    // these have message.type === 'interactive', not 'text', and
-    // would otherwise fall into the generic "Hi! I can help you
-    // plan a trip..." message instead of being handled properly.
+    // ── INTERACTIVE REPLIES (button/list taps) ─────────────
     if (message.type === 'interactive') {
       const buttonId = message.interactive?.button_reply?.id || null;
 
-      // TAP-TO-REVEAL PHOTO — traveler tapped the "📷 View Photo"
-      // button sent alongside a package card (see whatsapp.js's
-      // _sendPackageCard/sendButtons). The button's id was set to
-      // `photo_<index>` where index matches directly into the SAME
-      // durable package cache already used for "reply with the
-      // option number to book" — no separate correlation table
-      // needed. Not tied to any booking session, so checked first.
+      // Tap-to-reveal photo
       if (buttonId) {
         const photoMatch = buttonId.match(/^photo_(\d+)$/);
         if (photoMatch) {
-          const idx = parseInt(photoMatch[1], 10);
+          const idx    = parseInt(photoMatch[1], 10);
           const cached = await packageCache.get(from);
-          const pkg = cached?.packages?.[idx];
+          const pkg    = cached?.packages?.[idx];
           const imageUrl = pkg?.hotel?.images?.[0];
           if (imageUrl) {
             await whatsappService.sendImage(phoneNumberId, from, imageUrl, pkg.hotel.name || null);
@@ -113,20 +98,17 @@ router.post('/whatsapp', async (req, res) => {
         }
       }
 
-      // Any other interactive reply (list-menu taps like the
-      // Gender+Traveler-type selection during booking — see
-      // whatsappBooking.js) — only the booking flow knows what to
-      // do with these, so pass the raw interactive payload through.
-      // If there's no active booking session, handleMessage()
-      // returns false and we fall through to a generic ack rather
-      // than silently doing nothing.
-      const handledByBooking = await whatsappBookingFlow.handleMessage({ phoneNumberId, from, text: null, interactive: message.interactive });
+      // Booking flow interactive (gender/type list taps etc.)
+      const handledByBooking = await whatsappBookingFlow.handleMessage({
+        phoneNumberId, from, text: null, interactive: message.interactive,
+      });
       if (handledByBooking) return;
 
       await whatsappService.sendText(phoneNumberId, from, "Got it, thanks!");
       return;
     }
 
+    // ── NON-TEXT MESSAGES ──────────────────────────────────
     if (message.type !== 'text') {
       await whatsappService.sendText(phoneNumberId, from,
         "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
@@ -134,11 +116,11 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    const prompt = message.text.body;
+    const prompt   = message.text.body;
     const agencyId = await _resolveAgency(phoneNumberId);
+    const contact  = await _getOrCreateContact(from, agencyId);
 
-    const contact = await _getOrCreateContact(from, agencyId);
-
+    // ── FIRST-EVER MESSAGE ─────────────────────────────────
     if (contact.justCreated) {
       await whatsappService.sendText(phoneNumberId, from,
         `Hey there! 👋 Welcome to Rove.\nThink of me as your personal travel guy, I'll sort out your transportation, stays and transfers\n\nBefore we get into it though, what's your name? I'd rather not just call you "traveler" the whole time`
@@ -146,6 +128,7 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
+    // ── AWAITING NAME ──────────────────────────────────────
     if (contact.awaiting_name) {
       const extractedName = _extractName(prompt);
       if (extractedName) {
@@ -158,63 +141,145 @@ router.post('/whatsapp', async (req, res) => {
       await _clearAwaitingName(from);
     }
 
-    // CANCELLATION FLOW — checked before the normal booking flow.
-    // Covers both a fresh cancel request ("cancel my booking") and a
-    // yes/no reply to a cancellation confirmation already in
-    // progress for this number. Returns true if it handled the
-    // message (either case), false if this message has nothing to
-    // do with cancelling and normal handling should continue.
-    const handledByCancel = await whatsappCancelFlow.handleMessage({ phoneNumberId, from, text: prompt });
+    // ── DROP-OFF RECOVERY ──────────────────────────────────
+    // Check if the traveler is returning after a gap (30+ min).
+    // Only fires when none of the early handlers above consumed
+    // the message — a returning traveler mid-booking or cancelling
+    // should never see the resume prompt instead.
+    const resumePending = _pendingResumeChoice.get(from);
+    if (resumePending && Date.now() < resumePending.expiresAt) {
+      // They replied to our "resume or fresh?" question
+      _pendingResumeChoice.delete(from);
+      const choice = prompt.trim();
+
+      const wantsResume = choice === '1' || /\b(resume|continue|pick up|yes|go on)\b/i.test(choice);
+
+      if (wantsResume && resumePending.dropOff.hasPreviousSearch) {
+        const { cachedPackages, previousDestination } = resumePending.dropOff;
+
+        if (cachedPackages?.length > 0) {
+          const destPhrase = previousDestination
+            ? ` for ${_titleCase(previousDestination)}`
+            : '';
+          await whatsappService.sendText(phoneNumberId, from,
+            `Welcome back! Here are the options you were looking at${destPhrase}:`
+          );
+          await whatsappService.sendPackages(phoneNumberId, from, cachedPackages);
+          await whatsappService.sendText(phoneNumberId, from,
+            `Reply with the option number to book, or tell me any changes you'd like — different budget, dates, hotel, airline, anything.`
+          );
+          // Save packages back to the live cache so option selection works
+          await packageCache.save(from, cachedPackages, resumePending.dropOff.previousParams);
+          // Reset drop_off_at so they don't get the prompt again immediately
+          await conversationMemory.upsertContact(from, agencyId, {
+            drop_off_at: new Date().toISOString(),
+          });
+          return;
+        }
+      }
+
+      // Fresh start (choice "2", or resume with no cached packages)
+      await conversationMemory.clearConversation(from, agencyId);
+      await whatsappService.sendText(phoneNumberId, from,
+        "Fresh start! Tell me about your next trip — where to, when, and how many of you?"
+      );
+      return;
+    }
+
+    // Drop-off check (only for messages not already handled above)
+    const dropOff = await conversationMemory.checkDropOff(from, agencyId);
+    if (dropOff.isDropOff) {
+      const welcomeMsg = conversationMemory.buildDropOffWelcome({
+        minutesAway:         dropOff.minutesAway,
+        previousDestination: dropOff.previousDestination,
+        hasPreviousSearch:   dropOff.hasPreviousSearch,
+      });
+      await whatsappService.sendText(phoneNumberId, from, welcomeMsg);
+
+      if (dropOff.hasPreviousSearch) {
+        // Store their drop-off context so the next message (1 or 2) can act on it
+        _pendingResumeChoice.set(from, {
+          dropOff,
+          agencyId,
+          expiresAt: Date.now() + 5 * 60 * 1000,
+        });
+      } else {
+        // Nothing to resume — just reset and let them search
+        await conversationMemory.upsertContact(from, agencyId, {
+          drop_off_at: new Date().toISOString(),
+        });
+      }
+      return;
+    }
+
+    // ── POST-BOOKING CANCEL FLOW ───────────────────────────
+    // Checked before booking flow — a traveller cancelling should
+    // never accidentally land in passenger-detail collection.
+    const handledByCancel = await whatsappCancelFlow.handleMessage({
+      phoneNumberId, from, text: prompt, agencyId,
+    });
     if (handledByCancel) return;
 
-    // CHANGE-FLIGHT FLOW — same "checked before normal booking flow"
-    // posture as cancellation above. Always asks for the booking
-    // reference explicitly (see whatsappChangeFlow.js's file header
-    // for why) rather than guessing which booking is meant.
-    const handledByChange = await whatsappChangeFlow.handleMessage({ phoneNumberId, from, text: prompt });
+    // ── FLIGHT CHANGE FLOW ─────────────────────────────────
+    const handledByChange = await whatsappChangeFlow.handleMessage({
+      phoneNumberId, from, text: prompt,
+    });
     if (handledByChange) return;
 
-    const handledByBooking = await whatsappBookingFlow.handleMessage({ phoneNumberId, from, text: prompt });
+    // ── MID-BOOKING CANCEL ─────────────────────────────────
+    // "cancel" while in the booking passenger-detail flow →
+    // clear session but preserve conversation so they can pivot.
+    if (/^cancel$/i.test(prompt.trim())) {
+      const hadSession = await whatsappBookingFlow.hasActiveSession(from);
+      if (hadSession) {
+        await conversationMemory.cancelMidBooking(from, agencyId);
+        await whatsappService.sendText(phoneNumberId, from,
+          "Booking cancelled — no problem at all. Your previous search results are still available if you'd like to pick a different option, or just tell me where you'd like to go!"
+        );
+        // Re-show cached packages so they can pick again immediately
+        const cached = await packageCache.get(from);
+        if (cached?.packages?.length > 0) {
+          await whatsappService.sendPackages(phoneNumberId, from, cached.packages);
+          await whatsappService.sendText(phoneNumberId, from,
+            `Reply with the option number (1-${cached.packages.length}) to book, or describe what you'd like instead.`
+          );
+        }
+        return;
+      }
+    }
+
+    // ── ACTIVE BOOKING SESSION ─────────────────────────────
+    const handledByBooking = await whatsappBookingFlow.handleMessage({
+      phoneNumberId, from, text: prompt, interactive: null,
+    });
     if (handledByBooking) return;
 
+    // ── PACKAGE SELECTION (1 / 2 / 3 / 4) ─────────────────
     const selectionMatch = prompt.trim().match(/^(?:option\s*)?([1-4])$/i);
     if (selectionMatch) {
       const cached = await packageCache.get(from);
-      if (cached && cached.packages && cached.packages.length > 0) {
-        const idx = parseInt(selectionMatch[1], 10) - 1;
+      if (cached?.packages?.length > 0) {
+        const idx             = parseInt(selectionMatch[1], 10) - 1;
         const selectedPackage = cached.packages[idx];
         if (selectedPackage) {
-          // BUG FIX (found via a real "conversation memory" review,
-          // 2026-07-05): if the cached list is more than an hour
-          // old, say so honestly before proceeding — real prices/
-          // availability can move on, same as an agent re-confirming
-          // before booking. Booking-time re-verification (Duffel
-          // offer expiry, HotelBeds rate re-check) already exists
-          // downstream regardless — this is about setting honest
-          // expectations, not a new safety mechanism.
           if (cached.isStale) {
             await whatsappService.sendText(phoneNumberId, from,
               "One moment — just double-checking that's still available before we begin..."
             );
           }
+          // Hold the selected package in memory for mid-conv modify
+          await conversationMemory.saveSelectedPackage(from, agencyId, selectedPackage);
           await whatsappBookingFlow.startBooking({ phoneNumberId, from, agencyId, selectedPackage });
           return;
         }
       }
-      // BUG FIX (found via a real "conversation memory" review,
-      // 2026-07-05): previously, a bare "3"/"option 3" with no
-      // matching cache (e.g. after a Render restart wiped the old
-      // in-memory Map, or the cache genuinely expired) silently fell
-      // through into normal orchestration below, which tried to
-      // parse "3" as a brand-new trip search — producing a
-      // confusing, unrelated response. Now tells the traveler
-      // plainly what happened instead.
       await whatsappService.sendText(phoneNumberId, from,
         "I don't have a recent list of options for you anymore — could you search again? For example: \"Nairobi to Zanzibar, 3 nights\"."
       );
       return;
     }
 
+    // ── STRAY PASSENGER DETAILS ────────────────────────────
     if (PASSENGER_DETAIL_LINE.test(prompt.trim())) {
       const hasSession = await whatsappBookingFlow.hasActiveSession(from);
       if (!hasSession) {
@@ -225,65 +290,121 @@ router.post('/whatsapp', async (req, res) => {
       }
     }
 
+    // ── MID-CONVERSATION MODIFY ────────────────────────────
+    // User has a package held (selected but not yet booked) and
+    // wants to tweak something — "make it 7 nights", "cheaper hotel"
+    // etc. Checked before orchestrate() so we don't run a full
+    // re-search when a simple patch will do.
+    const memCtx = await conversationMemory.getConversationContext(from, agencyId);
+
+    if (memCtx.selectedPackage) {
+      const intent = orchestrationEngine._detectIntent(prompt, memCtx.previousParams);
+      const hasAdjustments = Object.keys(intent.adjustments || {}).length > 0;
+
+      if (intent.isFollowUp && hasAdjustments) {
+        const modifyResult = await conversationMemory.handleModify(
+          from, agencyId, intent, memCtx.previousParams
+        );
+
+        if (modifyResult.action === 'patch') {
+          // Nights/dates only — patch in place, no re-search
+          const pkg    = modifyResult.updatedPackage;
+          const nights = intent.adjustments.nights;
+          await whatsappService.sendText(phoneNumberId, from,
+            `Updated to *${nights} nights* — here's your revised package:`
+          );
+          await whatsappService.sendPackages(phoneNumberId, from, [pkg]);
+          await whatsappService.sendText(phoneNumberId, from,
+            "Reply *book* to proceed, or tell me anything else you'd like to change."
+          );
+          await conversationMemory.saveTurn(from, agencyId, {
+            userMessage:    prompt,
+            engineResponse: `Updated to ${nights} nights`,
+            tripParams:     modifyResult.updatedParams,
+            packages:       [pkg],
+          });
+          return;
+        }
+        // 'research' — selected package cleared, fall through to
+        // normal orchestrate() below with the adjusted params
+      }
+    }
+
+    // ── NORMAL ORCHESTRATION ───────────────────────────────
     await whatsappService.sendText(phoneNumberId, from, _pickAcknowledgment());
 
     const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
-      conversationHistory: contact.conversation_history || [],
-      previousParams: contact.previous_params || null,
-      channel: 'whatsapp',
-      phone: from,
+      conversationHistory: memCtx.conversationHistory,
+      previousParams:      memCtx.previousParams,
+      channel:             'whatsapp',
+      phone:               from,
     });
 
-    await _saveConversationState(from, result.conversationHistory, result.tripParams);
+    // ── SAVE TO DURABLE MEMORY ─────────────────────────────
+    await conversationMemory.saveTurn(from, agencyId, {
+      userMessage:    prompt,
+      engineResponse: result.text,
+      tripParams:     result.tripParams,
+      packages:       result.packages || [],
+      sessionId:      result.sessionId,
+    });
 
+    // ── SEND RESULTS ───────────────────────────────────────
     if (result.needsClarification) {
       await whatsappService.sendText(phoneNumberId, from, result.text);
       return;
     }
 
+    // Multi-trip results (Zanzibar + Lagos grouped separately)
     if (result.tripResults && result.tripResults.length > 1) {
-      const allPackagesInOrder = [];
+      const allPackages = [];
 
       for (let i = 0; i < result.tripResults.length; i++) {
-        const trip = result.tripResults[i];
+        const trip     = result.tripResults[i];
         const introLine = i === 0
-          ? `Let's start with ${trip.label}:`
-          : `Now for ${trip.label}:`;
+          ? `Here are options for *Trip 1 — ${trip.label}*:`
+          : `And here are options for *Trip ${i + 1} — ${trip.label}*:`;
 
         await whatsappService.sendText(phoneNumberId, from, introLine);
 
-        if (trip.packages && trip.packages.length > 0) {
+        if (trip.packages?.length > 0) {
           await whatsappService.sendPackages(phoneNumberId, from, trip.packages);
-          allPackagesInOrder.push(...trip.packages);
+          allPackages.push(...trip.packages);
         } else {
-          await whatsappService.sendText(phoneNumberId, from, `Sorry, I couldn't find any matching options for ${trip.label}.`);
+          await whatsappService.sendText(phoneNumberId, from,
+            `Sorry, I couldn't find any options for ${trip.label}.`
+          );
         }
       }
 
-      if (allPackagesInOrder.length > 0) {
-        await packageCache.save(from, allPackagesInOrder, result.tripParams);
+      if (allPackages.length > 0) {
+        await packageCache.save(from, allPackages, result.tripParams);
         await whatsappService.sendText(phoneNumberId, from,
-          `Reply with the option number (1-${allPackagesInOrder.length}) to book one of the options above.`
+          `Reply with the option number (1-${allPackages.length}) to book any of the above.`
         );
       }
       return;
     }
 
+    // Single-trip results
     await whatsappService.sendText(phoneNumberId, from, result.text);
 
-    if (result.packages && result.packages.length > 0) {
+    if (result.packages?.length > 0) {
       await whatsappService.sendPackages(phoneNumberId, from, result.packages);
       await packageCache.save(from, result.packages, result.tripParams);
-
       await whatsappService.sendText(phoneNumberId, from,
         `Reply with the option number (1-${result.packages.length}) to book that option.`
       );
     }
 
   } catch (error) {
-    logger.error('WhatsApp webhook error', { error: error.message });
+    logger.error('WhatsApp webhook error', { error: error.message, stack: error.stack });
   }
 });
+
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
 
 async function _resolveAgency(phoneNumberId) {
   try {
@@ -292,38 +413,13 @@ async function _resolveAgency(phoneNumberId) {
       .select('id')
       .eq('whatsapp_phone_number_id', phoneNumberId)
       .single();
-
     if (data) return data.id;
   } catch (err) {
     logger.warn('Could not resolve agency from phone number', { phoneNumberId });
   }
-
   return process.env.DEFAULT_AGENCY_ID || 'azaki-adventures';
 }
 
-/**
- * GET OR CREATE WHATSAPP CONTACT
- * Looks up whatsapp_contacts by phone. If no row exists, this is
- * the traveler's first-ever message — insert one with
- * awaiting_name: true and flag justCreated so the caller knows to
- * send the welcome message rather than treat this as a normal reply.
- *
- * FIX: now stamps agency_id at creation time, resolved from the
- * phone_number_id the message arrived on (same resolution
- * _resolveAgency already does for routing). Previously this column
- * didn't exist on the table at all, so "which agency does this
- * contact belong to" had to be inferred downstream from bookings/
- * sessions — which missed any contact who'd only searched and never
- * booked. Setting it here, once, at the moment of first contact, is
- * the single source of truth going forward.
- *
- * If a contact somehow already exists with agency_id still NULL
- * (pre-migration row, or a backfill miss), we opportunistically set
- * it now rather than leaving it unset forever — cheap and harmless
- * since a phone number realistically only ever talks to one agency's
- * WhatsApp number in this architecture (each agency has its own
- * number/phone_number_id).
- */
 async function _getOrCreateContact(phone, agencyId) {
   const { data: existing, error: selectError } = await supabase
     .from('whatsapp_contacts')
@@ -338,7 +434,6 @@ async function _getOrCreateContact(phone, agencyId) {
 
   if (existing) {
     if (!existing.agency_id && agencyId) {
-      // Opportunistic backfill — don't block the response on this.
       supabase
         .from('whatsapp_contacts')
         .update({ agency_id: agencyId })
@@ -361,15 +456,6 @@ async function _getOrCreateContact(phone, agencyId) {
   return { justCreated: true, awaiting_name: true, name: null };
 }
 
-// ─────────────────────────────────────────────
-// PICK ACKNOWLEDGMENT MESSAGE
-// Replaces a single robotic "Got it! Give me a moment..." line with
-// a small rotating set, matching the same "personal travel guy"
-// warmth already established in the welcome message
-// (_getOrCreateContact's justCreated branch). Picked at random each
-// time so back-to-back searches in one conversation don't feel like
-// the same canned bot line repeating.
-// ─────────────────────────────────────────────
 const ACKNOWLEDGMENT_MESSAGES = [
   "On it! 🔍 Let me pull together some great options for you...",
   "Say less — searching now, one moment...",
@@ -385,17 +471,13 @@ function _pickAcknowledgment() {
 
 function _extractName(text) {
   let cleaned = text.trim();
-
   cleaned = cleaned.replace(/^(it'?s|i'?m|i am|my name is|call me|this is|am)\s+/i, '').trim();
   cleaned = cleaned.replace(/[.!]+$/, '').trim();
-
   if (!cleaned) return null;
-
   const looksLikeTripPrompt = /\d|\bto\b|\bfrom\b|\bnight|\bday|\bbudget|\btrip\b|\bbook\b|\bflight|\bhotel/i.test(cleaned);
   if (looksLikeTripPrompt) return null;
   if (cleaned.split(/\s+/).length > 4) return null;
   if (cleaned.length > 40) return null;
-
   return cleaned
     .split(/\s+/)
     .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
@@ -407,10 +489,7 @@ async function _saveContactName(phone, name) {
     .from('whatsapp_contacts')
     .update({ name, awaiting_name: false, updated_at: new Date().toISOString() })
     .eq('phone', phone);
-
-  if (error) {
-    logger.error('whatsapp_contacts name save failed', { error: error.message, phone });
-  }
+  if (error) logger.error('whatsapp_contacts name save failed', { error: error.message, phone });
 }
 
 async function _clearAwaitingName(phone) {
@@ -418,25 +497,12 @@ async function _clearAwaitingName(phone) {
     .from('whatsapp_contacts')
     .update({ awaiting_name: false, updated_at: new Date().toISOString() })
     .eq('phone', phone);
-
-  if (error) {
-    logger.error('whatsapp_contacts awaiting_name clear failed', { error: error.message, phone });
-  }
+  if (error) logger.error('whatsapp_contacts awaiting_name clear failed', { error: error.message, phone });
 }
 
-async function _saveConversationState(phone, conversationHistory, tripParams) {
-  const { error } = await supabase
-    .from('whatsapp_contacts')
-    .update({
-      conversation_history: conversationHistory || [],
-      previous_params: tripParams || null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('phone', phone);
-
-  if (error) {
-    logger.error('whatsapp_contacts conversation state save failed', { error: error.message, phone });
-  }
+function _titleCase(str) {
+  if (!str) return '';
+  return String(str).replace(/\b\w/g, c => c.toUpperCase());
 }
 
 module.exports = router;
