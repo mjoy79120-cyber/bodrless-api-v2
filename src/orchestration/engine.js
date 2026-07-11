@@ -133,7 +133,28 @@ class OrchestrationEngine {
   async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null) {
     this._validateTripParams(tripParams);
 
-    const resolvedIntent = intent || this._detectIntent(prompt, null);
+// ── DATE FALLBACK ─────────────────────────────────────────
+// When the user didn't give dates (e.g. "Dar es Salaam to
+// Cape Town 5 nights") the parser returns departureDate: null
+// and returnDate: null. The individual flight/hotel fallbacks
+// already handle the missing outbound date with tomorrow, but
+// returnDate stays null so the return search never fires at all.
+// Fix both here, once, before any search runs.
+if (!tripParams.departureDate) {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  tripParams.departureDate = d.toISOString().split('T')[0];
+  console.log(`[DATE FALLBACK] No departureDate — using ${tripParams.departureDate}`);
+}
+if (!tripParams.returnDate && tripParams.nights) {
+  const dep = new Date(tripParams.departureDate);
+  dep.setDate(dep.getDate() + tripParams.nights);
+  tripParams.returnDate = dep.toISOString().split('T')[0];
+  console.log(`[DATE FALLBACK] No returnDate — using ${tripParams.returnDate} (${tripParams.nights} nights)`);
+}
+// ── END DATE FALLBACK ─────────────────────────────────────
+
+const resolvedIntent = intent || this._detectIntent(prompt, null);
 
     tripParams.wantsCheapest = !!resolvedIntent.wantsCheapest;
     tripParams.wantsAffordableSort = !!resolvedIntent.wantsAffordableSort;
