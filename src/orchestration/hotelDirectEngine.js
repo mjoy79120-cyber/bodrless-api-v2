@@ -51,9 +51,15 @@ const NOISE_PATTERNS = [
   // Budget/quality words
   /\b(?:luxury|premium|budget|affordable|cheap|5[\s-]?star|five[\s-]?star|4[\s-]?star|four[\s-]?star|3[\s-]?star)\b/gi,
 
+  // Preference/context words that are never property names
+  /\b(?:honeymoon|romantic|anniversary|family|business|corporate|beach|safari|game\s+drive|spa|wellness|relaxation|vacation|holiday|trip|getaway|escape|stay|visit)\b/gi,
+
+  // Possessives and filler words
+  /\b(?:my|our|your|their|his|her|its)\b/gi,
+
   // Filler prepositions/articles that won't be property names
   /\b(?:at\s+the|at\s+a|in\s+the|in\s+a|for\s+a|for\s+the)\b/gi,
-  /\b(?:^|\s)(?:in|at|the|a|an|for|us|me|with|of|from|some|any)\b/gi,
+  /\b(?:^|\s)(?:in|at|the|a|an|for|us|me|with|of|from|some|any|on)\b/gi,
 
   // Stray punctuation & excess whitespace (applied last)
 ];
@@ -277,10 +283,15 @@ class HotelDirectEngine {
 
     if (properties.length === 0) {
       const allProps = await this._getAllProperties(group.id);
-      const propList = allProps.map(p => `${p.name} (${p.destination})`).join(', ');
+      const propList = allProps
+        .map((p, i) => `${i + 1}. ${p.name} — ${p.destination}`)
+        .join('\n');
+      const context = tripParams.preferences.length
+        ? ` For your ${tripParams.preferences.join(' & ')} stay`
+        : '';
       return this._buildResponse(
         sessionId, tripParams, conversationHistory,
-        `We don't have a property matching "${destination || 'that location'}". ${group.name} properties: ${propList}. Which would you like?`,
+        `${context ? context + ', which' : 'Which'} ${group.name} property would you like?\n\n${propList}`,
         []
       );
     }
@@ -660,70 +671,98 @@ class HotelDirectEngine {
 
     if (!properties?.length) return [];
 
-    const raw          = (rawPrompt  || '').toLowerCase().trim();
-    const search       = (destination || '').toLowerCase().trim();
-    const searchWords  = search.split(/\s+/).filter(Boolean);
+    const raw         = (rawPrompt  || '').toLowerCase().trim();
+    const search      = (destination || '').toLowerCase().trim();
+    const searchWords = search.split(/\s+/).filter(Boolean);
+    const rawWords    = raw.split(/\s+/).filter(Boolean);
 
-    return properties.filter(p => {
-      const name     = (p.name        || '').toLowerCase();
-      const dest     = (p.destination || '').toLowerCase();
-      const location = (p.location    || '').toLowerCase();
-      const aliases  = Array.isArray(p.search_aliases) ? p.search_aliases : [];
+    // ── Detect shared brand prefix words (e.g. "sarova" in every Sarova property)
+    // These alone cannot distinguish between properties so we require the
+    // DISTINCTIVE words to match — prevents "sarova imperial" matching "sarova shaba".
+    const allNameWords = properties.map(p =>
+      (p.name || '').toLowerCase().split(/\s+/).filter(Boolean)
+    );
+    const brandWords = allNameWords.length > 1
+      ? allNameWords[0].filter(w => allNameWords.every(nws => nws.includes(w)))
+      : [];
 
-      // ── Strategy 0: raw prompt contains known property identifiers ──────
-      // Only when we have the original unstripped prompt.
-      if (raw) {
-        if (name     && raw.includes(name))     return true;
-        if (dest     && raw.includes(dest))     return true;
-        if (location && raw.includes(location)) return true;
-        if (aliases.some(a => {
-          const al = String(a).toLowerCase();
-          return al && raw.includes(al);
-        })) return true;
+    // ── Score each property ──────────────────────────────────────────────
+    // Tier 100  full property name substring in raw prompt          (exact)
+    // Tier  90  full property name substring in stripped search     (exact)
+    // Tier  80  alias exact match in raw or search
+    // Tier  70  destination/location exact substring in raw
+    // Tier  60  ALL distinctive words present exactly in raw words
+    // Tier  50  ALL distinctive words present exactly in search words
+    // Tier  40  ALL distinctive words fuzzy-match (≤1 edit) in raw words
+    //           (tighter than before — was ≤2 on brand+distinctive combined)
+    const scored = properties.map(p => {
+      const name      = (p.name        || '').toLowerCase();
+      const dest      = (p.destination || '').toLowerCase();
+      const location  = (p.location    || '').toLowerCase();
+      const aliases   = Array.isArray(p.search_aliases) ? p.search_aliases : [];
+      const nameWords = name.split(/\s+/).filter(Boolean);
 
-        // Fuzzy against raw prompt words for the property name words
-        const rawWords  = raw.split(/\s+/).filter(Boolean);
-        const nameWords = name.split(/\s+/).filter(Boolean);
-        if (nameWords.length >= 1 && nameWords.every(nw =>
-          rawWords.some(rw =>
-            rw === nw ||
-            rw.startsWith(nw) ||
-            nw.startsWith(rw) ||
-            (nw.length > 3 && _levenshtein(rw, nw) <= 2)
-          )
-        )) return true;
-      }
+      // Words that distinguish this property from siblings
+      const distinctWords = nameWords.filter(w => !brandWords.includes(w));
+      const matchWords    = distinctWords.length > 0 ? distinctWords : nameWords;
 
-      // ── Strategies 1-4: fall back to stripped destination string ────────
-      if (!search) return false;
+      let score = 0;
 
-      // 1. Substring
-      if (dest.includes(search))     return true;
-      if (name.includes(search))     return true;
-      if (location.includes(search)) return true;
+      // T100: full name in raw prompt
+      if (raw && name && raw.includes(name))
+        score = Math.max(score, 100);
 
-      // 2. Reverse — search contains full property name
-      if (name && search.includes(name)) return true;
+      // T90: full name in stripped search
+      if (search && name && search.includes(name))
+        score = Math.max(score, 90);
 
-      // 3. Alias
+      // T80: alias hit
       if (aliases.some(a => {
         const al = String(a).toLowerCase();
-        return al.includes(search) || search.includes(al);
-      })) return true;
+        return (raw && raw.includes(al)) ||
+               (search && (search.includes(al) || al.includes(search)));
+      })) score = Math.max(score, 80);
 
-      // 4. Word-level fuzzy on stripped search words
-      const nameWords = name.split(/\s+/).filter(Boolean);
-      if (nameWords.length >= 1 && nameWords.every(nw =>
-        searchWords.some(sw =>
-          sw === nw ||
-          sw.startsWith(nw) ||
-          nw.startsWith(sw) ||
-          (nw.length > 3 && _levenshtein(sw, nw) <= 2)
+      // T70: destination or location in raw
+      if (raw) {
+        if (dest     && dest.length     > 3 && raw.includes(dest))     score = Math.max(score, 70);
+        if (location && location.length > 3 && raw.includes(location)) score = Math.max(score, 70);
+      }
+
+      // T60: all distinctive words exact in raw
+      if (raw && matchWords.length > 0 && matchWords.every(mw =>
+        rawWords.some(rw => rw === mw || rw.startsWith(mw) || mw.startsWith(rw))
+      )) score = Math.max(score, 60);
+
+      // T50: all distinctive words exact in search
+      if (search && matchWords.length > 0 && matchWords.every(mw =>
+        searchWords.some(sw => sw === mw || sw.startsWith(mw) || mw.startsWith(sw))
+      )) score = Math.max(score, 50);
+
+      // T40: all distinctive words fuzzy ≤1 edit in raw
+      if (raw && matchWords.length > 0 && matchWords.every(mw =>
+        rawWords.some(rw =>
+          rw === mw ||
+          rw.startsWith(mw) ||
+          mw.startsWith(rw) ||
+          (mw.length > 4 && _levenshtein(rw, mw) <= 1)
         )
-      )) return true;
+      )) score = Math.max(score, 40);
 
-      return false;
-    });
+      return { p, score };
+    }).filter(s => s.score > 0);
+
+    if (!scored.length) return [];
+
+    // Only return properties within a tight band of the top score.
+    // e.g. top=100 → threshold=90, so a score-40 false positive is excluded.
+    const topScore  = Math.max(...scored.map(s => s.score));
+    const threshold = topScore >= 60 ? topScore - 10 : topScore;
+
+    return scored
+      .filter(s  => s.score >= threshold)
+      .sort((a, b) => b.score - a.score)
+      .map(s  => s.p);
   }
 
   async _getAllProperties(groupId) {
