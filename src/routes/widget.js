@@ -2,804 +2,566 @@ const express = require('express');
 const router  = express.Router();
 
 router.get('/', (req, res) => {
-  const agencyKey   = req.query.key   || 'epic-travels';
-  const agencyName  = req.query.name  || 'Epic Travels';
-  const mode        = req.query.mode  || 'agency';
-  const embedTarget = req.query.embed || null;
-  const apiBase     = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
-  const isHotelMode = mode === 'hotel_direct';
+  const agencyKey  = req.query.key  || 'epic-travels';
+  const agencyName = req.query.name || 'Epic Travels';
+  const apiBase    = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
+  const isHotelDirect = req.query.mode === 'hotel_direct';
+  const embedTarget   = req.query.embed || null; // container id for embedded mode
 
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
 
-  const widgetCode = '(function () {\n' +
-  'function initWidget() {\n' +
-  'if (!document.body) { setTimeout(initWidget, 50); return; }\n' +
-  'if (document.getElementById("bodrless-widget-root")) return;\n' +
+  // ─── HOTEL DIRECT PALETTE (Sarova brand) ─────────────────────
+  // Forest green #114B43, ivory #F8F5EE, gold #C9A84C, warm white #FFFFFF
+  // ─────────────────────────────────────────────────────────────
+  const HOTEL_CSS = `
+    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Inter:wght@300;400;500;600&display=swap');
+    :root {
+      --h-green:   #114B43;
+      --h-green2:  #1a6b5e;
+      --h-gold:    #C9A84C;
+      --h-gold2:   #e8c97a;
+      --h-ivory:   #F8F5EE;
+      --h-ivory2:  #EDE9DF;
+      --h-cream:   #FDFCF9;
+      --h-text:    #1a1a1a;
+      --h-muted:   #6b6460;
+      --h-border:  #ddd8cc;
+    }
+    #bodrless-chat.hotel-mode {
+      font-family: 'Inter', sans-serif !important;
+      background: var(--h-cream) !important;
+      border: none !important;
+      box-shadow: 0 24px 80px rgba(17,75,67,0.18) !important;
+      border-radius: 20px !important;
+    }
+    .hotel-mode #et-header {
+      background: var(--h-green) !important;
+      border-bottom: 2px solid var(--h-gold) !important;
+    }
+    .hotel-mode #et-header-text h3 { color: #fff !important; font-family: 'Cormorant Garamond', serif !important; font-size: 17px !important; letter-spacing: 1px !important; }
+    .hotel-mode #et-header-text h3 span { color: var(--h-gold) !important; }
+    .hotel-mode #et-header-text p { color: rgba(255,255,255,0.55) !important; letter-spacing: 2px !important; }
+    .hotel-mode #et-close { background: rgba(255,255,255,0.1) !important; }
+    .hotel-mode #bodrless-messages { background: var(--h-cream) !important; }
+    .hotel-mode .msg.bot {
+      background: #fff !important;
+      border: 1px solid var(--h-border) !important;
+      color: var(--h-text) !important;
+      border-radius: 4px 16px 16px 16px !important;
+      font-size: 13px !important;
+      line-height: 1.65 !important;
+    }
+    .hotel-mode .msg.user {
+      background: var(--h-green) !important;
+      color: #fff !important;
+      border: none !important;
+      border-radius: 16px 4px 16px 16px !important;
+    }
+    .hotel-mode .typing { background: #fff !important; border: 1px solid var(--h-border) !important; }
+    .hotel-mode .typing span { background: var(--h-green) !important; }
+    .hotel-mode .typing span:nth-child(2) { background: var(--h-gold) !important; }
+    .hotel-mode #bodrless-input-area { background: #fff !important; border-top: 1px solid var(--h-border) !important; }
+    .hotel-mode #bodrless-input { background: var(--h-ivory) !important; border: 1.5px solid var(--h-border) !important; color: var(--h-text) !important; }
+    .hotel-mode #bodrless-input:focus { border-color: var(--h-green) !important; }
+    .hotel-mode #bodrless-input::placeholder { color: var(--h-muted) !important; }
+    .hotel-mode #bodrless-send { background: var(--h-green) !important; border: none !important; }
+    .hotel-mode #bodrless-send:hover { background: var(--h-green2) !important; }
+    .hotel-mode .et-welcome {
+      background: var(--h-green) !important;
+      border-left: 3px solid var(--h-gold) !important;
+      border-radius: 16px !important;
+    }
+    .hotel-mode .et-welcome h4 { font-family: 'Cormorant Garamond', serif !important; font-size: 18px !important; font-weight: 500 !important; letter-spacing: 0.5px !important; }
+    .hotel-mode .et-suggestion {
+      background: rgba(255,255,255,0.08) !important;
+      border: 1px solid rgba(201,168,76,0.4) !important;
+      color: rgba(255,255,255,0.85) !important;
+      border-radius: 20px !important;
+      font-size: 11px !important;
+      padding: 5px 12px !important;
+      cursor: pointer !important;
+    }
+    .hotel-mode .et-suggestion:hover { background: rgba(201,168,76,0.2) !important; }
+    .hotel-mode .package {
+      background: #fff !important;
+      border: 1px solid var(--h-border) !important;
+      box-shadow: 0 4px 20px rgba(17,75,67,0.08) !important;
+      border-radius: 16px !important;
+    }
+    .hotel-mode .pkg-header { background: var(--h-green) !important; border-radius: 15px 15px 0 0 !important; }
+    .hotel-mode .pkg-title { font-family: 'Cormorant Garamond', serif !important; font-size: 15px !important; font-weight: 500 !important; letter-spacing: 0.5px !important; }
+    .hotel-mode .pkg-route { background: var(--h-gold) !important; color: #2a1f00 !important; }
+    .hotel-mode .pkg-label { color: var(--h-green) !important; }
+    .hotel-mode .pkg-name { color: var(--h-text) !important; font-family: 'Cormorant Garamond', serif !important; font-size: 15px !important; }
+    .hotel-mode .pkg-sub { color: var(--h-muted) !important; }
+    .hotel-mode .pkg-row { border-bottom-color: var(--h-border) !important; }
+    .hotel-mode .pkg-footer { background: var(--h-ivory) !important; border-top-color: var(--h-border) !important; border-radius: 0 0 15px 15px !important; }
+    .hotel-mode .pkg-price { color: var(--h-green) !important; }
+    .hotel-mode .pkg-price small { color: var(--h-muted) !important; }
+    .hotel-mode .book { background: var(--h-green) !important; color: #fff !important; font-family: 'Inter', sans-serif !important; letter-spacing: 0.5px !important; }
+    .hotel-mode .book:hover { background: var(--h-green2) !important; }
+    .hotel-mode .name-form { background: var(--h-ivory) !important; border: 1px solid var(--h-border) !important; border-radius: 16px !important; }
+    .hotel-mode .name-input { background: #fff !important; border: 1.5px solid var(--h-border) !important; color: var(--h-text) !important; }
+    .hotel-mode .name-input:focus { border-color: var(--h-green) !important; outline: none !important; }
+    .hotel-mode .confirm-btn { background: var(--h-green) !important; }
+    .hotel-mode .confirm-btn:hover { background: var(--h-green2) !important; }
+    .hotel-mode .trust-badge { color: var(--h-muted) !important; }
+    .hotel-mode .h-addon-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--h-ivory); border: 1px solid var(--h-border);
+      color: var(--h-muted); font-size: 10px; border-radius: 20px;
+      padding: 4px 10px; cursor: pointer; transition: all 0.2s; margin: 3px 3px 3px 0;
+    }
+    .hotel-mode .h-addon-chip.on { background: rgba(17,75,67,0.08); border-color: var(--h-green); color: var(--h-green); }
+    .hotel-mode .h-manage-bar { background: var(--h-ivory); border: 1px solid var(--h-border); border-radius: 14px; padding: 12px 14px; margin-top: 4px; }
+    .hotel-mode .h-manage-title { font-size: 10px; color: var(--h-gold); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 10px; font-weight: 600; }
+    .hotel-mode .h-manage-btn {
+      background: #fff; border: 1px solid var(--h-border); border-radius: 8px;
+      padding: 7px 12px; font-size: 11px; color: var(--h-muted); cursor: pointer;
+      transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px;
+      margin: 3px; font-family: 'Inter', sans-serif;
+    }
+    .hotel-mode .h-manage-btn:hover { border-color: var(--h-green); color: var(--h-green); background: var(--h-ivory); }
+    .hotel-mode .h-policy-strip { font-size: 11px; padding: 7px 10px; border-radius: 8px; margin-top: 6px; display: flex; align-items: flex-start; gap: 6px; line-height: 1.5; }
+    .hotel-mode .h-policy-green { background: #edf7ed; color: #2d6a2d; border: 1px solid #b8dcb8; }
+    .hotel-mode .h-policy-amber { background: #fff8e6; color: #7a5c00; border: 1px solid #f0d88a; }
+    .hotel-mode .h-meal-select { width: 100%; padding: 8px 10px; border: 1.5px solid var(--h-border); border-radius: 8px; font-size: 12px; color: var(--h-text); background: #fff; margin-top: 4px; }
+    .hotel-mode .h-room-img { width: 100%; height: 150px; object-fit: cover; border-radius: 10px; margin-bottom: 10px; display: block; }
+    .hotel-mode .h-stars { color: var(--h-gold); font-size: 11px; letter-spacing: 2px; }
+    .hotel-mode .h-divider { text-align: center; font-size: 10px; color: var(--h-muted); letter-spacing: 2px; text-transform: uppercase; padding: 6px 0 10px; }
+  `;
 
-  'var conversationHistory = [];\n' +
-  'var previousParams = null;\n' +
-  'var sessionId = null;\n' +
-  'var isHotelMode = ' + String(isHotelMode) + ';\n' +
-  'var embedTarget = ' + JSON.stringify(embedTarget) + ';\n' +
+  const code = `(function(){
+function initWidget(){
+  if(!document.body){setTimeout(initWidget,50);return;}
+  if(document.getElementById('bodrless-widget-root'))return;
 
-  'var STORAGE_KEY = "bodrless_widget_' + agencyKey + '";\n' +
-  'var transcript = [];\n' +
-  'var hasRestoredHistory = false;\n' +
+  var IS_HOTEL = ${isHotelDirect ? 'true' : 'false'};
+  var EMBED_TARGET = ${embedTarget ? `'${embedTarget}'` : 'null'};
+  var conversationHistory=[], previousParams=null, sessionId=null;
+  var STORAGE_KEY='bodrless_${agencyKey}';
+  var transcript=[], hasRestored=false;
 
-  'function persistState() {\n' +
-  '  try {\n' +
-  '    localStorage.setItem(STORAGE_KEY, JSON.stringify({ v:1, savedAt:Date.now(), transcript:transcript.slice(-20), conversationHistory:conversationHistory, previousParams:previousParams, sessionId:sessionId }));\n' +
-  '  } catch(e) {}\n' +
-  '}\n' +
+  function save(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify({v:1,savedAt:Date.now(),transcript:transcript.slice(-20),conversationHistory,previousParams,sessionId}));}catch(e){}}
+  function load(){try{var r=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');if(!r||r.v!==1||(Date.now()-r.savedAt)>86400000)return null;return r;}catch(e){return null;}}
+  var _r=load();
+  if(_r){conversationHistory=_r.conversationHistory||[];previousParams=_r.previousParams||null;sessionId=_r.sessionId||null;transcript=_r.transcript||[];hasRestored=transcript.length>0;}
 
-  'function loadPersistedState() {\n' +
-  '  try {\n' +
-  '    var raw = localStorage.getItem(STORAGE_KEY);\n' +
-  '    if (!raw) return null;\n' +
-  '    var p = JSON.parse(raw);\n' +
-  '    if (!p || p.v !== 1) return null;\n' +
-  '    if (Date.now() - (p.savedAt||0) > 24*60*60*1000) return null;\n' +
-  '    return p;\n' +
-  '  } catch(e) { return null; }\n' +
-  '}\n' +
+  /* ── HOTEL CSS inject ── */
+  if(IS_HOTEL){
+    var hStyle=document.createElement('style');
+    hStyle.innerHTML=${JSON.stringify(HOTEL_CSS)};
+    document.head.appendChild(hStyle);
+  }
 
-  'var __r = loadPersistedState();\n' +
-  'if (__r) {\n' +
-  '  conversationHistory = __r.conversationHistory || [];\n' +
-  '  previousParams = __r.previousParams || null;\n' +
-  '  sessionId = __r.sessionId || null;\n' +
-  '  transcript = __r.transcript || [];\n' +
-  '  hasRestoredHistory = transcript.length > 0;\n' +
-  '}\n' +
+  /* ── Agency CSS ── */
+  var style=document.createElement('style');
+  style.innerHTML=[
+    ':root{--et-navy:#1E2A5E;--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F8F9FC;--et-border:#E4E8F0;--et-muted:#8892A4;--et-green:#27ae60;}',
+    '#bodrless-chat{position:fixed;bottom:90px;right:24px;width:390px;height:630px;background:var(--et-cream);z-index:999999;display:none;flex-direction:column;border-radius:20px;overflow:hidden;box-shadow:0 20px 60px rgba(30,42,94,0.18);font-family:Arial,sans-serif;}',
+    '#bodrless-chat.embedded{position:relative;bottom:auto;right:auto;width:100%;height:620px;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,0.1);}',
+    '#bodrless-chat.open{display:flex;}',
+    '@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:0.6;}30%{transform:translateY(-6px);opacity:1;}}',
+    '#et-header{background:var(--et-navy);padding:14px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-bottom:3px solid var(--et-red);}',
+    '#et-header-left{display:flex;align-items:center;gap:12px;}',
+    '#et-logo-wrap{width:42px;height:42px;background:rgba(255,255,255,0.15);border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;color:white;font-weight:700;font-size:18px;}',
+    '#et-header-text h3{font-size:15px;color:white;margin:0 0 2px 0;}',
+    '#et-header-text h3 span{color:var(--et-red);}',
+    '#et-header-text p{font-size:10px;color:rgba(255,255,255,0.6);margin:0;letter-spacing:0.8px;text-transform:uppercase;}',
+    '#et-close{background:rgba(255,255,255,0.1);border:none;color:white;width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:13px;}',
+    '#bodrless-messages{flex:1;padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;}',
+    '.msg{padding:10px 14px;border-radius:14px;max-width:85%;font-size:13px;line-height:1.5;}',
+    '.user{background:var(--et-navy);color:white;margin-left:auto;border-bottom-right-radius:4px;}',
+    '.bot{background:var(--et-white);color:var(--et-navy);border:1px solid var(--et-border);border-bottom-left-radius:4px;}',
+    '.typing{background:var(--et-white);border:1px solid var(--et-border);padding:12px 16px;border-radius:14px;display:flex;gap:5px;align-items:center;width:fit-content;}',
+    '.typing span{width:7px;height:7px;background:var(--et-navy);border-radius:50%;animation:bounce 1.2s infinite;}',
+    '.typing span:nth-child(2){animation-delay:0.2s;background:var(--et-red);}',
+    '.typing span:nth-child(3){animation-delay:0.4s;}',
+    '.et-welcome{background:linear-gradient(135deg,#1E2A5E 0%,#2d3f82 100%);border-radius:16px;padding:16px;color:white;border-left:4px solid #C0392B;}',
+    '.et-welcome h4{font-size:14px;margin:0 0 6px 0;}',
+    '.et-welcome p{font-size:12px;margin:0 0 12px 0;color:rgba(255,255,255,0.7);line-height:1.5;}',
+    '.et-suggestions{display:flex;flex-wrap:wrap;gap:6px;}',
+    '.et-suggestion{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.9);padding:5px 10px;border-radius:20px;font-size:11px;cursor:pointer;}',
+    '.package{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;overflow:visible;height:auto;box-shadow:0 2px 10px rgba(30,42,94,0.07);margin-bottom:8px;}',
+    '.pkg-header{background:var(--et-navy);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-radius:14px 14px 0 0;}',
+    '.pkg-title{color:white;font-size:13px;font-weight:600;}',
+    '.pkg-route{background:var(--et-red);color:white;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+    '.pkg-body{padding:12px 14px;display:flex;flex-direction:column;height:auto;}',
+    '.pkg-row{display:flex;flex-direction:column;padding:8px 0;border-bottom:1px dashed var(--et-border);}',
+    '.pkg-row:last-child{border-bottom:none;}',
+    '.pkg-label{font-size:10px;font-weight:700;color:var(--et-red);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;}',
+    '.pkg-name{font-size:13px;font-weight:600;color:var(--et-navy);margin-bottom:2px;}',
+    '.pkg-sub{font-size:11px;color:var(--et-muted);line-height:1.4;}',
+    '.pkg-footer{padding:10px 14px;background:var(--et-cream);display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--et-border);height:auto;border-radius:0 0 14px 14px;}',
+    '.pkg-price{font-size:20px;font-weight:700;color:var(--et-navy);line-height:1;}',
+    '.pkg-price small{font-size:10px;color:var(--et-muted);display:block;font-weight:400;margin-top:2px;}',
+    '.book{background:var(--et-red);color:white;border:none;padding:9px 18px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}',
+    '.book:disabled{opacity:0.7;cursor:not-allowed;}',
+    '#bodrless-input-area{display:flex;border-top:1px solid var(--et-border);background:var(--et-white);padding:10px 12px;gap:8px;flex-shrink:0;}',
+    '#bodrless-input{flex:1;padding:10px 14px;border:1.5px solid var(--et-border);border-radius:20px;outline:none;font-size:13px;background:var(--et-cream);color:var(--et-navy);}',
+    '#bodrless-input:focus{border-color:var(--et-navy);}',
+    '#bodrless-input::placeholder{color:var(--et-muted);font-size:12px;}',
+    '#bodrless-send{background:var(--et-navy);color:white;border:none;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}',
+    '#bodrless-trigger{display:none !important;}',
+    '.name-form{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:14px;margin-top:8px;}',
+    '.name-form p{font-size:12px;color:var(--et-navy);margin:0 0 10px 0;font-weight:500;}',
+    '.name-input{width:100%;padding:9px 12px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:var(--et-navy);box-sizing:border-box;margin-bottom:10px;}',
+    '.dob-row{display:flex;gap:6px;margin-bottom:10px;}',
+    '.dob-row select{flex:1;padding:9px 4px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:var(--et-navy);box-sizing:border-box;background:white;}',
+    '.field-label{font-size:10px;color:var(--et-muted);margin-bottom:4px;font-weight:600;}',
+    '.confirm-btn{background:var(--et-navy);color:white;border:none;padding:9px 18px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;width:100%;}',
+    '.trust-badge{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;font-size:10px;color:var(--et-muted);}',
+    '.trust-badge svg{width:13px;height:13px;flex-shrink:0;}',
+    '.price-alert{background:#FFF7E6;border:1px solid #F0C36D;border-radius:12px;padding:12px;margin-top:8px;}',
+    '.price-alert p{font-size:12px;color:#5A4A1A;margin:0 0 10px 0;line-height:1.5;}',
+    '.price-alert .old{text-decoration:line-through;color:var(--et-muted);}',
+    '.price-alert .new{color:var(--et-red);font-weight:700;}',
+    '.price-alert-actions{display:flex;gap:8px;}',
+    '.price-approve{flex:1;background:var(--et-navy);color:white;border:none;padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}',
+    '.price-cancel{flex:1;background:white;color:var(--et-navy);border:1.5px solid var(--et-border);padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}'
+  ].join('');
+  document.head.appendChild(style);
 
-  // ── STYLES ────────────────────────────────────────────────
-  'var style = document.createElement("style");\n' +
-  'style.innerHTML = [\n' +
-  // CSS variables
-  '":root{--et-navy:#1E2A5E;--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F9F7F4;--et-border:#E8E3DA;--et-muted:#9A9088;--et-green:#27ae60;--et-gold:#B8964A;}",\n' +
+  /* ── DOM BUILD ── */
+  var root=document.createElement('div');root.id='bodrless-widget-root';
+  var chatDiv=document.createElement('div');chatDiv.id='bodrless-chat';
+  if(IS_HOTEL) chatDiv.classList.add('hotel-mode');
 
-  // Chat container — no fixed position by default, class decides
-  '"#bodrless-chat{background:var(--et-white);z-index:999999;display:none;flex-direction:column;border-radius:18px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,0.14);font-family:\'Inter\',Arial,sans-serif;}",\n' +
-  '"#bodrless-chat.open{display:flex;}",\n' +
+  var header=document.createElement('div');header.id='et-header';
+  var hLeft=document.createElement('div');hLeft.id='et-header-left';
+  var logoWrap=document.createElement('div');logoWrap.id='et-logo-wrap';
+  logoWrap.innerText='${agencyName.charAt(0).toUpperCase()}';
+  var hText=document.createElement('div');hText.id='et-header-text';
+  hText.innerHTML='<h3><span>${agencyName}</span></h3><p>${isHotelDirect ? 'Private Concierge' : 'Premium Travel'}</p>';
+  var closeBtn=document.createElement('button');closeBtn.id='et-close';closeBtn.innerText='✕';
+  hLeft.appendChild(logoWrap);hLeft.appendChild(hText);
+  header.appendChild(hLeft);header.appendChild(closeBtn);
 
-  // Floating mode — agency default and hotel fallback
-  '"#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:390px;height:640px;}",\n' +
+  var messages=document.createElement('div');messages.id='bodrless-messages';
+  var inputArea=document.createElement('div');inputArea.id='bodrless-input-area';
+  var input=document.createElement('input');input.id='bodrless-input';
+  input.placeholder=IS_HOTEL?'Tell me how you\\'d like to stay…':'Where would you like to go?';
+  var sendBtn=document.createElement('button');sendBtn.id='bodrless-send';sendBtn.innerHTML='&#9658;';
+  inputArea.appendChild(input);inputArea.appendChild(sendBtn);
+  chatDiv.appendChild(header);chatDiv.appendChild(messages);chatDiv.appendChild(inputArea);
+  root.appendChild(chatDiv);
+  document.body.appendChild(root);
 
-  // Embedded mode — hotel direct, fills its mount container
-  '"#bodrless-chat.embedded{position:relative;width:100%;height:760px;display:flex;border-radius:0;}",\n' +
+  /* ── EMBED or FLOATING ── */
+  if(EMBED_TARGET){
+    chatDiv.classList.add('embedded','open');
+    var mountEl=document.getElementById(EMBED_TARGET);
+    if(mountEl){mountEl.appendChild(chatDiv);}else{document.body.appendChild(chatDiv);}
+  } else {
+    var triggerBtn=document.createElement('button');
+    triggerBtn.id='bodrless-trigger';
+    triggerBtn.innerText=IS_HOTEL?'Book a Room':'Plan Your Trip';
+    document.body.appendChild(triggerBtn);
+    var welcomeShown=false;
+    triggerBtn.onclick=function(){chatDiv.classList.add('open');input.focus();if(!welcomeShown){welcomeShown=true;if(hasRestored){replayTranscript();}else{showWelcome();}}};
+    closeBtn.onclick=function(){chatDiv.classList.remove('open');};
+  }
 
-  '"@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:0.5;}30%{transform:translateY(-5px);opacity:1;}}",\n' +
+  if(EMBED_TARGET && !hasRestored){showWelcome();}
+  else if(EMBED_TARGET && hasRestored){replayTranscript();}
 
-  // Header
-  '"#et-header{background:var(--et-navy);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}",\n' +
-  '"#et-header-left{display:flex;align-items:center;gap:12px;}",\n' +
-  '"#et-logo-wrap{width:38px;height:38px;background:rgba(255,255,255,0.1);border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;}",\n' +
-  '"#et-logo-wrap img{width:34px;height:34px;object-fit:contain;}",\n' +
-  '"#et-header-text h3{font-size:14px;color:white;margin:0 0 1px 0;font-weight:600;letter-spacing:0.2px;}",\n' +
-  '"#et-header-text p{font-size:10px;color:rgba(255,255,255,0.5);margin:0;letter-spacing:1px;text-transform:uppercase;}",\n' +
-  '"#et-close{background:rgba(255,255,255,0.08);border:none;color:rgba(255,255,255,0.7);width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:background 0.2s;}",\n' +
-  '"#et-close:hover{background:rgba(255,255,255,0.18);}",\n' +
+  /* ── WELCOME ── */
+  function showWelcome(){
+    var div=document.createElement('div');div.className='et-welcome';
+    var h4=document.createElement('h4');
+    var p=document.createElement('p');
+    var sd=document.createElement('div');sd.className='et-suggestions';
+    if(IS_HOTEL){
+      h4.innerHTML='Welcome to ${agencyName} &mdash; I\\'m your personal concierge.';
+      p.innerText='Tell me what you\\'re looking for and I\\'ll take care of the rest.';
+      var starters=window.bodrlessStarters||[
+        {text:'Book me a room for two this weekend, all inclusive'},
+        {text:'Honeymoon suite with spa package'},
+        {text:'Family room for 4 nights, full board'},
+        {text:'What\\'s your best suite available?'}
+      ];
+      starters.slice(0,3).forEach(function(s){
+        var btn=document.createElement('span');btn.className='et-suggestion';
+        btn.innerText=s.text;
+        btn.onclick=function(){input.value=s.text;send();};
+        sd.appendChild(btn);
+      });
+    } else {
+      h4.innerText='Welcome to ${agencyName}';
+      p.innerText='Tell me your dream destination and I will find the perfect package.';
+      ['Nairobi to Zanzibar','Cape Town 5 nights','Masai Mara Safari'].forEach(function(s){
+        var btn=document.createElement('span');btn.className='et-suggestion';
+        btn.innerText=s;btn.onclick=function(){input.value=s;send();};
+        sd.appendChild(btn);
+      });
+    }
+    div.appendChild(h4);div.appendChild(p);div.appendChild(sd);
+    messages.appendChild(div);
+  }
 
-  // Messages area
-  '"#bodrless-messages{flex:1;padding:20px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;background:var(--et-cream);}",\n' +
+  /* ── REPLAY ── */
+  function replayTranscript(){
+    var note=document.createElement('div');note.className='msg bot';
+    note.style.fontStyle='italic';note.style.opacity='0.6';
+    note.innerText='\\u2014 Continuing your session \\u2014';
+    messages.appendChild(note);
+    transcript.forEach(function(e){
+      if(!e||!e.type)return;
+      if(e.type==='user'||e.type==='bot'){addMsg(e.text||'',e.type);}
+      else if(e.type==='hotel_packages'&&Array.isArray(e.packages)){e.packages.forEach(function(p,i){addHotelPackage(p,i);});}
+      else if(e.type==='hotel_itinerary'&&e.pkg){addHotelItinerary(e.pkg);}
+      else if(e.type==='packages'&&Array.isArray(e.packages)){e.packages.forEach(function(p,i){addPackage(p,i);});}
+      else if(e.type==='itinerary'&&e.pkg){addItinerary(e.pkg);}
+    });
+    messages.scrollTop=messages.scrollHeight;
+  }
 
-  // Message bubbles
-  '".msg{padding:11px 15px;border-radius:16px;max-width:82%;font-size:13.5px;line-height:1.55;}",\n' +
-  '".user{background:var(--et-navy);color:white;margin-left:auto;border-bottom-right-radius:4px;}",\n' +
-  '".bot{background:var(--et-white);color:#2A2A2A;border:1px solid var(--et-border);border-bottom-left-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,0.05);}",\n' +
+  /* ── HELPERS ── */
+  function addMsg(text,type){var d=document.createElement('div');d.className='msg '+type;d.innerText=text;messages.appendChild(d);messages.scrollTop=messages.scrollHeight;}
+  function showTyping(){var d=document.createElement('div');d.className='typing';d.id='et-typing';d.innerHTML='<span></span><span></span><span></span>';messages.appendChild(d);messages.scrollTop=messages.scrollHeight;}
+  function hideTyping(){var t=document.getElementById('et-typing');if(t)t.remove();}
+  function fmtTime(iso){if(!iso)return'TBC';try{var d=new Date(iso);if(isNaN(d))return iso;return d.toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});}catch(e){return iso;}}
+  function fmtPrice(n,cur){return(cur||'KES')+' '+(Math.round(Number(n)||0)).toLocaleString();}
+  function titleCase(str){if(!str)return'';return String(str).replace(/\\b\\w/g,function(c){return c.toUpperCase();});}
+  function makeRow(label,name,sub){var row=document.createElement('div');row.className='pkg-row';var lEl=document.createElement('div');lEl.className='pkg-label';lEl.innerText=label;var nEl=document.createElement('div');nEl.className='pkg-name';nEl.innerText=name;var sEl=document.createElement('div');sEl.className='pkg-sub';sEl.innerText=sub;row.appendChild(lEl);row.appendChild(nEl);row.appendChild(sEl);return row;}
+  function makeHighlight(text,tone){var d=document.createElement('div');var bg=tone==='good'?'#E8F8EE':tone==='warn'?'#FFF3E0':'#EEF1F8';var fg=tone==='good'?'#1B7A3D':tone==='warn'?'#B05A00':'#3A4A7A';d.style.cssText='background:'+bg+';color:'+fg+';padding:7px 10px;border-radius:8px;font-size:11px;font-weight:700;margin-top:6px;';d.innerText=text;return d;}
 
-  // Typing
-  '".typing{background:var(--et-white);border:1px solid var(--et-border);padding:12px 16px;border-radius:16px;display:flex;gap:5px;align-items:center;width:fit-content;}",\n' +
-  '".typing span{width:6px;height:6px;background:var(--et-navy);border-radius:50%;animation:bounce 1.2s infinite;}",\n' +
-  '".typing span:nth-child(2){animation-delay:0.2s;background:var(--et-gold);}",\n' +
-  '".typing span:nth-child(3){animation-delay:0.4s;}",\n' +
+  /* ══════════════════════════════════════════
+     HOTEL DIRECT — ROOM CARD
+     Sarova palette, concierge voice, smart add-ons
+  ══════════════════════════════════════════ */
+  function addHotelPackage(p,i){
+    var hotel=p.hotel||{}, summary=p.summary||{}, ancs=p.ancillaryServices||[];
+    var currency=hotel.currency||summary.currency||'KES';
+    var nights=hotel.nights||summary.nights||1;
+    var passengers=summary.passengers||1;
+    var baseTotal=hotel.totalRate||(hotel.pricePerNight*nights)||summary.totalPrice||0;
+    var currentTotal=baseTotal;
+    var selectedAncs=[];
+    var isHoneymoon=hotel.mealPlan==='honeymoon'||(p.preferences||[]).includes('honeymoon')||(hotel.roomType||'').toLowerCase().includes('suite');
 
-  // Welcome card — hotel mode only
-  '".et-welcome{background:var(--et-white);border-radius:14px;padding:20px;border:1px solid var(--et-border);}",\n' +
-  '".et-welcome-eyebrow{font-size:10px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:var(--et-gold);margin-bottom:10px;}",\n' +
-  '".et-welcome-title{font-size:18px;font-weight:600;color:var(--et-navy);margin-bottom:8px;line-height:1.3;}",\n' +
-  '".et-welcome-body{font-size:13px;color:#5A5A5A;line-height:1.65;margin-bottom:18px;}",\n' +
-  '".et-divider{height:1px;background:var(--et-border);margin:4px 0 16px 0;}",\n' +
-  '".et-prompts-label{font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--et-muted);margin-bottom:12px;}",\n' +
+    var div=document.createElement('div');div.className='package';
+    if(isHoneymoon) div.style.borderColor='#e8b4b4';
 
-  // Conversation starter cards
-  '".et-starter{width:100%;background:var(--et-cream);border:1px solid var(--et-border);border-radius:12px;padding:14px 16px;text-align:left;cursor:pointer;transition:all 0.2s;margin-bottom:8px;display:block;}",\n' +
-  '".et-starter:last-child{margin-bottom:0;}",\n' +
-  '".et-starter:hover{background:var(--et-navy);border-color:var(--et-navy);}",\n' +
-  '".et-starter:hover .st-title{color:white;}",\n' +
-  '".et-starter:hover .st-body{color:rgba(255,255,255,0.7);}",\n' +
-  '".st-title{font-size:13px;font-weight:600;color:var(--et-navy);margin-bottom:3px;}",\n' +
-  '".st-body{font-size:12px;color:var(--et-muted);line-height:1.45;}",\n' +
+    var pkgHeader=document.createElement('div');pkgHeader.className='pkg-header';
+    var pkgTitle=document.createElement('span');pkgTitle.className='pkg-title';
+    pkgTitle.innerText='Option '+(i+1)+(isHoneymoon?' \\u2728':'');
+    var pkgRoute=document.createElement('span');pkgRoute.className='pkg-route';
+    pkgRoute.innerText=hotel.location||summary.route||'Room';
+    pkgHeader.appendChild(pkgTitle);pkgHeader.appendChild(pkgRoute);
 
-  // Agency welcome chips
-  '".et-agency-welcome{background:linear-gradient(135deg,#1E2A5E 0%,#2d3f82 100%);border-radius:16px;padding:16px;color:white;border-left:4px solid #C0392B;}",\n' +
-  '".et-agency-welcome h4{font-size:14px;margin:0 0 6px 0;}",\n' +
-  '".et-agency-welcome p{font-size:12px;margin:0 0 12px 0;color:rgba(255,255,255,0.7);}",\n' +
-  '".et-suggestions{display:flex;flex-wrap:wrap;gap:6px;}",\n' +
-  '".et-suggestion{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.9);padding:5px 10px;border-radius:20px;font-size:11px;cursor:pointer;}",\n' +
+    var pkgBody=document.createElement('div');pkgBody.className='pkg-body';pkgBody.style.height='auto';
 
-  // Package cards
-  '".package{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;overflow:visible;box-shadow:0 2px 12px rgba(0,0,0,0.06);margin-bottom:8px;}",\n' +
-  '".pkg-header{background:var(--et-navy);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-radius:14px 14px 0 0;}",\n' +
-  '".pkg-title{color:white;font-size:13px;font-weight:600;}",\n' +
-  '".pkg-route{background:rgba(255,255,255,0.15);color:white;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",\n' +
-  '".pkg-body{padding:12px 14px;}",\n' +
-  '".pkg-row{display:flex;flex-direction:column;padding:8px 0;border-bottom:1px solid var(--et-border);}",\n' +
-  '".pkg-row:last-child{border-bottom:none;}",\n' +
-  '".pkg-label{font-size:10px;font-weight:700;color:var(--et-gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;}",\n' +
-  '".pkg-name{font-size:13px;font-weight:600;color:var(--et-navy);margin-bottom:2px;}",\n' +
-  '".pkg-sub{font-size:11px;color:var(--et-muted);line-height:1.4;}",\n' +
-  '".pkg-footer{padding:10px 14px;background:#FAFAF8;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--et-border);border-radius:0 0 14px 14px;}",\n' +
-  '".pkg-price{font-size:20px;font-weight:700;color:var(--et-navy);line-height:1;}",\n' +
-  '".pkg-price small{font-size:10px;color:var(--et-muted);display:block;font-weight:400;margin-top:2px;}",\n' +
-  '".book{background:var(--et-gold);color:white;border:none;padding:10px 20px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;letter-spacing:0.3px;transition:opacity 0.2s;}",\n' +
-  '".book:hover{opacity:0.88;}",\n' +
-  '".book:disabled{opacity:0.6;cursor:not-allowed;}",\n' +
+    /* Room image */
+    var images=hotel.images||[];
+    if(images.length>0){var img=document.createElement('img');img.src=images[0];img.alt=hotel.roomType||hotel.name||'Room';img.className='h-room-img';img.onerror=function(){this.style.display='none';};pkgBody.appendChild(img);}
 
-  // Input area
-  '"#bodrless-input-area{display:flex;border-top:1px solid var(--et-border);background:var(--et-white);padding:12px;gap:8px;flex-shrink:0;}",\n' +
-  '"#bodrless-input{flex:1;padding:10px 14px;border:1.5px solid var(--et-border);border-radius:20px;outline:none;font-size:13px;background:var(--et-cream);color:#2A2A2A;font-family:\'Inter\',Arial,sans-serif;}",\n' +
-  '"#bodrless-input:focus{border-color:var(--et-navy);}",\n' +
-  '"#bodrless-input::placeholder{color:var(--et-muted);font-size:12px;}",\n' +
-  '"#bodrless-send{background:var(--et-navy);color:white;border:none;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.2s;}",\n' +
-  '"#bodrless-send:hover{background:var(--et-gold);}",\n' +
+    /* Hotel name + stars */
+    var stars=hotel.stars?'\\u2605'.repeat(Math.min(Math.round(hotel.stars),5)):'';
+    pkgBody.appendChild(makeRow('Property',(hotel.propertyName||hotel.name||'TBC')+(stars?' '+stars:''),hotel.location||hotel.address||''));
 
-  // Floating trigger — only shown in floating mode
-  '"#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:390px;height:640px;}",\n' +
-  // Forms
-  '".name-form{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:16px;margin-top:8px;}",\n' +
-  '".name-form p{font-size:12px;color:var(--et-navy);margin:0 0 12px 0;font-weight:500;}",\n' +
-  '".name-input{width:100%;padding:9px 12px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:#2A2A2A;box-sizing:border-box;margin-bottom:10px;font-family:\'Inter\',Arial,sans-serif;background:var(--et-cream);}",\n' +
-  '".name-input:focus{border-color:var(--et-navy);}",\n' +
-  '".dob-row{display:flex;gap:6px;margin-bottom:10px;}",\n' +
-  '".dob-row select{flex:1;padding:9px 4px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:#2A2A2A;background:white;}",\n' +
-  '".field-label{font-size:10px;color:var(--et-muted);margin-bottom:4px;font-weight:600;letter-spacing:0.3px;}",\n' +
-  '".confirm-btn{background:var(--et-navy);color:white;border:none;padding:11px 18px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;width:100%;transition:background 0.2s;}",\n' +
-  '".confirm-btn:hover{background:var(--et-gold);}",\n' +
-  '".trust-badge{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;font-size:10px;color:var(--et-muted);}",\n' +
-  '".trust-badge svg{width:12px;height:12px;}",\n' +
+    /* Room type */
+    var roomSub=[];if(hotel.bedType)roomSub.push(hotel.bedType);if(hotel.view)roomSub.push(hotel.view);if(hotel.amenities&&hotel.amenities.length)roomSub.push(hotel.amenities.slice(0,3).join(', '));
+    pkgBody.appendChild(makeRow('Room',hotel.roomType||'Standard Room',roomSub.join(' \\u00b7 ')||''));
 
-  // Highlight rows
-  '".hl{padding:7px 10px;border-radius:8px;font-size:11px;font-weight:600;margin-top:6px;}",\n' +
-  '".hl-good{background:#E8F8EE;color:#1B7A3D;}",\n' +
-  '".hl-warn{background:#FFF3E0;color:#B05A00;}",\n' +
-  '".hl-neutral{background:#F0EDE8;color:#5A4A3A;}",\n' +
+    /* Dates */
+    pkgBody.appendChild(makeRow('Dates',(hotel.checkIn||'')+'\\u2192'+(hotel.checkOut||''),nights+' night'+(nights!==1?'s':'')+' \\u00b7 '+passengers+' guest'+(passengers>1?'s':'')));
 
-  // Itinerary
-  '".itin-stop{padding:10px 0;border-bottom:1px dashed var(--et-border);}",\n' +
-  '".itin-stop:last-child{border-bottom:none;}",\n' +
-  '".itin-stop-title{font-size:12px;font-weight:700;color:var(--et-navy);margin-bottom:4px;}",\n' +
-  '".itin-line{font-size:11px;color:var(--et-muted);line-height:1.5;margin-bottom:2px;}",\n' +
+    /* Meal plan — dropdown if multiple rates available */
+    var mealLabels={'room_only':'Room Only','bed_and_breakfast':'Bed & Breakfast','half_board':'Half Board','full_board':'Full Board','all_inclusive':'All Inclusive'};
+    var rates=hotel.availableRates||[];
+    var mealPlan=hotel.mealPlan||(rates[0]&&rates[0].mealPlan)||'bed_and_breakfast';
+    var mealRow=document.createElement('div');mealRow.className='pkg-row';
+    var mealLbl=document.createElement('div');mealLbl.className='pkg-label';mealLbl.innerText='Meal Plan';mealRow.appendChild(mealLbl);
+    if(rates.length<=1){var mealD=document.createElement('div');mealD.className='pkg-name';mealD.innerText='\\uD83C\\uDF7D\\uFE0F '+(mealLabels[mealPlan]||mealPlan);mealRow.appendChild(mealD);}
+    else{var sel=document.createElement('select');sel.className='h-meal-select';rates.forEach(function(rate){var opt=document.createElement('option');opt.value=rate.ratePlanId;opt.setAttribute('data-ppn',rate.pricePerNight);opt.setAttribute('data-meal',rate.mealPlan);opt.selected=rate.mealPlan===mealPlan;opt.innerText=(mealLabels[rate.mealPlan]||rate.mealPlan)+' \\u2014 '+currency+' '+Math.round(rate.pricePerNight).toLocaleString()+'/night';sel.appendChild(opt);});sel.onchange=function(){var o=sel.options[sel.selectedIndex];var ppn=parseFloat(o.getAttribute('data-ppn'))||0;mealPlan=o.getAttribute('data-meal');hotel.ratePlanId=o.value;baseTotal=ppn*nights;currentTotal=baseTotal+calcAncs();updateTotal();};mealRow.appendChild(sel);}
+    pkgBody.appendChild(mealRow);
 
-  // Price alert
-  '".price-alert{background:#FFF8EC;border:1px solid #E8C96D;border-radius:12px;padding:12px;margin-top:8px;}",\n' +
-  '".price-alert p{font-size:12px;color:#5A4A1A;margin:0 0 10px 0;line-height:1.5;}",\n' +
-  '".price-alert-actions{display:flex;gap:8px;}",\n' +
-  '".price-approve{flex:1;background:var(--et-navy);color:white;border:none;padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}",\n' +
-  '".price-cancel{flex:1;background:white;color:var(--et-navy);border:1.5px solid var(--et-border);padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;}"\n' +
-  '].join("");\n' +
-  'document.head.appendChild(style);\n' +
+    /* Cancellation policy */
+    if(hotel.policySummary){var isRefund=hotel.isRefundable;var strip=document.createElement('div');strip.className='h-policy-strip '+(isRefund===false?'h-policy-amber':'h-policy-green');strip.innerHTML=(isRefund===false?'\\u26a0\\ufe0f ':'\\u2705 ')+hotel.policySummary;pkgBody.appendChild(strip);}
 
-  // ── BUILD DOM ─────────────────────────────────────────────
-  'var root = document.createElement("div");\n' +
-  'root.id = "bodrless-widget-root";\n' +
+    /* Rate per night */
+    pkgBody.appendChild(makeRow('Rate',currency+' '+Math.round(hotel.pricePerNight||0).toLocaleString()+'/night','\\u00d7 '+nights+' nights = '+currency+' '+Math.round(baseTotal).toLocaleString()));
 
-  'var chatDiv = document.createElement("div");\n' +
-  'chatDiv.id = "bodrless-chat";\n' +
+    /* Add-ons — smart: show spa/romance for honeymoon */
+    if(ancs.length>0){
+      var ancRow=document.createElement('div');ancRow.className='pkg-row';
+      var ancLbl=document.createElement('div');ancLbl.className='pkg-label';ancLbl.innerText='Enhance your stay';ancRow.appendChild(ancLbl);
+      var ancWrap=document.createElement('div');ancWrap.style.marginTop='6px';
+      ancs.forEach(function(anc){
+        var chip=document.createElement('span');chip.className='h-addon-chip';
+        var basisStr=anc.priceBasis==='per_person'?'/person':anc.priceBasis==='per_night'?'/night':'';
+        chip.innerHTML='+ '+anc.name+' <em style="color:inherit;opacity:0.7">'+currency+' '+Math.round(anc.price).toLocaleString()+basisStr+'</em>';
+        chip.onclick=function(){
+          chip.classList.toggle('on');
+          if(chip.classList.contains('on')){selectedAncs.push(anc);}else{selectedAncs=selectedAncs.filter(function(a){return a.id!==anc.id;});}
+          currentTotal=baseTotal+calcAncs();updateTotal();
+        };
+        ancWrap.appendChild(chip);
+      });
+      ancRow.appendChild(ancWrap);pkgBody.appendChild(ancRow);
+    }
 
-  // Embedded vs floating class
-  'if (embedTarget) {\n' +
-  '  chatDiv.classList.add("embedded");\n' +
-  '} else {\n' +
-  '  chatDiv.classList.add("floating");\n' +
-  '}\n' +
+    /* Footer */
+    var pkgFooter=document.createElement('div');pkgFooter.className='pkg-footer';pkgFooter.style.height='auto';
+    var priceDiv=document.createElement('div');priceDiv.className='pkg-price';
+    var priceMain=document.createElement('span');priceMain.id='htl-total-'+i;priceMain.innerText=currency+' '+Math.round(baseTotal).toLocaleString();
+    var priceSub=document.createElement('small');priceSub.innerText=currency+' '+Math.round(hotel.pricePerNight||0).toLocaleString()+'/night';
+    priceDiv.appendChild(priceMain);priceDiv.appendChild(priceSub);
+    var bookBtn=document.createElement('button');bookBtn.className='book';bookBtn.innerText='Reserve';
+    bookBtn.onclick=function(){var ep=JSON.parse(JSON.stringify(p));ep.hotel.mealPlan=mealPlan;ep.selectedAncillaries=selectedAncs;ep.summary.totalPrice=currentTotal;ep.summary.currency=currency;showHotelGuestForm(ep,bookBtn);};
+    pkgFooter.appendChild(priceDiv);pkgFooter.appendChild(bookBtn);
 
-  // Header
-  'var header = document.createElement("div");\n' +
-  'header.id = "et-header";\n' +
-  'var headerLeft = document.createElement("div");\n' +
-  'headerLeft.id = "et-header-left";\n' +
-  'var logoWrap = document.createElement("div");\n' +
-  'logoWrap.id = "et-logo-wrap";\n' +
-  'logoWrap.innerText = "S";\n' +
-  'logoWrap.style.cssText += ";display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#0F4C3A;color:#fff;font-family:Playfair Display,serif;font-size:22px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.18);flex-shrink:0;";\n' +
-  'var headerText = document.createElement("div");\n' +
-  'headerText.id = "et-header-text";\n' +
-  'headerText.innerHTML = "<h3>' + agencyName + '</h3><p>" + (isHotelMode ? "Concierge" : "Travel Specialist") + "</p>";\n' +
-  'headerLeft.appendChild(logoWrap);\n' +
-  'headerLeft.appendChild(headerText);\n' +
-  'var closeBtn = document.createElement("button");\n' +
-  'closeBtn.id = "et-close";\n' +
-  'closeBtn.innerHTML = "&#215;";\n' +
-  // Hide close button in embedded mode — no floating panel to close
-  'if (embedTarget) closeBtn.style.display = "none";\n' +
-  'header.appendChild(headerLeft);\n' +
-  'header.appendChild(closeBtn);\n' +
+    function calcAncs(){return selectedAncs.reduce(function(s,a){if(a.priceBasis==='per_person')return s+(a.price*passengers);if(a.priceBasis==='per_night')return s+(a.price*nights);return s+a.price;},0);}
+    function updateTotal(){var el=document.getElementById('htl-total-'+i);if(el)el.innerText=currency+' '+Math.round(currentTotal).toLocaleString();}
 
-  'var messages = document.createElement("div");\n' +
-  'messages.id = "bodrless-messages";\n' +
+    div.appendChild(pkgHeader);div.appendChild(pkgBody);div.appendChild(pkgFooter);
+    messages.appendChild(div);messages.scrollTop=messages.scrollHeight;
+  }
 
-  'var inputArea = document.createElement("div");\n' +
-  'inputArea.id = "bodrless-input-area";\n' +
-  'var input = document.createElement("input");\n' +
-  'input.id = "bodrless-input";\n' +
-  'input.placeholder = isHotelMode ? "Tell me what you\'re looking for..." : "Where would you like to go?";\n' +
-  'var sendBtn = document.createElement("button");\n' +
-  'sendBtn.id = "bodrless-send";\n' +
-  'sendBtn.innerHTML = "&#10148;";\n' +
-  'inputArea.appendChild(input);\n' +
-  'inputArea.appendChild(sendBtn);\n' +
-  'chatDiv.appendChild(header);\n' +
-  'chatDiv.appendChild(messages);\n' +
-  'chatDiv.appendChild(inputArea);\n' +
-  'root.appendChild(chatDiv);\n' +
+  /* ── HOTEL MULTI-PROPERTY ITINERARY ── */
+  function addHotelItinerary(p){
+    var div=document.createElement('div');div.className='package';
+    var summary=p.summary||{};var legs=p.legs||[];var currency=summary.currency||'KES';
+    var pkgH=document.createElement('div');pkgH.className='pkg-header';
+    var t=document.createElement('span');t.className='pkg-title';t.innerText='Your Sarova Itinerary';
+    var r=document.createElement('span');r.className='pkg-route';r.innerText=summary.route||'';
+    pkgH.appendChild(t);pkgH.appendChild(r);
+    var pkgB=document.createElement('div');pkgB.className='pkg-body';pkgB.style.height='auto';
+    var divL=document.createElement('div');divL.className='h-divider';divL.innerText=legs.length+' propert'+(legs.length===1?'y':'ies')+' \\u00b7 '+summary.totalNights+' nights total';pkgB.appendChild(divL);
+    legs.forEach(function(leg,idx){
+      var stopDiv=document.createElement('div');stopDiv.style.cssText='padding:10px 0;border-bottom:1px dashed var(--h-border,#ddd8cc);';
+      var stopTitle=document.createElement('div');stopTitle.style.cssText='font-weight:600;font-size:13px;margin-bottom:4px;';
+      stopTitle.innerText='Stop '+(idx+1)+': '+titleCase(leg.destination||'')+' ('+(leg.nights||1)+' night'+((leg.nights||1)===1?'':'s')+')';
+      stopDiv.appendChild(stopTitle);
+      if(leg.hotel){var h=leg.hotel;var hl=document.createElement('div');hl.style.cssText='font-size:11px;opacity:0.7;line-height:1.5;';hl.innerText=(h.propertyName||h.name||'')+(h.roomType?' \\u2014 '+h.roomType:'')+(h.mealPlan?' \\u00b7 '+(h.mealPlan.replace(/_/g,' ')):'')+'  '+fmtPrice(h.pricePerNight,h.currency)+'/night';stopDiv.appendChild(hl);}
+      pkgB.appendChild(stopDiv);
+    });
+    var pkgF=document.createElement('div');pkgF.className='pkg-footer';pkgF.style.height='auto';
+    var pp=document.createElement('div');pp.className='pkg-price';pp.innerText=fmtPrice(Math.round(summary.totalPrice||0),currency);
+    var bb=document.createElement('button');bb.className='book';bb.innerText='Book Itinerary';
+    bb.onclick=function(){addMsg('To book this multi-property itinerary, our reservations team will contact you to confirm each leg.','bot');};
+    pkgF.appendChild(pp);pkgF.appendChild(bb);
+    div.appendChild(pkgH);div.appendChild(pkgB);div.appendChild(pkgF);
+    messages.appendChild(div);messages.scrollTop=messages.scrollHeight;
+  }
 
-  // Mount: embedded goes into target div, floating goes to body
-  'if (embedTarget) {\n' +
-  '  var mount = document.getElementById(embedTarget);\n' +
-  '  if (mount) { mount.appendChild(root); } else { document.body.appendChild(root); }\n' +
-  '} else {\n' +
-  '  document.body.appendChild(root);\n' +
-  '}\n' +
+  /* ── MANAGE BAR (hotel) ── */
+  function showManageBar(){
+    var d=document.createElement('div');d.className='h-manage-bar';
+    var t=document.createElement('div');t.className='h-manage-title';t.innerText='Manage your booking';d.appendChild(t);
+    var wrap=document.createElement('div');
+    [['\\uD83D\\uDCC5 Change dates','I\\'d like to change my dates'],['\\uD83D\\uDEC6 Add spa','Please add a spa package'],['\\uD83D\\uDCCB Cancellation policy','What is your cancellation policy?'],['\\u2715 Cancel','I need to cancel my reservation']].forEach(function(pair){
+      var btn=document.createElement('button');btn.className='h-manage-btn';btn.innerText=pair[0];
+      btn.onclick=function(){input.value=pair[1];send();};
+      wrap.appendChild(btn);
+    });
+    d.appendChild(wrap);
+    var wrapper=document.createElement('div');wrapper.className='msg bot';wrapper.style.cssText='max-width:100%;width:100%;padding:0;background:transparent;border:none;';
+    wrapper.appendChild(d);messages.appendChild(wrapper);messages.scrollTop=messages.scrollHeight;
+  }
 
-  // Floating trigger — only in floating mode
-  'var welcomeShown = false;\n' +
-  'if (!embedTarget) {\n' +
-  '  var triggerBtn = document.createElement("button");\n' +
-  '  triggerBtn.id = "bodrless-trigger";\n' +
-  '  triggerBtn.innerText = isHotelMode ? "Book a Room" : "Plan Your Trip";\n' +
-  '  document.body.appendChild(triggerBtn);\n' +
-  '  triggerBtn.onclick = function() {\n' +
-  '    chatDiv.classList.add("open");\n' +
-  '    input.focus();\n' +
-  '    if (!welcomeShown) { welcomeShown = true; if (hasRestoredHistory) { replayTranscript(); } else { showWelcome(); } }\n' +
-  '  };\n' +
-  '  closeBtn.onclick = function() { chatDiv.classList.remove("open"); };\n' +
-  '} else {\n' +
-  // Embedded: show immediately, no trigger needed
-  '  chatDiv.classList.add("open");\n' +
-  '  if (!welcomeShown) { welcomeShown = true; if (hasRestoredHistory) { replayTranscript(); } else { showWelcome(); } }\n' +
-  '}\n' +
+  /* ── HOTEL GUEST FORM ── */
+  function showHotelGuestForm(p,bookBtn){
+    var ex=document.getElementById('et-hotel-form');if(ex)ex.remove();
+    var hotel=p.hotel||{};var summary=p.summary||{};var currency=hotel.currency||summary.currency||'KES';var total=summary.totalPrice||hotel.totalRate||0;
+    var form=document.createElement('div');form.className='name-form';form.id='et-hotel-form';
+    var fp=document.createElement('p');fp.innerText='Complete your reservation:';form.appendChild(fp);
+    var strip=document.createElement('div');strip.style.cssText='background:var(--h-ivory,#F8F5EE);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--h-text,#1a1a1a);margin-bottom:12px;border:1px solid var(--h-border,#ddd8cc);';
+    var ancNames=(p.selectedAncillaries||[]).map(function(a){return a.name;});
+    strip.innerHTML='<strong>'+(hotel.propertyName||hotel.name||'')+'</strong><br>'+(hotel.roomType||'')+(hotel.mealPlan?' \\u00b7 '+hotel.mealPlan.replace(/_/g,' '):'')+'<br>'+(hotel.checkIn||'')+' \\u2192 '+(hotel.checkOut||'')+(ancNames.length?'<br>Add-ons: '+ancNames.join(', '):'')+'<br><strong>Total: '+currency+' '+Math.round(total).toLocaleString()+'</strong>';
+    form.appendChild(strip);
+    var nameI=document.createElement('input');nameI.className='name-input';nameI.placeholder='Full name';nameI.type='text';form.appendChild(nameI);
+    var phoneI=document.createElement('input');phoneI.className='name-input';phoneI.placeholder='Phone number';phoneI.type='tel';form.appendChild(phoneI);
+    var emailI=document.createElement('input');emailI.className='name-input';emailI.placeholder='Email (confirmation voucher)';emailI.type='email';form.appendChild(emailI);
+    var reqI=document.createElement('textarea');reqI.className='name-input';reqI.placeholder='Special requests \\u2014 late check-in, dietary needs, celebrations\\u2026';reqI.style.height='60px';reqI.style.resize='none';form.appendChild(reqI);
+    var errD=document.createElement('div');errD.style.cssText='color:#c0392b;font-size:11px;margin-bottom:8px;display:none;';form.appendChild(errD);
+    var confirmBtn=document.createElement('button');confirmBtn.className='confirm-btn';confirmBtn.innerText='Confirm Reservation';
+    confirmBtn.onclick=function(){
+      errD.style.display='none';
+      var name=nameI.value.trim();var phone=phoneI.value.trim();var email=emailI.value.trim();
+      if(!name){errD.innerText='Please enter your name.';errD.style.display='block';return;}
+      if(!phone){errD.innerText='Please enter your phone number.';errD.style.display='block';return;}
+      confirmBtn.innerText='Processing\\u2026';confirmBtn.disabled=true;
+      fetch('${apiBase}/api/hotel/reserve',{method:'POST',headers:{'Content-Type':'application/json','x-hotel-key':'${agencyKey}'},body:JSON.stringify({groupSlug:'${agencyKey}',pkg:p,selectedAncillaries:p.selectedAncillaries||[],guestName:name,guestPhone:phone,guestEmail:email||null,specialRequests:reqI.value.trim()||null,channel:'widget'})})
+      .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})
+      .then(function(result){
+        if(!result.ok||!result.data.success){errD.innerText=(result.data&&result.data.error)||'Reservation failed. Please try again.';errD.style.display='block';confirmBtn.innerText='Confirm Reservation';confirmBtn.disabled=false;return;}
+        form.remove();
+        var ref=result.data.reservationRef;
+        addMsg('\\uD83C\\uDFE8 Reservation '+ref+' confirmed. '+currency+' '+Math.round(total).toLocaleString()+' due.','bot');
+        if(result.data.paymentType==='mpesa'||result.data.paymentType==='both'){
+          fetch('${apiBase}/api/hotel/pay',{method:'POST',headers:{'Content-Type':'application/json','x-hotel-key':'${agencyKey}'},body:JSON.stringify({reservationRef:ref,guestPhone:phone})})
+          .then(function(r){return r.json();}).then(function(d){addMsg(d.success?(d.paymentLink?'Pay here: '+d.paymentLink:d.message||'Check your phone.'):'Reservation confirmed as '+ref+'. Contact the hotel to arrange payment.','bot');messages.scrollTop=messages.scrollHeight;});
+        } else {addMsg('Your reservation '+ref+' is confirmed. The hotel will contact you to arrange payment.','bot');}
+        if(bookBtn){bookBtn.innerText='Reserved \\u2713';bookBtn.style.background='#114B43';bookBtn.disabled=true;}
+        setTimeout(function(){showManageBar();},500);
+      }).catch(function(){errD.innerText='Network error. Please try again.';errD.style.display='block';confirmBtn.innerText='Confirm Reservation';confirmBtn.disabled=false;});
+    };
+    form.appendChild(confirmBtn);
+    var trust=document.createElement('div');trust.className='trust-badge';trust.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Secure booking';
+    form.appendChild(trust);messages.appendChild(form);messages.scrollTop=messages.scrollHeight;
+  }
 
-  // ── WELCOME ───────────────────────────────────────────────
-  'function showWelcome() {\n' +
-  '  if (isHotelMode) {\n' +
-  '    showHotelWelcome();\n' +
-  '  } else {\n' +
-  '    showAgencyWelcome();\n' +
-  '  }\n' +
-  '}\n' +
+  /* ══════════════════════════════════════════
+     AGENCY FLOW — unchanged from original
+  ══════════════════════════════════════════ */
+  function pollBookingStatus(bookingRef,bookBtn){var attempts=0;var interval=setInterval(function(){attempts++;fetch('${apiBase}/api/trips/booking/'+bookingRef).then(function(r){return r.json();}).then(function(data){if(data.bookingStage==='paid'){clearInterval(interval);bookBtn.innerText='Paid & Confirmed!';bookBtn.style.background='#27ae60';addMsg('Payment received! Booking '+bookingRef+' is confirmed. Your e-ticket will arrive shortly.','bot');messages.scrollTop=messages.scrollHeight;}else if(data.bookingStage==='failed'||data.status==='cancelled'){clearInterval(interval);bookBtn.innerText='Payment not received';bookBtn.style.background='#C0392B';addMsg('Payment was not received for booking '+bookingRef+'. The hold has been released.','bot');messages.scrollTop=messages.scrollHeight;}else if(attempts>=40){clearInterval(interval);addMsg('Still waiting on payment for booking '+bookingRef+'. If you have paid, this will update shortly.','bot');messages.scrollTop=messages.scrollHeight;}}).catch(function(){});},5000);}
 
-  'function showHotelWelcome() {\n' +
-  '  var card = document.createElement("div");\n' +
-  '  card.className = "et-welcome";\n' +
-  '  var eyebrow = document.createElement("div");\n' +
-  '  eyebrow.className = "et-welcome-eyebrow";\n' +
-  '  eyebrow.innerText = "Your Concierge";\n' +
-  '  var title = document.createElement("div");\n' +
-  '  title.className = "et-welcome-title";\n' +
-  '  title.innerText = "Welcome to ' + agencyName + '";\n' +
-  '  var body = document.createElement("div");\n' +
-  '  body.className = "et-welcome-body";\n' +
-  '  body.innerText = "I\'m here to help you find and book the perfect stay. Tell me which property you\'d like, your dates and number of guests — I\'ll take care of the rest.";\n' +
-  '  var divider = document.createElement("div");\n' +
-  '  divider.className = "et-divider";\n' +
-  '  var promptLabel = document.createElement("div");\n' +
-  '  promptLabel.className = "et-prompts-label";\n' +
-  '  promptLabel.innerText = "Need inspiration?";\n' +
-  '  card.appendChild(eyebrow);\n' +
-  '  card.appendChild(title);\n' +
-  '  card.appendChild(body);\n' +
-  '  card.appendChild(divider);\n' +
-  '  card.appendChild(promptLabel);\n' +
-  // Conversation starters — pulled from page-level window.bodrlessStarters if set,
-  // otherwise sensible defaults. The landing page injects these via a small inline script.
-  '  var starters = (window.bodrlessStarters && window.bodrlessStarters.length)\n' +
-  '    ? window.bodrlessStarters\n' +
-  '    : [\n' +
-  '        { icon: "💼", title: "Business Stay",    text: "Book me a business room at ' + agencyName + ' tomorrow night." },\n' +
-  '        { icon: "🏖️", title: "Beach Holiday",    text: "Sea view room for two adults, 5 nights all inclusive." },\n' +
-  '        { icon: "👨‍👩‍👧", title: "Family Escape",   text: "Family room for 2 adults and 2 children, full board." },\n' +
-  '        { icon: "❤️", title: "Romantic Getaway", text: "Recommend the perfect ' + agencyName + ' stay for our anniversary." }\n' +
-  '      ];\n' +
-  '  starters.forEach(function(s) {\n' +
-  '    var btn = document.createElement("button");\n' +
-  '    btn.className = "et-starter";\n' +
-  '    var t = document.createElement("div"); t.className = "st-title"; t.innerText = s.icon + "  " + s.title;\n' +
-  '    var b = document.createElement("div"); b.className = "st-body";  b.innerText = s.text;\n' +
-  '    btn.appendChild(t); btn.appendChild(b);\n' +
-  '    btn.onclick = function() { input.value = s.text; send(); };\n' +
-  '    card.appendChild(btn);\n' +
-  '  });\n' +
-  '  messages.appendChild(card);\n' +
-  '  messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+  function showPriceApprovalAlert(priceInfo,bookCtx,bookBtn){var ex=document.getElementById('et-price-alert');if(ex)ex.remove();var div=document.createElement('div');div.className='price-alert';div.id='et-price-alert';var p=document.createElement('p');p.innerHTML='The hotel price changed: <span class="old">'+fmtPrice(priceInfo.oldPrice,priceInfo.currency)+'</span> \\u2192 <span class="new">'+fmtPrice(priceInfo.newPrice,priceInfo.currency)+'</span>.';div.appendChild(p);var actions=document.createElement('div');actions.className='price-alert-actions';var approveBtn=document.createElement('button');approveBtn.className='price-approve';approveBtn.innerText='Approve new price';var cancelBtn=document.createElement('button');cancelBtn.className='price-cancel';cancelBtn.innerText='Cancel';actions.appendChild(approveBtn);actions.appendChild(cancelBtn);div.appendChild(actions);messages.appendChild(div);messages.scrollTop=messages.scrollHeight;cancelBtn.onclick=function(){div.remove();addMsg('Booking cancelled \\u2014 no payment taken.','bot');};approveBtn.onclick=function(){approveBtn.disabled=true;cancelBtn.disabled=true;approveBtn.innerText='Processing\\u2026';fetch('${apiBase}/api/trips/book-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencyId:'${agencyKey}',guestName:bookCtx.guestName,guestPhone:bookCtx.phone,guestEmail:bookCtx.email,passengers:bookCtx.passengers,package:bookCtx.pkg,priceApproved:true})}).then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});}).then(function(result){div.remove();if(!result.ok||!result.data.success){addMsg((result.data&&result.data.error)||'Booking failed at the new price.','bot');return;}continueToPayment(result.data,bookCtx,bookBtn);}).catch(function(){div.remove();addMsg('Network error. Please try again.','bot');});});}
 
-  'function showAgencyWelcome() {\n' +
-  '  var div = document.createElement("div");\n' +
-  '  div.className = "et-agency-welcome";\n' +
-  '  var h4 = document.createElement("h4"); h4.innerText = "Welcome to ' + agencyName + '";\n' +
-  '  var p = document.createElement("p"); p.innerText = "Tell me your dream destination and I will find the perfect package.";\n' +
-  '  var sugDiv = document.createElement("div"); sugDiv.className = "et-suggestions";\n' +
-  '  ["Nairobi to Zanzibar","Cape Town 5 nights","Masai Mara Safari","Kigali Rwanda","Cairo Egypt"].forEach(function(s) {\n' +
-  '    var btn = document.createElement("span"); btn.className = "et-suggestion"; btn.innerText = s;\n' +
-  '    btn.onclick = function() { input.value = s; send(); };\n' +
-  '    sugDiv.appendChild(btn);\n' +
-  '  });\n' +
-  '  div.appendChild(h4); div.appendChild(p); div.appendChild(sugDiv);\n' +
-  '  messages.appendChild(div);\n' +
-  '}\n' +
+  function continueToPayment(data,bookCtx,bookBtn){var bookingRef=data.bookingRef;var totalPrice=data.totalPrice;var currency=data.currency;addMsg('Flight held and hotel confirmed! Ref: '+bookingRef+'. Total: '+currency+' '+totalPrice.toLocaleString()+'. Sending M-Pesa prompt to '+bookCtx.phone+'\\u2026','bot');messages.scrollTop=messages.scrollHeight;fetch('${apiBase}/api/trips/book-pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bookingRef:bookingRef,phone:bookCtx.phone,amount:totalPrice,currency:currency,email:bookCtx.email,firstName:bookCtx.passengers[0].firstName,lastName:bookCtx.passengers[0].lastName})}).then(function(pr){return pr.json().then(function(pdata){return{ok:pr.ok,data:pdata};});}).then(function(payResult){if(!payResult.ok||!payResult.data.success){if(bookBtn){bookBtn.innerText='Payment failed to send';bookBtn.style.background='#C0392B';}addMsg('Your booking is held as '+bookingRef+', but we could not send the payment prompt. Please contact support.','bot');return;}if(bookBtn){bookBtn.innerText='Awaiting payment\\u2026';bookBtn.style.background='#f0ad4e';bookBtn.disabled=true;}addMsg('Check your phone and enter your M-Pesa PIN. Booking '+bookingRef+' is held for 30 minutes.','bot');messages.scrollTop=messages.scrollHeight;pollBookingStatus(bookingRef,bookBtn||{innerText:'',style:{}});});}
 
-  'function replayTranscript() {\n' +
-  '  var note = document.createElement("div"); note.className = "msg bot";\n' +
-  '  note.style.cssText = "font-style:italic;opacity:0.6;";\n' +
-  '  note.innerText = "\u2014 Continuing where you left off \u2014";\n' +
-  '  messages.appendChild(note);\n' +
-  '  for (var ri = 0; ri < transcript.length; ri++) {\n' +
-  '    var e = transcript[ri];\n' +
-  '    if (!e || !e.type) continue;\n' +
-  '    if (e.type === "user" || e.type === "bot") { addMsg(e.text || "", e.type); }\n' +
-  '    else if (e.type === "hotel_packages" && Array.isArray(e.packages)) { e.packages.slice(0,4).forEach(function(p,i){addHotelPackage(p,i);}); }\n' +
-  '    else if (e.type === "hotel_itinerary" && e.pkg) { addHotelItinerary(e.pkg); }\n' +
-  '    else if (e.type === "packages" && Array.isArray(e.packages)) { e.packages.slice(0,4).forEach(function(p,i){addPackage(p,i);}); }\n' +
-  '    else if (e.type === "itinerary" && e.pkg) { addItinerary(e.pkg); }\n' +
-  '  }\n' +
-  '  messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+  function showNameForm(p,bookBtn){var ex=document.getElementById('et-name-form');if(ex)ex.remove();var passengerCount=(p.summary&&p.summary.passengers)?p.summary.passengers:1;var needsFlight=p.isMultiDestination?(p.legs||[]).some(function(l){return l.transportIn&&(l.transportIn.transportType||'flight')==='flight';})||!!(p.returnTransport&&(p.returnTransport.transportType||'flight')==='flight'):!!(p.transport&&(p.transport.transportType||'flight')==='flight');var offersSeat=!p.isMultiDestination&&!!(p.transport&&p.transport.supplier==='duffel');var form=document.createElement('div');form.className='name-form';form.id='et-name-form';var formP=document.createElement('p');formP.innerText=needsFlight?'Enter passenger details:':'Enter your details:';form.appendChild(formP);var passengerInputs=[];var currentYear=new Date().getFullYear();function buildDobRow(){var row=document.createElement('div');row.className='dob-row';var daySel=document.createElement('select');daySel.innerHTML='<option value="">Day</option>'+Array.from({length:31},function(_,i){return'<option value="'+(i+1)+'">'+(i+1)+'</option>';}).join('');var monthNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];var monthSel=document.createElement('select');monthSel.innerHTML='<option value="">Month</option>'+monthNames.map(function(m,i){return'<option value="'+(i+1)+'">'+m+'</option>';}).join('');var yearSel=document.createElement('select');yearSel.innerHTML='<option value="">Year</option>'+Array.from({length:100},function(_,i){return currentYear-i;}).map(function(y){return'<option value="'+y+'">'+y+'</option>';}).join('');row.appendChild(daySel);row.appendChild(monthSel);row.appendChild(yearSel);return{row:row,daySel:daySel,monthSel:monthSel,yearSel:yearSel};}
+  for(var pi=0;pi<passengerCount;pi++){var pBlock=document.createElement('div');pBlock.style.marginBottom='12px';pBlock.style.paddingBottom='10px';pBlock.style.borderBottom=pi<passengerCount-1?'1px dashed #E4E8F0':'none';if(passengerCount>1){var pLabel=document.createElement('div');pLabel.style.cssText='font-size:11px;font-weight:700;color:var(--et-navy,#1E2A5E);margin-bottom:6px;';pLabel.innerText='Traveler '+(pi+1);pBlock.appendChild(pLabel);}var fnI=document.createElement('input');fnI.className='name-input';fnI.placeholder='First name';fnI.type='text';pBlock.appendChild(fnI);var lnI=document.createElement('input');lnI.className='name-input';lnI.placeholder='Last name';lnI.type='text';pBlock.appendChild(lnI);var dobLbl=document.createElement('div');dobLbl.className='field-label';dobLbl.innerText='Date of birth';pBlock.appendChild(dobLbl);var dob=buildDobRow();pBlock.appendChild(dob.row);var gSel=document.createElement('select');gSel.className='name-input';gSel.innerHTML='<option value="male">Male</option><option value="female">Female</option>';pBlock.appendChild(gSel);var cRow=document.createElement('label');cRow.style.cssText='display:flex;align-items:center;gap:6px;font-size:11px;color:var(--et-navy,#1E2A5E);margin-bottom:8px;';var cCb=document.createElement('input');cCb.type='checkbox';cRow.appendChild(cCb);cRow.appendChild(document.createTextNode('Child'));pBlock.appendChild(cRow);var idLbl=document.createElement('div');idLbl.className='field-label';idLbl.innerText='Passport or National ID';pBlock.appendChild(idLbl);var idI=document.createElement('input');idI.className='name-input';idI.placeholder='Passport / ID number';idI.type='text';pBlock.appendChild(idI);var seatSel=null;if(offersSeat){var seatLbl=document.createElement('div');seatLbl.className='field-label';seatLbl.innerText='Seat preference (optional)';pBlock.appendChild(seatLbl);seatSel=document.createElement('select');seatSel.className='name-input';seatSel.innerHTML='<option value="">No preference</option><option value="window">Window</option><option value="aisle">Aisle</option><option value="exit_row">Exit row</option>';pBlock.appendChild(seatSel);}passengerInputs.push({fnI:fnI,lnI:lnI,daySel:dob.daySel,monthSel:dob.monthSel,yearSel:dob.yearSel,gSel:gSel,cCb:cCb,idI:idI,seatSel:seatSel});form.appendChild(pBlock);}
+  var cLbl=document.createElement('div');cLbl.style.cssText='font-size:11px;font-weight:700;color:var(--et-navy,#1E2A5E);margin-bottom:6px;';cLbl.innerText='Contact';form.appendChild(cLbl);var phoneI=document.createElement('input');phoneI.className='name-input';phoneI.placeholder='Phone (e.g. 0712345678)';phoneI.type='tel';form.appendChild(phoneI);var emailI=document.createElement('input');emailI.className='name-input';emailI.placeholder='Email';emailI.type='email';form.appendChild(emailI);var errD=document.createElement('div');errD.style.cssText='color:#C0392B;font-size:11px;margin-bottom:8px;display:none;';form.appendChild(errD);var confirmBtn=document.createElement('button');confirmBtn.className='confirm-btn';confirmBtn.innerText='Confirm Booking';
+  confirmBtn.onclick=function(){errD.style.display='none';var passengers=[];for(var k=0;k<passengerInputs.length;k++){var pin=passengerInputs[k];var fn=pin.fnI.value.trim();var ln=pin.lnI.value.trim();if(!fn||!ln){errD.innerText='Please fill in all traveler names.';errD.style.display='block';return;}var day=pin.daySel.value,month=pin.monthSel.value,year=pin.yearSel.value;if(!day||!month||!year){errD.innerText='Please select a complete date of birth for traveler '+(k+1)+'.';errD.style.display='block';return;}var dobStr=year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0');var isChild=pin.cCb.checked;var idNum=pin.idI.value.trim();if(!isChild&&!idNum){errD.innerText='Passport/ID required for traveler '+(k+1)+'.';errD.style.display='block';return;}passengers.push({firstName:fn,lastName:ln,dateOfBirth:dobStr,gender:pin.gSel.value,type:isChild?'child':'adult',idNumber:idNum||null,seatPreference:(pin.seatSel&&pin.seatSel.value)?pin.seatSel.value:null});}var phone=phoneI.value.trim();var email=emailI.value.trim();if(!phone){errD.innerText='Phone number is required.';errD.style.display='block';return;}if(needsFlight&&!email){errD.innerText='Email is required for flight bookings.';errD.style.display='block';return;}var guestName=passengers[0].firstName+' '+passengers[0].lastName;var bookCtx={guestName:guestName,phone:phone,email:email,passengers:passengers,pkg:p};confirmBtn.innerText='Processing\\u2026';confirmBtn.disabled=true;fetch('${apiBase}/api/trips/book-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencyId:'${agencyKey}',guestName:guestName,guestPhone:phone,guestEmail:email,passengers:passengers,package:p})}).then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});}).then(function(result){if(!result.ok&&result.data&&result.data.code==='PRICE_CHANGED'){form.remove();showPriceApprovalAlert(result.data,bookCtx,bookBtn);return;}if(!result.ok||!result.data.success){var msg=(result.data&&result.data.error)?result.data.error:'Booking failed. Please try again.';errD.innerText=msg;errD.style.display='block';confirmBtn.innerText='Confirm Booking';confirmBtn.disabled=false;return;}form.remove();continueToPayment(result.data,bookCtx,bookBtn);}).catch(function(){errD.innerText='Network error. Please try again.';errD.style.display='block';confirmBtn.innerText='Confirm Booking';confirmBtn.disabled=false;});};
+  form.appendChild(confirmBtn);var trust=document.createElement('div');trust.className='trust-badge';trust.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Secure payment via M-Pesa';form.appendChild(trust);messages.appendChild(form);messages.scrollTop=messages.scrollHeight;}
 
-  // ── HELPERS ───────────────────────────────────────────────
-  'function addMsg(text, type) {\n' +
-  '  var div = document.createElement("div"); div.className = "msg " + type;\n' +
-  '  div.innerText = text; messages.appendChild(div); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
-  'function showTyping() {\n' +
-  '  var div = document.createElement("div"); div.className = "typing"; div.id = "et-typing";\n' +
-  '  div.innerHTML = "<span></span><span></span><span></span>";\n' +
-  '  messages.appendChild(div); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
-  'function hideTyping() { var t = document.getElementById("et-typing"); if (t) t.remove(); }\n' +
-  'function fmtTime(iso) {\n' +
-  '  if (!iso) return "TBC";\n' +
-  '  try { var d = new Date(iso); if (isNaN(d)) return iso; return d.toLocaleTimeString("en-KE",{hour:"2-digit",minute:"2-digit"}); } catch(e){return iso;}\n' +
-  '}\n' +
-  'function fmtPrice(n, cur) { return (cur||"KES")+" "+(Math.round(Number(n)||0)).toLocaleString(); }\n' +
-  'function titleCase(s) { if(!s)return""; return String(s).replace(/\\b\\w/g,function(c){return c.toUpperCase();}); }\n' +
-  'function makeRow(label, name, sub) {\n' +
-  '  var row = document.createElement("div"); row.className = "pkg-row";\n' +
-  '  var l = document.createElement("div"); l.className = "pkg-label"; l.innerText = label;\n' +
-  '  var n = document.createElement("div"); n.className = "pkg-name";  n.innerText = name;\n' +
-  '  var s = document.createElement("div"); s.className = "pkg-sub";   s.innerText = sub;\n' +
-  '  row.appendChild(l); row.appendChild(n); row.appendChild(s); return row;\n' +
-  '}\n' +
-  'function makeHL(text, tone) {\n' +
-  '  var d = document.createElement("div");\n' +
-  '  d.className = "hl " + (tone==="good"?"hl-good":tone==="warn"?"hl-warn":"hl-neutral");\n' +
-  '  d.innerText = text; return d;\n' +
-  '}\n' +
+  function addPackage(p,i){var div=document.createElement('div');div.className='package';div.style.height='auto';var transport=p.transport||null;var returnTransport=p.returnTransport||null;var hotel=p.hotel||null;var transfers=p.transfers||null;var summary=p.summary||{};var totalCurrency=summary.currency||'KES';var total=Math.round(summary.totalPrice||0);var ppp=Math.round(summary.pricePerPerson||0);var nights=summary.nights||0;var passengers=summary.passengers||1;var route=summary.route||((transport&&transport.origin?transport.origin:'TBC')+' to '+(transport&&transport.destination?transport.destination:'TBC'));var pkgHeader=document.createElement('div');pkgHeader.className='pkg-header';var pkgTitle=document.createElement('span');pkgTitle.className='pkg-title';pkgTitle.innerText='Option '+(i+1);var pkgRoute=document.createElement('span');pkgRoute.className='pkg-route';pkgRoute.innerText=route;pkgHeader.appendChild(pkgTitle);pkgHeader.appendChild(pkgRoute);var pkgBody=document.createElement('div');pkgBody.className='pkg-body';pkgBody.style.height='auto';if(transport){var isbus=(transport.transportType||'').toLowerCase()==='bus';var tLabel=isbus?'Outbound Bus':'Outbound Flight';var tName=transport.airline||transport.provider||'TBC';var tSub=(transport.origin||'TBC')+' \\u2192 '+(transport.destination||'TBC')+' | '+fmtTime(transport.departureTime)+' - '+fmtTime(transport.arrivalTime);if(transport.stops)tSub+=' | '+transport.stops;if(transport.cabinClass)tSub+=' | '+transport.cabinClass;if(!isbus&&transport.baggageSummary)tSub+=' | '+transport.baggageSummary;tSub+=' | '+fmtPrice(transport.price,transport.currency);pkgBody.appendChild(makeRow(tLabel,tName,tSub));var tPolicyText=transport.policySummary||(isbus?transport.cancellationPolicy:null);if(tPolicyText){var tTone=transport.isRefundable===true?'good':transport.isRefundable===false?'warn':'neutral';pkgBody.appendChild(makeHighlight(tPolicyText,tTone));}}if(returnTransport){var isRetBus=(returnTransport.transportType||'').toLowerCase()==='bus';var rtLabel=isRetBus?'Return Bus':'Return Flight';var rtName=returnTransport.airline||returnTransport.provider||'TBC';var rtSub=(returnTransport.origin||'TBC')+' \\u2192 '+(returnTransport.destination||'TBC')+' | '+fmtTime(returnTransport.departureTime)+' - '+fmtTime(returnTransport.arrivalTime);if(!isRetBus&&returnTransport.baggageSummary)rtSub+=' | '+returnTransport.baggageSummary;rtSub+=' | '+fmtPrice(returnTransport.price,returnTransport.currency);pkgBody.appendChild(makeRow(rtLabel,rtName,rtSub));var rtPolicyText=returnTransport.policySummary||(isRetBus?returnTransport.cancellationPolicy:null);if(rtPolicyText){var rtTone=returnTransport.isRefundable===true?'good':returnTransport.isRefundable===false?'warn':'neutral';pkgBody.appendChild(makeHighlight(rtPolicyText,rtTone));}}if(hotel){var stars=hotel.stars?'\\u2605'.repeat(Math.min(Math.round(hotel.stars),5)):'';var hName=(hotel.name||'TBC')+(stars?' '+stars:'');var hSub=(hotel.location||'TBC');if(nights>0)hSub+=' | '+nights+' nights | '+fmtPrice(hotel.pricePerNight,hotel.currency)+'/night';if(hotel.rating)hSub+=' | Rating: '+hotel.rating+'/5';if(hotel.images&&hotel.images.length>0){var hotelImg=document.createElement('img');hotelImg.src=hotel.images[0];hotelImg.alt=hotel.name||'Hotel';hotelImg.style.cssText='width:100%;height:140px;object-fit:cover;border-radius:10px;margin-bottom:8px;display:block;';hotelImg.onerror=function(){this.style.display='none';};pkgBody.appendChild(hotelImg);}pkgBody.appendChild(makeRow('Hotel',hName,hSub));if(hotel.mealPlan){pkgBody.appendChild(makeHighlight('\\uD83C\\uDF7D\\uFE0F Board: '+hotel.mealPlan,'neutral'));}var hPolicyTone=hotel.isRefundable===false?'warn':hotel.isRefundable===true||hotel.policySummary?'good':'neutral';var hPolicyText=hotel.policySummary||(hotel.isRefundable===false?'\\u26a0\\ufe0f Non-refundable':'Refund terms confirmed at booking');pkgBody.appendChild(makeHighlight(hPolicyText,hPolicyTone));}var transferList=Array.isArray(transfers)?transfers:(transfers?[transfers]:[]);if(transferList.length>0){var transferSub=transferList.map(function(t){var legLabel=t.legType==='departure'?'Departure':t.legType==='arrival'?'Arrival':(t.provider||'Transfer');return legLabel+': '+(t.description||t.location||'TBC')+' ('+fmtPrice(t.price,t.currency)+')';}).join(' | ');pkgBody.appendChild(makeRow('Transfer',transferList[0].provider||'Bodrless Standard Transfer',transferSub));}if(p.connectionAdvisory){var advRow=document.createElement('div');advRow.className='pkg-row';var advLbl=document.createElement('div');advLbl.className='pkg-label';advLbl.innerText='\\u26a0\\ufe0f Before you book';var advTxt=document.createElement('div');advTxt.className='pkg-sub';advTxt.innerText=p.connectionAdvisory;advRow.appendChild(advLbl);advRow.appendChild(advTxt);pkgBody.appendChild(advRow);}var pkgFooter=document.createElement('div');pkgFooter.className='pkg-footer';pkgFooter.style.height='auto';var pkgPrice=document.createElement('div');pkgPrice.className='pkg-price';pkgPrice.innerText=fmtPrice(total,totalCurrency);var pkgPriceSub=document.createElement('small');pkgPriceSub.innerText=fmtPrice(ppp,totalCurrency)+'/person | '+passengers+' traveller(s)';pkgPrice.appendChild(pkgPriceSub);var bookBtn=document.createElement('button');bookBtn.className='book';bookBtn.innerText='Book Now';bookBtn.onclick=function(){showNameForm(p,bookBtn);};pkgFooter.appendChild(pkgPrice);pkgFooter.appendChild(bookBtn);div.appendChild(pkgHeader);div.appendChild(pkgBody);div.appendChild(pkgFooter);messages.appendChild(div);messages.scrollTop=messages.scrollHeight;}
 
-  // ── HOTEL PACKAGE CARD ────────────────────────────────────
-  'function addHotelPackage(p, idx) {\n' +
-  '  var div = document.createElement("div"); div.className = "package";\n' +
-  '  var hotel = p.hotel || {}; var summary = p.summary || {};\n' +
-  '  var ancillaries = p.ancillaryServices || [];\n' +
-  '  var currency = hotel.currency || summary.currency || "KES";\n' +
-  '  var nights = hotel.nights || summary.nights || 1;\n' +
-  '  var passengers = summary.passengers || 1;\n' +
-  '  var baseTotal = hotel.totalRate || (hotel.pricePerNight * nights) || summary.totalPrice || 0;\n' +
-  '  var currentTotal = baseTotal;\n' +
-  '  var selectedAnc = [];\n' +
-  '  var currentMealPlan = hotel.mealPlan || "bed_and_breakfast";\n' +
-  '  var mealLabels = {room_only:"Room Only",bed_and_breakfast:"Bed & Breakfast",half_board:"Half Board",full_board:"Full Board",all_inclusive:"All Inclusive"};\n' +
+  function addItinerary(p){var div=document.createElement('div');div.className='package';div.style.height='auto';var summary=p.summary||{};var legs=p.legs||[];var totalCurrency=summary.currency||'KES';var total=Math.round(summary.totalPrice||0);var ppp=Math.round(summary.pricePerPerson||0);var passengers=summary.passengers||1;var pkgHeader=document.createElement('div');pkgHeader.className='pkg-header';var pkgTitle=document.createElement('span');pkgTitle.className='pkg-title';pkgTitle.innerText='Your Itinerary';var pkgRoute=document.createElement('span');pkgRoute.className='pkg-route';pkgRoute.innerText=summary.route||'';pkgHeader.appendChild(pkgTitle);pkgHeader.appendChild(pkgRoute);var pkgBody=document.createElement('div');pkgBody.className='pkg-body';pkgBody.style.height='auto';legs.forEach(function(leg,idx){var stopDiv=document.createElement('div');stopDiv.className='itin-stop'+(leg.isBufferLeg?' buffer':'');var titleDiv=document.createElement('div');titleDiv.className='itin-stop-title'+(leg.isBufferLeg?' buffer':'');titleDiv.innerText=leg.isBufferLeg?'Connection: '+titleCase(leg.destination):'Stop '+(idx+1)+': '+titleCase(leg.destination)+' ('+(leg.nights||1)+' night'+((leg.nights||1)===1?'':'s')+')';stopDiv.appendChild(titleDiv);var t=leg.transportIn;if(t){var isbus=(t.transportType||'').toLowerCase()==='bus';var tLine=document.createElement('div');tLine.style.cssText='font-size:11px;color:var(--et-muted,#8892A4);line-height:1.5;margin-bottom:2px;';tLine.innerText=(isbus?'Bus: ':'Flight: ')+(t.airline||t.provider||'TBC')+' | '+(t.origin||'TBC')+' \\u2192 '+(t.destination||'TBC')+' | '+fmtTime(t.departureTime)+'-'+fmtTime(t.arrivalTime)+' | '+fmtPrice(t.price,t.currency);stopDiv.appendChild(tLine);}if(leg.hotel){var h=leg.hotel;var stars=h.stars?'\\u2605'.repeat(Math.min(Math.round(h.stars),5)):'';var hLine=document.createElement('div');hLine.style.cssText='font-size:11px;color:var(--et-muted,#8892A4);line-height:1.5;';hLine.innerText='Hotel: '+(h.name||'TBC')+(stars?' '+stars:'')+(h.location?' | '+h.location:'')+' | '+fmtPrice(h.pricePerNight,h.currency)+'/night \\u00d7 '+(leg.nights||1);stopDiv.appendChild(hLine);}pkgBody.appendChild(stopDiv);});if(p.returnTransport){var rt=p.returnTransport;var isRetBus=(rt.transportType||'').toLowerCase()==='bus';var returnDiv=document.createElement('div');returnDiv.style.padding='10px 0';var returnTitle=document.createElement('div');returnTitle.style.fontWeight='600';returnTitle.style.fontSize='12px';returnTitle.style.marginBottom='4px';returnTitle.innerText='Return';returnDiv.appendChild(returnTitle);var returnLine=document.createElement('div');returnLine.style.cssText='font-size:11px;color:var(--et-muted,#8892A4);';returnLine.innerText=(isRetBus?'Bus: ':'Flight: ')+(rt.origin||'TBC')+' \\u2192 '+(rt.destination||'TBC')+' | '+fmtTime(rt.departureTime)+'-'+fmtTime(rt.arrivalTime)+' | '+fmtPrice(rt.price,rt.currency);returnDiv.appendChild(returnLine);pkgBody.appendChild(returnDiv);}var pkgFooter=document.createElement('div');pkgFooter.className='pkg-footer';pkgFooter.style.height='auto';var pkgPrice=document.createElement('div');pkgPrice.className='pkg-price';pkgPrice.innerText=fmtPrice(total,totalCurrency);var pkgPriceSub=document.createElement('small');pkgPriceSub.innerText=fmtPrice(ppp,totalCurrency)+'/person | '+passengers+' traveller(s)';pkgPrice.appendChild(pkgPriceSub);var bookBtn=document.createElement('button');bookBtn.className='book';bookBtn.innerText='Book This Itinerary';bookBtn.onclick=function(){showNameForm(p,bookBtn);};pkgFooter.appendChild(pkgPrice);pkgFooter.appendChild(bookBtn);div.appendChild(pkgHeader);div.appendChild(pkgBody);div.appendChild(pkgFooter);messages.appendChild(div);messages.scrollTop=messages.scrollHeight;}
 
-  // Header
-  '  var pkgH = document.createElement("div"); pkgH.className = "pkg-header";\n' +
-  '  var pt = document.createElement("span"); pt.className = "pkg-title"; pt.innerText = "Option "+(idx+1);\n' +
-  '  var pr = document.createElement("span"); pr.className = "pkg-route"; pr.innerText = hotel.location||summary.route||"Room";\n' +
-  '  pkgH.appendChild(pt); pkgH.appendChild(pr);\n' +
-  '  var pkgB = document.createElement("div"); pkgB.className = "pkg-body";\n' +
+  /* ── SEND ── */
+  function send(){
+    var text=input.value.trim();if(!text)return;
+    addMsg(text,'user');transcript.push({type:'user',text:text});save();input.value='';
+    showTyping();
+    var endpoint=IS_HOTEL?'${apiBase}/api/hotel/orchestrate':'${apiBase}/api/trips/orchestrate';
+    var authHeader=IS_HOTEL?{'x-hotel-key':'${agencyKey}'}:{'x-api-key':'${agencyKey}'};
+    var body=IS_HOTEL?JSON.stringify({prompt:text,groupSlug:'${agencyKey}',conversationHistory:conversationHistory,previousParams:previousParams}):JSON.stringify({prompt:text,agencyId:'${agencyKey}',channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams});
+    fetch(endpoint,{method:'POST',headers:Object.assign({'Content-Type':'application/json'},authHeader),body:body})
+    .then(function(res){return res.json();})
+    .then(function(data){
+      hideTyping();
+      if(data.sessionId)sessionId=data.sessionId;
+      if(data.tripParams)previousParams=data.tripParams;
+      if(data.conversationHistory)conversationHistory=data.conversationHistory;
+      if(data.needsClarification){var ct=data.text||'Could you give me a bit more detail?';addMsg(ct,'bot');transcript.push({type:'bot',text:ct});save();return;}
+      var pkgs=data&&data.packages?data.packages:[];
+      var isHotelResp=data.isHotelDirect||(pkgs.length>0&&pkgs[0]&&pkgs[0].isHotelDirect);
+      var isMultiProp=isHotelResp&&pkgs.length===1&&pkgs[0]&&pkgs[0].isMultiDestination;
+      var isItin=!isHotelResp&&pkgs.length===1&&pkgs[0]&&pkgs[0].isMultiDestination;
+      if(!pkgs.length){var nt=(data&&data.text)?data.text:'No options found for those dates.';addMsg(nt,'bot');transcript.push({type:'bot',text:nt});save();return;}
+      var responseMsg=data.text||(isHotelResp?'Here are the available rooms:':'I found '+pkgs.length+' option'+(pkgs.length>1?'s':'')+' for you:');
+      addMsg(responseMsg,'bot');transcript.push({type:'bot',text:responseMsg});
+      if(isHotelResp&&isMultiProp){addHotelItinerary(pkgs[0]);transcript.push({type:'hotel_itinerary',pkg:pkgs[0]});}
+      else if(isHotelResp){pkgs.forEach(function(p,i){addHotelPackage(p,i);});transcript.push({type:'hotel_packages',packages:pkgs});if(IS_HOTEL)setTimeout(showManageBar,300);}
+      else if(isItin){addItinerary(pkgs[0]);transcript.push({type:'itinerary',pkg:pkgs[0]});}
+      else{pkgs.slice(0,6).forEach(function(p,i){addPackage(p,i);});transcript.push({type:'packages',packages:pkgs.slice(0,6)});}
+      save();
+    })
+    .catch(function(e){hideTyping();console.log('Widget error:',e);addMsg('Unable to load right now. Please try again.','bot');});
+  }
 
-  // Image
-  '  var images = hotel.images||[];\n' +
-  '  if (images.length>0) {\n' +
-  '    var img = document.createElement("img");\n' +
-  '    img.src = images[0]; img.alt = hotel.roomType||hotel.name||"Room";\n' +
-  '    img.style.cssText = "width:100%;height:160px;object-fit:cover;border-radius:10px;margin-bottom:10px;display:block;";\n' +
-  '    img.onerror = function(){this.style.display="none";};\n' +
-  '    pkgB.appendChild(img);\n' +
-  '  }\n' +
+  sendBtn.onclick=send;
+  input.addEventListener('keypress',function(e){if(e.key==='Enter')send();});
+  console.log('[BODRLESS] Widget loaded: ${agencyKey} | hotel: ${isHotelDirect}');
+}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',initWidget);}else{initWidget();}
+})();`;
 
-  // Hotel + room rows
-  '  var stars = hotel.stars?Array(Math.min(Math.round(hotel.stars),5)+1).join("\\u2605"):"";\n' +
-  '  pkgB.appendChild(makeRow("Property",(hotel.propertyName||hotel.name||"TBC")+(stars?" "+stars:""),hotel.location||hotel.address||""));\n' +
-  '  var roomSub=[]; if(hotel.bedType)roomSub.push(hotel.bedType); if(hotel.view)roomSub.push(hotel.view);\n' +
-  '  pkgB.appendChild(makeRow("Room",hotel.roomType||"Standard Room",roomSub.join(" \u00b7 ")));\n' +
-  '  pkgB.appendChild(makeRow("Dates",(hotel.checkIn||"")+" \u2192 "+(hotel.checkOut||""),nights+" night"+(nights!==1?"s":"")+" \u00b7 "+passengers+" guest(s)"));\n' +
-
-  // Meal plan
-  '  var avRates = hotel.availableRates||[];\n' +
-  '  var mealRow = document.createElement("div"); mealRow.className = "pkg-row";\n' +
-  '  var ml = document.createElement("div"); ml.className = "pkg-label"; ml.innerText = "Meal Plan"; mealRow.appendChild(ml);\n' +
-  '  if (avRates.length>1) {\n' +
-  '    var ms = document.createElement("select");\n' +
-  '    ms.style.cssText = "margin-top:4px;padding:7px 10px;border:1.5px solid var(--et-border);border-radius:8px;font-size:12px;color:#2A2A2A;background:var(--et-cream);width:100%;";\n' +
-  '    avRates.forEach(function(r){\n' +
-  '      var o=document.createElement("option"); o.value=r.ratePlanId;\n' +
-  '      o.setAttribute("data-price",r.pricePerNight); o.setAttribute("data-meal",r.mealPlan);\n' +
-  '      o.selected=r.mealPlan===currentMealPlan;\n' +
-  '      o.innerText=(mealLabels[r.mealPlan]||r.mealPlan)+" \u2014 "+currency+" "+Math.round(r.pricePerNight).toLocaleString()+"/night";\n' +
-  '      ms.appendChild(o);\n' +
-  '    });\n' +
-  '    ms.onchange=function(){\n' +
-  '      var o=ms.options[ms.selectedIndex];\n' +
-  '      currentMealPlan=o.getAttribute("data-meal"); hotel.ratePlanId=o.value;\n' +
-  '      baseTotal=parseFloat(o.getAttribute("data-price"))*nights;\n' +
-  '      currentTotal=baseTotal+selectedAnc.reduce(function(s,a){return s+(a.priceBasis==="per_person"?a.price*passengers:a.priceBasis==="per_night"?a.price*nights:a.price);},0);\n' +
-  '      var el=document.getElementById("htl-total-"+idx); if(el)el.innerText=currency+" "+Math.round(currentTotal).toLocaleString();\n' +
-  '    };\n' +
-  '    mealRow.appendChild(ms);\n' +
-  '  } else {\n' +
-  '    var md=document.createElement("div"); md.className="pkg-name"; md.innerText="\uD83C\uDF7D\uFE0F "+(mealLabels[currentMealPlan]||currentMealPlan); mealRow.appendChild(md);\n' +
-  '  }\n' +
-  '  pkgB.appendChild(mealRow);\n' +
-  '  if(hotel.policySummary) pkgB.appendChild(makeHL(hotel.policySummary,hotel.isRefundable===false?"warn":hotel.isRefundable===true?"good":"neutral"));\n' +
-  '  pkgB.appendChild(makeRow("Rate",currency+" "+Math.round(hotel.pricePerNight||0).toLocaleString()+"/night","\u00d7 "+nights+" night"+(nights!==1?"s":"")+" = "+currency+" "+Math.round(baseTotal).toLocaleString()));\n' +
-
-  // Ancillaries
-  '  if(ancillaries.length>0){\n' +
-  '    var aRow=document.createElement("div"); aRow.className="pkg-row";\n' +
-  '    var aLbl=document.createElement("div"); aLbl.className="pkg-label"; aLbl.innerText="Add-ons"; aRow.appendChild(aLbl);\n' +
-  '    var catIcons={spa:"\uD83D\uDEC6",transfer:"\uD83D\uDE97",dining:"\uD83C\uDF7D\uFE0F",activity:"\uD83C\uDFC4",upgrade:"\u2B06\uFE0F",wellness:"\uD83E\uDDD8",other:"\u2728"};\n' +
-  '    ancillaries.forEach(function(a){\n' +
-  '      var ai=document.createElement("div"); ai.style.cssText="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--et-border);";\n' +
-  '      var cb=document.createElement("input"); cb.type="checkbox"; cb.style.cssText="margin-top:3px;flex-shrink:0;accent-color:var(--et-navy);";\n' +
-  '      var inf=document.createElement("div"); inf.style.flex="1";\n' +
-  '      var an=document.createElement("div"); an.style.cssText="font-size:12px;font-weight:600;color:var(--et-navy);";\n' +
-  '      an.innerText=(catIcons[a.category]||"\u2728")+" "+a.name;\n' +
-  '      var basis=a.priceBasis==="per_person"?"/person":a.priceBasis==="per_night"?"/night":"";\n' +
-  '      var ap=document.createElement("div"); ap.style.cssText="font-size:11px;color:var(--et-muted);";\n' +
-  '      ap.innerText=currency+" "+Math.round(a.price).toLocaleString()+basis;\n' +
-  '      if(a.description){var ad=document.createElement("div");ad.style.cssText="font-size:11px;color:var(--et-muted);margin-top:2px;";ad.innerText=a.description;inf.appendChild(ad);}\n' +
-  '      inf.appendChild(an); inf.appendChild(ap); ai.appendChild(cb); ai.appendChild(inf); aRow.appendChild(ai);\n' +
-  '      cb.onchange=function(){\n' +
-  '        if(cb.checked){selectedAnc.push(a);}else{selectedAnc=selectedAnc.filter(function(x){return x.id!==a.id;});}\n' +
-  '        currentTotal=baseTotal+selectedAnc.reduce(function(s,x){return s+(x.priceBasis==="per_person"?x.price*passengers:x.priceBasis==="per_night"?x.price*nights:x.price);},0);\n' +
-  '        var el=document.getElementById("htl-total-"+idx); if(el)el.innerText=currency+" "+Math.round(currentTotal).toLocaleString();\n' +
-  '      };\n' +
-  '    });\n' +
-  '    pkgB.appendChild(aRow);\n' +
-  '  }\n' +
-
-  // Footer
-  '  var pkgF=document.createElement("div"); pkgF.className="pkg-footer";\n' +
-  '  var pd=document.createElement("div"); pd.className="pkg-price";\n' +
-  '  var pm=document.createElement("span"); pm.id="htl-total-"+idx; pm.innerText=currency+" "+Math.round(baseTotal).toLocaleString();\n' +
-  '  var ps=document.createElement("small"); ps.innerText=currency+" "+Math.round(hotel.pricePerNight||0).toLocaleString()+"/night";\n' +
-  '  pd.appendChild(pm); pd.appendChild(ps);\n' +
-  '  var bk=document.createElement("button"); bk.className="book"; bk.innerText="Reserve";\n' +
-  '  bk.onclick=function(){var ep=JSON.parse(JSON.stringify(p));ep.hotel.mealPlan=currentMealPlan;ep.selectedAncillaries=selectedAnc;ep.summary.totalPrice=currentTotal;showHotelGuestForm(ep,bk);};\n' +
-  '  pkgF.appendChild(pd); pkgF.appendChild(bk);\n' +
-  '  div.appendChild(pkgH); div.appendChild(pkgB); div.appendChild(pkgF);\n' +
-  '  messages.appendChild(div); messages.scrollTop=messages.scrollHeight;\n' +
-  '}\n' +
-
-  // ── HOTEL ITINERARY ───────────────────────────────────────
-  'function addHotelItinerary(p) {\n' +
-  '  var div=document.createElement("div"); div.className="package";\n' +
-  '  var summary=p.summary||{}; var legs=p.legs||{};\n' +
-  '  var currency=summary.currency||"KES";\n' +
-  '  var pkgH=document.createElement("div"); pkgH.className="pkg-header";\n' +
-  '  var pt=document.createElement("span"); pt.className="pkg-title"; pt.innerText="Your Itinerary";\n' +
-  '  var pr=document.createElement("span"); pr.className="pkg-route"; pr.innerText=summary.route||"";\n' +
-  '  pkgH.appendChild(pt); pkgH.appendChild(pr);\n' +
-  '  var pkgB=document.createElement("div"); pkgB.className="pkg-body";\n' +
-  '  legs.forEach(function(leg,i){\n' +
-  '    var sd=document.createElement("div"); sd.className="itin-stop";\n' +
-  '    var st=document.createElement("div"); st.className="itin-stop-title";\n' +
-  '    st.innerText="Stop "+(i+1)+": "+titleCase(leg.destination)+" ("+(leg.nights||1)+" night"+((leg.nights||1)===1?"":"s")+")";\n' +
-  '    sd.appendChild(st);\n' +
-  '    if(leg.hotel){\n' +
-  '      var h=leg.hotel; var stars=h.stars?Array(Math.min(Math.round(h.stars),5)+1).join("\\u2605"):"";\n' +
-  '      var hl=document.createElement("div"); hl.className="itin-line";\n' +
-  '      hl.innerText="\uD83C\uDFE8 "+(h.propertyName||h.name||"TBC")+(stars?" "+stars:"")+(h.view?" \u00b7 "+h.view:"")+" \u00b7 "+fmtPrice(h.pricePerNight,h.currency)+"/night \u00d7 "+(leg.nights||1);\n' +
-  '      sd.appendChild(hl);\n' +
-  '    }\n' +
-  '    pkgB.appendChild(sd);\n' +
-  '  });\n' +
-  '  var pkgF=document.createElement("div"); pkgF.className="pkg-footer";\n' +
-  '  var pd=document.createElement("div"); pd.className="pkg-price"; pd.innerText=fmtPrice(Math.round(summary.totalPrice||0),currency);\n' +
-  '  var ps=document.createElement("small"); ps.innerText=fmtPrice(Math.round(summary.pricePerPerson||0),currency)+"/person"; pd.appendChild(ps);\n' +
-  '  var bk=document.createElement("button"); bk.className="book"; bk.innerText="Reserve Itinerary";\n' +
-  '  bk.onclick=function(){showHotelGuestForm(p,bk);};\n' +
-  '  pkgF.appendChild(pd); pkgF.appendChild(bk);\n' +
-  '  div.appendChild(pkgH); div.appendChild(pkgB); div.appendChild(pkgF);\n' +
-  '  messages.appendChild(div); messages.scrollTop=messages.scrollHeight;\n' +
-  '}\n' +
-
-  // ── HOTEL GUEST FORM ──────────────────────────────────────
-  'function showHotelGuestForm(p, bookBtn) {\n' +
-  '  var ex=document.getElementById("et-hotel-form"); if(ex)ex.remove();\n' +
-  '  var hotel=p.hotel||{}; var summary=p.summary||{};\n' +
-  '  var currency=hotel.currency||summary.currency||"KES";\n' +
-  '  var total=summary.totalPrice||hotel.totalRate||0;\n' +
-  '  var form=document.createElement("div"); form.className="name-form"; form.id="et-hotel-form";\n' +
-  '  var fp=document.createElement("p"); fp.innerText="Complete your reservation:"; form.appendChild(fp);\n' +
-  '  var strip=document.createElement("div"); strip.style.cssText="background:var(--et-cream);border-radius:8px;padding:10px 12px;font-size:12px;color:#2A2A2A;margin-bottom:12px;line-height:1.6;";\n' +
-  '  var ancNames=(p.selectedAncillaries||[]).map(function(a){return a.name;});\n' +
-  '  strip.innerHTML="<strong>"+(hotel.propertyName||hotel.name||"")+"</strong><br>"+(hotel.roomType||"")+(hotel.mealPlan?" \u00b7 "+hotel.mealPlan.replace(/_/g," "):"")+"<br>"+(hotel.checkIn||"")+" \u2192 "+(hotel.checkOut||"")+"<br>"+(ancNames.length?"Add-ons: "+ancNames.join(", ")+"<br>":"")+"<strong>Total: "+currency+" "+Math.round(total).toLocaleString()+"</strong>";\n' +
-  '  form.appendChild(strip);\n' +
-  '  var ni=document.createElement("input"); ni.className="name-input"; ni.placeholder="Full name"; ni.type="text"; form.appendChild(ni);\n' +
-  '  var pi=document.createElement("input"); pi.className="name-input"; pi.placeholder="Phone number"; pi.type="tel"; form.appendChild(pi);\n' +
-  '  var ei=document.createElement("input"); ei.className="name-input"; ei.placeholder="Email (for voucher)"; ei.type="email"; form.appendChild(ei);\n' +
-  '  var ri=document.createElement("textarea"); ri.className="name-input"; ri.placeholder="Special requests (optional)"; ri.style.cssText="height:56px;resize:none;"; form.appendChild(ri);\n' +
-  '  var err=document.createElement("div"); err.style.cssText="color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;"; form.appendChild(err);\n' +
-  '  var cb=document.createElement("button"); cb.className="confirm-btn"; cb.innerText="Confirm Reservation";\n' +
-  '  cb.onclick=function(){\n' +
-  '    err.style.display="none";\n' +
-  '    var name=ni.value.trim(); var phone=pi.value.trim();\n' +
-  '    if(!name){err.innerText="Please enter your name.";err.style.display="block";return;}\n' +
-  '    if(!phone){err.innerText="Please enter your phone number.";err.style.display="block";return;}\n' +
-  '    cb.innerText="Processing..."; cb.disabled=true;\n' +
-  '    fetch("' + apiBase + '/api/hotel/reserve",{\n' +
-  '      method:"POST",\n' +
-  '      headers:{"Content-Type":"application/json","x-hotel-key":"' + agencyKey + '"},\n' +
-  '      body:JSON.stringify({groupSlug:"' + agencyKey + '",pkg:p,selectedAncillaries:p.selectedAncillaries||[],guestName:name,guestPhone:phone,guestEmail:ei.value.trim()||null,specialRequests:ri.value.trim()||null,channel:"widget"})\n' +
-  '    })\n' +
-  '    .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})\n' +
-  '    .then(function(res){\n' +
-  '      if(!res.ok||!res.data.success){err.innerText=(res.data&&res.data.error)||"Reservation failed. Please try again.";err.style.display="block";cb.innerText="Confirm Reservation";cb.disabled=false;return;}\n' +
-  '      form.remove();\n' +
-  '      var ref=res.data.reservationRef;\n' +
-  '      addMsg("\uD83C\uDFE8 Reservation "+ref+" confirmed. "+currency+" "+Math.round(total).toLocaleString()+" due.","bot");\n' +
-  '      if(res.data.paymentType==="mpesa"||res.data.paymentType==="both"){\n' +
-  '        fetch("' + apiBase + '/api/hotel/pay",{method:"POST",headers:{"Content-Type":"application/json","x-hotel-key":"' + agencyKey + '"},body:JSON.stringify({reservationRef:ref,guestPhone:phone})})\n' +
-  '        .then(function(r){return r.json();})\n' +
-  '        .then(function(pd){addMsg(pd.success?pd.message||"Check your phone to complete payment.":"Reservation confirmed as "+ref+". The hotel will contact you to arrange payment.","bot");messages.scrollTop=messages.scrollHeight;});\n' +
-  '      } else { addMsg("Reservation "+ref+" confirmed. The hotel will contact you to arrange payment.","bot"); }\n' +
-  '      if(bookBtn){bookBtn.innerText="Reserved \u2713";bookBtn.style.background="var(--et-green)";bookBtn.disabled=true;}\n' +
-  '    })\n' +
-  '    .catch(function(){err.innerText="Network error. Please try again.";err.style.display="block";cb.innerText="Confirm Reservation";cb.disabled=false;});\n' +
-  '  };\n' +
-  '  form.appendChild(cb);\n' +
-  '  var tb=document.createElement("div"); tb.className="trust-badge";\n' +
-  '  tb.innerHTML="<svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\\"/><path d=\\"M9 12l2 2 4-4\\"/></svg> Secure booking";\n' +
-  '  form.appendChild(tb);\n' +
-  '  messages.appendChild(form); messages.scrollTop=messages.scrollHeight;\n' +
-  '}\n' +
-
-  // ── AGENCY PACKAGE CARD ───────────────────────────────────
-  'function pollBookingStatus(ref,btn){\n' +
-  '  var a=0,max=40,iv=setInterval(function(){\n' +
-  '    a++;\n' +
-  '    fetch("' + apiBase + '/api/trips/booking/"+ref).then(function(r){return r.json();}).then(function(d){\n' +
-  '      if(d.bookingStage==="paid"){clearInterval(iv);btn.innerText="Paid & Confirmed!";btn.style.background="#27ae60";addMsg("Payment received! Booking "+ref+" confirmed. Your e-ticket will follow shortly.","bot");messages.scrollTop=messages.scrollHeight;}\n' +
-  '      else if(d.bookingStage==="failed"||d.status==="cancelled"){clearInterval(iv);btn.innerText="Payment not received";btn.style.background="var(--et-red)";addMsg("We did not receive payment for booking "+ref+". The hold has been released.","bot");messages.scrollTop=messages.scrollHeight;}\n' +
-  '      else if(a>=max){clearInterval(iv);addMsg("Still waiting on payment for "+ref+". If you have paid, this will update shortly.","bot");messages.scrollTop=messages.scrollHeight;}\n' +
-  '    }).catch(function(){});\n' +
-  '  },5000);\n' +
-  '}\n' +
-
-  'function continueToPayment(data,ctx,btn){\n' +
-  '  var ref=data.bookingRef,total=data.totalPrice,cur=data.currency;\n' +
-  '  addMsg("Flight held! Ref: "+ref+". Total: "+cur+" "+total.toLocaleString()+". Sending M-Pesa prompt to "+ctx.phone+"...","bot");\n' +
-  '  messages.scrollTop=messages.scrollHeight;\n' +
-  '  fetch("' + apiBase + '/api/trips/book-pay",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({bookingRef:ref,phone:ctx.phone,amount:total,currency:cur,email:ctx.email,firstName:ctx.passengers[0].firstName,lastName:ctx.passengers[0].lastName})})\n' +
-  '  .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})\n' +
-  '  .then(function(pr){\n' +
-  '    if(!pr.ok||!pr.data.success){if(btn){btn.innerText="Payment failed";btn.style.background="var(--et-red)";}addMsg("Flight held but M-Pesa prompt failed. Contact support with ref "+ref+".","bot");return;}\n' +
-  '    if(btn){btn.innerText="Awaiting payment...";btn.style.background="#f0ad4e";btn.disabled=true;}\n' +
-  '    addMsg("Check your phone and enter your PIN to complete payment. Ref: "+ref+".","bot");\n' +
-  '    messages.scrollTop=messages.scrollHeight;\n' +
-  '    pollBookingStatus(ref,btn||{innerText:"",style:{}});\n' +
-  '  });\n' +
-  '}\n' +
-
-  'function showNameForm(p,bookBtn){\n' +
-  '  var ex=document.getElementById("et-name-form"); if(ex)ex.remove();\n' +
-  '  var pc=(p.summary&&p.summary.passengers)?p.summary.passengers:1;\n' +
-  '  var needsFlight=!!(p.transport&&(p.transport.transportType||"flight")==="flight");\n' +
-  '  var offersSeat=!p.isMultiDestination&&!!(p.transport&&p.transport.supplier==="duffel");\n' +
-  '  var form=document.createElement("div"); form.className="name-form"; form.id="et-name-form";\n' +
-  '  var fp=document.createElement("p"); fp.innerText=needsFlight?"Enter passenger details to confirm:":"Enter your details to confirm:"; form.appendChild(fp);\n' +
-  '  var pInputs=[]; var yr=new Date().getFullYear();\n' +
-  '  function buildDob(){\n' +
-  '    var row=document.createElement("div"); row.className="dob-row";\n' +
-  '    var d=document.createElement("select"); d.innerHTML="<option value=\\"\\">Day</option>"+Array.from({length:31},function(_,i){return"<option value=\\""+(i+1)+"\\">"+(i+1)+"</option>";}).join("");\n' +
-  '    var m=document.createElement("select"); m.innerHTML="<option value=\\"\\">Month</option>"+["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map(function(mn,i){return"<option value=\\""+(i+1)+"\\">" +mn+"</option>";}).join("");\n' +
-  '    var y=document.createElement("select"); y.innerHTML="<option value=\\"\\">Year</option>"+Array.from({length:100},function(_,i){return yr-i;}).map(function(yy){return"<option value=\\""+yy+"\\">"+yy+"</option>";}).join("");\n' +
-  '    row.appendChild(d);row.appendChild(m);row.appendChild(y);return{row:row,d:d,m:m,y:y};\n' +
-  '  }\n' +
-  '  for(var pi=0;pi<pc;pi++){\n' +
-  '    var pb=document.createElement("div"); pb.style.cssText="margin-bottom:12px;padding-bottom:10px;border-bottom:"+(pi<pc-1?"1px solid var(--et-border)":"none")+";";\n' +
-  '    if(pc>1){var pl=document.createElement("div");pl.style.cssText="font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:6px;";pl.innerText="Traveler "+(pi+1);pb.appendChild(pl);}\n' +
-  '    var fn=document.createElement("input");fn.className="name-input";fn.placeholder="First name";fn.type="text";pb.appendChild(fn);\n' +
-  '    var ln=document.createElement("input");ln.className="name-input";ln.placeholder="Last name";ln.type="text";pb.appendChild(ln);\n' +
-  '    var dl=document.createElement("div");dl.className="field-label";dl.innerText="Date of birth";pb.appendChild(dl);\n' +
-  '    var dob=buildDob();pb.appendChild(dob.row);\n' +
-  '    var gs=document.createElement("select");gs.className="name-input";gs.innerHTML="<option value=\\"male\\">Male</option><option value=\\"female\\">Female</option>";pb.appendChild(gs);\n' +
-  '    var cl=document.createElement("label");cl.style.cssText="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--et-navy);margin-bottom:8px;";\n' +
-  '    var cc=document.createElement("input");cc.type="checkbox";cl.appendChild(cc);cl.appendChild(document.createTextNode("This traveler is a child"));pb.appendChild(cl);\n' +
-  '    var idl=document.createElement("div");idl.className="field-label";idl.innerText="Passport or National ID";pb.appendChild(idl);\n' +
-  '    var ii=document.createElement("input");ii.className="name-input";ii.placeholder="Passport / ID number";ii.type="text";pb.appendChild(ii);\n' +
-  '    var ss=null;\n' +
-  '    if(offersSeat){var sl=document.createElement("div");sl.className="field-label";sl.innerText="Seat preference (optional)";pb.appendChild(sl);ss=document.createElement("select");ss.className="name-input";ss.innerHTML="<option value=\\"\\">No preference</option><option value=\\"window\\">Window</option><option value=\\"aisle\\">Aisle</option><option value=\\"exit_row\\">Exit row</option>";pb.appendChild(ss);}\n' +
-  '    pInputs.push({fn:fn,ln:ln,d:dob.d,m:dob.m,y:dob.y,gs:gs,cc:cc,ii:ii,ss:ss});\n' +
-  '    form.appendChild(pb);\n' +
-  '  }\n' +
-  '  var cl2=document.createElement("div");cl2.style.cssText="font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:6px;";cl2.innerText="Contact details";form.appendChild(cl2);\n' +
-  '  var phi=document.createElement("input");phi.className="name-input";phi.placeholder="Phone (e.g. 0712345678)";phi.type="tel";form.appendChild(phi);\n' +
-  '  var emi=document.createElement("input");emi.className="name-input";emi.placeholder="Email";emi.type="email";form.appendChild(emi);\n' +
-  '  var em=document.createElement("div");em.style.cssText="color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;";form.appendChild(em);\n' +
-  '  var cfb=document.createElement("button");cfb.className="confirm-btn";cfb.innerText="Confirm Booking";\n' +
-  '  cfb.onclick=function(){\n' +
-  '    em.style.display="none";\n' +
-  '    var pax=[];\n' +
-  '    for(var k=0;k<pInputs.length;k++){\n' +
-  '      var pin=pInputs[k];\n' +
-  '      var f=pin.fn.value.trim(),l=pin.ln.value.trim();\n' +
-  '      if(!f||!l){em.innerText="Please fill in all traveler names.";em.style.display="block";return;}\n' +
-  '      var dd=pin.d.value,mm=pin.m.value,yy=pin.y.value;\n' +
-  '      if(!dd||!mm||!yy){em.innerText="Please select a date of birth for traveler "+(k+1)+".";em.style.display="block";return;}\n' +
-  '      var dstr=yy+"-"+String(mm).padStart(2,"0")+"-"+String(dd).padStart(2,"0");\n' +
-  '      var isC=pin.cc.checked,idn=pin.ii.value.trim();\n' +
-  '      if(!isC&&!idn){em.innerText="Passport/ID required for traveler "+(k+1)+".";em.style.display="block";return;}\n' +
-  '      pax.push({firstName:f,lastName:l,dateOfBirth:dstr,gender:pin.gs.value,type:isC?"child":"adult",idNumber:idn||null,seatPreference:(pin.ss&&pin.ss.value)?pin.ss.value:null});\n' +
-  '    }\n' +
-  '    var phone=phi.value.trim(),email=emi.value.trim();\n' +
-  '    if(!phone){em.innerText="Phone number is required.";em.style.display="block";return;}\n' +
-  '    if(needsFlight&&!email){em.innerText="Email is required for flight bookings.";em.style.display="block";return;}\n' +
-  '    var gn=pax[0].firstName+" "+pax[0].lastName;\n' +
-  '    var ctx={guestName:gn,phone:phone,email:email,passengers:pax,pkg:p};\n' +
-  '    cfb.innerText="Processing...";cfb.disabled=true;\n' +
-  '    fetch("' + apiBase + '/api/trips/book-init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agencyId:"' + agencyKey + '",guestName:gn,guestPhone:phone,guestEmail:email,passengers:pax,package:p})})\n' +
-  '    .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})\n' +
-  '    .then(function(res){\n' +
-  '      if(!res.ok&&res.data&&res.data.code==="PRICE_CHANGED"){form.remove();showPriceAlert(res.data,ctx,bookBtn);return;}\n' +
-  '      if(!res.ok||!res.data.success){em.innerText=(res.data&&res.data.error)||"Booking failed. Please try again.";em.style.display="block";cfb.innerText="Confirm Booking";cfb.disabled=false;return;}\n' +
-  '      form.remove();continueToPayment(res.data,ctx,bookBtn);\n' +
-  '    })\n' +
-  '    .catch(function(){em.innerText="Network error. Please try again.";em.style.display="block";cfb.innerText="Confirm Booking";cfb.disabled=false;});\n' +
-  '  };\n' +
-  '  form.appendChild(cfb);\n' +
-  '  var tb=document.createElement("div");tb.className="trust-badge";\n' +
-  '  tb.innerHTML="<svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\\"/><path d=\\"M9 12l2 2 4-4\\"/></svg> Secure payment via M-Pesa";\n' +
-  '  form.appendChild(tb);\n' +
-  '  messages.appendChild(form);messages.scrollTop=messages.scrollHeight;\n' +
-  '}\n' +
-
-  'function showPriceAlert(info,ctx,btn){\n' +
-  '  var ex=document.getElementById("et-price-alert");if(ex)ex.remove();\n' +
-  '  var d=document.createElement("div");d.className="price-alert";d.id="et-price-alert";\n' +
-  '  var p=document.createElement("p");p.innerHTML="The hotel price changed: <span style=\\"text-decoration:line-through;color:var(--et-muted);\\">" +fmtPrice(info.oldPrice,info.currency)+"</span> \u2192 <strong style=\\"color:var(--et-red);\\">"+(fmtPrice(info.newPrice,info.currency))+"</strong>"+(info.flightHeld?" Your flight is held and not yet charged.":"");\n' +
-  '  d.appendChild(p);\n' +
-  '  var acts=document.createElement("div");acts.className="price-alert-actions";\n' +
-  '  var ap=document.createElement("button");ap.className="price-approve";ap.innerText="Approve new price";\n' +
-  '  var ca=document.createElement("button");ca.className="price-cancel";ca.innerText="Cancel";\n' +
-  '  acts.appendChild(ap);acts.appendChild(ca);d.appendChild(acts);messages.appendChild(d);messages.scrollTop=messages.scrollHeight;\n' +
-  '  ca.onclick=function(){d.remove();addMsg("Booking cancelled \u2014 no charge was made.","bot");};\n' +
-  '  ap.onclick=function(){\n' +
-  '    ap.disabled=true;ca.disabled=true;ap.innerText="Processing...";\n' +
-  '    fetch("' + apiBase + '/api/trips/book-init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agencyId:"' + agencyKey + '",guestName:ctx.guestName,guestPhone:ctx.phone,guestEmail:ctx.email,passengers:ctx.passengers,package:ctx.pkg,priceApproved:true})})\n' +
-  '    .then(function(r){return r.json().then(function(data){return{ok:r.ok,data:data};});})\n' +
-  '    .then(function(res){d.remove();if(!res.ok||!res.data.success){addMsg((res.data&&res.data.error)||"Booking failed at the new price.","bot");return;}continueToPayment(res.data,ctx,btn);})\n' +
-  '    .catch(function(){d.remove();addMsg("Network error. Please try again.","bot");});\n' +
-  '  };\n' +
-  '}\n' +
-
-  'function addPackage(p,i){\n' +
-  '  var div=document.createElement("div");div.className="package";\n' +
-  '  var t=p.transport||null,rt=p.returnTransport||null,h=p.hotel||null,tr=p.transfers||null,s=p.summary||{};\n' +
-  '  var cur=s.currency||"KES",total=Math.round(s.totalPrice||0),ppp=Math.round(s.pricePerPerson||0),nights=s.nights||0,pax=s.passengers||1;\n' +
-  '  var route=s.route||((t&&t.origin?t.origin:"TBC")+" to "+(t&&t.destination?t.destination:"TBC"));\n' +
-  '  var ph=document.createElement("div");ph.className="pkg-header";\n' +
-  '  var pt=document.createElement("span");pt.className="pkg-title";pt.innerText="Option "+(i+1);\n' +
-  '  var pr=document.createElement("span");pr.className="pkg-route";pr.innerText=route;\n' +
-  '  ph.appendChild(pt);ph.appendChild(pr);\n' +
-  '  var pb=document.createElement("div");pb.className="pkg-body";\n' +
-  '  if(t){\n' +
-  '    var isb=(t.transportType||"").toLowerCase()==="bus";\n' +
-  '    var sub=(t.origin||"TBC")+" \u2192 "+(t.destination||"TBC")+" \u00b7 "+fmtTime(t.departureTime)+" - "+fmtTime(t.arrivalTime);\n' +
-  '    if(t.stops)sub+=" \u00b7 "+t.stops;if(t.cabinClass)sub+=" \u00b7 "+t.cabinClass;\n' +
-  '    if(!isb&&t.baggageSummary)sub+=" \u00b7 "+t.baggageSummary;sub+=" \u00b7 "+fmtPrice(t.price,t.currency);\n' +
-  '    pb.appendChild(makeRow(isb?"Outbound Bus":"Outbound Flight",t.airline||t.provider||"TBC",sub));\n' +
-  '    if(t.policySummary)pb.appendChild(makeHL(t.policySummary,t.isRefundable===true?"good":t.isRefundable===false?"warn":"neutral"));\n' +
-  '  }\n' +
-  '  if(rt){\n' +
-  '    var isrb=(rt.transportType||"").toLowerCase()==="bus";\n' +
-  '    var rsub=(rt.origin||"TBC")+" \u2192 "+(rt.destination||"TBC")+" \u00b7 "+fmtTime(rt.departureTime)+" - "+fmtTime(rt.arrivalTime);\n' +
-  '    if(!isrb&&rt.baggageSummary)rsub+=" \u00b7 "+rt.baggageSummary;rsub+=" \u00b7 "+fmtPrice(rt.price,rt.currency);\n' +
-  '    pb.appendChild(makeRow(isrb?"Return Bus":"Return Flight",rt.airline||rt.provider||"TBC",rsub));\n' +
-  '    if(rt.policySummary)pb.appendChild(makeHL(rt.policySummary,rt.isRefundable===true?"good":rt.isRefundable===false?"warn":"neutral"));\n' +
-  '  }\n' +
-  '  if(h){\n' +
-  '    var stars=h.stars?Array(Math.min(Math.round(h.stars),5)+1).join("\\u2605"):"";\n' +
-  '    var hsub=(h.location||"TBC");if(nights>0)hsub+=" \u00b7 "+nights+" nights \u00b7 "+fmtPrice(h.pricePerNight,h.currency)+"/night";\n' +
-  '    if(h.images&&h.images.length>0){var hi=document.createElement("img");hi.src=h.images[0];hi.alt=h.name||"Hotel";hi.style.cssText="width:100%;height:140px;object-fit:cover;border-radius:10px;margin-bottom:8px;display:block;";hi.onerror=function(){this.style.display="none";};pb.appendChild(hi);}\n' +
-  '    pb.appendChild(makeRow("Hotel",(h.name||"TBC")+(stars?" "+stars:""),hsub));\n' +
-  '    if(h.mealPlan)pb.appendChild(makeHL("\uD83C\uDF7D\uFE0F Board: "+h.mealPlan,"neutral"));\n' +
-  '    pb.appendChild(makeHL(h.policySummary||(h.isRefundable===false?"\u26a0\uFE0F Non-refundable":"Refund terms confirmed at booking"),h.isRefundable===false?"warn":h.isRefundable===true||h.policySummary?"good":"neutral"));\n' +
-  '  }\n' +
-  '  var trl=Array.isArray(tr)?tr:(tr?[tr]:[]);\n' +
-  '  if(trl.length>0){var tsub=trl.map(function(x){return(x.legType==="departure"?"Departure":x.legType==="arrival"?"Arrival":(x.provider||"Transfer"))+": "+(x.description||x.location||"TBC")+" ("+fmtPrice(x.price,x.currency)+")";}).join(" \u00b7 ");pb.appendChild(makeRow("Transfer",trl[0].provider||"Bodrless Transfer",tsub));}\n' +
-  '  if(p.connectionAdvisory){var ar=document.createElement("div");ar.className="pkg-row";var al=document.createElement("div");al.className="pkg-label";al.innerText="\u26a0\uFE0F Before you book";var at=document.createElement("div");at.className="pkg-sub";at.innerText=p.connectionAdvisory;ar.appendChild(al);ar.appendChild(at);pb.appendChild(ar);}\n' +
-  '  var pf=document.createElement("div");pf.className="pkg-footer";\n' +
-  '  var ppd=document.createElement("div");ppd.className="pkg-price";ppd.innerText=fmtPrice(total,cur);\n' +
-  '  var pps=document.createElement("small");pps.innerText=fmtPrice(ppp,cur)+"/person \u00b7 "+pax+" traveller(s)";ppd.appendChild(pps);\n' +
-  '  var bk=document.createElement("button");bk.className="book";bk.innerText="Book Now";\n' +
-  '  bk.onclick=function(){showNameForm(p,bk);};\n' +
-  '  pf.appendChild(ppd);pf.appendChild(bk);\n' +
-  '  div.appendChild(ph);div.appendChild(pb);div.appendChild(pf);\n' +
-  '  messages.appendChild(div);messages.scrollTop=messages.scrollHeight;\n' +
-  '}\n' +
-
-  'function addItinerary(p){\n' +
-  '  var div=document.createElement("div");div.className="package";\n' +
-  '  var s=p.summary||{},legs=p.legs||[],cur=s.currency||"KES";\n' +
-  '  var ph=document.createElement("div");ph.className="pkg-header";\n' +
-  '  var pt=document.createElement("span");pt.className="pkg-title";pt.innerText="Your Itinerary";\n' +
-  '  var pr=document.createElement("span");pr.className="pkg-route";pr.innerText=s.route||"";\n' +
-  '  ph.appendChild(pt);ph.appendChild(pr);\n' +
-  '  var pb=document.createElement("div");pb.className="pkg-body";\n' +
-  '  legs.forEach(function(leg,idx){\n' +
-  '    var sd=document.createElement("div");sd.className="itin-stop"+(leg.isBufferLeg?" buffer":"");\n' +
-  '    var st=document.createElement("div");st.className="itin-stop-title";\n' +
-  '    st.innerText=leg.isBufferLeg?"Connection: overnight in "+titleCase(leg.destination):"Stop "+(idx+1)+": "+titleCase(leg.destination)+" ("+leg.nights+" night"+(leg.nights===1?"":"s")+")";\n' +
-  '    sd.appendChild(st);\n' +
-  '    var tr=leg.transportIn;\n' +
-  '    if(tr){var isb=(tr.transportType||"").toLowerCase()==="bus";var tl=document.createElement("div");tl.className="itin-line";tl.innerText=(isb?"Bus: ":"Flight: ")+(tr.airline||tr.provider||"TBC")+" \u00b7 "+(tr.origin||"TBC")+" \u2192 "+(tr.destination||"TBC")+" \u00b7 "+fmtTime(tr.departureTime)+"-"+fmtTime(tr.arrivalTime)+" \u00b7 "+fmtPrice(tr.price,tr.currency);sd.appendChild(tl);}\n' +
-  '    if(leg.hotel){var h=leg.hotel;var stars=h.stars?Array(Math.min(Math.round(h.stars),5)+1).join("\\u2605"):"";var hl=document.createElement("div");hl.className="itin-line";hl.innerText="Hotel: "+(h.name||"TBC")+(stars?" "+stars:"")+(h.location?" \u00b7 "+h.location:"")+" \u00b7 "+fmtPrice(h.pricePerNight,h.currency)+"/night \u00d7 "+leg.nights;sd.appendChild(hl);}\n' +
-  '    pb.appendChild(sd);\n' +
-  '  });\n' +
-  '  if(p.returnTransport){var rt=p.returnTransport;var isrb=(rt.transportType||"").toLowerCase()==="bus";var rd=document.createElement("div");rd.className="itin-stop";var rtl=document.createElement("div");rtl.className="itin-stop-title";rtl.innerText="Return";rd.appendChild(rtl);var rl=document.createElement("div");rl.className="itin-line";rl.innerText=(isrb?"Bus: ":"Flight: ")+(rt.origin||"TBC")+" \u2192 "+(rt.destination||"TBC")+" \u00b7 "+fmtTime(rt.departureTime)+"-"+fmtTime(rt.arrivalTime)+" \u00b7 "+fmtPrice(rt.price,rt.currency);rd.appendChild(rl);pb.appendChild(rd);}\n' +
-  '  var pf=document.createElement("div");pf.className="pkg-footer";\n' +
-  '  var ppd=document.createElement("div");ppd.className="pkg-price";ppd.innerText=fmtPrice(Math.round(s.totalPrice||0),cur);\n' +
-  '  var pps=document.createElement("small");pps.innerText=fmtPrice(Math.round(s.pricePerPerson||0),cur)+"/person \u00b7 "+(s.passengers||1)+" traveller(s)";ppd.appendChild(pps);\n' +
-  '  var bk=document.createElement("button");bk.className="book";bk.innerText="Book Itinerary";\n' +
-  '  bk.onclick=function(){showNameForm(p,bk);};\n' +
-  '  pf.appendChild(ppd);pf.appendChild(bk);\n' +
-  '  div.appendChild(ph);div.appendChild(pb);div.appendChild(pf);\n' +
-  '  messages.appendChild(div);messages.scrollTop=messages.scrollHeight;\n' +
-  '}\n' +
-
-  // ── SEND ─────────────────────────────────────────────────
-  'function send(){\n' +
-  '  var text=input.value.trim(); if(!text)return;\n' +
-  '  addMsg(text,"user"); transcript.push({type:"user",text:text}); persistState();\n' +
-  '  input.value=""; showTyping();\n' +
-  '  var endpoint=isHotelMode?"' + apiBase + '/api/hotel/orchestrate":"' + apiBase + '/api/trips/orchestrate";\n' +
-  '  var hdrs=isHotelMode?{"Content-Type":"application/json","x-hotel-key":"' + agencyKey + '"}:{"Content-Type":"application/json","x-api-key":"' + agencyKey + '"};\n' +
-  '  var body=isHotelMode?JSON.stringify({prompt:text,groupSlug:"' + agencyKey + '",sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams}):JSON.stringify({prompt:text,agencyId:"' + agencyKey + '",channelType:"widget",sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams});\n' +
-  '  fetch(endpoint,{method:"POST",headers:hdrs,body:body})\n' +
-  '  .then(function(r){return r.json();})\n' +
-  '  .then(function(data){\n' +
-  '    hideTyping();\n' +
-  '    if(data.sessionId)sessionId=data.sessionId;\n' +
-  '    if(data.tripParams)previousParams=data.tripParams;\n' +
-  '    if(data.conversationHistory)conversationHistory=data.conversationHistory;\n' +
-  '    if(data.needsClarification){var ct=data.text||"Could you give me a bit more detail?";addMsg(ct,"bot");transcript.push({type:"bot",text:ct});persistState();return;}\n' +
-  '    var pkgs=data&&data.packages?data.packages:[];\n' +
-  '    var isHD=data.isHotelDirect||(pkgs.length>0&&pkgs[0]&&pkgs[0].isHotelDirect);\n' +
-  '    var isIt=pkgs.length===1&&pkgs[0]&&pkgs[0].isMultiDestination;\n' +
-  '    if(!pkgs.length){var nt=(data&&data.text)?data.text:"No options found. Try specifying your dates and number of guests.";addMsg(nt,"bot");transcript.push({type:"bot",text:nt});persistState();return;}\n' +
-  '    var rm=data.text||(isHD?"Here are the available rooms:":"I found "+pkgs.length+" option(s) for you:");\n' +
-  '    if(!isHD&&!isIt&&data.intent&&data.intent.isFollowUp){var adj=data.intent.adjustments||{};if(adj.budget==="low")rm="Here are more affordable options:";else if(adj.budget==="luxury")rm="Here are the premium options:";else if(adj.nights)rm="Here are options for "+adj.nights+" nights:";else rm="Here are the updated options:";}\n' +
-  '    addMsg(rm,"bot");transcript.push({type:"bot",text:rm});\n' +
-  '    if(isHD&&isIt){addHotelItinerary(pkgs[0]);transcript.push({type:"hotel_itinerary",pkg:pkgs[0]});}\n' +
-  '    else if(isHD){pkgs.slice(0,4).forEach(function(p,i){addHotelPackage(p,i);});transcript.push({type:"hotel_packages",packages:pkgs.slice(0,4)});}\n' +
-  '    else if(isIt){addItinerary(pkgs[0]);transcript.push({type:"itinerary",pkg:pkgs[0]});}\n' +
-  '    else{pkgs.slice(0,4).forEach(function(p,i){addPackage(p,i);});transcript.push({type:"packages",packages:pkgs.slice(0,4)});}\n' +
-  '    persistState();\n' +
-  '  })\n' +
-  '  .catch(function(e){hideTyping();console.log("Widget error:",e);addMsg("Unable to load options right now. Please try again.","bot");});\n' +
-  '}\n' +
-
-  'sendBtn.onclick=send;\n' +
-  'input.addEventListener("keypress",function(e){if(e.key==="Enter")send();});\n' +
-  'console.log("[BODRLESS] Widget loaded — key:' + agencyKey + ' mode:' + mode + ' embed:"+(embedTarget||"floating"));\n' +
-  '}\n' +
-  'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",initWidget);}else{initWidget();}\n' +
-  '})();\n';
-
-  res.send(widgetCode);
+  res.send(code);
 });
 
 module.exports = router;
