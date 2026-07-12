@@ -58,14 +58,14 @@ router.get('/', (req, res) => {
   // CSS variables
   '":root{--et-navy:#1E2A5E;--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F9F7F4;--et-border:#E8E3DA;--et-muted:#9A9088;--et-green:#27ae60;--et-gold:#B8964A;}",\n' +
 
-  // Chat container — no fixed position by default, class decides
+  // Chat container
   '"#bodrless-chat{background:var(--et-white);z-index:999999;display:none;flex-direction:column;border-radius:18px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,0.14);font-family:\'Inter\',Arial,sans-serif;}",\n' +
   '"#bodrless-chat.open{display:flex;}",\n' +
 
-  // Floating mode — agency default and hotel fallback
+  // Floating mode
   '"#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:390px;height:640px;}",\n' +
 
-  // Embedded mode — hotel direct, fills its mount container
+  // Embedded mode — fills mount container
   '"#bodrless-chat.embedded{position:relative;width:100%;height:760px;display:flex;border-radius:0;}",\n' +
 
   '"@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:0.5;}30%{transform:translateY(-5px);opacity:1;}}",\n' +
@@ -102,7 +102,7 @@ router.get('/', (req, res) => {
   '".et-divider{height:1px;background:var(--et-border);margin:4px 0 16px 0;}",\n' +
   '".et-prompts-label{font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--et-muted);margin-bottom:12px;}",\n' +
 
-  // Conversation starter cards
+  // Conversation starter cards — 3 starters, taller hit area
   '".et-starter{width:100%;background:var(--et-cream);border:1px solid var(--et-border);border-radius:12px;padding:14px 16px;text-align:left;cursor:pointer;transition:all 0.2s;margin-bottom:8px;display:block;}",\n' +
   '".et-starter:last-child{margin-bottom:0;}",\n' +
   '".et-starter:hover{background:var(--et-navy);border-color:var(--et-navy);}",\n' +
@@ -136,6 +136,12 @@ router.get('/', (req, res) => {
   '".book:hover{opacity:0.88;}",\n' +
   '".book:disabled{opacity:0.6;cursor:not-allowed;}",\n' +
 
+  // Cancellation policy badge on card
+  '".cancel-policy{display:flex;align-items:center;gap:6px;font-size:11px;padding:8px 10px;border-radius:8px;margin-top:4px;}",\n' +
+  '".cancel-policy.refundable{background:#E8F8EE;color:#1B7A3D;}",\n' +
+  '".cancel-policy.non-refundable{background:#FFF0F0;color:#A02020;}",\n' +
+  '".cancel-policy.neutral{background:#F0EDE8;color:#5A4A3A;}",\n' +
+
   // Input area
   '"#bodrless-input-area{display:flex;border-top:1px solid var(--et-border);background:var(--et-white);padding:12px;gap:8px;flex-shrink:0;}",\n' +
   '"#bodrless-input{flex:1;padding:10px 14px;border:1.5px solid var(--et-border);border-radius:20px;outline:none;font-size:13px;background:var(--et-cream);color:#2A2A2A;font-family:\'Inter\',Arial,sans-serif;}",\n' +
@@ -144,8 +150,6 @@ router.get('/', (req, res) => {
   '"#bodrless-send{background:var(--et-navy);color:white;border:none;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.2s;}",\n' +
   '"#bodrless-send:hover{background:var(--et-gold);}",\n' +
 
-  // Floating trigger — only shown in floating mode
-  '"#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:390px;height:640px;}",\n' +
   // Forms
   '".name-form{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:16px;margin-top:8px;}",\n' +
   '".name-form p{font-size:12px;color:var(--et-navy);margin:0 0 12px 0;font-weight:500;}",\n' +
@@ -164,6 +168,14 @@ router.get('/', (req, res) => {
   '".hl-good{background:#E8F8EE;color:#1B7A3D;}",\n' +
   '".hl-warn{background:#FFF3E0;color:#B05A00;}",\n' +
   '".hl-neutral{background:#F0EDE8;color:#5A4A3A;}",\n' +
+
+  // Manage booking card
+  '".manage-card{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:16px;margin-top:8px;}",\n' +
+  '".manage-card p{font-size:12px;color:var(--et-navy);margin:0 0 12px 0;font-weight:500;}",\n' +
+  '".manage-actions{display:flex;gap:8px;}",\n' +
+  '".manage-btn{flex:1;padding:10px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;border:1.5px solid var(--et-border);background:var(--et-cream);color:var(--et-navy);transition:all 0.2s;}",\n' +
+  '".manage-btn:hover{background:var(--et-navy);color:white;border-color:var(--et-navy);}",\n' +
+  '".manage-btn.danger:hover{background:var(--et-red);border-color:var(--et-red);color:white;}",\n' +
 
   // Itinerary
   '".itin-stop{padding:10px 0;border-bottom:1px dashed var(--et-border);}",\n' +
@@ -211,7 +223,7 @@ router.get('/', (req, res) => {
   'var closeBtn = document.createElement("button");\n' +
   'closeBtn.id = "et-close";\n' +
   'closeBtn.innerHTML = "&#215;";\n' +
-  // Hide close button in embedded mode — no floating panel to close
+  // Hide close button in embedded mode
   'if (embedTarget) closeBtn.style.display = "none";\n' +
   'header.appendChild(headerLeft);\n' +
   'header.appendChild(closeBtn);\n' +
@@ -223,7 +235,7 @@ router.get('/', (req, res) => {
   'inputArea.id = "bodrless-input-area";\n' +
   'var input = document.createElement("input");\n' +
   'input.id = "bodrless-input";\n' +
-  'input.placeholder = isHotelMode ? "Tell me what you\'re looking for..." : "Where would you like to go?";\n' +
+  'input.placeholder = isHotelMode ? "How can I help you plan your stay?" : "Where would you like to go?";\n' +
   'var sendBtn = document.createElement("button");\n' +
   'sendBtn.id = "bodrless-send";\n' +
   'sendBtn.innerHTML = "&#10148;";\n' +
@@ -270,38 +282,55 @@ router.get('/', (req, res) => {
   '  }\n' +
   '}\n' +
 
+  // ── HOTEL WELCOME — warm concierge, 3 starters, "Start Planning" CTA ──
   'function showHotelWelcome() {\n' +
   '  var card = document.createElement("div");\n' +
   '  card.className = "et-welcome";\n' +
   '  var eyebrow = document.createElement("div");\n' +
   '  eyebrow.className = "et-welcome-eyebrow";\n' +
-  '  eyebrow.innerText = "Your Concierge";\n' +
+  '  eyebrow.innerText = "Your Personal Concierge";\n' +
   '  var title = document.createElement("div");\n' +
   '  title.className = "et-welcome-title";\n' +
   '  title.innerText = "Welcome to ' + agencyName + '";\n' +
   '  var body = document.createElement("div");\n' +
   '  body.className = "et-welcome-body";\n' +
-  '  body.innerText = "I\'m here to help you find and book the perfect stay. Tell me which property you\'d like, your dates and number of guests — I\'ll take care of the rest.";\n' +
+  '  body.innerText = "It\'s a pleasure to have you with us. Tell me the occasion, your preferred dates, and how many guests — I\'ll take care of finding the perfect room and making it special.";\n' +
   '  var divider = document.createElement("div");\n' +
   '  divider.className = "et-divider";\n' +
   '  var promptLabel = document.createElement("div");\n' +
   '  promptLabel.className = "et-prompts-label";\n' +
-  '  promptLabel.innerText = "Need inspiration?";\n' +
+  '  promptLabel.innerText = "Popular requests";\n' +
+  // ── 3 conversation starters — customisable via window.bodrlessStarters ──
+  // The landing page can inject window.bodrlessStarters = [...] before the widget loads.
+  // Each starter: { icon, title, text }
+  // Default set is 3 starters covering the most common use cases.
+  '  var starters = (window.bodrlessStarters && window.bodrlessStarters.length)\n' +
+  '    ? window.bodrlessStarters.slice(0, 3)\n' +
+  '    : [\n' +
+  '        { icon: "❤️", title: "Romantic Getaway",  text: "We\'re celebrating our anniversary — recommend your most romantic room for 2 nights." },\n' +
+  '        { icon: "👨‍👩‍👧", title: "Family Stay",      text: "Family room for 2 adults and 2 children, full board, arriving this weekend." },\n' +
+  '        { icon: "💼", title: "Business Trip",     text: "Single business room for tomorrow night, need early check-in if possible." }\n' +
+  '      ];\n' +
   '  card.appendChild(eyebrow);\n' +
   '  card.appendChild(title);\n' +
   '  card.appendChild(body);\n' +
+  // ── "Start Planning" CTA — scrolls to the embedded chat ──────────────
+  // Only shown if embed target exists (hotel landing page context).
+  '  if (embedTarget) {\n' +
+  '    var ctaBtn = document.createElement("button");\n' +
+  '    ctaBtn.style.cssText = "display:block;width:100%;background:var(--et-navy);color:white;border:none;padding:12px 20px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.3px;margin-bottom:16px;transition:background 0.2s;";\n' +
+  '    ctaBtn.innerText = "Start Planning";\n' +
+  '    ctaBtn.onmouseover = function(){this.style.background="var(--et-gold)";};\n' +
+  '    ctaBtn.onmouseout  = function(){this.style.background="var(--et-navy)";};\n' +
+  '    ctaBtn.onclick = function() {\n' +
+  '      var mountEl = document.getElementById(embedTarget);\n' +
+  '      if (mountEl) { mountEl.scrollIntoView({ behavior: "smooth", block: "start" }); }\n' +
+  '      setTimeout(function(){ input.focus(); }, 400);\n' +
+  '    };\n' +
+  '    card.appendChild(ctaBtn);\n' +
+  '  }\n' +
   '  card.appendChild(divider);\n' +
   '  card.appendChild(promptLabel);\n' +
-  // Conversation starters — pulled from page-level window.bodrlessStarters if set,
-  // otherwise sensible defaults. The landing page injects these via a small inline script.
-  '  var starters = (window.bodrlessStarters && window.bodrlessStarters.length)\n' +
-  '    ? window.bodrlessStarters\n' +
-  '    : [\n' +
-  '        { icon: "💼", title: "Business Stay",    text: "Book me a business room at ' + agencyName + ' tomorrow night." },\n' +
-  '        { icon: "🏖️", title: "Beach Holiday",    text: "Sea view room for two adults, 5 nights all inclusive." },\n' +
-  '        { icon: "👨‍👩‍👧", title: "Family Escape",   text: "Family room for 2 adults and 2 children, full board." },\n' +
-  '        { icon: "❤️", title: "Romantic Getaway", text: "Recommend the perfect ' + agencyName + ' stay for our anniversary." }\n' +
-  '      ];\n' +
   '  starters.forEach(function(s) {\n' +
   '    var btn = document.createElement("button");\n' +
   '    btn.className = "et-starter";\n' +
@@ -311,6 +340,15 @@ router.get('/', (req, res) => {
   '    btn.onclick = function() { input.value = s.text; send(); };\n' +
   '    card.appendChild(btn);\n' +
   '  });\n' +
+  // Manage booking option — always shown last
+  '  var manageBtn = document.createElement("button");\n' +
+  '  manageBtn.className = "et-starter";\n' +
+  '  manageBtn.style.cssText += "margin-top:12px;border-color:#C0C0C0;";\n' +
+  '  var mt = document.createElement("div"); mt.className = "st-title"; mt.innerText = "🔑  Manage a Booking";\n' +
+  '  var mb = document.createElement("div"); mb.className = "st-body";  mb.innerText = "View, modify, or cancel an existing reservation.";\n' +
+  '  manageBtn.appendChild(mt); manageBtn.appendChild(mb);\n' +
+  '  manageBtn.onclick = function() { showManageBookingForm(); };\n' +
+  '  card.appendChild(manageBtn);\n' +
   '  messages.appendChild(card);\n' +
   '  messages.scrollTop = messages.scrollHeight;\n' +
   '}\n' +
@@ -339,7 +377,8 @@ router.get('/', (req, res) => {
   '    var e = transcript[ri];\n' +
   '    if (!e || !e.type) continue;\n' +
   '    if (e.type === "user" || e.type === "bot") { addMsg(e.text || "", e.type); }\n' +
-  '    else if (e.type === "hotel_packages" && Array.isArray(e.packages)) { e.packages.slice(0,4).forEach(function(p,i){addHotelPackage(p,i);}); }\n' +
+  // Hotel packages: replay ALL, no cap
+  '    else if (e.type === "hotel_packages" && Array.isArray(e.packages)) { e.packages.forEach(function(p,i){addHotelPackage(p,i);}); }\n' +
   '    else if (e.type === "hotel_itinerary" && e.pkg) { addHotelItinerary(e.pkg); }\n' +
   '    else if (e.type === "packages" && Array.isArray(e.packages)) { e.packages.slice(0,4).forEach(function(p,i){addPackage(p,i);}); }\n' +
   '    else if (e.type === "itinerary" && e.pkg) { addItinerary(e.pkg); }\n' +
@@ -377,11 +416,188 @@ router.get('/', (req, res) => {
   '  d.innerText = text; return d;\n' +
   '}\n' +
 
+  // ── CANCELLATION POLICY BADGE ─────────────────────────────
+  // Shows a clear, human-readable badge under each room card.
+  'function makeCancelBadge(policySummary, isRefundable) {\n' +
+  '  var d = document.createElement("div");\n' +
+  '  var cls = "cancel-policy ";\n' +
+  '  var icon;\n' +
+  '  if (isRefundable === true)  { cls += "refundable";     icon = "\u2705"; }\n' +
+  '  else if (isRefundable === false) { cls += "non-refundable"; icon = "\u274C"; }\n' +
+  '  else                        { cls += "neutral";        icon = "\u2139\uFE0F"; }\n' +
+  '  d.className = cls;\n' +
+  '  d.innerText = icon + "  " + (policySummary || "Cancellation policy confirmed at booking.");\n' +
+  '  return d;\n' +
+  '}\n' +
+
+  // ── SMART CONTEXT — reorder ancillaries for honeymoon/anniversary ──────
+  // Surfaces spa/romantic/dining add-ons first when the conversation contains
+  // honeymoon or anniversary signals (detected from previousParams.preferences).
+  'function sortAncillariesByContext(ancillaries, prefs) {\n' +
+  '  if (!prefs || !prefs.length) return ancillaries;\n' +
+  '  var isRomantic = prefs.indexOf("honeymoon") !== -1;\n' +
+  '  var isFamily   = prefs.indexOf("family") !== -1;\n' +
+  '  var isSpa      = prefs.indexOf("spa") !== -1;\n' +
+  '  var priority = [];\n' +
+  '  if (isRomantic) priority = ["spa", "dining", "upgrade", "wellness", "activity"];\n' +
+  '  else if (isFamily) priority = ["activity", "dining", "transfer", "upgrade"];\n' +
+  '  else if (isSpa)  priority = ["spa", "wellness", "dining", "upgrade"];\n' +
+  '  else             priority = ["transfer", "dining", "spa", "activity", "upgrade", "wellness"];\n' +
+  '  return ancillaries.slice().sort(function(a, b) {\n' +
+  '    var ai = priority.indexOf(a.category); var bi = priority.indexOf(b.category);\n' +
+  '    if (ai === -1) ai = 99; if (bi === -1) bi = 99;\n' +
+  '    return ai - bi;\n' +
+  '  });\n' +
+  '}\n' +
+
+  // ── MANAGE BOOKING FORM ───────────────────────────────────
+  'function showManageBookingForm() {\n' +
+  '  var ex = document.getElementById("et-manage-form"); if (ex) ex.remove();\n' +
+  '  var card = document.createElement("div"); card.className = "manage-card"; card.id = "et-manage-form";\n' +
+  '  var p = document.createElement("p"); p.innerText = "Enter your reservation reference and we\'ll pull up your booking."; card.appendChild(p);\n' +
+  '  var ri = document.createElement("input"); ri.className = "name-input"; ri.placeholder = "Reservation reference (e.g. BDR-12345)"; ri.type = "text"; card.appendChild(ri);\n' +
+  '  var pi = document.createElement("input"); pi.className = "name-input"; pi.placeholder = "Phone number used at booking"; pi.type = "tel"; card.appendChild(pi);\n' +
+  '  var err = document.createElement("div"); err.style.cssText = "color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;"; card.appendChild(err);\n' +
+  '  var findBtn = document.createElement("button"); findBtn.className = "confirm-btn"; findBtn.innerText = "Find My Booking";\n' +
+  '  findBtn.onclick = function() {\n' +
+  '    err.style.display = "none";\n' +
+  '    var ref = ri.value.trim(); var phone = pi.value.trim();\n' +
+  '    if (!ref)   { err.innerText = "Please enter your reservation reference."; err.style.display = "block"; return; }\n' +
+  '    if (!phone) { err.innerText = "Please enter the phone number used at booking."; err.style.display = "block"; return; }\n' +
+  '    findBtn.innerText = "Looking up..."; findBtn.disabled = true;\n' +
+  '    fetch("' + apiBase + '/api/hotel/reservation?ref=" + encodeURIComponent(ref) + "&phone=" + encodeURIComponent(phone), {\n' +
+  '      headers: { "x-hotel-key": "' + agencyKey + '" }\n' +
+  '    })\n' +
+  '    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })\n' +
+  '    .then(function(res) {\n' +
+  '      if (!res.ok || !res.data.success) {\n' +
+  '        err.innerText = (res.data && res.data.error) || "Booking not found. Please check your reference and phone number.";\n' +
+  '        err.style.display = "block"; findBtn.innerText = "Find My Booking"; findBtn.disabled = false; return;\n' +
+  '      }\n' +
+  '      card.remove();\n' +
+  '      showBookingDetails(res.data.reservation);\n' +
+  '    })\n' +
+  '    .catch(function() { err.innerText = "Network error. Please try again."; err.style.display = "block"; findBtn.innerText = "Find My Booking"; findBtn.disabled = false; });\n' +
+  '  };\n' +
+  '  card.appendChild(findBtn);\n' +
+  '  messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
+  '}\n' +
+
+  // ── BOOKING DETAILS + MODIFY / CANCEL ─────────────────────
+  'function showBookingDetails(res) {\n' +
+  '  var card = document.createElement("div"); card.className = "manage-card";\n' +
+  '  var summary = [\n' +
+  '    "\uD83C\uDFE8 " + (res.property_name || res.hotel_name || ""),\n' +
+  '    (res.room_type || "") + (res.meal_plan ? " \u00b7 " + res.meal_plan.replace(/_/g," ") : ""),\n' +
+  '    (res.check_in || "") + " \u2192 " + (res.check_out || ""),\n' +
+  '    "Ref: " + res.reservation_ref + " \u00b7 " + (res.status || "").toUpperCase()\n' +
+  '  ].filter(Boolean).join("\\n");\n' +
+  '  var p = document.createElement("p"); p.style.whiteSpace = "pre-line"; p.innerText = summary; card.appendChild(p);\n' +
+  '  var canModify = res.status === "confirmed" || res.status === "pending";\n' +
+  '  var canCancel = res.status === "confirmed" || res.status === "pending";\n' +
+  // Show cancellation policy clearly
+  '  if (res.cancellation_policy) {\n' +
+  '    card.appendChild(makeCancelBadge(res.cancellation_policy, res.is_refundable));\n' +
+  '  }\n' +
+  '  var acts = document.createElement("div"); acts.className = "manage-actions"; acts.style.marginTop = "14px";\n' +
+  '  if (canModify) {\n' +
+  '    var modBtn = document.createElement("button"); modBtn.className = "manage-btn"; modBtn.innerText = "\u270F\uFE0F Modify";\n' +
+  '    modBtn.onclick = function() { showModifyForm(res); };\n' +
+  '    acts.appendChild(modBtn);\n' +
+  '  }\n' +
+  '  if (canCancel) {\n' +
+  '    var canBtn = document.createElement("button"); canBtn.className = "manage-btn danger"; canBtn.innerText = "\u274C Cancel";\n' +
+  '    canBtn.onclick = function() { confirmCancellation(res, canBtn); };\n' +
+  '    acts.appendChild(canBtn);\n' +
+  '  }\n' +
+  '  if (!canModify && !canCancel) {\n' +
+  '    var na = document.createElement("p"); na.style.cssText = "font-size:11px;color:var(--et-muted);margin:8px 0 0 0;";\n' +
+  '    na.innerText = "This reservation cannot be modified. Please contact us directly for assistance.";\n' +
+  '    card.appendChild(na);\n' +
+  '  }\n' +
+  '  card.appendChild(acts);\n' +
+  '  messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
+  '}\n' +
+
+  'function showModifyForm(res) {\n' +
+  '  var ex = document.getElementById("et-modify-form"); if (ex) ex.remove();\n' +
+  '  var card = document.createElement("div"); card.className = "manage-card"; card.id = "et-modify-form";\n' +
+  '  var p = document.createElement("p"); p.innerText = "Update your reservation dates:"; card.appendChild(p);\n' +
+  '  var ciLabel = document.createElement("div"); ciLabel.className = "field-label"; ciLabel.innerText = "New check-in"; card.appendChild(ciLabel);\n' +
+  '  var ci = document.createElement("input"); ci.className = "name-input"; ci.type = "date"; ci.value = res.check_in || ""; card.appendChild(ci);\n' +
+  '  var coLabel = document.createElement("div"); coLabel.className = "field-label"; coLabel.innerText = "New check-out"; card.appendChild(coLabel);\n' +
+  '  var co = document.createElement("input"); co.className = "name-input"; co.type = "date"; co.value = res.check_out || ""; card.appendChild(co);\n' +
+  '  var ri = document.createElement("textarea"); ri.className = "name-input"; ri.placeholder = "Any special requests for your updated stay?"; ri.style.cssText = "height:56px;resize:none;"; card.appendChild(ri);\n' +
+  '  var err = document.createElement("div"); err.style.cssText = "color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;"; card.appendChild(err);\n' +
+  '  var sb = document.createElement("button"); sb.className = "confirm-btn"; sb.innerText = "Request Modification";\n' +
+  '  sb.onclick = function() {\n' +
+  '    err.style.display = "none";\n' +
+  '    if (!ci.value || !co.value) { err.innerText = "Please select both check-in and check-out dates."; err.style.display = "block"; return; }\n' +
+  '    if (new Date(co.value) <= new Date(ci.value)) { err.innerText = "Check-out must be after check-in."; err.style.display = "block"; return; }\n' +
+  '    sb.innerText = "Submitting..."; sb.disabled = true;\n' +
+  '    fetch("' + apiBase + '/api/hotel/reservation/modify", {\n' +
+  '      method: "POST",\n' +
+  '      headers: { "Content-Type": "application/json", "x-hotel-key": "' + agencyKey + '" },\n' +
+  '      body: JSON.stringify({ reservationRef: res.reservation_ref, newCheckIn: ci.value, newCheckOut: co.value, specialRequests: ri.value.trim() || null })\n' +
+  '    })\n' +
+  '    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })\n' +
+  '    .then(function(result) {\n' +
+  '      card.remove();\n' +
+  '      if (result.ok && result.data.success) {\n' +
+  '        addMsg("\u2705 Modification request submitted for " + res.reservation_ref + ". We\'ll confirm the updated dates shortly.", "bot");\n' +
+  '      } else {\n' +
+  '        addMsg((result.data && result.data.error) || "Unable to modify your reservation. Please contact us directly.", "bot");\n' +
+  '      }\n' +
+  '    })\n' +
+  '    .catch(function() { card.remove(); addMsg("Network error — please contact us directly to modify your booking.", "bot"); });\n' +
+  '  };\n' +
+  '  card.appendChild(sb);\n' +
+  '  messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
+  '}\n' +
+
+  'function confirmCancellation(res, btn) {\n' +
+  '  var ex = document.getElementById("et-cancel-confirm"); if (ex) ex.remove();\n' +
+  '  var card = document.createElement("div"); card.className = "manage-card"; card.id = "et-cancel-confirm";\n' +
+  '  card.style.borderColor = "var(--et-red)";\n' +
+  '  var p = document.createElement("p");\n' +
+  '  p.innerHTML = "Are you sure you want to cancel <strong>" + res.reservation_ref + "</strong>?";\n' +
+  '  if (res.cancellation_policy) {\n' +
+  '    p.innerHTML += "<br><br>" + res.cancellation_policy;\n' +
+  '  }\n' +
+  '  card.appendChild(p);\n' +
+  '  var acts = document.createElement("div"); acts.className = "manage-actions";\n' +
+  '  var confirmBtn = document.createElement("button"); confirmBtn.className = "manage-btn danger"; confirmBtn.innerText = "Yes, Cancel Booking";\n' +
+  '  var keepBtn    = document.createElement("button"); keepBtn.className    = "manage-btn";        keepBtn.innerText    = "Keep My Booking";\n' +
+  '  keepBtn.onclick    = function() { card.remove(); addMsg("No problem — your reservation " + res.reservation_ref + " is still active. Is there anything else I can help you with?", "bot"); };\n' +
+  '  confirmBtn.onclick = function() {\n' +
+  '    confirmBtn.innerText = "Cancelling..."; confirmBtn.disabled = true; keepBtn.disabled = true;\n' +
+  '    fetch("' + apiBase + '/api/hotel/reservation/cancel", {\n' +
+  '      method: "POST",\n' +
+  '      headers: { "Content-Type": "application/json", "x-hotel-key": "' + agencyKey + '" },\n' +
+  '      body: JSON.stringify({ reservationRef: res.reservation_ref, groupSlug: "' + agencyKey + '" })\n' +
+  '    })\n' +
+  '    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })\n' +
+  '    .then(function(result) {\n' +
+  '      card.remove();\n' +
+  '      if (result.ok && result.data.success) {\n' +
+  '        addMsg("\u2705 Reservation " + res.reservation_ref + " has been cancelled. " + (result.data.refundNote || "Any applicable refund will be processed within 5-7 business days."), "bot");\n' +
+  '      } else {\n' +
+  '        addMsg((result.data && result.data.error) || "We couldn\'t cancel online — please call us directly and quote " + res.reservation_ref + ".", "bot");\n' +
+  '      }\n' +
+  '    })\n' +
+  '    .catch(function() { card.remove(); addMsg("Network error — please contact us directly to cancel booking " + res.reservation_ref + ".", "bot"); });\n' +
+  '  };\n' +
+  '  acts.appendChild(confirmBtn); acts.appendChild(keepBtn); card.appendChild(acts);\n' +
+  '  messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
+  '}\n' +
+
   // ── HOTEL PACKAGE CARD ────────────────────────────────────
   'function addHotelPackage(p, idx) {\n' +
   '  var div = document.createElement("div"); div.className = "package";\n' +
   '  var hotel = p.hotel || {}; var summary = p.summary || {};\n' +
-  '  var ancillaries = p.ancillaryServices || [];\n' +
+  // Smart context — sort ancillaries by conversation preferences
+  '  var prefs = (previousParams && previousParams.preferences) || (summary && summary.preferences) || [];\n' +
+  '  var ancillaries = sortAncillariesByContext(p.ancillaryServices || [], prefs);\n' +
   '  var currency = hotel.currency || summary.currency || "KES";\n' +
   '  var nights = hotel.nights || summary.nights || 1;\n' +
   '  var passengers = summary.passengers || 1;\n' +
@@ -415,6 +631,9 @@ router.get('/', (req, res) => {
   '  pkgB.appendChild(makeRow("Room",hotel.roomType||"Standard Room",roomSub.join(" \u00b7 ")));\n' +
   '  pkgB.appendChild(makeRow("Dates",(hotel.checkIn||"")+" \u2192 "+(hotel.checkOut||""),nights+" night"+(nights!==1?"s":"")+" \u00b7 "+passengers+" guest(s)"));\n' +
 
+  // Cancellation policy badge — prominently shown
+  '  pkgB.appendChild(makeCancelBadge(hotel.policySummary, hotel.isRefundable));\n' +
+
   // Meal plan
   '  var avRates = hotel.availableRates||[];\n' +
   '  var mealRow = document.createElement("div"); mealRow.className = "pkg-row";\n' +
@@ -441,13 +660,18 @@ router.get('/', (req, res) => {
   '    var md=document.createElement("div"); md.className="pkg-name"; md.innerText="\uD83C\uDF7D\uFE0F "+(mealLabels[currentMealPlan]||currentMealPlan); mealRow.appendChild(md);\n' +
   '  }\n' +
   '  pkgB.appendChild(mealRow);\n' +
-  '  if(hotel.policySummary) pkgB.appendChild(makeHL(hotel.policySummary,hotel.isRefundable===false?"warn":hotel.isRefundable===true?"good":"neutral"));\n' +
   '  pkgB.appendChild(makeRow("Rate",currency+" "+Math.round(hotel.pricePerNight||0).toLocaleString()+"/night","\u00d7 "+nights+" night"+(nights!==1?"s":"")+" = "+currency+" "+Math.round(baseTotal).toLocaleString()));\n' +
 
-  // Ancillaries
+  // Ancillaries — smart-sorted by context
   '  if(ancillaries.length>0){\n' +
   '    var aRow=document.createElement("div"); aRow.className="pkg-row";\n' +
   '    var aLbl=document.createElement("div"); aLbl.className="pkg-label"; aLbl.innerText="Add-ons"; aRow.appendChild(aLbl);\n' +
+  // If romantic context, add a subtle nudge above the add-ons list
+  '    if (prefs.indexOf("honeymoon") !== -1 || prefs.indexOf("romantic") !== -1) {\n' +
+  '      var nudge=document.createElement("div"); nudge.style.cssText="font-size:11px;color:var(--et-gold);margin-bottom:6px;font-style:italic;";\n' +
+  '      nudge.innerText="\u2728 Curated for a romantic stay";\n' +
+  '      aRow.appendChild(nudge);\n' +
+  '    }\n' +
   '    var catIcons={spa:"\uD83D\uDEC6",transfer:"\uD83D\uDE97",dining:"\uD83C\uDF7D\uFE0F",activity:"\uD83C\uDFC4",upgrade:"\u2B06\uFE0F",wellness:"\uD83E\uDDD8",other:"\u2728"};\n' +
   '    ancillaries.forEach(function(a){\n' +
   '      var ai=document.createElement("div"); ai.style.cssText="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--et-border);";\n' +
@@ -502,6 +726,7 @@ router.get('/', (req, res) => {
   '      var hl=document.createElement("div"); hl.className="itin-line";\n' +
   '      hl.innerText="\uD83C\uDFE8 "+(h.propertyName||h.name||"TBC")+(stars?" "+stars:"")+(h.view?" \u00b7 "+h.view:"")+" \u00b7 "+fmtPrice(h.pricePerNight,h.currency)+"/night \u00d7 "+(leg.nights||1);\n' +
   '      sd.appendChild(hl);\n' +
+  '      if(h.policySummary) sd.appendChild(makeCancelBadge(h.policySummary, h.isRefundable));\n' +
   '    }\n' +
   '    pkgB.appendChild(sd);\n' +
   '  });\n' +
@@ -566,7 +791,7 @@ router.get('/', (req, res) => {
   '  messages.appendChild(form); messages.scrollTop=messages.scrollHeight;\n' +
   '}\n' +
 
-  // ── AGENCY PACKAGE CARD ───────────────────────────────────
+  // ── AGENCY PACKAGE CARD (UNCHANGED) ───────────────────────
   'function pollBookingStatus(ref,btn){\n' +
   '  var a=0,max=40,iv=setInterval(function(){\n' +
   '    a++;\n' +
@@ -763,6 +988,15 @@ router.get('/', (req, res) => {
   // ── SEND ─────────────────────────────────────────────────
   'function send(){\n' +
   '  var text=input.value.trim(); if(!text)return;\n' +
+  // Intercept manage/cancel/modify keywords before hitting the API
+  '  if(isHotelMode){\n' +
+  '    var lower=text.toLowerCase();\n' +
+  '    if(/\\b(?:cancel|modify|change|update|manage|view)\\b/.test(lower)&&/\\b(?:booking|reservation|stay|ref|reference)\\b/.test(lower)){\n' +
+  '      addMsg(text,"user"); transcript.push({type:"user",text:text}); persistState(); input.value="";\n' +
+  '      addMsg("Of course — let me pull up your reservation. Please provide your booking reference and the phone number you used.","bot");\n' +
+  '      showManageBookingForm(); return;\n' +
+  '    }\n' +
+  '  }\n' +
   '  addMsg(text,"user"); transcript.push({type:"user",text:text}); persistState();\n' +
   '  input.value=""; showTyping();\n' +
   '  var endpoint=isHotelMode?"' + apiBase + '/api/hotel/orchestrate":"' + apiBase + '/api/trips/orchestrate";\n' +
@@ -779,12 +1013,27 @@ router.get('/', (req, res) => {
   '    var pkgs=data&&data.packages?data.packages:[];\n' +
   '    var isHD=data.isHotelDirect||(pkgs.length>0&&pkgs[0]&&pkgs[0].isHotelDirect);\n' +
   '    var isIt=pkgs.length===1&&pkgs[0]&&pkgs[0].isMultiDestination;\n' +
-  '    if(!pkgs.length){var nt=(data&&data.text)?data.text:"No options found. Try specifying your dates and number of guests.";addMsg(nt,"bot");transcript.push({type:"bot",text:nt});persistState();return;}\n' +
-  '    var rm=data.text||(isHD?"Here are the available rooms:":"I found "+pkgs.length+" option(s) for you:");\n' +
-  '    if(!isHD&&!isIt&&data.intent&&data.intent.isFollowUp){var adj=data.intent.adjustments||{};if(adj.budget==="low")rm="Here are more affordable options:";else if(adj.budget==="luxury")rm="Here are the premium options:";else if(adj.nights)rm="Here are options for "+adj.nights+" nights:";else rm="Here are the updated options:";}\n' +
+  '    if(!pkgs.length){var nt=(data&&data.text)?data.text:"No rooms available for those dates. Try adjusting your dates or tell me more about what you\'re looking for.";addMsg(nt,"bot");transcript.push({type:"bot",text:nt});persistState();return;}\n' +
+  // Warm concierge intro text for hotel mode
+  '    var rm;\n' +
+  '    if(isHD){\n' +
+  '      var prefs=(previousParams&&previousParams.preferences)||[];\n' +
+  '      if(prefs.indexOf("honeymoon")!==-1||prefs.indexOf("romantic")!==-1)\n' +
+  '        rm="How lovely — here are our most special rooms for your romantic stay:";\n' +
+  '      else if(prefs.indexOf("family")!==-1)\n' +
+  '        rm="Perfect for families — here are the rooms that work best for your group:";\n' +
+  '      else if(prefs.indexOf("business")!==-1)\n' +
+  '        rm="Here are our best options for your business stay:";\n' +
+  '      else\n' +
+  '        rm=data.text||"Here\'s what we have available for your dates:";\n' +
+  '    } else {\n' +
+  '      rm=data.text||(isIt?"Here is your itinerary:":"I found "+pkgs.length+" option(s) for you:");\n' +
+  '      if(!isIt&&data.intent&&data.intent.isFollowUp){var adj=data.intent.adjustments||{};if(adj.budget==="low")rm="Here are more affordable options:";else if(adj.budget==="luxury")rm="Here are the premium options:";else if(adj.nights)rm="Here are options for "+adj.nights+" nights:";else rm="Here are the updated options:";}\n' +
+  '    }\n' +
   '    addMsg(rm,"bot");transcript.push({type:"bot",text:rm});\n' +
+  // Hotel: show ALL packages, no cap
   '    if(isHD&&isIt){addHotelItinerary(pkgs[0]);transcript.push({type:"hotel_itinerary",pkg:pkgs[0]});}\n' +
-  '    else if(isHD){pkgs.slice(0,4).forEach(function(p,i){addHotelPackage(p,i);});transcript.push({type:"hotel_packages",packages:pkgs.slice(0,4)});}\n' +
+  '    else if(isHD){pkgs.forEach(function(p,i){addHotelPackage(p,i);});transcript.push({type:"hotel_packages",packages:pkgs});}\n' +
   '    else if(isIt){addItinerary(pkgs[0]);transcript.push({type:"itinerary",pkg:pkgs[0]});}\n' +
   '    else{pkgs.slice(0,4).forEach(function(p,i){addPackage(p,i);});transcript.push({type:"packages",packages:pkgs.slice(0,4)});}\n' +
   '    persistState();\n' +
