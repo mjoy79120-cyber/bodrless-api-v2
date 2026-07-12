@@ -268,21 +268,58 @@ router.get('/', (req, res) => {
   '  };\n' +
   '  closeBtn.onclick = function() { chatDiv.classList.remove("open"); };\n' +
   '} else {\n' +
-  // Embedded: show immediately, no trigger needed
+  // Embedded: show immediately. For hotel mode, only show entry card (not full welcome yet).
   '  chatDiv.classList.add("open");\n' +
   '  if (!welcomeShown) { welcomeShown = true; if (hasRestoredHistory) { replayTranscript(); } else { showWelcome(); } }\n' +
   '}\n' +
 
   // ── WELCOME ───────────────────────────────────────────────
+  // For hotel mode: showWelcome() shows the entry card (title + body + Start Planning button).
+  // The full starters card (showHotelWelcome) only appears AFTER clicking Start Planning.
+  // Agency mode: showAgencyWelcome fires immediately as before — unchanged.
   'function showWelcome() {\n' +
   '  if (isHotelMode) {\n' +
-  '    showHotelWelcome();\n' +
+  '    showHotelEntry();\n' +
   '  } else {\n' +
   '    showAgencyWelcome();\n' +
   '  }\n' +
   '}\n' +
 
-  // ── HOTEL WELCOME — warm concierge, 3 starters, "Start Planning" CTA ──
+  // ── HOTEL ENTRY CARD — shown on load, gates the full welcome ──────────
+  // Just the warm intro + "Start Planning" CTA. No starters, no dots.
+  'function showHotelEntry() {\n' +
+  '  var card = document.createElement("div");\n' +
+  '  card.className = "et-welcome";\n' +
+  '  card.id = "et-hotel-entry";\n' +
+  '  var eyebrow = document.createElement("div");\n' +
+  '  eyebrow.className = "et-welcome-eyebrow";\n' +
+  '  eyebrow.innerText = "Your Personal Concierge";\n' +
+  '  var title = document.createElement("div");\n' +
+  '  title.className = "et-welcome-title";\n' +
+  '  title.innerText = "Welcome to ' + agencyName + '";\n' +
+  '  var body = document.createElement("div");\n' +
+  '  body.className = "et-welcome-body";\n' +
+  '  body.innerText = "It\'s a pleasure to have you with us. Tell me the occasion, your preferred dates, and how many guests — I\'ll take care of finding the perfect room and making it special.";\n' +
+  '  var ctaBtn = document.createElement("button");\n' +
+  '  ctaBtn.style.cssText = "display:block;width:100%;background:var(--et-navy);color:white;border:none;padding:12px 20px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.3px;margin-top:4px;transition:background 0.2s;";\n' +
+  '  ctaBtn.innerText = "Start Planning";\n' +
+  '  ctaBtn.onmouseover = function(){this.style.background="var(--et-gold)";};\n' +
+  '  ctaBtn.onmouseout  = function(){this.style.background="var(--et-navy)";};\n' +
+  '  ctaBtn.onclick = function() {\n' +
+  '    card.remove();\n' +
+  '    var mountEl = embedTarget ? document.getElementById(embedTarget) : null;\n' +
+  '    if (mountEl) { mountEl.scrollIntoView({ behavior: "smooth", block: "start" }); }\n' +
+  '    setTimeout(function(){ showHotelWelcome(); input.focus(); }, 300);\n' +
+  '  };\n' +
+  '  card.appendChild(eyebrow);\n' +
+  '  card.appendChild(title);\n' +
+  '  card.appendChild(body);\n' +
+  '  card.appendChild(ctaBtn);\n' +
+  '  messages.appendChild(card);\n' +
+  '  messages.scrollTop = messages.scrollHeight;\n' +
+  '}\n' +
+
+  // ── HOTEL WELCOME — full concierge card with starters, shown after Start Planning ──
   'function showHotelWelcome() {\n' +
   '  var card = document.createElement("div");\n' +
   '  card.className = "et-welcome";\n' +
@@ -301,9 +338,6 @@ router.get('/', (req, res) => {
   '  promptLabel.className = "et-prompts-label";\n' +
   '  promptLabel.innerText = "Popular requests";\n' +
   // ── 3 conversation starters — customisable via window.bodrlessStarters ──
-  // The landing page can inject window.bodrlessStarters = [...] before the widget loads.
-  // Each starter: { icon, title, text }
-  // Default set is 3 starters covering the most common use cases.
   '  var starters = (window.bodrlessStarters && window.bodrlessStarters.length)\n' +
   '    ? window.bodrlessStarters.slice(0, 3)\n' +
   '    : [\n' +
@@ -314,21 +348,6 @@ router.get('/', (req, res) => {
   '  card.appendChild(eyebrow);\n' +
   '  card.appendChild(title);\n' +
   '  card.appendChild(body);\n' +
-  // ── "Start Planning" CTA — scrolls to the embedded chat ──────────────
-  // Only shown if embed target exists (hotel landing page context).
-  '  if (embedTarget) {\n' +
-  '    var ctaBtn = document.createElement("button");\n' +
-  '    ctaBtn.style.cssText = "display:block;width:100%;background:var(--et-navy);color:white;border:none;padding:12px 20px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.3px;margin-bottom:16px;transition:background 0.2s;";\n' +
-  '    ctaBtn.innerText = "Start Planning";\n' +
-  '    ctaBtn.onmouseover = function(){this.style.background="var(--et-gold)";};\n' +
-  '    ctaBtn.onmouseout  = function(){this.style.background="var(--et-navy)";};\n' +
-  '    ctaBtn.onclick = function() {\n' +
-  '      var mountEl = document.getElementById(embedTarget);\n' +
-  '      if (mountEl) { mountEl.scrollIntoView({ behavior: "smooth", block: "start" }); }\n' +
-  '      setTimeout(function(){ input.focus(); }, 400);\n' +
-  '    };\n' +
-  '    card.appendChild(ctaBtn);\n' +
-  '  }\n' +
   '  card.appendChild(divider);\n' +
   '  card.appendChild(promptLabel);\n' +
   '  starters.forEach(function(s) {\n' +
@@ -417,7 +436,6 @@ router.get('/', (req, res) => {
   '}\n' +
 
   // ── CANCELLATION POLICY BADGE ─────────────────────────────
-  // Shows a clear, human-readable badge under each room card.
   'function makeCancelBadge(policySummary, isRefundable) {\n' +
   '  var d = document.createElement("div");\n' +
   '  var cls = "cancel-policy ";\n' +
@@ -431,8 +449,6 @@ router.get('/', (req, res) => {
   '}\n' +
 
   // ── SMART CONTEXT — reorder ancillaries for honeymoon/anniversary ──────
-  // Surfaces spa/romantic/dining add-ons first when the conversation contains
-  // honeymoon or anniversary signals (detected from previousParams.preferences).
   'function sortAncillariesByContext(ancillaries, prefs) {\n' +
   '  if (!prefs || !prefs.length) return ancillaries;\n' +
   '  var isRomantic = prefs.indexOf("honeymoon") !== -1;\n' +
@@ -495,7 +511,6 @@ router.get('/', (req, res) => {
   '  var p = document.createElement("p"); p.style.whiteSpace = "pre-line"; p.innerText = summary; card.appendChild(p);\n' +
   '  var canModify = res.status === "confirmed" || res.status === "pending";\n' +
   '  var canCancel = res.status === "confirmed" || res.status === "pending";\n' +
-  // Show cancellation policy clearly
   '  if (res.cancellation_policy) {\n' +
   '    card.appendChild(makeCancelBadge(res.cancellation_policy, res.is_refundable));\n' +
   '  }\n' +
@@ -595,7 +610,6 @@ router.get('/', (req, res) => {
   'function addHotelPackage(p, idx) {\n' +
   '  var div = document.createElement("div"); div.className = "package";\n' +
   '  var hotel = p.hotel || {}; var summary = p.summary || {};\n' +
-  // Smart context — sort ancillaries by conversation preferences
   '  var prefs = (previousParams && previousParams.preferences) || (summary && summary.preferences) || [];\n' +
   '  var ancillaries = sortAncillariesByContext(p.ancillaryServices || [], prefs);\n' +
   '  var currency = hotel.currency || summary.currency || "KES";\n' +
@@ -631,7 +645,7 @@ router.get('/', (req, res) => {
   '  pkgB.appendChild(makeRow("Room",hotel.roomType||"Standard Room",roomSub.join(" \u00b7 ")));\n' +
   '  pkgB.appendChild(makeRow("Dates",(hotel.checkIn||"")+" \u2192 "+(hotel.checkOut||""),nights+" night"+(nights!==1?"s":"")+" \u00b7 "+passengers+" guest(s)"));\n' +
 
-  // Cancellation policy badge — prominently shown
+  // Cancellation policy badge
   '  pkgB.appendChild(makeCancelBadge(hotel.policySummary, hotel.isRefundable));\n' +
 
   // Meal plan
@@ -662,11 +676,10 @@ router.get('/', (req, res) => {
   '  pkgB.appendChild(mealRow);\n' +
   '  pkgB.appendChild(makeRow("Rate",currency+" "+Math.round(hotel.pricePerNight||0).toLocaleString()+"/night","\u00d7 "+nights+" night"+(nights!==1?"s":"")+" = "+currency+" "+Math.round(baseTotal).toLocaleString()));\n' +
 
-  // Ancillaries — smart-sorted by context
+  // Ancillaries
   '  if(ancillaries.length>0){\n' +
   '    var aRow=document.createElement("div"); aRow.className="pkg-row";\n' +
   '    var aLbl=document.createElement("div"); aLbl.className="pkg-label"; aLbl.innerText="Add-ons"; aRow.appendChild(aLbl);\n' +
-  // If romantic context, add a subtle nudge above the add-ons list
   '    if (prefs.indexOf("honeymoon") !== -1 || prefs.indexOf("romantic") !== -1) {\n' +
   '      var nudge=document.createElement("div"); nudge.style.cssText="font-size:11px;color:var(--et-gold);margin-bottom:6px;font-style:italic;";\n' +
   '      nudge.innerText="\u2728 Curated for a romantic stay";\n' +
