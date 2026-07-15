@@ -133,28 +133,30 @@ class OrchestrationEngine {
   async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null) {
     this._validateTripParams(tripParams);
 
-// ── DATE FALLBACK ─────────────────────────────────────────
-// When the user didn't give dates (e.g. "Dar es Salaam to
-// Cape Town 5 nights") the parser returns departureDate: null
-// and returnDate: null. The individual flight/hotel fallbacks
-// already handle the missing outbound date with tomorrow, but
-// returnDate stays null so the return search never fires at all.
-// Fix both here, once, before any search runs.
-if (!tripParams.departureDate) {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  tripParams.departureDate = d.toISOString().split('T')[0];
-  console.log(`[DATE FALLBACK] No departureDate — using ${tripParams.departureDate}`);
-}
-if (!tripParams.returnDate && tripParams.nights) {
-  const dep = new Date(tripParams.departureDate);
-  dep.setDate(dep.getDate() + tripParams.nights);
-  tripParams.returnDate = dep.toISOString().split('T')[0];
-  console.log(`[DATE FALLBACK] No returnDate — using ${tripParams.returnDate} (${tripParams.nights} nights)`);
-}
-// ── END DATE FALLBACK ─────────────────────────────────────
+    // ── DATE FALLBACK ─────────────────────────────────────────
+    // When the user didn't give dates (e.g. "Help me plan a trip
+    // to Malaysia") the parser returns departureDate: null and
+    // returnDate: null. The individual flight/hotel fallbacks
+    // already handle the missing outbound date with tomorrow, but
+    // returnDate stays null so the return search never fires at all.
+    // Fix both here, once, before any search runs.
+    if (!tripParams.departureDate) {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      tripParams.departureDate = d.toISOString().split('T')[0];
+      console.log(`[DATE FALLBACK] No departureDate — using ${tripParams.departureDate}`);
+    }
+    if (!tripParams.returnDate) {
+      const nights = tripParams.nights || 7;
+      const dep = new Date(tripParams.departureDate);
+      dep.setDate(dep.getDate() + nights);
+      tripParams.returnDate = dep.toISOString().split('T')[0];
+      if (!tripParams.nights) tripParams.nights = nights;
+      console.log(`[DATE FALLBACK] No returnDate — using ${tripParams.returnDate} (${nights} nights${!tripParams.nights ? ' default' : ''})`);
+    }
+    // ── END DATE FALLBACK ─────────────────────────────────────
 
-const resolvedIntent = intent || this._detectIntent(prompt, null);
+    const resolvedIntent = intent || this._detectIntent(prompt, null);
 
     tripParams.wantsCheapest = !!resolvedIntent.wantsCheapest;
     tripParams.wantsAffordableSort = !!resolvedIntent.wantsAffordableSort;
@@ -883,16 +885,13 @@ const resolvedIntent = intent || this._detectIntent(prompt, null);
     tripParams.agencyId = agencyId;
 
     // ── Multi-trip: independent separate trips ────────────────────────────────
-    // parsePrompt returns { trips: [...] } when the user asks for multiple
-    // completely separate trips (different origins, destinations, and dates).
-    // These are NOT multi-destination legs — run each as its own search.
     if (Array.isArray(tripParams.trips) && tripParams.trips.length > 1) {
       const tripResults = [];
 
       for (const trip of tripParams.trips) {
         const legParams = {
           ...tripParams,
-          trips:              undefined,   // prevent recursion
+          trips:              undefined,
           isMultiDestination: false,
           legs:               undefined,
           destination:        trip.destination,
@@ -1278,7 +1277,7 @@ const resolvedIntent = intent || this._detectIntent(prompt, null);
           nationality:        p.nationality     || null,
           passport_number:    p.passportNumber  || p.passport_number || null,
           passport_expiry:    p.passportExpiry  || p.passport_expiry || null,
-          national_id: p.nationalId || p.national_id_number || p.national_id || null,
+          national_id:        p.nationalId || p.national_id_number || p.national_id || null,
           gender:             p.gender          || null,
           passenger_type:     p.type            || 'adult',
           phone:              p.phone           || guestPhone,
@@ -2028,7 +2027,7 @@ const resolvedIntent = intent || this._detectIntent(prompt, null);
       const d = new Date(value);
       if (isNaN(d.getTime())) return null;
       const pad = n => String(n).padStart(2, '0');
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getSeconds())}`;
     } catch {
       return null;
     }
