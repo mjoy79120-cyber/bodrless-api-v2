@@ -21,7 +21,7 @@
 const { logger } = require('../utils/logger');
 const supabase = require('../utils/supabase');
 const whatsappService = require('./whatsapp');
-const notificationService = require('./notificationService');
+const notificationService = require('./notifications');
 const tripMonitoringService = require('./tripMonitoringService');
 const duffel = require('../adapters/duffel');
 
