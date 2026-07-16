@@ -7,6 +7,7 @@ const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
 const destinationIntel = require("../services/destinationIntel");
 const tracking = require("../services/trackingService");
 const travelerIntelligence = require("../services/travelerIntelligence");
+const tripMonitoringService = require("../services/tripMonitoringService");
 
 let hotelbedsTransfers = null;
 try {
@@ -133,13 +134,6 @@ class OrchestrationEngine {
   async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null) {
     this._validateTripParams(tripParams);
 
-    // ── DATE FALLBACK ─────────────────────────────────────────
-    // When the user didn't give dates (e.g. "Help me plan a trip
-    // to Malaysia") the parser returns departureDate: null and
-    // returnDate: null. The individual flight/hotel fallbacks
-    // already handle the missing outbound date with tomorrow, but
-    // returnDate stays null so the return search never fires at all.
-    // Fix both here, once, before any search runs.
     if (!tripParams.departureDate) {
       const d = new Date();
       d.setDate(d.getDate() + 1);
@@ -154,7 +148,6 @@ class OrchestrationEngine {
       if (!tripParams.nights) tripParams.nights = nights;
       console.log(`[DATE FALLBACK] No returnDate — using ${tripParams.returnDate} (${nights} nights${!tripParams.nights ? ' default' : ''})`);
     }
-    // ── END DATE FALLBACK ─────────────────────────────────────
 
     const resolvedIntent = intent || this._detectIntent(prompt, null);
 
@@ -1305,6 +1298,35 @@ class OrchestrationEngine {
       }
 
       logger.info('Booking saved', { bookingRef, agencyId });
+
+      // ── TRIP MONITORING — start monitoring this booking ───────
+      // Fire-and-forget: a monitoring failure must never break the
+      // booking confirmation. The traveler already has their
+      // confirmed booking — this is additive, not load-bearing.
+      tripMonitoringService.createTripFromBooking({
+        id:                         booking.id,
+        booking_ref:                bookingRef,
+        agency_id:                  agencyId,
+        guest_name:                 guestName,
+        guest_phone:                guestPhone,
+        guest_email:                guestEmail,
+        origin:                     tripParams.origin       || null,
+        destination:                tripParams.destination  || null,
+        departure_date:             tripParams.departureDate || null,
+        return_date:                tripParams.returnDate    || null,
+        flight_details:             selectedPackage.transport  || null,
+        hotel_details:              selectedPackage.hotel      || null,
+        transfer_details:           selectedPackage.transfers  || null,
+        trip_params:                tripParams,
+        supplier_booking_reference: supplierBookingReference,
+        passengers:                 tripParams.passengers || 1,
+      }).catch(err => {
+        logger.error('Trip monitoring creation failed — booking is still confirmed', {
+          bookingRef, error: err.message,
+        });
+      });
+      // ── END TRIP MONITORING ───────────────────────────────────
+
       return { bookingRef, bookingId: booking.id };
 
     } catch (err) {

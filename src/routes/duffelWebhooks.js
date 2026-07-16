@@ -3,37 +3,15 @@
  * ─────────────────────────────────────────────────────────────
  * Receives real-time notifications FROM Duffel — airline-initiated
  * schedule changes, order created/cancelled confirmations, payment
- * events, etc. This is the reactive counterpart to everything else
- * built for Duffel this session (booking, cancel, change), which are
- * all things BODRLESS initiates on demand. This route instead
- * receives events Duffel pushes to us.
+ * events, etc.
  *
- * SIGNATURE VERIFICATION (real scheme confirmed from Duffel's docs,
- * 2026-07-03): every webhook POST carries a `Webhook-Signature`
- * header shaped like `t=<timestamp>,v1=<hex signature>`. The
- * signature is an HMAC-SHA256 of the string `${timestamp}.${rawBody}`
- * using the webhook's own secret (generated when the webhook is
- * created in Duffel's dashboard/API — NOT the same as
- * DUFFEL_ACCESS_TOKEN). Never process a webhook body without
- * verifying this first — an unverified endpoint would let anyone
- * POST a fake "your flight was cancelled" event.
+ * SIGNATURE VERIFICATION: every webhook POST carries a
+ * `Webhook-Signature` header shaped like `t=<timestamp>,v1=<hex>`.
+ * The signature is HMAC-SHA256 of `${timestamp}.${rawBody}` using
+ * the webhook secret (set as DUFFEL_WEBHOOK_SECRET in Render).
  *
- * *** RAW BODY REQUIREMENT — WIRED IN SERVER.JS ***
- * Signature verification needs the RAW, exact request body bytes —
- * not a re-stringified version of Express's parsed body. server.js
- * handles this via the `verify` callback on the global JSON parser:
- *
- *   app.use(express.json({
- *     verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); }
- *   }));
- *
- * So req.rawBody is the exact UTF-8 bytes Duffel signed, while
- * req.body remains parsed JSON for every other route, unchanged.
- * If req.rawBody is ever missing here, the endpoint fails loudly
- * with a 500 (see below) rather than silently accepting anything.
- *
- * Set DUFFEL_WEBHOOK_SECRET in Render env vars (from creating the
- * webhook in Duffel's dashboard — a real value, not invented).
+ * RAW BODY: req.rawBody is populated by server.js's express.json
+ * verify callback — required for HMAC verification.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -44,12 +22,33 @@ const router  = express.Router();
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 const tracking = require('../services/trackingService');
-const notificationService = require('../services/notifications');
+
+// Trip monitoring — lazy-loaded to avoid circular dependency issues
+let _tripMonitoringService = null;
+let _disruptionFlow = null;
+
+const getTripMonitoring = () => {
+  if (!_tripMonitoringService) {
+    try { _tripMonitoringService = require('../services/tripMonitoringService'); } catch (e) {
+      logger.warn('DuffelWebhook: tripMonitoringService not available', { error: e.message });
+    }
+  }
+  return _tripMonitoringService;
+};
+
+const getDisruptionFlow = () => {
+  if (!_disruptionFlow) {
+    try { _disruptionFlow = require('../services/disruptionFlow'); } catch (e) {
+      logger.warn('DuffelWebhook: disruptionFlow not available', { error: e.message });
+    }
+  }
+  return _disruptionFlow;
+};
 
 // ─────────────────────────────────────────────
 // SIGNATURE VERIFICATION
 // ─────────────────────────────────────────────
-const SIGNATURE_TOLERANCE_SECONDS = 5 * 60; // reject anything older than 5 minutes — replay-attack protection
+const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 
 function verifyDuffelSignature(rawBody, signatureHeader) {
   const secret = process.env.DUFFEL_WEBHOOK_SECRET;
@@ -61,7 +60,6 @@ function verifyDuffelSignature(rawBody, signatureHeader) {
     return { valid: false, reason: 'missing_signature_header' };
   }
 
-  // Header shape: "t=1699999999,v1=abcdef123..."
   const parts = Object.fromEntries(
     signatureHeader.split(',').map(kv => kv.split('=').map(s => s.trim()))
   );
@@ -82,11 +80,6 @@ function verifyDuffelSignature(rawBody, signatureHeader) {
     .update(`${timestamp}.${rawBody}`)
     .digest('hex');
 
-  // Constant-time comparison — a plain === check here would leak
-  // timing information an attacker could use to guess the signature
-  // byte-by-byte. Both buffers must be equal length for
-  // timingSafeEqual, so a length mismatch is checked first (and is
-  // itself just "invalid", not a crash).
   const expectedBuf = Buffer.from(expectedSignature, 'hex');
   const providedBuf = Buffer.from(providedSignature, 'hex');
   if (expectedBuf.length !== providedBuf.length) {
@@ -99,29 +92,23 @@ function verifyDuffelSignature(rawBody, signatureHeader) {
 
 // ─────────────────────────────────────────────
 // WEBHOOK ENDPOINT
-// req.rawBody is populated by server.js's express.json verify
-// callback (see file header) — this is NOT the default Express
-// behavior, so the missing-rawBody guard below stays as a tripwire.
 // ─────────────────────────────────────────────
 router.post('/duffel', async (req, res) => {
   const rawBody = req.rawBody;
   const signatureHeader = req.headers['webhook-signature'];
 
   if (!rawBody) {
-    logger.error('Duffel webhook: req.rawBody is missing — raw-body middleware is not wired correctly in server.js. Rejecting for safety.');
+    logger.error('Duffel webhook: req.rawBody missing — raw-body middleware not wired in server.js');
     return res.status(500).send('Server misconfigured — cannot verify webhook.');
   }
 
   const verification = verifyDuffelSignature(rawBody, signatureHeader);
   if (!verification.valid) {
-    logger.warn('Duffel webhook: signature verification failed — rejecting', { reason: verification.reason });
+    logger.warn('Duffel webhook: signature verification failed', { reason: verification.reason });
     return res.status(401).send('Invalid signature.');
   }
 
-  // Acknowledge immediately — Duffel expects a fast 200 response and
-  // will retry on failure/timeout. Real handling happens after
-  // responding so a slow lookup/notification never risks a
-  // duplicate delivery from Duffel's own retry logic.
+  // Acknowledge immediately — Duffel retries on timeout
   res.status(200).send('OK');
 
   let event;
@@ -132,54 +119,128 @@ router.post('/duffel', async (req, res) => {
     return;
   }
 
-  const eventType = event?.data?.object?.type || event?.type || null;
+  // Type: top-level first, then nested fallback per Duffel docs
+  const eventType = event?.type
+    || event?.data?.object?.type
+    || null;
+
   const eventData = event?.data?.object || event?.data || null;
 
   logger.info('Duffel webhook received', { eventType, orderId: eventData?.id || eventData?.order_id });
 
   try {
     switch (eventType) {
+
       case 'order.airline_initiated_change_detected':
         await handleAirlineInitiatedChange(eventData);
+        break;
+
+      case 'order.flight_delay':
+        await handleFlightDisruption(eventData, 'delay');
+        break;
+
+      case 'order.flight_cancelled':
+        await handleFlightDisruption(eventData, 'cancellation');
         break;
 
       case 'order.cancelled':
         logger.info('Duffel webhook: order cancelled (informational)', { orderId: eventData?.id });
         break;
 
+      case 'order.updated':
+        logger.info('Duffel webhook: order updated (informational)', { orderId: eventData?.id });
+        await _logToTripMonitoring(eventData, 'order_updated', 'info', 'Duffel order updated');
+        break;
+
+      case 'order.payment_succeeded':
       case 'payment.created':
-        logger.info('Duffel webhook: payment created (informational)', { orderId: eventData?.order_id });
+        logger.info('Duffel webhook: payment event (informational)', { orderId: eventData?.order_id || eventData?.id });
+        await _logToTripMonitoring(eventData, 'payment_confirmed', 'info', 'Payment confirmed by Duffel');
         break;
 
       default:
-        // Any event type not explicitly handled is logged, not
-        // silently dropped — useful for noticing new event types
-        // Duffel adds later without us realizing.
         logger.info('Duffel webhook: unhandled event type (informational only)', { eventType });
     }
   } catch (err) {
-    // Never let a handler error surface as a failed webhook response
-    // — we already sent 200 above. Log loudly instead so it's caught
-    // in monitoring rather than silently triggering Duffel retries
-    // for a duplicate root cause.
     logger.error('Duffel webhook: handler threw after acknowledging', { eventType, error: err.message });
   }
 });
 
 // ─────────────────────────────────────────────
+// HANDLE FLIGHT DISRUPTION (delay / cancellation)
+// Routes into trip monitoring disruptionFlow which handles:
+//   - Searching alternative flights
+//   - Sending WhatsApp options to traveler
+//   - Notifying hotel and transfer of delay
+//   - Executing Duffel order change when traveler picks an option
+// Falls back to alert-only for pre-monitoring bookings.
+// ─────────────────────────────────────────────
+async function handleFlightDisruption(orderData, forcedDisruptionType) {
+  const orderId = orderData?.id;
+  if (!orderId) {
+    logger.warn('Duffel webhook: disruption event with no order id');
+    return;
+  }
+
+  const monitoring = getTripMonitoring();
+  const flow = getDisruptionFlow();
+
+  if (monitoring && flow) {
+    const trip = await monitoring.getTripBySupplierOrder('duffel', orderId);
+    if (trip) {
+      // Build normalized disruption object matching flightStatusService shape
+      const slices  = orderData?.slices  || [];
+      const slice   = slices[0]          || {};
+      const segment = slice.segments?.[0] || {};
+      const carrier = segment.marketing_carrier || segment.operating_carrier || {};
+
+      const delayMinutes = orderData?.changes?.find(
+        c => c.type === 'flight_delay'
+      )?.flight_delay_in_minutes || 0;
+
+      const isCancelled = forcedDisruptionType === 'cancellation' || orderData?.status === 'cancelled';
+      const isDelayed   = !isCancelled && delayMinutes >= 20;
+
+      const disruption = {
+        flightNumber:    segment.marketing_carrier_flight_number || trip.flight_number || null,
+        airline:         carrier.name       || null,
+        airlineCode:     carrier.iata_code  || null,
+        status:          isCancelled ? 'Cancelled' : (isDelayed ? 'Delayed' : 'Changed'),
+        rawStatus:       orderData?.status  || null,
+        departure: {
+          iata:          slice.origin?.iata_code      || null,
+          scheduledTime: segment.departing_at         || null,
+          revisedTime:   null,
+          gate:          null,
+        },
+        arrival: {
+          iata:          slice.destination?.iata_code || null,
+          scheduledTime: segment.arriving_at          || null,
+          revisedTime:   null,
+        },
+        delayMinutes,
+        isDisrupted:     isCancelled || isDelayed,
+        disruptionType:  forcedDisruptionType,
+        isCancelled,
+        isDiverted:      false,
+        isDelayed,
+        source:          'duffel_webhook',
+        duffelOrderId:   orderId,
+      };
+
+      await flow.handleFlightDisruption(trip, disruption);
+      return;
+    }
+  }
+
+  // Fallback: not in monitoring system — alert only
+  await _alertFallback(orderId, forcedDisruptionType);
+}
+
+// ─────────────────────────────────────────────
 // HANDLE AIRLINE-INITIATED CHANGE
-// The airline changed something about a flight someone already
-// booked (schedule shift, cancellation, etc.) — Bodrless didn't
-// initiate this. Find which real booking this belongs to and raise
-// a clear, actionable alert; also let the traveler know directly
-// rather than leaving them to discover it themselves.
-//
-// NOT YET BUILT: automatically rebooking/resolving the change on
-// the traveler's behalf — that needs its own real Duffel endpoint
-// (likely accepting/rejecting the airline's proposed change) which
-// hasn't been confirmed via documentation yet. For now this
-// surfaces the change clearly for manual handling, rather than
-// guessing at an automated resolution.
+// Routes into disruption flow for monitored trips.
+// Falls back to alert + WhatsApp for pre-monitoring bookings.
 // ─────────────────────────────────────────────
 async function handleAirlineInitiatedChange(orderData) {
   const orderId = orderData?.id;
@@ -188,6 +249,19 @@ async function handleAirlineInitiatedChange(orderData) {
     return;
   }
 
+  // Try trip monitoring first
+  const monitoring = getTripMonitoring();
+  const flow = getDisruptionFlow();
+
+  if (monitoring && flow) {
+    const trip = await monitoring.getTripBySupplierOrder('duffel', orderId);
+    if (trip) {
+      await handleFlightDisruption(orderData, 'schedule_change');
+      return;
+    }
+  }
+
+  // Fallback: pre-monitoring booking — alert + WhatsApp traveler directly
   const { data: booking, error } = await supabase
     .from('bookings')
     .select('*')
@@ -195,60 +269,105 @@ async function handleAirlineInitiatedChange(orderData) {
     .maybeSingle();
 
   if (error || !booking) {
-    logger.warn('Duffel webhook: airline-initiated change for an order we have no matching booking for', { orderId, error: error?.message });
+    logger.warn('Duffel webhook: airline-initiated change for unknown order', {
+      orderId, error: error?.message,
+    });
     return;
   }
 
   tracking.alert({
-    type:     'airline_initiated_change',
-    severity: 'critical',
-    title:    `Airline changed a booked flight — ${booking.booking_ref}`,
-    detail:   `Duffel detected an airline-initiated change on order ${orderId} (booking ${booking.booking_ref}). This was NOT something Bodrless requested. Review the order in Duffel's dashboard and contact the traveler with next steps — automated resolution isn't built yet.`,
-    context:  { bookingRef: booking.booking_ref, orderId },
-    agencyId: booking.agency_id,
+    type:       'airline_initiated_change',
+    severity:   'critical',
+    title:      `Airline changed a booked flight — ${booking.booking_ref}`,
+    detail:     `Duffel detected an airline-initiated change on order ${orderId} (booking ${booking.booking_ref}). Review in Duffel's dashboard and contact the traveler.`,
+    context:    { bookingRef: booking.booking_ref, orderId },
+    agencyId:   booking.agency_id,
     bookingRef: booking.booking_ref,
   });
 
-  // Let the traveler know directly and promptly — never leave them
-  // to find out from the airline first with no context from us.
   if (booking.guest_phone) {
     try {
       const whatsappService = require('../services/whatsapp');
-      const agency = await supabase.from('agencies').select('whatsapp_phone_number_id').eq('id', booking.agency_id).single();
-      if (agency?.data?.whatsapp_phone_number_id) {
+      const { data: agency } = await supabase
+        .from('agencies')
+        .select('whatsapp_phone_number_id')
+        .eq('id', booking.agency_id)
+        .single();
+
+      if (agency?.whatsapp_phone_number_id) {
         await whatsappService.sendText(
-          agency.data.whatsapp_phone_number_id,
+          agency.whatsapp_phone_number_id,
           booking.guest_phone,
           `We've been notified by the airline of a change affecting your flight for booking *${booking.booking_ref}*. Our team is reviewing this now and will contact you shortly with details and options.`
         );
       }
     } catch (err) {
-      logger.error('Duffel webhook: could not notify traveler of airline-initiated change', { bookingRef: booking.booking_ref, error: err.message });
+      logger.error('Duffel webhook: could not notify traveler of airline-initiated change', {
+        bookingRef: booking.booking_ref, error: err.message,
+      });
     }
   }
+}
+
+// ─────────────────────────────────────────────
+// LOG TO TRIP MONITORING
+// For informational events — just appends to the event log.
+// ─────────────────────────────────────────────
+async function _logToTripMonitoring(orderData, eventType, severity, title) {
+  const orderId = orderData?.id || orderData?.order_id;
+  if (!orderId) return;
+
+  const monitoring = getTripMonitoring();
+  if (!monitoring) return;
+
+  try {
+    const trip = await monitoring.getTripBySupplierOrder('duffel', orderId);
+    if (!trip) return;
+    await monitoring.logEvent(trip.id, { event_type: eventType, severity, title, metadata: { orderId } });
+  } catch (err) {
+    logger.error('Duffel webhook: _logToTripMonitoring failed', { orderId, error: err.message });
+  }
+}
+
+// ─────────────────────────────────────────────
+// ALERT FALLBACK
+// For bookings not yet in the monitoring system.
+// ─────────────────────────────────────────────
+async function _alertFallback(orderId, disruptionType) {
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('booking_ref, agency_id, guest_phone')
+    .eq('supplier_order_id', orderId)
+    .maybeSingle();
+
+  if (!booking) {
+    logger.warn('Duffel webhook: no booking found for disruption alert fallback', { orderId });
+    return;
+  }
+
+  tracking.alert({
+    type:       `flight_${disruptionType}`,
+    severity:   disruptionType === 'cancellation' ? 'critical' : 'warning',
+    title:      `Flight ${disruptionType} detected — ${booking.booking_ref}`,
+    detail:     `Duffel order ${orderId} has a ${disruptionType}. Check Duffel dashboard for details.`,
+    context:    { orderId, bookingRef: booking.booking_ref },
+    agencyId:   booking.agency_id,
+    bookingRef: booking.booking_ref,
+  });
 }
 
 module.exports = router;
 
 /**
  * ═══════════════════════════════════════════════════════════
- * SERVER.JS WIRING — DONE (2026-07-04)
+ * SERVER.JS WIRING
  * ═══════════════════════════════════════════════════════════
- * This route is mounted in server.js at:
- *
+ * Mounted in server.js at:
  *   app.use('/api/webhooks', duffelWebhookRoutes);
  *
- * giving the live endpoint:  POST /api/webhooks/duffel
- * (this is the URL to register in Duffel's dashboard)
+ * Live endpoint:  POST /api/webhooks/duffel
+ * Register this URL in Duffel dashboard → Developers → Webhooks
  *
- * Raw body capture is handled globally via the `verify` callback
- * on express.json() in server.js (see file header) — no separate
- * express.raw() mount is needed, and adding one would be redundant.
- *
- * The webhook routes are deliberately mounted BEFORE the /api/
- * rate limiter in server.js, so a burst of airline-initiated
- * change events (e.g. a mass disruption) can never be dropped
- * with a 429. Authentication is the HMAC signature check above,
- * not the rate limiter.
+ * Mounted BEFORE the rate limiter so burst events are never 429'd.
  * ═══════════════════════════════════════════════════════════
  */

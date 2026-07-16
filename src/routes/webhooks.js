@@ -11,6 +11,8 @@
  * → Drop-off recovery: returning traveler after 30+ min gap —
  *   offer resume vs fresh start before anything else runs
  * → Resume/fresh choice: re-show cached packages or clear and start over
+ * → Disruption tap (disruption_alt_* / disruption_keep_*) — handled
+ *   by disruptionFlow before any other button handler
  * → Cancellation flow (post-booking cancel with ref)
  * → Flight change flow
  * → Active booking session (passenger detail collection)
@@ -33,6 +35,7 @@ const whatsappCancelFlow = require('../services/whatsappCancelFlow');
 const whatsappChangeFlow = require('../services/whatsappChangeFlow');
 const packageCache = require('../services/packageCache');
 const conversationMemory = require('../services/conversationMemoryService');
+const disruptionFlow = require('../services/disruptionFlow');
 const { logger } = require('../utils/logger');
 
 const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|phone|email|dob|date of birth)\s*:/im;
@@ -77,9 +80,29 @@ router.post('/whatsapp', async (req, res) => {
 
     // ── INTERACTIVE REPLIES (button/list taps) ─────────────
     if (message.type === 'interactive') {
-      const buttonId = message.interactive?.button_reply?.id || null;
+      const buttonId = message.interactive?.button_reply?.id
+        || message.interactive?.list_reply?.id
+        || null;
 
-      // Tap-to-reveal photo
+      // ── DISRUPTION ALTERNATIVE TAP ─────────────────────
+      // Must be checked FIRST before any other button handler —
+      // disruption tap IDs (disruption_alt_* / disruption_keep_*)
+      // must never fall through to the photo or booking handlers.
+      if (buttonId && (
+        buttonId.startsWith('disruption_alt_') ||
+        buttonId.startsWith('disruption_keep_')
+      )) {
+        logger.info('Disruption tap received', { buttonId, from });
+
+        // Handle async — don't await so WhatsApp ack returns fast
+        disruptionFlow.handleAlternativeTap(buttonId, from).catch(err => {
+          logger.error('DisruptionFlow tap handler failed', { buttonId, error: err.message });
+        });
+
+        return;
+      }
+
+      // ── TAP-TO-REVEAL PHOTO ────────────────────────────
       if (buttonId) {
         const photoMatch = buttonId.match(/^photo_(\d+)$/);
         if (photoMatch) {

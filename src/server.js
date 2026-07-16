@@ -18,7 +18,9 @@ const uploadRoutes          = require('./routes/uploads');
 const widgetRoutes          = require('./routes/widget');
 const apiV1Routes           = require('./routes/api');
 const adminRoutes           = require('./routes/admin');
+const tripMonitoringRoutes  = require('./routes/tripMonitoring');
 const { startSweeper }      = require('./services/paymentSweeper');
+const monitoringWorker      = require('./workers/monitoringWorker');
 const tracking              = require('./services/trackingService');
 const insightsEngine        = require('./services/insightsEngine');
 const hotelbedsContent      = require('./services/hotelbedsContent');
@@ -80,8 +82,9 @@ app.use('/api/agencies', agencyRoutes);
 app.use('/admin',        adminRoutes);
 
 const { authenticateAgency } = require('./middleware/auth');
-app.use('/api/trips',   authenticateAgency, tripRoutes);
-app.use('/api/uploads', authenticateAgency, uploadRoutes);
+app.use('/api/trips',      authenticateAgency, tripRoutes);
+app.use('/api/uploads',    authenticateAgency, uploadRoutes);
+app.use('/api/monitoring', authenticateAgency, tripMonitoringRoutes);
 
 app.get('/test-widget.html', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -92,10 +95,6 @@ app.get('/test-widget.html', (req, res) => {
 // HOTEL LANDING PAGE
 // /hotel/sarova          — clean URL for each hotel group
 // /test-hotel.html       — legacy alias
-//
-// Pulls group name, primary_color, properties from Supabase.
-// Prompts built from real property names — nothing hardcoded.
-// Widget embedded directly on page (no floating trigger button).
 // ─────────────────────────────────────────────────────────────
 async function serveHotelLanding(req, res) {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -420,6 +419,7 @@ app.get('/', (req, res) => {
       hotel_mpesa_webhook: '/api/hotel/webhook/mpesa',
       widget:              '/widget.js?key=YOUR_AGENCY_ID',
       health:              '/health',
+      monitoring:          '/api/monitoring/trips',
     },
   });
 });
@@ -455,6 +455,15 @@ app.listen(PORT, '0.0.0.0', () => {
       ), interval
     );
   }
+
+  // ── TRIP MONITORING WORKER ────────────────────────────────
+  // Starts the frequency-aware background cron that monitors all
+  // active trips (flight status, stage advancement, disruption
+  // detection). Fires every 15 minutes internally but respects
+  // per-trip check_interval_mins so trips far from departure
+  // are only actually checked every 2 hours.
+  monitoringWorker.start();
+  // ── END TRIP MONITORING WORKER ────────────────────────────
 });
 
 if (process.env.NODE_ENV === 'production') {
@@ -465,5 +474,23 @@ if (process.env.NODE_ENV === 'production') {
     }).on('error', (e) => console.log('Keep alive error:', e.message));
   }, 4 * 60 * 1000);
 }
+
+// ── Rate Scraper Cron ─────────────────────────────────────────
+const cron = require('node-cron');
+const { runScraper } = require('./workers/rateScraper');
+
+// Run every 6 hours: midnight, 6am, noon, 6pm
+cron.schedule('0 0,6,12,18 * * *', async () => {
+  logger.info('[Cron] Firing rate scraper');
+  try { await runScraper(); }
+  catch (err) { logger.error('[Cron] Scraper error:', { error: err.message }); }
+});
+
+// Run once on startup after 10 seconds
+setTimeout(async () => {
+  logger.info('[Startup] Running initial rate scrape...');
+  try { await runScraper(); }
+  catch (err) { logger.error('[Startup scraper] Error:', { error: err.message }); }
+}, 10000);
 
 module.exports = app;
