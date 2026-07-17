@@ -134,7 +134,11 @@ class OrchestrationEngine {
   async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null) {
     this._validateTripParams(tripParams);
 
+    // Track whether dates came from the user or were assumed
+    let datesWereAssumed = false;
+
     if (!tripParams.departureDate) {
+      datesWereAssumed = true;
       const d = new Date();
       d.setDate(d.getDate() + 1);
       tripParams.departureDate = d.toISOString().split('T')[0];
@@ -148,6 +152,8 @@ class OrchestrationEngine {
       if (!tripParams.nights) tripParams.nights = nights;
       console.log(`[DATE FALLBACK] No returnDate — using ${tripParams.returnDate} (${nights} nights${!tripParams.nights ? ' default' : ''})`);
     }
+
+    tripParams._datesWereAssumed = datesWereAssumed;
 
     const resolvedIntent = intent || this._detectIntent(prompt, null);
 
@@ -237,15 +243,42 @@ class OrchestrationEngine {
 
     const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
 
+    const dest        = this._titleCase(tripParams.destination);
+    const depDateFmt  = this._formatDateHuman(tripParams.departureDate);
+    const retDateFmt  = tripParams.returnDate ? this._formatDateHuman(tripParams.returnDate) : null;
+    const dateNote    = tripParams._datesWereAssumed
+      ? ` (no dates given — searched ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''} as a starting point — reply with your actual dates for accurate prices)`
+      : '';
+
     let responseText;
     if (rankedPackages.length > 0) {
-      responseText = `I found ${rankedPackages.length} travel option(s) for ${tripParams.destination}.${unavailableNotes ? ' ' + unavailableNotes : ''}`;
+      const dateLabel = tripParams._datesWereAssumed
+        ? ` — ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''}`
+        : '';
+      responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
     } else {
+      // No results — try alternative nearby date windows and come
+      // back with something concrete instead of just saying "try shifting"
+      const altResults = await this._searchAlternativeDates(tripParams, sessionId);
+
+      if (altResults.length > 0) {
+        const best = altResults[0];
+        responseText = `Nothing available ${depDateFmt ? `on ${depDateFmt} ` : ''}for ${dest}. ` +
+          `How about *${this._formatDateHuman(best.departureDate)}*? ` +
+          `I found ${best.packages.length} option${best.packages.length > 1 ? 's' : ''} then.`;
+        return {
+          text: responseText,
+          packages: best.packages,
+          suggestedDate: best.departureDate,
+          tripParams: { ...tripParams, departureDate: best.departureDate, returnDate: best.returnDate },
+        };
+      }
+
       const suggestions = await this._suggestAvailableDestinations(tripParams.agencyId, tripParams.destination);
-      const dest = this._titleCase(tripParams.destination);
+      const origin = this._titleCase(tripParams.origin || '');
       responseText = suggestions.length > 0
-        ? `I couldn't find availability for ${dest} on those dates. I can put a trip together to one of these right now: ${suggestions.join(', ')}. Want me to try one of those, or adjust your dates?`
-        : `I couldn't find availability for ${dest} on those dates. Try shifting your dates or naming a nearby city and I'll search again.`;
+        ? `No flights found${origin ? ` from ${origin}` : ''} to ${dest}${depDateFmt ? ` on ${depDateFmt}` : ''}. I can look at one of these instead: ${suggestions.join(', ')}. Or give me different dates and I'll try again.`
+        : `No flights found${origin ? ` from ${origin}` : ''} to ${dest}${depDateFmt ? ` on ${depDateFmt}` : ''}. Try a different date — what works for you?`;
     }
 
     return { text: responseText, packages: rankedPackages };
@@ -1094,6 +1127,58 @@ class OrchestrationEngine {
       });
     }
 
+    // ── SUGGEST DATES ─────────────────────────────────────────
+    // Traveler asked for date suggestions ("suggest dates", "when
+    // should I go?") — run the alternative date search directly
+    // and surface the best window found rather than searching
+    // tomorrow's date (the fallback) and returning no results.
+    if (intent?.wantsSuggestDates && tripParams.destination && !tripParams.departureDate) {
+      const altResults = await this._searchAlternativeDates(
+        { ...tripParams, departureDate: new Date().toISOString().split('T')[0] },
+        sessionId
+      );
+
+      if (altResults.length > 0) {
+        const best = altResults[0];
+        const depFmt = this._formatDateHuman(best.departureDate);
+        const retFmt = this._formatDateHuman(best.returnDate);
+        const dest   = this._titleCase(tripParams.destination);
+        const text   = `Here's what I'd suggest — flights to ${dest} look good from *${depFmt}*${retFmt ? ` to ${retFmt}` : ''}. Here are the best options for those dates:`;
+
+        const updatedHistory = [
+          ...conversationHistory,
+          { role: 'user', content: prompt },
+          { role: 'assistant', content: text, params: { ...tripParams, departureDate: best.departureDate }, packageCount: best.packages.length },
+        ].slice(-10);
+
+        // Package cache save is handled by the caller (webhooks.js) after receiving packages
+
+        return {
+          sessionId,
+          text,
+          packages: best.packages,
+          tripParams: { ...tripParams, departureDate: best.departureDate, returnDate: best.returnDate },
+          intent,
+          conversationHistory: updatedHistory,
+          generatedAt: new Date().toISOString(),
+        };
+      }
+
+      // No dates found at all — ask them directly
+      const dest = this._titleCase(tripParams.destination);
+      return {
+        sessionId,
+        text: `I couldn't find flights to ${dest} in the next few weeks. What dates are you flexible on? Give me a rough window and I'll find you something.`,
+        packages: [],
+        needsClarification: true,
+        tripParams,
+        intent,
+        conversationHistory,
+        generatedAt: new Date().toISOString(),
+      };
+    }
+    // ── END SUGGEST DATES ──────────────────────────────────────
+
     const singleResult = await this._runSingleDestinationSearch(tripParams, sessionId, prompt, intent);
 
     const updatedHistory = [
@@ -1430,7 +1515,15 @@ class OrchestrationEngine {
     }
     if (newDestination) adjustments.destination = newDestination;
 
-    return { isFollowUp, adjustments, productScope, wantsCheapest, wantsAffordableSort };
+    // "suggest dates" / "what dates" / "recommend dates" — traveler
+    // wants us to propose good travel dates rather than running a
+    // full search. Detected here so _continueOrchestration can
+    // route it to the alternative date search instead of a normal search.
+    const wantsSuggestDates = /\b(suggest|recommend|propose|what|any good)\s+(dates?|times?|days?)\b/i.test(lower)
+      || /\bdates?\s+(suggestion|recommendation|ideas?)\b/i.test(lower)
+      || /\bwhen\s+(should|can|is good)\b/i.test(lower);
+
+    return { isFollowUp, adjustments, productScope, wantsCheapest, wantsAffordableSort, wantsSuggestDates };
   }
 
   _adjustParams(previousParams, intent) {
@@ -2372,6 +2465,74 @@ class OrchestrationEngine {
 
     if (!outboundNote && !returnNote) return null;
     return [outboundNote, returnNote].filter(Boolean).join(' ');
+  }
+
+
+  // ─────────────────────────────────────────────
+  // SEARCH ALTERNATIVE DATES
+  // When no results found for requested date, try the next 3
+  // windows (3, 7, 14 days out) and return the first that has
+  // results. Gives the traveler something concrete immediately
+  // rather than just "try different dates".
+  // ─────────────────────────────────────────────
+  async _searchAlternativeDates(tripParams, sessionId) {
+    const offsets = [3, 7, 14]; // days from original departure
+    const results = [];
+
+    for (const offset of offsets) {
+      try {
+        const altDep = this._addDaysStr(tripParams.departureDate, offset);
+        const nights = tripParams.nights || 7;
+        const altRet = this._addDaysStr(altDep, nights);
+
+        const altParams = {
+          ...tripParams,
+          departureDate: altDep,
+          returnDate: altRet,
+          _datesWereAssumed: false,
+          _isAltDateSearch: true,
+        };
+
+        const [outbound, hotels] = await Promise.all([
+          this._searchFlightsWithHubFallback(altParams, 'outbound'),
+          this._searchHotels(altParams),
+        ]);
+
+        if (outbound.results.length > 0 || hotels.length > 0) {
+          const packages = await this._buildPackages({
+            outboundTransport: this._dedupeEquivalentFlights(outbound.results),
+            returnTransport: [],
+            hotels,
+            tripParams: altParams,
+            intent: { productScope: { needsTransport: true, needsHotel: true, needsTransfers: true } },
+            connectionInfo: { outbound: { connectsVia: outbound.connectsVia, connectingLegBookable: outbound.connectingLegBookable }, return: { connectsVia: null, connectingLegBookable: true } },
+          });
+
+          if (packages.length > 0) {
+            results.push({ departureDate: altDep, returnDate: altRet, packages: packages.slice(0, 3) });
+            break; // found one — stop searching
+          }
+        }
+      } catch (err) {
+        logger.warn('_searchAlternativeDates: attempt failed', { offset, error: err.message });
+      }
+    }
+
+    return results;
+  }
+
+  // ─────────────────────────────────────────────
+  // FORMAT DATE HUMAN
+  // Converts YYYY-MM-DD to "Mon 14 Jul" for display in messages
+  // ─────────────────────────────────────────────
+  _formatDateHuman(dateStr) {
+    if (!dateStr) return null;
+    try {
+      const d = new Date(dateStr + 'T00:00:00');
+      return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+    } catch {
+      return dateStr;
+    }
   }
 
   _validateTripParams(params) {
