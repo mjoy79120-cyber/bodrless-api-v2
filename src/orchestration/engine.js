@@ -856,6 +856,37 @@ class OrchestrationEngine {
       return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
     }
 
+    if (marker?.type === 'departure_date') {
+      const tripParams = { ...previousParams };
+      delete tripParams._awaitingClarification;
+
+      // Try to parse their date answer — handles formats like:
+      // "July 20", "20th July", "next Friday", "20/07", "2026-07-20"
+      const parsedDate = this._parseDateAnswer(answer);
+
+      if (parsedDate) {
+        tripParams.departureDate = parsedDate;
+        // Derive return date if nights known
+        if (tripParams.nights && !tripParams.returnDate) {
+          const dep = new Date(parsedDate);
+          dep.setDate(dep.getDate() + tripParams.nights);
+          tripParams.returnDate = dep.toISOString().split('T')[0];
+        }
+        console.log('RESUMED CLARIFICATION (departure_date) — completed params:', tripParams);
+        return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
+      }
+
+      // Couldn't parse — ask again more specifically
+      return this._buildClarificationResponse({
+        sessionId, prompt,
+        question: `I didn't quite catch that — what date are you thinking? Something like "20 July" or "early August" works perfectly.`,
+        tripParams: { ...previousParams },
+        intent: neutralIntent,
+        conversationHistory,
+        awaitingClarification: { type: 'departure_date' },
+      });
+    }
+
     if (marker?.type === 'child_age') {
       const tripParams = { ...previousParams };
       delete tripParams._awaitingClarification;
@@ -1126,6 +1157,33 @@ class OrchestrationEngine {
         awaitingClarification: { type: 'child_age' },
       });
     }
+
+    // ── DATE CLARIFICATION GATE ──────────────────────────────
+    // If no departure date was given AND the traveler isn't asking
+    // us to suggest dates AND this is a transport search — ask
+    // before searching. Silently using tomorrow as a fallback and
+    // showing prices for a random date is worse than just asking.
+    // Only fires for single-destination transport searches —
+    // hotel-only searches don't need a departure date prompt since
+    // the engine uses a sensible check-in default.
+    if (
+      !tripParams.departureDate &&
+      !intent?.wantsSuggestDates &&
+      intent?.productScope?.needsTransport !== false &&
+      tripParams.destination &&
+      !tripParams._awaitingClarification
+    ) {
+      const dest = this._titleCase(tripParams.destination);
+      return this._buildClarificationResponse({
+        sessionId, prompt,
+        question: `When are you looking to travel to ${dest}? Even a rough date or month works — I'll find what's available around then.`,
+        tripParams,
+        intent,
+        conversationHistory,
+        awaitingClarification: { type: 'departure_date' },
+      });
+    }
+    // ── END DATE CLARIFICATION GATE ───────────────────────────
 
     // ── SUGGEST DATES ─────────────────────────────────────────
     // Traveler asked for date suggestions ("suggest dates", "when
@@ -2533,6 +2591,116 @@ class OrchestrationEngine {
     } catch {
       return dateStr;
     }
+  }
+
+  // ─────────────────────────────────────────────
+  // PARSE DATE ANSWER
+  // Converts a traveler's free-text date reply into YYYY-MM-DD.
+  // Handles the formats people actually type:
+  //   "20 July", "July 20", "20th July 2026", "20/07", "next month",
+  //   "early August", "August", ISO "2026-07-20"
+  // Returns null if nothing recognizable — caller re-asks.
+  // ─────────────────────────────────────────────
+  _parseDateAnswer(text) {
+    if (!text) return null;
+    const t = text.trim().toLowerCase();
+
+    // Already ISO format
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+
+    const now = new Date();
+    const currentYear = now.getFullYear();
+
+    const MONTHS = {
+      jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+      apr: 4, april: 4, may: 5, jun: 6, june: 6,
+      jul: 7, july: 7, aug: 8, august: 8, sep: 9, september: 9, sept: 9,
+      oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+    };
+
+    // "20 July", "20th July", "July 20", "July 20th"
+    const dayMonthMatch = t.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i)
+      || t.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?/i);
+
+    if (dayMonthMatch) {
+      let day, monthStr;
+      if (/^\d/.test(dayMonthMatch[1])) {
+        day = parseInt(dayMonthMatch[1], 10);
+        monthStr = dayMonthMatch[2].toLowerCase().slice(0, 3);
+      } else {
+        monthStr = dayMonthMatch[1].toLowerCase().slice(0, 3);
+        day = parseInt(dayMonthMatch[2], 10);
+      }
+      const month = MONTHS[monthStr] || MONTHS[dayMonthMatch[1]?.toLowerCase().slice(0, 3)];
+      if (month && day >= 1 && day <= 31) {
+        // Pick year: if the month is already past this year, use next year
+        let year = currentYear;
+        const candidate = new Date(year, month - 1, day);
+        if (candidate < now) year = currentYear + 1;
+        return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+    }
+
+    // "20/07" or "07/20" (ambiguous — assume DD/MM for East Africa)
+    const slashMatch = t.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+    if (slashMatch) {
+      const day = parseInt(slashMatch[1], 10);
+      const month = parseInt(slashMatch[2], 10);
+      const year = slashMatch[3] ? (slashMatch[3].length === 2 ? 2000 + parseInt(slashMatch[3]) : parseInt(slashMatch[3])) : currentYear;
+      if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+        return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+    }
+
+    // "next week" → 7 days, "next month" → 30 days, "in 2 weeks" → 14 days
+    const relativeMatch = t.match(/next\s+(week|month|weekend)/i) || t.match(/in\s+(\d+)\s+(days?|weeks?)/i);
+    if (relativeMatch) {
+      const d = new Date(now);
+      if (relativeMatch[1] === 'week')    d.setDate(d.getDate() + 7);
+      else if (relativeMatch[1] === 'month')   d.setDate(d.getDate() + 30);
+      else if (relativeMatch[1] === 'weekend') d.setDate(d.getDate() + (6 - d.getDay() + 7) % 7 || 7);
+      else {
+        const n = parseInt(relativeMatch[1], 10);
+        const unit = relativeMatch[2];
+        d.setDate(d.getDate() + (unit.startsWith('week') ? n * 7 : n));
+      }
+      return d.toISOString().split('T')[0];
+    }
+
+    // "early July" → 5th, "mid July" → 15th, "late July" / "end of July" → 25th
+    const earlyMidLate = t.match(/(early|mid|late|end\s+of)\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i);
+    if (earlyMidLate) {
+      const qualifier = earlyMidLate[1].toLowerCase();
+      const monthStr  = earlyMidLate[2].toLowerCase().slice(0, 3);
+      const month     = MONTHS[monthStr];
+      if (month) {
+        const day = qualifier.startsWith('early') ? 5 : qualifier.startsWith('mid') ? 15 : 25;
+        let year = currentYear;
+        const candidate = new Date(year, month - 1, day);
+        if (candidate < now) year = currentYear + 1;
+        return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+    }
+
+    // Just a month name — use the 1st of that month
+    for (const [name, num] of Object.entries(MONTHS)) {
+      if (t === name || t.startsWith(name + ' ') || t.endsWith(' ' + name)) {
+        let year = currentYear;
+        const candidate = new Date(year, num - 1, 1);
+        if (candidate < now) year = currentYear + 1;
+        return `${year}-${String(num).padStart(2, '0')}-01`;
+      }
+    }
+
+    // Try native Date parsing as last resort
+    try {
+      const d = new Date(text);
+      if (!isNaN(d.getTime()) && d.getFullYear() >= currentYear) {
+        return d.toISOString().split('T')[0];
+      }
+    } catch {}
+
+    return null;
   }
 
   _validateTripParams(params) {
