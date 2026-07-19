@@ -1,216 +1,76 @@
-// HOTEL DIRECT ENGINE — v5
-// Fixed: _getRatePlans now fetches all plans and falls back gracefully when
-// requested meal plan isn't available. Agent-style messaging when meal plan
-// differs from request. Destination extraction is property-first.
-// v5.1: Smart alternative suggestions when requested destination has no property.
+// HOTEL DIRECT ENGINE — v6.1
+// Conversational AI layer: Groq (llama-3.3-70b) handles intent, context, and follow-ups.
+// Supabase layer: rooms, rates, availability, reservations (unchanged).
 
 const { v4: uuidv4 } = require('uuid');
-const supabase        = require('../utils/supabase');
-const { logger }      = require('../utils/logger');
+const Groq           = require('groq-sdk');
+const supabase       = require('../utils/supabase');
+const { logger }     = require('../utils/logger');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MEAL PLAN LABELS
-// ─────────────────────────────────────────────────────────────────────────────
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
 const MEAL_LABELS = {
-  room_only:        'Room Only',
-  bed_and_breakfast:'Bed & Breakfast',
-  half_board:       'Half Board',
-  full_board:       'Full Board',
-  all_inclusive:    'All Inclusive',
+  room_only:         'Room Only',
+  bed_and_breakfast: 'Bed & Breakfast',
+  half_board:        'Half Board',
+  full_board:        'Full Board',
+  all_inclusive:     'All Inclusive',
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DESTINATION CONTEXT — keywords that map to property traits
-// Used to pick the best alternative when no exact property match is found
-// ─────────────────────────────────────────────────────────────────────────────
-const DESTINATION_CONTEXT = {
-  beach:   ['beach', 'coast', 'ocean', 'sea', 'mombasa', 'malindi', 'diani', 'watamu', 'lamu', 'shore'],
-  safari:  ['safari', 'game', 'wildlife', 'mara', 'naivasha', 'amboseli', 'tsavo', 'samburu', 'shaba', 'lodge', 'camp'],
-  city:    ['nairobi', 'city', 'cbd', 'business', 'corporate', 'westlands', 'karen', 'gigiri'],
-  lake:    ['lake', 'nakuru', 'victoria', 'elementaita', 'naivasha'],
-};
+function buildSystemPrompt(group, allProperties) {
+  const propList = allProperties.map(p =>
+    `- ${p.name} (id: ${p.id}) — ${p.destination || p.location || ''}`
+  ).join('\n');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// NOISE PATTERNS
-// ─────────────────────────────────────────────────────────────────────────────
-const NOISE_PATTERNS = [
-  /\b(?:can\s+(?:you\s+)?(?:please\s+)?)?(?:find|search|look\s+up|look\s+for|show|get|book|reserve|check|need|want|require|suggest|recommend)(?:\s+(?:me|us))?\b/gi,
-  /\bi(?:'d|\s+would)\s+like(?:\s+to)?(?:\s+(?:book|reserve|find|get))?\b/gi,
-  /\bi\s+(?:want|need)(?:\s+to)?(?:\s+(?:book|reserve|find|get))?\b/gi,
-  /\bplease\b/gi,
-  /\bhelp\s+(?:me|us)\b/gi,
-  /\bcan\s+(?:i|we)\s+(?:get|have|book|reserve)\b/gi,
-  /\b(?:a\s+)?(?:room|rooms|suite|suites|deluxe|standard|superior|junior|double|twin|single|king|queen|family\s+room|bed)\b/gi,
-  /\b(?:all[\s-]inclusive|full[\s-]board|half[\s-]board|bed\s+and\s+breakfast|b&b|room\s+only|no\s+meals|with\s+breakfast|including\s+breakfast)\b/gi,
-  /\bfor\s+\d+\s*nights?\b/gi,
-  /\d+\s*(?:nights?|nts?)\b/gi,
-  /\bfor\s+\d+\s*(?:people|persons?|pax|adults?|guests?|of\s+us|travelers?)\b/gi,
-  /\b\d+\s*(?:people|persons?|pax|adults?|guests?|of\s+us|travelers?)\b/gi,
-  /\bcouple\b|\btwo\s+of\s+us\b|\b2\s+of\s+us\b|\bfor\s+two\b|\bfor\s+2\b/gi,
-  /\bfrom\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/gi,
-  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:\s+\d{4})?\b/gi,
-  /\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?\b/gi,
-  /\b\d{4}-\d{2}-\d{2}\b/g,
-  /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g,
-  /\b(?:this\s+weekend|next\s+week(?:end)?|tomorrow|today|tonight)\b/gi,
-  /\b(?:next|this|coming)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,
-  /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,
-  /\b(?:starting|arriving?|check(?:ing)?[\s-]in|departure|from|on|by)\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?\b/gi,
-  /\b(?:luxury|premium|budget|affordable|cheap|5[\s-]?star|five[\s-]?star|4[\s-]?star|four[\s-]?star|3[\s-]?star)\b/gi,
-  /\b(?:honeymoon|romantic|anniversary|family|business|corporate|beach|safari|game\s+drive|spa|wellness|relaxation|vacation|holiday|trip|getaway|escape|stay|visit)\b/gi,
-  /\b(?:my|our|your|their|his|her|its)\b/gi,
-  /\b(?:at\s+the|at\s+a|in\s+the|in\s+a|for\s+a|for\s+the)\b/gi,
-  /\b(?:^|\s)(?:in|at|the|a|an|for|us|me|with|of|from|some|any|on)\b/gi,
-];
+  return `You are a warm, professional hotel concierge for ${group.name}.
+You help guests find and book rooms across our properties.
 
-function stripNoise(text) {
-  let s = text;
-  for (const pattern of NOISE_PATTERNS) {
-    s = s.replace(pattern, ' ');
-  }
-  return s.replace(/\s+/g, ' ').trim();
+OUR PROPERTIES:
+${propList}
+
+YOUR JOB:
+Understand what the guest wants — no matter how they phrase it, across multiple turns — and return a JSON object so the system can search availability.
+
+ALWAYS respond with valid JSON in this exact shape:
+{
+  "intent": "search" | "refine" | "question" | "clarify" | "manage" | "chitchat",
+  "replyText": "Your warm, natural reply to the guest (1-3 sentences). For search/refine, briefly confirm what you're looking for. For question, answer it from context. For clarify, ask the one missing thing.",
+  "searchParams": {
+    "propertyId": "<uuid or null>",
+    "propertyName": "<name or null>",
+    "checkIn": "YYYY-MM-DD or null",
+    "checkOut": "YYYY-MM-DD or null",
+    "nights": <number or null>,
+    "adults": <number or null>,
+    "children": <number or null>,
+    "mealPlan": "room_only|bed_and_breakfast|half_board|full_board|all_inclusive or null",
+    "budget": "low|mid|luxury or null",
+    "preferences": ["honeymoon","family","business","beach","safari","spa"] or [],
+    "shouldSearch": <true if we have enough to search, false if we need more info>
+  },
+  "clarifyQuestion": "<single question to ask if intent=clarify, else null>"
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// parseHotelPrompt
-// ─────────────────────────────────────────────────────────────────────────────
-function parseHotelPrompt(prompt) {
-  const lower = (prompt || '').toLowerCase().trim();
+RULES:
+- Today is ${new Date().toISOString().split('T')[0]}.
+- If the guest says yes, sure, go ahead, sounds good, check it, that works — this is a CONFIRMATION. Use the property and params from the previous assistant message and set shouldSearch=true.
+- If the guest doesn't specify a property but we can infer one from context (e.g. "the beach one", "that lodge"), use it.
+- If the guest refines (e.g. "what about full board?", "do you have suites?", "make it 5 nights", "1 adult and 1 child"), update ONLY the changed fields and keep everything else from context.
+- If dates are relative ("this weekend", "next Friday", "tomorrow"), resolve them to YYYY-MM-DD.
+- If no check-in is given, default to tomorrow. If no nights, default to 3. If no adults, default to 1.
+- Only set shouldSearch=true when you have at minimum: a clear property match AND checkIn.
+- If the guest asks about a location we don't have a property in, suggest the closest matching property by context (beach request = suggest coastal property) and set shouldSearch=false with a clarifyQuestion asking if they would like to check that property instead.
+- For intent=question (e.g. "what's the cancellation policy?", "is breakfast included?"), answer from conversation context and set shouldSearch=false.
+- For intent=manage (cancel/modify/view booking), set shouldSearch=false — the widget handles this.
+- Keep replyText warm and concise. Never list room prices in replyText — the system renders cards.
+- Never make up room prices or availability — the system fetches live data.`;
+}
 
-  const legSplitMatch = lower.match(
-    /^(.*?)\s+(?:and\s+then|then|and\s+also|followed\s+by)\s+(.+)$/i
-  );
-
-  if (legSplitMatch) {
-    const p1 = parseHotelPrompt(legSplitMatch[1]);
-    const p2 = parseHotelPrompt(legSplitMatch[2]);
-
-    if (p1.destination && p2.destination) {
-      return {
-        destination:         null,
-        nights:              p1.nights,
-        adults:              p1.adults,
-        passengers:          p1.adults,
-        children:            p1.children,
-        childAges:           [],
-        mealPlan:            p1.mealPlan || p2.mealPlan,
-        departureDate:       p1.departureDate,
-        returnDate:          p1.returnDate,
-        budget:              p1.budget,
-        preferences:         [...new Set([...p1.preferences, ...p2.preferences])],
-        isMultiDestination:  true,
-        legs: [
-          { destination: p1.destination, nights: p1.nights, departureDate: p1.departureDate },
-          { destination: p2.destination, nights: p2.nights, departureDate: p2.departureDate },
-        ],
-        needsOriginClarification: false,
-        requiresFlight: false,
-        requiresBus:    false,
-        _parsedBy:      'hotel_rules_multi',
-        _originalPrompt: prompt,
-      };
-    }
-  }
-
-  let nights = 3;
-  const nightsMatch = lower.match(/(\d+)\s*(?:night|nights|nts?)\b/i);
-  if (nightsMatch) nights = parseInt(nightsMatch[1], 10);
-
-  let adults = 1;
-  const adultMatch = lower.match(/(\d+)\s*(?:people|persons?|pax|adults?|guests?|of\s+us|travelers?)\b/i);
-  if (adultMatch) adults = Math.max(1, parseInt(adultMatch[1], 10));
-  if (/\bcouple\b|two\s+of\s+us|2\s+of\s+us/i.test(lower)) adults = Math.max(adults, 2);
-  if (/\bfamily\b/i.test(lower) && adults < 2) adults = 2;
-  if (/\bfor\s+two\b|\bfor\s+2\b/i.test(lower)) adults = Math.max(adults, 2);
-
-  let children = 0;
-  const childMatch = lower.match(/(\d+)\s*(?:child(?:ren)?|kid(?:s)?)\b/i);
-  if (childMatch) children = parseInt(childMatch[1], 10);
-
-  let mealPlan = null;
-  if      (/all[\s-]?inclusive/i.test(lower))               mealPlan = 'all_inclusive';
-  else if (/full[\s-]?board/i.test(lower))                  mealPlan = 'full_board';
-  else if (/half[\s-]?board/i.test(lower))                  mealPlan = 'half_board';
-  else if (/bed[\s-]?and[\s-]?breakfast|b&b|\bbb\b/i.test(lower)) mealPlan = 'bed_and_breakfast';
-  else if (/room[\s-]?only|no\s+meals/i.test(lower))        mealPlan = 'room_only';
-  else if (/\bbreakfast\b/i.test(lower))                    mealPlan = 'bed_and_breakfast';
-
-  let departureDate = null;
-  const months = {
-    jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
-    january:1,february:2,march:3,april:4,june:6,july:7,august:8,
-    september:9,october:10,november:11,december:12,
-  };
-
-  const dateMatch =
-    lower.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?/i) ||
-    lower.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?/i);
-
-  if (dateMatch) {
-    const yr = new Date().getFullYear();
-    let day, month, year;
-    if (/^\d/.test(dateMatch[1] || '')) {
-      day   = parseInt(dateMatch[1], 10);
-      month = months[(dateMatch[2] || '').toLowerCase().slice(0, 3)];
-      year  = parseInt(dateMatch[3] || yr, 10);
-    } else {
-      month = months[(dateMatch[1] || '').toLowerCase().slice(0, 3)];
-      day   = parseInt(dateMatch[2], 10);
-      year  = parseInt(dateMatch[3] || yr, 10);
-    }
-    if (day && month) {
-      departureDate = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-    }
-  }
-
-  if (!departureDate) {
-    const d = new Date();
-    if      (/\btoday\b|\btonight\b/i.test(lower))     { /* use today */ }
-    else if (/\btomorrow\b/i.test(lower))               d.setDate(d.getDate() + 1);
-    else if (/this\s+weekend/i.test(lower))             d.setDate(d.getDate() + (6 - d.getDay()));
-    else if (/next\s+week/i.test(lower))                d.setDate(d.getDate() + 7);
-    else                                                 d.setDate(d.getDate() + 1);
-    departureDate = d.toISOString().split('T')[0];
-  }
-
-  const dep = new Date(departureDate);
-  dep.setDate(dep.getDate() + nights);
-  const returnDate = dep.toISOString().split('T')[0];
-
-  const destination = stripNoise(prompt).toLowerCase() || null;
-
-  let budget = 'mid';
-  if (/luxury|premium|5[\s-]?star|five[\s-]?star/i.test(lower)) budget = 'luxury';
-  else if (/cheap|budget|affordable/i.test(lower))               budget = 'low';
-
-  const preferences = [];
-  if (/honeymoon|romantic/i.test(lower))    preferences.push('honeymoon');
-  if (/family|kids|children/i.test(lower))  preferences.push('family');
-  if (/business|corporate/i.test(lower))    preferences.push('business');
-  if (/beach|ocean|sea|coast/i.test(lower)) preferences.push('beach');
-  if (/safari|game|wildlife/i.test(lower))  preferences.push('safari');
-  if (/spa|wellness|relax/i.test(lower))    preferences.push('spa');
-
-  return {
-    destination,
-    nights,
-    adults,
-    passengers: adults,
-    children,
-    childAges: [],
-    mealPlan,
-    departureDate,
-    returnDate,
-    budget,
-    preferences,
-    isMultiDestination: false,
-    legs: [],
-    needsOriginClarification: false,
-    requiresFlight: false,
-    requiresBus: false,
-    _parsedBy: 'hotel_rules',
-    _originalPrompt: prompt,
-  };
+function resolveCheckOut(checkIn, nights) {
+  if (!checkIn) return null;
+  const d = new Date(checkIn);
+  d.setDate(d.getDate() + (nights || 3));
+  return d.toISOString().split('T')[0];
 }
 
 class HotelDirectEngine {
@@ -222,273 +82,232 @@ class HotelDirectEngine {
     logger.info(`[HOTEL DIRECT][${sessionId}] Started`, { groupSlug, prompt });
 
     try {
-      const tripParams = parseHotelPrompt(prompt);
-      tripParams.groupSlug = groupSlug;
-
-      console.log('[HOTEL DIRECT] Parsed params:', tripParams);
-
       const group = await this._getHotelGroup(groupSlug);
       if (!group) {
-        return this._buildResponse(
-          sessionId, tripParams, conversationHistory,
-          `I couldn't find a hotel configuration for "${groupSlug}". Please contact support.`,
-          []
-        );
+        return this._buildResponse(sessionId, {}, conversationHistory,
+          `I couldn't find a hotel configuration for "${groupSlug}". Please contact support.`, []);
       }
 
-      if (tripParams.isMultiDestination && Array.isArray(tripParams.legs) && tripParams.legs.length > 0) {
-        return this._orchestrateMultiProperty(tripParams, group, sessionId, prompt, conversationHistory);
+      const allProperties = await this._getAllProperties(group.id);
+      const systemPrompt  = buildSystemPrompt(group, allProperties);
+
+      // Build conversation history for Groq — last 20 turns
+      // Groq requires alternating user/assistant roles with no empty content
+      const messages = [];
+      const history  = conversationHistory.slice(-20);
+      for (const h of history) {
+        const role    = h.role === 'assistant' ? 'assistant' : 'user';
+        const content = (h.content || '').trim();
+        if (!content) continue;
+        if (messages.length && messages[messages.length - 1].role === role) continue;
+        messages.push({ role, content });
+      }
+      if (messages.length && messages[messages.length - 1].role === 'user') {
+        messages.push({ role: 'assistant', content: 'Understood.' });
+      }
+      messages.push({ role: 'user', content: prompt });
+
+      // ── Call Groq ─────────────────────────────────────────────────────
+      let groqResult;
+      try {
+        const response = await groq.chat.completions.create({
+          model:           'llama-3.3-70b-versatile',
+          response_format: { type: 'json_object' },
+          max_tokens:      600,
+          temperature:     0.2,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...messages,
+          ],
+        });
+
+        const raw  = response.choices[0]?.message?.content || '{}';
+        groqResult = JSON.parse(raw);
+      } catch (err) {
+        logger.error('[HOTEL DIRECT] Groq parse failed', { error: err.message });
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          "I didn't quite catch that. Could you tell me which property you'd like and your preferred dates?", []);
       }
 
-      return this._orchestrateSingleDestination(tripParams, group, sessionId, prompt, conversationHistory);
+      const { intent, replyText, searchParams, clarifyQuestion } = groqResult;
+
+      console.log('[HOTEL DIRECT] Groq intent:', intent, '| shouldSearch:', searchParams?.shouldSearch);
+      console.log('[HOTEL DIRECT] Search params:', JSON.stringify(searchParams));
+
+      // ── Non-search intents ────────────────────────────────────────────
+      if (intent === 'clarify' || !searchParams?.shouldSearch) {
+        const msg = clarifyQuestion || replyText || "Could you give me a bit more detail?";
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          msg, [], { needsClarification: true });
+      }
+
+      if (intent === 'question' || intent === 'manage' || intent === 'chitchat') {
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          replyText || "How can I help?", []);
+      }
+
+      // ── Resolve property ──────────────────────────────────────────────
+      let property = null;
+      if (searchParams.propertyId) {
+        property = allProperties.find(p => p.id === searchParams.propertyId) || null;
+      }
+      if (!property && searchParams.propertyName) {
+        const name = (searchParams.propertyName || '').toLowerCase();
+        property   = allProperties.find(p =>
+          p.name.toLowerCase().includes(name) || name.includes(p.name.toLowerCase())
+        ) || null;
+      }
+
+      if (!property) {
+        const propList = allProperties
+          .map((p, i) => `${i + 1}. ${p.name} — ${p.destination || p.location || ''}`)
+          .join('\n');
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          `${replyText || "Which of our properties would you like?"}\n\n${propList}`, []);
+      }
+
+      // ── Build tripParams ──────────────────────────────────────────────
+      const nights   = searchParams.nights   || 3;
+      const checkIn  = searchParams.checkIn  || (() => {
+        const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0];
+      })();
+      const checkOut = searchParams.checkOut || resolveCheckOut(checkIn, nights);
+      const adults   = searchParams.adults   || 1;
+      const children = searchParams.children || 0;
+      const mealPlan = searchParams.mealPlan || null;
+      const budget   = searchParams.budget   || 'mid';
+
+      const tripParams = {
+        propertyId:   property.id,
+        propertyName: property.name,
+        destination:  property.destination || property.location,
+        nights, adults, passengers: adults, children, childAges: [],
+        mealPlan, departureDate: checkIn, returnDate: checkOut,
+        budget, preferences: searchParams.preferences || [],
+        groupSlug, _originalPrompt: prompt,
+      };
+
+      // ── Search rooms ──────────────────────────────────────────────────
+      const rooms = await this._searchRooms(property, {
+        checkIn, checkOut, nights, adults, children, childAges: [], mealPlan, budget,
+      });
+
+      if (!rooms.length) {
+        return this._buildResponse(sessionId, tripParams, conversationHistory,
+          `${replyText ? replyText + ' ' : ''}Unfortunately there are no rooms available at ${property.name} for those dates. Would you like to try different dates or a different property?`,
+          []);
+      }
+
+      const ancillaries    = await this._getAncillaryServices(property.id, tripParams);
+      const mealPlansFound = new Set(rooms.map(r => r.mealPlan));
+      const packages       = rooms.slice(0, 6).map(room =>
+        this._buildRoomPackage(room, property, ancillaries, tripParams, group)
+      );
+
+      // ── Apply price match silently ────────────────────────────────────
+      const matchedPackages = await this._applyPriceMatch(packages, groupSlug, checkIn, nights);
+
+      // ── Build reply text ──────────────────────────────────────────────
+      const foundLabels    = [...mealPlansFound].map(m => MEAL_LABELS[m] || m);
+      const requestedLabel = mealPlan ? (MEAL_LABELS[mealPlan] || mealPlan) : null;
+
+      let text = replyText || '';
+      if (!text) {
+        if (!mealPlan) {
+          const planNote = foundLabels.length === 1
+            ? `on ${foundLabels[0]}`
+            : `on ${foundLabels.slice(0,-1).join(', ')} and ${foundLabels[foundLabels.length-1]}`;
+          text = `Here's what we have at ${property.name} — ${nights} night${nights!==1?'s':''} for ${adults} guest${adults!==1?'s':''}, ${planNote}:`;
+        } else if ([...mealPlansFound].includes(mealPlan)) {
+          text = `Here are the ${requestedLabel} options at ${property.name}:`;
+        } else {
+          const planNote = foundLabels.length === 1
+            ? foundLabels[0]
+            : `${foundLabels.slice(0,-1).join(', ')} and ${foundLabels[foundLabels.length-1]}`;
+          text = `${property.name} operates on ${planNote} rather than ${requestedLabel}. Here's what's available:`;
+        }
+      }
+
+      logger.info('Hotel orchestrate', { groupSlug, packages: matchedPackages.length });
+      return this._buildResponse(sessionId, tripParams, conversationHistory, text, matchedPackages);
 
     } catch (err) {
       logger.error('[HOTEL DIRECT] Engine failure', { error: err.message, stack: err.stack });
-      return this._buildResponse(
-        sessionId, { groupSlug }, conversationHistory,
-        "I had trouble with that search. Could you tell me which property and dates you're looking for?",
-        []
-      );
+      return this._buildResponse(sessionId, {}, conversationHistory,
+        "I had a moment of trouble there. Could you tell me which property and dates you're looking for?", []);
     }
   }
 
-  async _orchestrateSingleDestination(tripParams, group, sessionId, prompt, conversationHistory) {
-    const checkIn     = tripParams.departureDate;
-    const checkOut    = tripParams.returnDate;
-    const nights      = tripParams.nights || 1;
-    const adults      = tripParams.adults || tripParams.passengers || 1;
-    const children    = tripParams.children || 0;
-    const childAges   = tripParams.childAges || [];
-    const mealPlan    = tripParams.mealPlan || null;
-    const budget      = tripParams.budget || 'mid';
-    const destination = tripParams.destination || '';
+  // ── PRICE MATCH ───────────────────────────────────────────────────────────
+  async _applyPriceMatch(packages, groupSlug, checkIn, nights) {
+    try {
+      const { data: rates } = await supabase
+        .from('competitor_rates')
+        .select('*')
+        .eq('group_slug', groupSlug)
+        .eq('check_in', checkIn)
+        .eq('is_current', true)
+        .order('ota_rate', { ascending: true })
+        .limit(1);
 
-    const properties = await this._findProperties(group.id, destination, tripParams._originalPrompt);
+      if (!rates || !rates.length) return packages;
+      const bestOTA = rates[0];
 
-    // ── NO PROPERTY FOUND — smart alternative suggestion ─────────────────
-    if (properties.length === 0) {
-      const allProps   = await this._getAllProperties(group.id);
-      const raw        = (tripParams._originalPrompt || '').toLowerCase();
-      const suggestion = this._suggestAlternative(raw, destination, tripParams.preferences, allProps);
+      return packages.map(pkg => {
+        const hotel      = pkg.hotel || {};
+        const directRate = hotel.pricePerNight;
+        if (!directRate) return pkg;
 
-      if (suggestion) {
-        return this._buildResponse(
-          sessionId, tripParams, conversationHistory,
-          suggestion.message,
-          [],
-          { suggestedProperty: suggestion.property.name }
-        );
-      }
+        const gap = directRate - bestOTA.ota_rate;
+        if (gap <= directRate * 0.03) return pkg;
 
-      // Fallback: list all properties
-      const propList = allProps
-        .map((p, i) => `${i + 1}. ${p.name} — ${p.destination || p.location || ''}`)
-        .join('\n');
-      return this._buildResponse(
-        sessionId, tripParams, conversationHistory,
-        `I don't have a property matching that location. Here's what we have:\n\n${propList}\n\nWhich would you like to check?`,
-        []
-      );
-    }
-    // ─────────────────────────────────────────────────────────────────────
+        const matchedRate    = Math.floor(bestOTA.ota_rate * 0.99);
+        const savingPerNight = directRate - matchedRate;
+        const newTotal       = matchedRate * (nights || 1);
 
-    const propertyResults = await Promise.all(
-      properties.map(property =>
-        this._searchRooms(property, {
-          checkIn, checkOut, nights, adults, children, childAges, mealPlan, budget,
-        }).then(rooms => ({ property, rooms }))
-      )
-    );
+        supabase.from('price_match_log').insert({
+          group_slug:       groupSlug,
+          property_name:    hotel.propertyName,
+          check_in:         checkIn,
+          nights:           nights || 1,
+          original_rate:    directRate,
+          ota_rate:         bestOTA.ota_rate,
+          matched_rate:     matchedRate,
+          ota_name:         bestOTA.ota_name,
+          saving_per_night: savingPerNight,
+          currency:         hotel.currency || 'KES',
+        }).then(() => {}).catch(() => {});
 
-    const packages = [];
-    const mealPlansFound = new Set();
-
-    for (const { property, rooms } of propertyResults) {
-      if (!rooms.length) continue;
-      const ancillaries = await this._getAncillaryServices(property.id, tripParams);
-      for (const room of rooms.slice(0, 3)) {
-        mealPlansFound.add(room.mealPlan);
-        packages.push(this._buildRoomPackage(room, property, ancillaries, tripParams, group));
-      }
-    }
-
-    if (!packages.length) {
-      return this._buildResponse(
-        sessionId, tripParams, conversationHistory,
-        `No rooms are available at ${properties.map(p => p.name).join(' or ')} for your requested dates. Please try different dates or contact us directly.`,
-        []
-      );
-    }
-
-    // ── Build agent-style response text ──────────────────────
-    const propertyName   = properties[0].name;
-    const mealPlansArray = [...mealPlansFound];
-    const requestedLabel = mealPlan ? (MEAL_LABELS[mealPlan] || mealPlan) : null;
-    const foundLabels    = mealPlansArray.map(m => MEAL_LABELS[m] || m);
-
-    let text;
-
-    if (!mealPlan) {
-      const planNote = foundLabels.length === 1
-        ? `Available on ${foundLabels[0]}.`
-        : `Available on ${foundLabels.slice(0, -1).join(', ')} and ${foundLabels[foundLabels.length - 1]}.`;
-      text = properties.length > 1
-        ? `I found ${packages.length} options across ${properties.length} of our properties. ${planNote}`
-        : `Here's what we have available at ${propertyName}. ${planNote}`;
-
-    } else if (mealPlansArray.includes(mealPlan)) {
-      text = properties.length > 1
-        ? `I found ${packages.length} options across ${properties.length} of our properties:`
-        : `Here ${packages.length === 1 ? 'is' : 'are'} the ${packages.length} room option${packages.length > 1 ? 's' : ''} at ${propertyName}:`;
-
-    } else {
-      const planNote = foundLabels.length === 1
-        ? `${foundLabels[0]}`
-        : `${foundLabels.slice(0, -1).join(', ')} and ${foundLabels[foundLabels.length - 1]}`;
-      text = `${propertyName} doesn't offer ${requestedLabel} — they operate on ${planNote}. I've pulled up the available rooms so you can see what's included:`;
-    }
-
-    return this._buildResponse(sessionId, tripParams, conversationHistory, text, packages);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // _suggestAlternative
-  //
-  // When a guest asks for a destination we don't have a property in,
-  // instead of a dead end we find the best matching property based on:
-  //   1. Preference signals (beach, safari, city, lake)
-  //   2. Destination keywords in the raw prompt
-  //   3. Falls back to the first property if nothing matches
-  //
-  // Returns { property, message } or null if no properties exist.
-  // ─────────────────────────────────────────────────────────────────────────
-  _suggestAlternative(rawPrompt, strippedDestination, preferences, allProps) {
-    if (!allProps.length) return null;
-
-    // Extract the requested destination name from the raw prompt for the message
-    const requestedDest = strippedDestination
-      ? strippedDestination.split(' ').slice(0, 3).join(' ')  // first 3 words as hint
-      : 'that location';
-
-    // Score each property by how well it matches the context
-    const scored = allProps.map(p => {
-      const propText = [
-        p.name        || '',
-        p.destination || '',
-        p.location    || '',
-        p.description || '',
-      ].join(' ').toLowerCase();
-
-      let score = 0;
-
-      // Match preferences to property traits
-      for (const [context, keywords] of Object.entries(DESTINATION_CONTEXT)) {
-        const prefMatch = preferences.some(pref => {
-          if (context === 'beach'  && ['beach', 'honeymoon'].includes(pref)) return true;
-          if (context === 'safari' && ['safari'].includes(pref))             return true;
-          if (context === 'city'   && ['business'].includes(pref))           return true;
-          return false;
+        logger.info('[PRICE MATCH] Applied', {
+          property: hotel.propertyName, checkIn,
+          directRate, matchedRate, ota: bestOTA.ota_name,
         });
 
-        const promptMatch = keywords.some(kw =>
-          rawPrompt.includes(kw) || strippedDestination.includes(kw)
-        );
-
-        const propMatch = keywords.some(kw => propText.includes(kw));
-
-        if ((prefMatch || promptMatch) && propMatch) score += 10;
-      }
-
-      return { p, score };
-    });
-
-    const best = scored.sort((a, b) => b.score - a.score)[0];
-    const property = best.p;
-
-    // Build a warm, helpful message explaining the situation
-    const propDest = property.destination || property.location || property.name;
-    const propName = property.name;
-
-    // Figure out WHY this property is a good fit
-    const propText = [property.destination, property.location, property.description].join(' ').toLowerCase();
-    let reason = '';
-    if (/beach|coast|ocean|sea/.test(propText))    reason = 'is right on the coast';
-    else if (/safari|game|wildlife/.test(propText)) reason = 'offers an incredible safari experience';
-    else if (/nairobi|city/.test(propText))         reason = 'is ideally located in the city';
-    else if (/lake/.test(propText))                 reason = 'sits on a beautiful lakeside setting';
-    else                                            reason = `is in ${propDest}`;
-
-    const message = `We don't have a property in ${requestedDest}, but ${propName} ${reason} and would be a wonderful alternative — shall I check availability there for your dates?`;
-
-    return { property, message };
-  }
-  // ─────────────────────────────────────────────────────────────────────────
-
-  async _orchestrateMultiProperty(tripParams, group, sessionId, prompt, conversationHistory) {
-    const legs      = tripParams.legs || [];
-    const packages  = [];
-    const foundLegs = [];
-
-    for (const leg of legs) {
-      const properties = await this._findProperties(group.id, leg.destination);
-
-      if (!properties.length) {
-        const allProps = await this._getAllProperties(group.id);
-        const propList = allProps.map(p => p.name).join(', ');
-        return this._buildResponse(
-          sessionId, tripParams, conversationHistory,
-          `I couldn't find a property matching "${leg.destination}". Available properties: ${propList}.`,
-          []
-        );
-      }
-
-      const property = properties[0];
-      foundLegs.push({ leg, property });
-
-      const legTripParams = {
-        ...tripParams,
-        departureDate: leg.departureDate || tripParams.departureDate,
-        returnDate:    this._addDays(leg.departureDate || tripParams.departureDate, leg.nights || tripParams.nights || 1),
-        nights:        leg.nights || tripParams.nights || 1,
-      };
-
-      const rooms = await this._searchRooms(property, {
-        checkIn:   legTripParams.departureDate,
-        checkOut:  legTripParams.returnDate,
-        nights:    legTripParams.nights,
-        adults:    tripParams.adults || tripParams.passengers || 1,
-        children:  tripParams.children || 0,
-        childAges: tripParams.childAges || [],
-        mealPlan:  tripParams.mealPlan,
-        budget:    tripParams.budget,
+        return {
+          ...pkg,
+          hotel: {
+            ...hotel,
+            pricePerNight:     matchedRate,
+            totalRate:         newTotal,
+            priceMatchApplied: true,
+            priceMatchOta:     bestOTA.ota_name,
+            priceMatchSaving:  savingPerNight,
+            originalRate:      directRate,
+          },
+          summary: {
+            ...pkg.summary,
+            totalPrice:     newTotal,
+            pricePerPerson: Math.round(newTotal / (pkg.summary.passengers || 1)),
+          },
+        };
       });
-
-      const ancillaries = await this._getAncillaryServices(property.id, tripParams);
-
-      for (const room of rooms.slice(0, 3)) {
-        const pkg = this._buildRoomPackage(room, property, ancillaries, legTripParams, group);
-        pkg.legIndex  = legs.indexOf(leg);
-        pkg.totalLegs = legs.length;
-        pkg.legLabel  = `${property.name} — Leg ${legs.indexOf(leg) + 1} of ${legs.length}`;
-        packages.push(pkg);
-      }
+    } catch (err) {
+      logger.warn('[PRICE MATCH] Failed silently', { error: err.message });
+      return packages;
     }
-
-    if (!packages.length) {
-      return this._buildResponse(
-        sessionId, tripParams, conversationHistory,
-        `No rooms are available for your requested dates. Please try different dates or contact us directly.`,
-        []
-      );
-    }
-
-    const propNames   = foundLegs.map(l => l.property.name).join(' → ');
-    const totalNights = legs.reduce((sum, l) => sum + (l.nights || tripParams.nights || 1), 0);
-    const text = `I found ${packages.length} room options across your ${totalNights}-night itinerary: ${propNames}. Select a room for each leg:`;
-
-    return this._buildResponse(sessionId, tripParams, conversationHistory, text, packages);
   }
 
+  // ── ROOM SEARCH ───────────────────────────────────────────────────────────
   async _searchRooms(property, params) {
     if (property.pms_type === 'opera_cloud') return this._searchRoomsOperaCloud(property, params);
     if (property.pms_type === 'opera_5')     return this._searchRoomsOpera5(property, params);
@@ -501,21 +320,13 @@ class HotelDirectEngine {
   }) {
     try {
       const { data: roomTypes, error } = await supabase
-        .from('room_types')
-        .select('*')
-        .eq('property_id', property.id)
-        .eq('is_active', true)
-        .gte('max_adults', adults)
-        .order('sort_order');
-
+        .from('room_types').select('*')
+        .eq('property_id', property.id).eq('is_active', true)
+        .gte('max_adults', adults).order('sort_order');
       if (error) throw error;
-      if (!roomTypes?.length) {
-        logger.warn('[HOTEL DIRECT] No room types found', { propertyId: property.id, adults });
-        return [];
-      }
+      if (!roomTypes?.length) return [];
 
       const results = [];
-
       for (const roomType of roomTypes) {
         const available = await this._checkAvailability(
           roomType.id, checkIn, checkOut || this._addDays(checkIn, nights)
@@ -528,30 +339,18 @@ class HotelDirectEngine {
         const bestRate    = ratePlans.find(r => r.is_refundable) || ratePlans[0];
         const extraAdults = Math.max(0, adults - (bestRate.base_occupancy || adults));
         const nightsCount = nights || 1;
-
-        const totalPrice = (
-          (bestRate.price_per_night * nightsCount) +
+        const totalPrice  = (bestRate.price_per_night * nightsCount) +
           ((bestRate.extra_adult_surcharge || 0) * extraAdults * nightsCount) +
-          ((bestRate.child_surcharge || 0) * children * nightsCount)
-        );
+          ((bestRate.child_surcharge       || 0) * children    * nightsCount);
 
         const { data: policy } = await supabase
-          .from('cancellation_policies')
-          .select('*')
-          .eq('rate_plan_id', bestRate.id)
-          .maybeSingle();
+          .from('cancellation_policies').select('*')
+          .eq('rate_plan_id', bestRate.id).maybeSingle();
 
         results.push({
-          roomType,
-          ratePlan:           bestRate,
-          property,
-          checkIn,
+          roomType, ratePlan: bestRate, property, checkIn,
           checkOut:           checkOut || this._addDays(checkIn, nights),
-          nights:             nightsCount,
-          adults,
-          children,
-          childAges,
-          totalPrice,
+          nights:             nightsCount, adults, children, childAges, totalPrice,
           pricePerNight:      bestRate.price_per_night,
           currency:           bestRate.currency || property.currency || 'KES',
           mealPlan:           bestRate.meal_plan,
@@ -560,80 +359,62 @@ class HotelDirectEngine {
           mealPlanMatched:    !mealPlan || bestRate.meal_plan === mealPlan,
         });
       }
-
       return results;
-
     } catch (err) {
-      logger.error('[HOTEL DIRECT] Supabase room search failed', {
-        error: err.message, propertyId: property.id,
-      });
+      logger.error('[HOTEL DIRECT] Supabase room search failed', { error: err.message, propertyId: property.id });
       return [];
     }
   }
 
   async _searchRoomsOperaCloud(property, params) {
-    logger.warn('[HOTEL DIRECT] Opera Cloud not yet implemented — falling back to Supabase', { propertyId: property.id });
+    logger.warn('[HOTEL DIRECT] Opera Cloud not yet implemented — falling back', { propertyId: property.id });
     return this._searchRoomsSupabase(property, params);
   }
 
   async _searchRoomsOpera5(property, params) {
-    logger.warn('[HOTEL DIRECT] Opera 5 not yet implemented — falling back to Supabase', { propertyId: property.id });
+    logger.warn('[HOTEL DIRECT] Opera 5 not yet implemented — falling back', { propertyId: property.id });
     return this._searchRoomsSupabase(property, params);
   }
 
   async _checkAvailability(roomTypeId, checkIn, checkOut) {
     if (!checkIn) return true;
     const { data: blocks } = await supabase
-      .from('availability_blocks')
-      .select('date_from, date_to, rooms_available')
-      .eq('room_type_id', roomTypeId)
-      .lte('date_from', checkIn)
-      .gte('date_to', checkOut || checkIn);
+      .from('availability_blocks').select('date_from, date_to, rooms_available')
+      .eq('room_type_id', roomTypeId).lte('date_from', checkIn).gte('date_to', checkOut || checkIn);
     if (!blocks?.length) return true;
     return blocks.every(b => b.rooms_available > 0);
   }
 
-  async _getRatePlans(roomTypeId, checkIn, mealPlan = null, budget = 'mid') {
+  async _getRatePlans(roomTypeId, checkIn, mealPlan = null) {
     const { data: plans } = await supabase
-      .from('rate_plans')
-      .select('*')
-      .eq('room_type_id', roomTypeId)
-      .eq('is_active', true);
-
+      .from('rate_plans').select('*')
+      .eq('room_type_id', roomTypeId).eq('is_active', true);
     if (!plans?.length) return [];
 
     const date = checkIn ? new Date(checkIn) : new Date();
-
-    const seasonFiltered = plans
-      .filter(plan => {
-        if (!plan.season_start && !plan.season_end) return true;
-        const start = plan.season_start ? new Date(plan.season_start) : null;
-        const end   = plan.season_end   ? new Date(plan.season_end)   : null;
-        if (start && end) return date >= start && date <= end;
-        if (start) return date >= start;
-        if (end)   return date <= end;
-        return true;
-      })
-      .sort((a, b) => a.price_per_night - b.price_per_night);
+    const seasonFiltered = plans.filter(plan => {
+      if (!plan.season_start && !plan.season_end) return true;
+      const start = plan.season_start ? new Date(plan.season_start) : null;
+      const end   = plan.season_end   ? new Date(plan.season_end)   : null;
+      if (start && end) return date >= start && date <= end;
+      if (start) return date >= start;
+      if (end)   return date <= end;
+      return true;
+    }).sort((a, b) => a.price_per_night - b.price_per_night);
 
     if (!seasonFiltered.length) return [];
-
     if (mealPlan) {
       const exact = seasonFiltered.filter(p => p.meal_plan === mealPlan);
       if (exact.length) return exact;
     }
-
     return seasonFiltered;
   }
 
   async _getAncillaryServices(propertyId, tripParams) {
     try {
       const { data: services } = await supabase
-        .from('ancillary_services')
-        .select('*')
-        .eq('property_id', propertyId)
-        .eq('is_active', true)
-        .order('sort_order');
+        .from('ancillary_services').select('*')
+        .eq('property_id', propertyId).eq('is_active', true).order('sort_order');
       if (!services?.length) return [];
       const tripTags = [
         ...(tripParams.preferences || []),
@@ -657,16 +438,13 @@ class HotelDirectEngine {
     const nights     = room.nights || 1;
     const passengers = tripParams.passengers || tripParams.adults || 1;
     const currency   = room.currency;
-
     const cancellationNote = this._formatCancellationNote(room.cancellationPolicy, room.ratePlan);
 
-    const ancillaryTotal = ancillaries
-      .filter(a => a.requires_booking)
-      .reduce((sum, a) => {
-        if (a.price_basis === 'per_person') return sum + (a.price * passengers);
-        if (a.price_basis === 'per_night')  return sum + (a.price * nights);
-        return sum + a.price;
-      }, 0);
+    const ancillaryTotal = ancillaries.filter(a => a.requires_booking).reduce((sum, a) => {
+      if (a.price_basis === 'per_person') return sum + (a.price * passengers);
+      if (a.price_basis === 'per_night')  return sum + (a.price * nights);
+      return sum + a.price;
+    }, 0);
 
     const totalPrice       = room.totalPrice + ancillaryTotal;
     const commissionRate   = group.commission_rate || 0.05;
@@ -677,25 +455,14 @@ class HotelDirectEngine {
       isHotelDirect: true,
       groupSlug:     group.slug,
       groupId:       group.id,
-
       summary: {
-        route:           property.destination,
-        nights,
-        passengers,
-        totalPrice,
-        roomTotal:       room.totalPrice,
-        ancillaryTotal,
-        pricePerPerson:  Math.round(totalPrice / passengers),
-        currency,
-        mealPlan:        room.mealPlan,
-        transportType:   'none',
-        commissionRate,
-        commissionAmount,
+        route: property.destination, nights, passengers, totalPrice,
+        roomTotal: room.totalPrice, ancillaryTotal,
+        pricePerPerson: Math.round(totalPrice / passengers),
+        currency, mealPlan: room.mealPlan,
+        transportType: 'none', commissionRate, commissionAmount,
       },
-
-      transport:       null,
-      returnTransport: null,
-
+      transport: null, returnTransport: null,
       hotel: {
         name:          `${property.name} — ${room.roomType.name}`,
         propertyName:  property.name,
@@ -706,14 +473,13 @@ class HotelDirectEngine {
         longitude:     property.longitude,
         pricePerNight: room.pricePerNight,
         totalRate:     room.totalPrice,
-        currency,
-        mealPlan:      room.mealPlan,
-        roomType:      room.roomType.name,
-        bedType:       room.roomType.bed_type,
-        view:          room.roomType.view,
-        amenities:     room.roomType.amenities || [],
-        checkIn:       room.checkIn,
-        checkOut:      room.checkOut,
+        currency, mealPlan: room.mealPlan,
+        roomType:  room.roomType.name,
+        bedType:   room.roomType.bed_type,
+        view:      room.roomType.view,
+        amenities: room.roomType.amenities || [],
+        checkIn:   room.checkIn,
+        checkOut:  room.checkOut,
         nights,
         images:        room.roomType.images || property.images || [],
         isRefundable:  room.ratePlan.is_refundable,
@@ -732,126 +498,29 @@ class HotelDirectEngine {
         groupId:     group.id,
         groupSlug:   group.slug,
       },
-
       transfers: [],
-
       ancillaryServices: ancillaries.map(a => ({
-        id:              a.id,
-        name:            a.name,
-        description:     a.description,
-        category:        a.category,
-        price:           a.price,
-        currency:        a.currency,
-        priceBasis:      a.price_basis,
-        requiresBooking: a.requires_booking,
-        images:          a.images || [],
+        id: a.id, name: a.name, description: a.description,
+        category: a.category, price: a.price, currency: a.currency,
+        priceBasis: a.price_basis, requiresBooking: a.requires_booking,
+        images: a.images || [],
       })),
-
       status: 'available',
     };
   }
 
-  async _findProperties(groupId, destination, rawPrompt = null) {
-    if (!destination && !rawPrompt) return this._getAllProperties(groupId);
-
-    const { data: properties } = await supabase
-      .from('hotel_properties')
-      .select('*')
-      .eq('group_id', groupId)
-      .eq('is_active', true);
-
-    if (!properties?.length) return [];
-
-    const raw         = (rawPrompt  || '').toLowerCase().trim();
-    const search      = (destination || '').toLowerCase().trim();
-    const searchWords = search.split(/\s+/).filter(Boolean);
-    const rawWords    = raw.split(/\s+/).filter(Boolean);
-
-    const allNameWords = properties.map(p =>
-      (p.name || '').toLowerCase().split(/\s+/).filter(Boolean)
-    );
-    const brandWords = allNameWords.length > 1
-      ? allNameWords[0].filter(w => allNameWords.every(nws => nws.includes(w)))
-      : [];
-
-    const scored = properties.map(p => {
-      const name      = (p.name        || '').toLowerCase();
-      const dest      = (p.destination || '').toLowerCase();
-      const location  = (p.location    || '').toLowerCase();
-      const aliases   = Array.isArray(p.search_aliases) ? p.search_aliases : [];
-      const nameWords = name.split(/\s+/).filter(Boolean);
-
-      const distinctWords = nameWords.filter(w => !brandWords.includes(w));
-      const matchWords    = distinctWords.length > 0 ? distinctWords : nameWords;
-
-      let score = 0;
-
-      if (raw && name && raw.includes(name))
-        score = Math.max(score, 100);
-
-      if (search && name && search.includes(name))
-        score = Math.max(score, 90);
-
-      if (aliases.some(a => {
-        const al = String(a).toLowerCase();
-        return (raw && raw.includes(al)) ||
-               (search && (search.includes(al) || al.includes(search)));
-      })) score = Math.max(score, 80);
-
-      if (raw) {
-        if (dest     && dest.length     > 3 && raw.includes(dest))     score = Math.max(score, 70);
-        if (location && location.length > 3 && raw.includes(location)) score = Math.max(score, 70);
-      }
-
-      if (raw && matchWords.length > 0 && matchWords.every(mw =>
-        rawWords.some(rw => rw === mw || rw.startsWith(mw) || mw.startsWith(rw))
-      )) score = Math.max(score, 60);
-
-      if (search && matchWords.length > 0 && matchWords.every(mw =>
-        searchWords.some(sw => sw === mw || sw.startsWith(mw) || mw.startsWith(sw))
-      )) score = Math.max(score, 50);
-
-      if (raw && matchWords.length > 0 && matchWords.every(mw =>
-        rawWords.some(rw =>
-          rw === mw ||
-          rw.startsWith(mw) ||
-          mw.startsWith(rw) ||
-          (mw.length > 4 && _levenshtein(rw, mw) <= 1)
-        )
-      )) score = Math.max(score, 40);
-
-      return { p, score };
-    }).filter(s => s.score > 0);
-
-    if (!scored.length) return [];
-
-    const topScore  = Math.max(...scored.map(s => s.score));
-    const threshold = topScore >= 60 ? topScore - 10 : topScore;
-
-    return scored
-      .filter(s  => s.score >= threshold)
-      .sort((a, b) => b.score - a.score)
-      .map(s  => s.p);
-  }
-
   async _getAllProperties(groupId) {
     const { data } = await supabase
-      .from('hotel_properties')
-      .select('*')
-      .eq('group_id', groupId)
-      .eq('is_active', true)
-      .order('sort_order');
+      .from('hotel_properties').select('*')
+      .eq('group_id', groupId).eq('is_active', true).order('sort_order');
     return data || [];
   }
 
   async _getHotelGroup(slug) {
     if (!slug) return null;
     const { data, error } = await supabase
-      .from('hotel_groups')
-      .select('*')
-      .eq('slug', slug)
-      .eq('is_active', true)
-      .single();
+      .from('hotel_groups').select('*')
+      .eq('slug', slug).eq('is_active', true).single();
     if (error) {
       logger.warn('[HOTEL DIRECT] Hotel group not found', { slug, error: error.message });
       return null;
@@ -861,9 +530,8 @@ class HotelDirectEngine {
 
   _formatCancellationNote(policy, ratePlan) {
     if (policy) {
-      if (policy.free_cancellation_days > 0) {
+      if (policy.free_cancellation_days > 0)
         return `Free cancellation up to ${policy.free_cancellation_days} day${policy.free_cancellation_days > 1 ? 's' : ''} before check-in${policy.penalty_percentage > 0 ? `, then ${policy.penalty_percentage}% penalty` : ''}.`;
-      }
       if (policy.penalty_percentage === 100) return 'Non-refundable.';
       return policy.policy_name || policy.notes || 'See cancellation policy.';
     }
@@ -877,13 +545,10 @@ class HotelDirectEngine {
       ...conversationHistory,
       { role: 'user',      content: tripParams._originalPrompt || '' },
       { role: 'assistant', content: text, packageCount: packages.length },
-    ].slice(-10);
+    ].slice(-20);
 
     return {
-      sessionId,
-      text,
-      packages,
-      tripParams,
+      sessionId, text, packages, tripParams,
       conversationHistory: updatedHistory,
       generatedAt: new Date().toISOString(),
       isHotelDirect: true,
@@ -893,29 +558,12 @@ class HotelDirectEngine {
 
   _addDays(dateStr, days) {
     if (!dateStr) {
-      const d = new Date();
-      d.setDate(d.getDate() + (days || 1));
+      const d = new Date(); d.setDate(d.getDate() + (days || 1));
       return d.toISOString().split('T')[0];
     }
-    const d = new Date(dateStr);
-    d.setDate(d.getDate() + (days || 1));
+    const d = new Date(dateStr); d.setDate(d.getDate() + (days || 1));
     return d.toISOString().split('T')[0];
   }
-}
-
-function _levenshtein(a, b) {
-  const m = a.length, n = b.length;
-  const dp = Array.from({ length: m + 1 }, (_, i) =>
-    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
-  );
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i-1] === b[j-1]
-        ? dp[i-1][j-1]
-        : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
-    }
-  }
-  return dp[m][n];
 }
 
 module.exports = new HotelDirectEngine();

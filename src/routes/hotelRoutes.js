@@ -12,7 +12,10 @@
  *   POST /api/hotel/orchestrate          — room search
  *   POST /api/hotel/reserve              — create reservation
  *   POST /api/hotel/pay                  — trigger guest payment
- *   GET  /api/hotel/reservation/:ref     — get reservation
+ *   GET  /api/hotel/reservation          — get reservation (query: ?ref=&phone=)
+ *   GET  /api/hotel/reservation/:ref     — get reservation (path param)
+ *   POST /api/hotel/reservation/modify   — modify reservation
+ *   POST /api/hotel/reservation/cancel   — cancel reservation
  *   POST /api/hotel/reservation/:ref/cancel
  *   POST /api/hotel/webhook/mpesa        — payment confirmation
  *   GET  /api/hotel/group/info           — group config for widget init
@@ -32,7 +35,6 @@ const hotelDirectEngine         = require('../orchestration/hotelDirectEngine');
 // Sets req.hotelGroup on success.
 // ─────────────────────────────
 async function requireHotelKey(req, res, next) {
-  // Accept from header or body (widget sends in body for POST requests)
   const slug = req.headers['x-hotel-key'] || req.body?.groupSlug;
 
   if (!slug) {
@@ -56,8 +58,6 @@ async function requireHotelKey(req, res, next) {
 
 // ─────────────────────────────
 // GET /api/hotel/group/info
-// Returns group config needed for widget initialisation.
-// Called by the widget embed script on load.
 // ─────────────────────────────
 router.get('/group/info', requireHotelKey, (req, res) => {
   const g = req.hotelGroup;
@@ -71,7 +71,6 @@ router.get('/group/info', requireHotelKey, (req, res) => {
 
 // ─────────────────────────────
 // POST /api/hotel/orchestrate
-// Room search — passes groupSlug to the engine, not agencyId.
 // ─────────────────────────────
 router.post('/orchestrate', requireHotelKey, async (req, res) => {
   try {
@@ -83,7 +82,7 @@ router.post('/orchestrate', requireHotelKey, async (req, res) => {
 
     const result = await hotelDirectEngine.orchestrate(
       prompt,
-      req.hotelGroup.slug,   // groupSlug — replaces agencyId
+      req.hotelGroup.slug,
       {
         conversationHistory: conversationHistory || [],
         previousParams:      previousParams      || null,
@@ -91,8 +90,8 @@ router.post('/orchestrate', requireHotelKey, async (req, res) => {
     );
 
     logger.info('Hotel orchestrate', {
-      groupSlug:  req.hotelGroup.slug,
-      packages:   result.packages?.length || 0,
+      groupSlug: req.hotelGroup.slug,
+      packages:  result.packages?.length || 0,
     });
 
     return res.json(result);
@@ -105,7 +104,6 @@ router.post('/orchestrate', requireHotelKey, async (req, res) => {
 
 // ─────────────────────────────
 // POST /api/hotel/reserve
-// Create a reservation. groupSlug comes from the authenticated key.
 // ─────────────────────────────
 router.post('/reserve', requireHotelKey, async (req, res) => {
   try {
@@ -134,7 +132,7 @@ router.post('/reserve', requireHotelKey, async (req, res) => {
       guestEmail,
       specialRequests,
       channel:  channel || 'widget',
-      groupId:  req.hotelGroup.id,   // passed explicitly so service doesn't re-fetch
+      groupId:  req.hotelGroup.id,
     });
 
     if (!result.success) {
@@ -156,7 +154,6 @@ router.post('/reserve', requireHotelKey, async (req, res) => {
 
 // ─────────────────────────────
 // POST /api/hotel/pay
-// Trigger payment for a reservation.
 // ─────────────────────────────
 router.post('/pay', requireHotelKey, async (req, res) => {
   try {
@@ -169,7 +166,7 @@ router.post('/pay', requireHotelKey, async (req, res) => {
     const result = await hotelDirectBookingService.triggerGuestPayment({
       reservationRef,
       guestPhone,
-      paymentMethod, // 'mpesa' or 'card' — guest chose if hotel supports both
+      paymentMethod,
     });
 
     return res.json(result);
@@ -181,8 +178,116 @@ router.post('/pay', requireHotelKey, async (req, res) => {
 });
 
 // ─────────────────────────────
+// GET /api/hotel/reservation
+// Widget sends ?ref=...&phone=... as query params
+// MUST come before /reservation/:ref so Express matches it first
+// ─────────────────────────────
+router.get('/reservation', requireHotelKey, async (req, res) => {
+  try {
+    const { ref, phone } = req.query;
+
+    if (!ref) {
+      return res.status(400).json({ success: false, error: 'ref query param is required.' });
+    }
+
+    const reservation = await hotelDirectBookingService.getReservation(ref);
+
+    if (!reservation) {
+      return res.status(404).json({ success: false, error: 'Reservation not found.' });
+    }
+    if (reservation.group_id !== req.hotelGroup.id) {
+      return res.status(403).json({ success: false, error: 'Access denied.' });
+    }
+
+    // Optional phone verification
+    if (phone && reservation.guest_phone) {
+      const clean = (s) => s.replace(/\D/g, '').slice(-9);
+      if (clean(phone) !== clean(reservation.guest_phone)) {
+        return res.status(403).json({ success: false, error: 'Phone number does not match reservation.' });
+      }
+    }
+
+    return res.json({ success: true, reservation });
+
+  } catch (err) {
+    logger.error('Hotel reservation fetch error', { error: err.message });
+    return res.status(500).json({ success: false, error: 'Could not fetch reservation.' });
+  }
+});
+
+// ─────────────────────────────
+// POST /api/hotel/reservation/modify
+// MUST come before /reservation/:ref
+// ─────────────────────────────
+router.post('/reservation/modify', requireHotelKey, async (req, res) => {
+  try {
+    const { reservationRef, newCheckIn, newCheckOut, specialRequests } = req.body;
+
+    if (!reservationRef || !newCheckIn || !newCheckOut) {
+      return res.status(400).json({
+        success: false,
+        error:   'reservationRef, newCheckIn, and newCheckOut are required.',
+      });
+    }
+
+    const existing = await hotelDirectBookingService.getReservation(reservationRef);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Reservation not found.' });
+    }
+    if (existing.group_id !== req.hotelGroup.id) {
+      return res.status(403).json({ success: false, error: 'Access denied.' });
+    }
+
+    const result = await hotelDirectBookingService.modifyReservation({
+      reservationRef, newCheckIn, newCheckOut, specialRequests,
+    });
+
+    return res.json(result);
+
+  } catch (err) {
+    logger.error('Hotel modify API error', { error: err.message });
+    return res.status(500).json({ success: false, error: 'Modification failed.' });
+  }
+});
+
+// ─────────────────────────────
+// POST /api/hotel/reservation/cancel
+// Widget sends { reservationRef } in body
+// MUST come before /reservation/:ref
+// ─────────────────────────────
+router.post('/reservation/cancel', requireHotelKey, async (req, res) => {
+  try {
+    const { reservationRef } = req.body;
+
+    if (!reservationRef) {
+      return res.status(400).json({ success: false, error: 'reservationRef is required.' });
+    }
+
+    const existing = await hotelDirectBookingService.getReservation(reservationRef);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Reservation not found.' });
+    }
+    if (existing.group_id !== req.hotelGroup.id) {
+      return res.status(403).json({ success: false, error: 'Access denied.' });
+    }
+
+    const result = await hotelDirectBookingService.cancelReservation({
+      reservationRef,
+      reason:      req.body.reason      || 'Cancelled by guest via widget',
+      cancelledBy: req.body.cancelledBy || 'guest',
+    });
+
+    return res.json(result);
+
+  } catch (err) {
+    logger.error('Hotel cancel API error', { error: err.message });
+    return res.status(500).json({ success: false, error: 'Cancellation failed.' });
+  }
+});
+
+// ─────────────────────────────
 // GET /api/hotel/reservation/:ref
-// Reservation status — widget polls this after payment.
+// Admin / direct lookup by path param
 // ─────────────────────────────
 router.get('/reservation/:ref', requireHotelKey, async (req, res) => {
   try {
@@ -191,8 +296,6 @@ router.get('/reservation/:ref', requireHotelKey, async (req, res) => {
     if (!reservation) {
       return res.status(404).json({ success: false, error: 'Reservation not found.' });
     }
-
-    // Security: only return reservations belonging to this hotel group
     if (reservation.group_id !== req.hotelGroup.id) {
       return res.status(403).json({ success: false, error: 'Access denied.' });
     }
@@ -207,6 +310,7 @@ router.get('/reservation/:ref', requireHotelKey, async (req, res) => {
 
 // ─────────────────────────────
 // POST /api/hotel/reservation/:ref/cancel
+// Admin cancel by path param
 // ─────────────────────────────
 router.post('/reservation/:ref/cancel', requireHotelKey, async (req, res) => {
   try {
@@ -224,8 +328,6 @@ router.post('/reservation/:ref/cancel', requireHotelKey, async (req, res) => {
 
 // ─────────────────────────────
 // POST /api/hotel/webhook/mpesa
-// IntaSend M-Pesa webhook — no auth header needed (IntaSend calls this).
-// Looks up reservation by api_ref = reservationRef.
 // ─────────────────────────────
 router.post('/webhook/mpesa', async (req, res) => {
   try {
@@ -259,7 +361,7 @@ router.post('/webhook/mpesa', async (req, res) => {
 
   } catch (err) {
     logger.error('Hotel M-Pesa webhook error', { error: err.message });
-    return res.status(200).json({ received: true }); // always 200 to IntaSend
+    return res.status(200).json({ received: true });
   }
 });
 

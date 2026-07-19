@@ -1,18 +1,5 @@
 /**
  * HOTEL DIRECT BOOKING SERVICE — v2
- * ─────────────────────────────────────────────────────────────
- * Hotel groups are independent tenants — no agency_id.
- * Group is identified by hotel_groups.id or hotel_groups.slug.
- *
- * FLOW:
- *   1. createReservation() — validate, write hotel_reservations +
- *      commission_ledger, notify hotel.
- *   2. triggerGuestPayment() — M-Pesa STK to hotel's shortcode
- *      OR return hotel's card payment link.
- *   3. markPaid() — called by hotel admin panel or M-Pesa webhook.
- *      Triggers guest voucher (email + WhatsApp).
- *   4. cancelReservation() — soft cancel, voids commission entry.
- * ─────────────────────────────────────────────────────────────
  */
 
 const { v4: uuidv4 } = require('uuid');
@@ -34,37 +21,23 @@ try {
 
 class HotelDirectBookingService {
 
-  // ─────────────────────────────
-  // CREATE RESERVATION
-  // ─────────────────────────────
   async createReservation({
-    pkg,
-    selectedAncillaries = [],
-    guestName,
-    guestEmail,
-    guestPhone,
-    specialRequests,
-    channel = 'widget',
-    groupId,              // passed from route handler (already resolved)
+    pkg, selectedAncillaries = [], guestName, guestEmail, guestPhone,
+    specialRequests, channel = 'widget', groupId,
   }) {
     try {
-      const hotel      = pkg.hotel   || {};
-      const summary    = pkg.summary || {};
+      const hotel   = pkg.hotel   || {};
+      const summary = pkg.summary || {};
 
-      // Use groupId from caller if available, else from package
-      const resolvedGroupId   = groupId    || hotel.groupId;
-      const propertyId        = hotel.propertyId;
-      const roomTypeId        = hotel.roomTypeId;
-      const ratePlanId        = hotel.ratePlanId;
+      const resolvedGroupId = groupId    || hotel.groupId;
+      const propertyId      = hotel.propertyId;
+      const roomTypeId      = hotel.roomTypeId;
+      const ratePlanId      = hotel.ratePlanId;
 
       if (!resolvedGroupId || !propertyId || !roomTypeId || !ratePlanId) {
-        return {
-          success: false,
-          error:   'Invalid package — missing booking identifiers. Please search again.',
-        };
+        return { success: false, error: 'Invalid package — missing booking identifiers. Please search again.' };
       }
 
-      // ── Fetch hotel group for commission + payment config ──
       const { data: group, error: groupErr } = await supabase
         .from('hotel_groups')
         .select('id, name, slug, commission_rate, payment_type, mpesa_shortcode, mpesa_account_ref, payment_link_template, notification_email, notification_phone')
@@ -76,13 +49,11 @@ class HotelDirectBookingService {
         return { success: false, error: 'Hotel configuration not found.' };
       }
 
-      // ── Totals ────────────────────────────────────────────
       const nights     = hotel.nights || summary.nights || 1;
       const passengers = summary.passengers || 1;
       const currency   = hotel.currency || summary.currency || 'KES';
       const roomTotal  = hotel.totalRate || (hotel.pricePerNight * nights) || 0;
 
-      // Ancillary total — pre-bookable services only
       const ancillaryTotal = selectedAncillaries.reduce((sum, a) => {
         if (a.priceBasis === 'per_person') return sum + (a.price * passengers);
         if (a.priceBasis === 'per_night')  return sum + (a.price * nights);
@@ -94,7 +65,6 @@ class HotelDirectBookingService {
       const commissionAmount = Math.round(grossAmount * commissionRate * 100) / 100;
       const reservationRef   = `HTL-${Date.now()}`;
 
-      // ── Write reservation ─────────────────────────────────
       const { data: reservation, error: resErr } = await supabase
         .from('hotel_reservations')
         .insert({
@@ -135,8 +105,7 @@ class HotelDirectBookingService {
         return { success: false, error: 'Could not create reservation. Please try again.' };
       }
 
-      // ── Write commission ledger ───────────────────────────
-      const period = new Date().toISOString().slice(0, 7); // '2026-07'
+      const period = new Date().toISOString().slice(0, 7);
       await supabase.from('commission_ledger').insert({
         id:                uuidv4(),
         group_id:          resolvedGroupId,
@@ -151,20 +120,10 @@ class HotelDirectBookingService {
         created_at:        new Date().toISOString(),
       });
 
-      // ── Notify hotel (non-blocking) ───────────────────────
-      this._notifyHotel({
-        group, reservation, hotel,
-        selectedAncillaries,
-        guestName, guestPhone, guestEmail,
-      }).catch(err =>
-        logger.error('HotelDirect: hotel notification failed', {
-          reservationRef, error: err.message,
-        })
-      );
+      this._notifyHotel({ group, reservation, hotel, selectedAncillaries, guestName, guestPhone, guestEmail })
+        .catch(err => logger.error('HotelDirect: hotel notification failed', { reservationRef, error: err.message }));
 
-      logger.info('HotelDirect: reservation created', {
-        reservationRef, groupSlug: group.slug, grossAmount, commissionAmount,
-      });
+      logger.info('HotelDirect: reservation created', { reservationRef, groupSlug: group.slug, grossAmount, commissionAmount });
 
       return {
         success:          true,
@@ -183,23 +142,11 @@ class HotelDirectBookingService {
     }
   }
 
-  // ─────────────────────────────
-  // TRIGGER GUEST PAYMENT
-  // M-Pesa → hotel's own shortcode (Bodrless never receives money).
-  // Card → hotel's payment link with amount + ref substituted in.
-  // ─────────────────────────────
   async triggerGuestPayment({ reservationRef, guestPhone, paymentMethod }) {
     try {
       const { data: reservation, error } = await supabase
         .from('hotel_reservations')
-        .select(`
-          *,
-          hotel_groups (
-            name, payment_type,
-            mpesa_shortcode, mpesa_account_ref,
-            payment_link_template
-          )
-        `)
+        .select(`*, hotel_groups ( name, payment_type, mpesa_shortcode, mpesa_account_ref, payment_link_template )`)
         .eq('reservation_ref', reservationRef)
         .single();
 
@@ -211,23 +158,15 @@ class HotelDirectBookingService {
       const amount   = reservation.gross_amount;
       const currency = reservation.currency;
       const phone    = guestPhone || reservation.guest_phone;
+      const method   = paymentMethod || (group.payment_type === 'mpesa' ? 'mpesa' : 'card');
 
-      // Determine which method to use
-      const method = paymentMethod
-        || (group.payment_type === 'mpesa' ? 'mpesa' : 'card');
-
-      // ── M-Pesa STK push to hotel's shortcode ──────────────
       if (method === 'mpesa') {
         if (!group.mpesa_shortcode) {
-          return {
-            success: false,
-            error:   'Hotel M-Pesa shortcode not configured. Please contact the hotel directly.',
-          };
+          return { success: false, error: 'Hotel M-Pesa shortcode not configured. Please contact the hotel directly.' };
         }
         if (!intasend) {
           return { success: false, error: 'Payment service unavailable. Please try again.' };
         }
-
         try {
           const nameParts = (reservation.guest_name || '').split(' ');
           await intasend.collection().mpesaStkPush({
@@ -238,54 +177,32 @@ class HotelDirectBookingService {
             amount:       Math.round(amount),
             phone_number: phone,
             api_ref:      reservationRef,
-            account:      group.mpesa_shortcode,   // hotel's till/paybill
+            account:      group.mpesa_shortcode,
             narrative:    `${group.mpesa_account_ref || group.name} — ${reservationRef}`,
           });
-
-          await supabase
-            .from('hotel_reservations')
-            .update({ payment_method: 'mpesa' })
-            .eq('reservation_ref', reservationRef);
-
-          logger.info('HotelDirect: M-Pesa STK sent to hotel shortcode', {
-            reservationRef, shortcode: group.mpesa_shortcode, amount,
-          });
-
+          await supabase.from('hotel_reservations').update({ payment_method: 'mpesa' }).eq('reservation_ref', reservationRef);
+          logger.info('HotelDirect: M-Pesa STK sent', { reservationRef, shortcode: group.mpesa_shortcode, amount });
           return {
             success:       true,
             paymentMethod: 'mpesa',
             message:       `M-Pesa prompt sent to ${phone}. Enter your PIN to pay ${currency} ${amount.toLocaleString()} to ${group.name}.`,
           };
-
         } catch (stkErr) {
           logger.error('HotelDirect: STK push failed', { reservationRef, error: stkErr.message });
-          return {
-            success: false,
-            error:   `Could not send payment prompt (${stkErr.message}). Please try again.`,
-          };
+          return { success: false, error: `Could not send payment prompt (${stkErr.message}). Please try again.` };
         }
       }
 
-      // ── Card payment link ──────────────────────────────────
       if (method === 'card') {
         if (!group.payment_link_template) {
-          return {
-            success: false,
-            error:   'Hotel card payment not configured. Please contact the hotel directly.',
-          };
+          return { success: false, error: 'Hotel card payment not configured. Please contact the hotel directly.' };
         }
-
         const paymentLink = group.payment_link_template
           .replace('{amount}',   Math.round(amount))
           .replace('{ref}',      reservationRef)
           .replace('{currency}', currency)
           .replace('{name}',     encodeURIComponent(reservation.guest_name));
-
-        await supabase
-          .from('hotel_reservations')
-          .update({ payment_method: 'card' })
-          .eq('reservation_ref', reservationRef);
-
+        await supabase.from('hotel_reservations').update({ payment_method: 'card' }).eq('reservation_ref', reservationRef);
         return {
           success:       true,
           paymentMethod: 'card',
@@ -302,51 +219,28 @@ class HotelDirectBookingService {
     }
   }
 
-  // ─────────────────────────────
-  // MARK PAID
-  // Called by hotel admin panel or M-Pesa webhook.
-  // Triggers guest voucher (email + WhatsApp).
-  // Updates commission ledger — now owed, will be invoiced monthly.
-  // ─────────────────────────────
   async markPaid({ reservationRef, paymentReference, markedBy = 'hotel' }) {
     try {
       const { data: reservation, error } = await supabase
         .from('hotel_reservations')
-        .select(`
-          *,
-          hotel_groups ( name, notification_email, notification_phone ),
-          hotel_properties ( name, location, address, check_in_time, check_out_time ),
-          room_types ( name, bed_type, view ),
-          rate_plans ( name, meal_plan )
-        `)
+        .select(`*, hotel_groups ( name, notification_email, notification_phone ), hotel_properties ( name, location, address, check_in_time, check_out_time ), room_types ( name, bed_type, view ), rate_plans ( name, meal_plan )`)
         .eq('reservation_ref', reservationRef)
         .single();
 
       if (error || !reservation) {
         return { success: false, error: 'Reservation not found.' };
       }
-
       if (reservation.payment_status === 'paid') {
         return { success: false, error: 'Already marked as paid.', alreadyPaid: true };
       }
 
-      // Update reservation
       await supabase
         .from('hotel_reservations')
-        .update({
-          payment_status:    'paid',
-          status:            'paid',
-          payment_reference: paymentReference || null,
-          voucher_sent:      false,
-        })
+        .update({ payment_status: 'paid', status: 'paid', payment_reference: paymentReference || null, voucher_sent: false })
         .eq('reservation_ref', reservationRef);
 
-      // Commission ledger stays 'pending' until invoiced monthly — no change needed
-
-      // Send voucher (non-blocking)
-      this._sendGuestVoucher(reservation).catch(err =>
-        logger.error('HotelDirect: voucher send failed', { reservationRef, error: err.message })
-      );
+      this._sendGuestVoucher(reservation)
+        .catch(err => logger.error('HotelDirect: voucher send failed', { reservationRef, error: err.message }));
 
       logger.info('HotelDirect: reservation marked paid', { reservationRef, markedBy });
       return { success: true, reservationRef, status: 'paid' };
@@ -358,10 +252,84 @@ class HotelDirectBookingService {
   }
 
   // ─────────────────────────────
-  // CANCEL RESERVATION
-  // Soft cancel. Voids commission ledger entry.
-  // Hotel handles any refund directly.
+  // MODIFY RESERVATION
+  // Updates dates and recalculates totals.
   // ─────────────────────────────
+  async modifyReservation({ reservationRef, newCheckIn, newCheckOut, specialRequests }) {
+    try {
+      const { data: reservation } = await supabase
+        .from('hotel_reservations')
+        .select('id, status, group_id, rate_plan_id, adults, children, currency, ancillary_total')
+        .eq('reservation_ref', reservationRef)
+        .single();
+
+      if (!reservation) {
+        return { success: false, error: 'Reservation not found.' };
+      }
+      if (reservation.status === 'cancelled') {
+        return { success: false, error: 'Cannot modify a cancelled reservation.' };
+      }
+
+      const checkIn  = new Date(newCheckIn);
+      const checkOut = new Date(newCheckOut);
+      const nights   = Math.round((checkOut - checkIn) / (1000 * 60 * 60 * 24));
+
+      if (nights <= 0) {
+        return { success: false, error: 'Check-out must be after check-in.' };
+      }
+
+      // Fetch rate plan to recalculate totals
+      const { data: ratePlan } = await supabase
+        .from('rate_plans')
+        .select('price_per_night, extra_adult_surcharge, child_surcharge')
+        .eq('id', reservation.rate_plan_id)
+        .single();
+
+      const pricePerNight  = ratePlan?.price_per_night || 0;
+      const roomTotal      = pricePerNight * nights;
+      const ancillaryTotal = Number(reservation.ancillary_total) || 0;
+      const grossAmount    = roomTotal + ancillaryTotal;
+
+      const updates = {
+        check_in:     newCheckIn,
+        check_out:    newCheckOut,
+        nights,
+        room_total:   roomTotal,
+        gross_amount: grossAmount,
+        updated_at:   new Date().toISOString(),
+      };
+      if (specialRequests !== undefined) updates.special_requests = specialRequests;
+
+      await supabase
+        .from('hotel_reservations')
+        .update(updates)
+        .eq('reservation_ref', reservationRef);
+
+      // Update commission ledger with new gross
+      const commissionRate = 0.05; // will be overridden by group rate if needed
+      const commissionAmount = Math.round(grossAmount * commissionRate * 100) / 100;
+      await supabase
+        .from('commission_ledger')
+        .update({ gross_amount: grossAmount, commission_amount: commissionAmount })
+        .eq('reservation_ref', reservationRef);
+
+      logger.info('HotelDirect: reservation modified', { reservationRef, newCheckIn, newCheckOut, nights });
+
+      return {
+        success:        true,
+        reservationRef,
+        newCheckIn,
+        newCheckOut,
+        nights,
+        note:           'Modification recorded. The hotel will confirm your updated dates shortly.',
+      };
+
+    } catch (err) {
+      logger.error('HotelDirect: modifyReservation threw', { error: err.message });
+      return { success: false, error: 'Could not modify reservation.' };
+    }
+  }
+
   async cancelReservation({ reservationRef, reason, cancelledBy = 'guest' }) {
     try {
       const { data: reservation } = await supabase
@@ -382,7 +350,6 @@ class HotelDirectBookingService {
         .update({ status: 'cancelled', updated_at: new Date().toISOString() })
         .eq('reservation_ref', reservationRef);
 
-      // Void commission entry
       await supabase
         .from('commission_ledger')
         .update({ status: 'waived' })
@@ -403,19 +370,10 @@ class HotelDirectBookingService {
     }
   }
 
-  // ─────────────────────────────
-  // GET RESERVATION
-  // ─────────────────────────────
   async getReservation(reservationRef) {
     const { data, error } = await supabase
       .from('hotel_reservations')
-      .select(`
-        *,
-        hotel_groups ( name, slug, commission_rate ),
-        hotel_properties ( name, location, address, check_in_time, check_out_time ),
-        room_types ( name, bed_type, view, amenities ),
-        rate_plans ( name, meal_plan, price_per_night )
-      `)
+      .select(`*, hotel_groups ( name, slug, commission_rate ), hotel_properties ( name, location, address, check_in_time, check_out_time ), room_types ( name, bed_type, view, amenities ), rate_plans ( name, meal_plan, price_per_night )`)
       .eq('reservation_ref', reservationRef)
       .single();
 
@@ -423,15 +381,8 @@ class HotelDirectBookingService {
     return data;
   }
 
-  // ─────────────────────────────
-  // GENERATE MONTHLY COMMISSION INVOICE
-  // Called by Bodrless ops (or a cron job) at month end.
-  // Aggregates all pending ledger entries for the period into
-  // one invoice per hotel group.
-  // ─────────────────────────────
   async generateMonthlyInvoice({ groupId, period }) {
     try {
-      // Fetch all pending ledger entries for this group + period
       const { data: entries, error } = await supabase
         .from('commission_ledger')
         .select('*')
@@ -447,11 +398,7 @@ class HotelDirectBookingService {
       const grossTotal      = entries.reduce((s, e) => s + Number(e.gross_amount),      0);
       const commissionTotal = entries.reduce((s, e) => s + Number(e.commission_amount), 0);
       const currency        = entries[0].currency || 'KES';
-
-      // Upsert invoice row
-      const dueDate = this._addDays(
-        new Date(`${period}-01`).toISOString().split('T')[0], 30
-      );
+      const dueDate         = this._addDays(new Date(`${period}-01`).toISOString().split('T')[0], 30);
 
       const { data: invoice, error: invErr } = await supabase
         .from('commission_invoices')
@@ -459,7 +406,7 @@ class HotelDirectBookingService {
           group_id:         groupId,
           period,
           total_bookings:   entries.length,
-          gross_total:      Math.round(grossTotal   * 100) / 100,
+          gross_total:      Math.round(grossTotal      * 100) / 100,
           commission_total: Math.round(commissionTotal * 100) / 100,
           currency,
           status:           'sent',
@@ -471,7 +418,6 @@ class HotelDirectBookingService {
 
       if (invErr) throw invErr;
 
-      // Mark ledger entries as invoiced
       await supabase
         .from('commission_ledger')
         .update({ status: 'invoiced', invoice_id: invoice.id })
@@ -479,17 +425,15 @@ class HotelDirectBookingService {
         .eq('period', period)
         .eq('status', 'pending');
 
-      logger.info('HotelDirect: commission invoice generated', {
-        groupId, period, commissionTotal, entries: entries.length,
-      });
+      logger.info('HotelDirect: commission invoice generated', { groupId, period, commissionTotal, entries: entries.length });
 
       return {
-        success:          true,
-        invoiceId:        invoice.id,
+        success:         true,
+        invoiceId:       invoice.id,
         period,
-        totalBookings:    entries.length,
-        grossTotal:       Math.round(grossTotal   * 100) / 100,
-        commissionTotal:  Math.round(commissionTotal * 100) / 100,
+        totalBookings:   entries.length,
+        grossTotal:      Math.round(grossTotal      * 100) / 100,
+        commissionTotal: Math.round(commissionTotal * 100) / 100,
         currency,
         dueDate,
       };
@@ -500,10 +444,6 @@ class HotelDirectBookingService {
     }
   }
 
-  // ─────────────────────────────
-  // NOTIFY HOTEL
-  // Email + WhatsApp to reservations team.
-  // ─────────────────────────────
   async _notifyHotel({ group, reservation, hotel, selectedAncillaries, guestName, guestPhone, guestEmail }) {
     const currency = reservation.currency || 'KES';
     const ancLines = selectedAncillaries.length > 0
@@ -573,10 +513,6 @@ ${currency} ${Number(reservation.commission_amount).toLocaleString()} — invoic
     }
   }
 
-  // ─────────────────────────────
-  // SEND GUEST VOUCHER
-  // Email + WhatsApp to guest after payment confirmed.
-  // ─────────────────────────────
   async _sendGuestVoucher(reservation) {
     const currency  = reservation.currency || 'KES';
     const property  = reservation.hotel_properties || {};
@@ -589,8 +525,7 @@ ${currency} ${Number(reservation.commission_amount).toLocaleString()} — invoic
       half_board: 'Half Board', full_board: 'Full Board', all_inclusive: 'All Inclusive',
     };
 
-    const ancLines = Array.isArray(reservation.ancillary_services) &&
-                     reservation.ancillary_services.length > 0
+    const ancLines = Array.isArray(reservation.ancillary_services) && reservation.ancillary_services.length > 0
       ? reservation.ancillary_services.map(a => `  • ${a.name}`).join('\n')
       : '  None';
 
@@ -660,20 +595,12 @@ Please present this confirmation at check-in.
 
     await supabase
       .from('hotel_reservations')
-      .update({
-        voucher_sent:    true,
-        voucher_sent_at: new Date().toISOString(),
-      })
+      .update({ voucher_sent: true, voucher_sent_at: new Date().toISOString() })
       .eq('reservation_ref', reservation.reservation_ref);
 
-    logger.info('HotelDirect: guest voucher sent', {
-      reservationRef: reservation.reservation_ref,
-    });
+    logger.info('HotelDirect: guest voucher sent', { reservationRef: reservation.reservation_ref });
   }
 
-  // ─────────────────────────────
-  // HELPERS
-  // ─────────────────────────────
   _addDays(dateStr, days) {
     const d = new Date(dateStr);
     d.setDate(d.getDate() + (days || 1));
