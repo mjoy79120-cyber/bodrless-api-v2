@@ -496,7 +496,7 @@ function ago(ts){
   const h=Math.floor(m/60);if(h<24)return h+'h ago';
   return Math.floor(h/24)+'d ago';
 }
-function initials(name){return (name||'??').split(/[\s\-_]/).filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join('')}
+function initials(name){return (name||'??').split(/[\s_-]/).filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join('')}
 function pill(type){
   const map={whatsapp:'<span class="pill wa">WhatsApp</span>',widget:'<span class="pill widget">Widget</span>',paid:'<span class="pill paid">Paid</span>',confirmed:'<span class="pill confirmed">Confirmed</span>',awaiting_payment:'<span class="pill pending">Awaiting payment</span>',hotel_confirmed:'<span class="pill pending">Pending payment</span>',search:'<span class="pill search">Search</span>'};
   return map[type]||'<span class="pill">'+type+'</span>';
