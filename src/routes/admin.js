@@ -246,7 +246,6 @@ router.get('/api/stats', requireAdminKey, async (req, res) => {
 });
 
 // ── ACTIVE TRIPS API ──────────────────────────────────────────
-// GET /admin/api/trips — all active trips across all agencies
 router.get('/api/trips', requireAdminKey, async (req, res) => {
   try {
     const { health, agency_id, limit = 100 } = req.query;
@@ -260,7 +259,6 @@ router.get('/api/trips', requireAdminKey, async (req, res) => {
   } catch (err) { logger.error('Admin trips query failed', { error: err.message }); res.status(500).json({ success: false, error: err.message }); }
 });
 
-// GET /admin/api/trips/:id/events — event timeline for one trip
 router.get('/api/trips/:id/events', requireAdminKey, async (req, res) => {
   try {
     const { data: events, error } = await supabase.from('trip_events').select('*').eq('trip_id', req.params.id).order('created_at', { ascending: false }).limit(50);
@@ -269,7 +267,6 @@ router.get('/api/trips/:id/events', requireAdminKey, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// POST /admin/api/trips/:id/resolve — manually resolve a disruption
 router.post('/api/trips/:id/resolve', requireAdminKey, async (req, res) => {
   try {
     const tripMonitoringService = require('../services/tripMonitoringService');
@@ -365,7 +362,6 @@ tr:last-child td{border-bottom:none}
 .pkg-detail-card{background:#f8f9fb;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:12px}.pkg-detail-card:last-child{margin-bottom:0}
 .pkg-detail-row{display:flex;justify-content:space-between;gap:10px;padding:3px 0}.pkg-detail-row .k{color:var(--muted);flex-shrink:0}.pkg-detail-row .v{text-align:right;font-weight:500}
 .pkg-detail-price{font-size:13px;font-weight:600;color:var(--text);margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)}
-/* Trip monitoring styles */
 .h-badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:12px}
 .h-badge.healthy{background:#dcfce7;color:#15803d}.h-badge.attention{background:#fef9c3;color:#92400e}.h-badge.critical{background:#fee2e2;color:#b91c1c}
 .h-dot{width:5px;height:5px;border-radius:50%;display:inline-block}
@@ -444,7 +440,6 @@ tr:last-child td{border-bottom:none}
     <div id="section-destinations" class="section"><div id="destinations-body"><div class="loading">Loading...</div></div></div>
     <div id="section-live" class="section"><div id="live-body"><div class="loading">Loading...</div></div></div>
 
-    <!-- ACTIVE TRIPS -->
     <div id="section-trips" class="section">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
         <p style="font-size:12px;color:var(--muted);max-width:560px">All active trips across every agency — sorted by health. Critical first. Monitoring starts automatically when a booking is confirmed.</p>
@@ -581,7 +576,7 @@ function renderAgencies(d){
   const el=document.getElementById('agencies-body');
   if(!d.agencies||!d.agencies.length){el.innerHTML='<div class="card"><div class="empty">No agencies found</div></div>';return;}
   const sorted=[...d.agencies].sort((a,b)=>(b.gmvKES||0)-(a.gmvKES||0));
-  el.innerHTML='<div class="card"><div class="card-title">All agencies</div><table><thead><tr><th>Agency</th><th>Channels</th><th>Searches</th><th>Bookings</th><th>Travelers</th><th>GMV</th></tr></thead><tbody>'+sorted.map(a=>'<tr><td><div style="display:flex;align-items:center;gap:10px"><div class="avatar">'+initials(a.name)+'</div><div><div style="font-weight:500">'+( a.name||a.id)+'</div><div class="mono" style="color:var(--muted);font-size:10px">'+a.id+'</div></div></div></td><td>'+(a.channels||[]).map(c=>pill(c)).join(' ')+'</td><td class="mono">'+fmt(a.searches)+'</td><td class="mono">'+fmt(a.bookings)+'</td><td class="mono">'+fmt(a.travelers)+'</td><td><div class="mono" style="font-weight:600">'+kes(a.gmvKES)+'</div><div class="mono" style="color:var(--muted);font-size:11px">'+usd(a.gmvKES)+'</div></td></tr>').join('')+'</tbody></table></div>';
+  el.innerHTML='<div class="card"><div class="card-title">All agencies</div><table><thead><tr><th>Agency</th><th>Channels</th><th>Searches</th><th>Bookings</th><th>Travelers</th><th>GMV</th></tr></thead><tbody>'+sorted.map(a=>'<tr><td><div style="display:flex;align-items:center;gap:10px"><div class="avatar">'+initials(a.name)+'</div><div><div style="font-weight:500">'+(a.name||a.id)+'</div><div class="mono" style="color:var(--muted);font-size:10px">'+a.id+'</div></div></div></td><td>'+(a.channels||[]).map(c=>pill(c)).join(' ')+'</td><td class="mono">'+fmt(a.searches)+'</td><td class="mono">'+fmt(a.bookings)+'</td><td class="mono">'+fmt(a.travelers)+'</td><td><div class="mono" style="font-weight:600">'+kes(a.gmvKES)+'</div><div class="mono" style="color:var(--muted);font-size:11px">'+usd(a.gmvKES)+'</div></td></tr>').join('')+'</tbody></table></div>';
 }
 
 function renderBookings(d){
@@ -634,7 +629,7 @@ function renderAdminTrips(trips, summary) {
   const hBadge = (h) => {
     const map = { healthy: 'background:#dcfce7;color:#15803d', attention: 'background:#fef9c3;color:#92400e', critical: 'background:#fee2e2;color:#b91c1c' };
     const dotC = { healthy: '#16a34a', attention: '#d97706', critical: '#dc2626' };
-    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:12px;'+( map[h]||'')+'">' +
+    return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:12px;'+(map[h]||'')+'">' +
       '<span style="width:5px;height:5px;border-radius:50%;background:'+(dotC[h]||'#94a3b8')+';display:inline-block'+(h==='critical'?';animation:blink 1s infinite':'')+'">' +
       '</span>'+h.charAt(0).toUpperCase()+h.slice(1)+'</span>';
   };
@@ -648,7 +643,7 @@ function renderAdminTrips(trips, summary) {
     const ini = (t.guest_name||'??').split(' ').slice(0,2).map(w=>w[0]||'').join('').toUpperCase();
     const disruption = t.active_disruption
       ? '<div class="disruption-banner">⚠ '+(t.disruption_type||'disruption').replace(/_/g,' ')+' detected'+(t.last_event_title?' — '+t.last_event_title:'')+
-        '<button onclick="resolveAdminTrip(\''+t.id+'\',this)" style="margin-left:10px;padding:2px 8px;font-size:10px;border:1px solid #fed7aa;border-radius:4px;background:transparent;color:#9a3412;cursor:pointer">Resolve</button></div>' : '';
+        '<button onclick="resolveAdminTrip(this.dataset.id,this)" data-id="'+t.id+'" style="margin-left:10px;padding:2px 8px;font-size:10px;border:1px solid #fed7aa;border-radius:4px;background:transparent;color:#9a3412;cursor:pointer">Resolve</button></div>' : '';
     return '<div class="trip-row-item">' +
       '<div style="width:32px;height:32px;border-radius:50%;background:#1a2d4a;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#60a5fa;flex-shrink:0;font-family:var(--mono)">'+ini+'</div>' +
       '<div style="flex:1;min-width:0">' +
@@ -728,7 +723,7 @@ function renderConversations(convs){
     (bookingRef?'<div style="font-size:12px;margin-bottom:10px;padding:6px 10px;background:#f8f9fb;border-radius:6px;font-family:var(--mono)">Booking ref: <strong>'+bookingRef+'</strong></div>':'')+
     [...turns].reverse().map(t=>{
       let pkgSection='';
-      if(t.packages_count>0){if(Array.isArray(t.packages_shown)&&t.packages_shown.length>0){ctr++;const did='pkg-detail-'+ctr;pkgSection='<span class="pkg-detail-toggle" id="'+did+'-toggle" onclick="togglePkgDetail(\''+did+'\')">View packages ▼</span><div class="pkg-detail-list" id="'+did+'">'+t.packages_shown.map(renderPackageDetail).join('')+'</div>';}else{pkgSection='<div style="font-size:11px;color:var(--muted);font-style:italic;margin-top:4px">'+t.packages_count+' packages shown</div>';}}
+      if(t.packages_count>0){if(Array.isArray(t.packages_shown)&&t.packages_shown.length>0){ctr++;const did='pkg-detail-'+ctr;pkgSection='<span class="pkg-detail-toggle" id="'+did+'-toggle" onclick="togglePkgDetail(this.dataset.id)" data-id="'+did+'">View packages ▼</span><div class="pkg-detail-list" id="'+did+'">'+t.packages_shown.map(renderPackageDetail).join('')+'</div>';}else{pkgSection='<div style="font-size:11px;color:var(--muted);font-style:italic;margin-top:4px">'+t.packages_count+' packages shown</div>';}}
       return '<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #f1f5f9"><div style="background:#f1f5f9;border-radius:8px;padding:8px 12px;margin-bottom:6px;font-size:12px"><div style="font-size:10px;color:var(--muted);margin-bottom:3px">'+ago(t.created_at)+' · '+(t.destination||'no destination')+'</div>'+t.user_message+'</div>'+(t.engine_response?'<div style="font-size:12px;color:var(--muted);padding:0 4px">'+t.engine_response.slice(0,200)+(t.engine_response.length>200?'...':'')+'</div>':'')+pkgSection+'</div>';
     }).join('')+'</div>';
   }).join('');
@@ -750,7 +745,7 @@ function renderAlerts(alerts){
   const el=document.getElementById('alerts-body');
   if(!alerts||!alerts.length){el.innerHTML='<div class="card"><div class="empty">No unresolved alerts.</div></div>';return;}
   const sc={info:'#2563eb',warning:'#d97706',error:'#dc2626',critical:'#7f1d1d'};const sb={info:'#dbeafe',warning:'#fef9c3',error:'#fee2e2',critical:'#fee2e2'};
-  el.innerHTML=alerts.map(a=>'<div class="card" style="margin-bottom:10px;border-left:3px solid '+(sc[a.severity]||'#94a3b8')+'"><div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px"><div style="flex:1"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:4px;background:'+(sb[a.severity])+';color:'+(sc[a.severity])+'">'+a.severity.toUpperCase()+'</span><span style="font-size:10px;color:var(--muted);font-family:var(--mono)">'+a.type+'</span><span style="font-size:11px;color:var(--muted)">'+ago(a.created_at)+'</span></div><div style="font-size:13px;font-weight:500;margin-bottom:4px">'+a.title+'</div>'+(a.detail?'<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+a.detail.slice(0,300)+'</div>':'')+'<div style="display:flex;gap:10px;font-size:11px;color:var(--muted)">'+(a.booking_ref?'<span class="mono">'+a.booking_ref+'</span>':'')+(a.phone?'<span>'+a.phone+'</span>':'')+(a.agency_id?'<span>'+a.agency_id+'</span>':'')+'</div></div>'+(!a.resolved?'<button onclick="resolveAlert(\''+a.id+'\',this)" style="padding:6px 12px;font-size:11px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;flex-shrink:0">Resolve</button>':'<span style="font-size:11px;color:var(--muted)">Resolved</span>')+'</div></div>').join('');
+  el.innerHTML=alerts.map(a=>'<div class="card" style="margin-bottom:10px;border-left:3px solid '+(sc[a.severity]||'#94a3b8')+'"><div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px"><div style="flex:1"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:4px;background:'+(sb[a.severity])+';color:'+(sc[a.severity])+'">'+a.severity.toUpperCase()+'</span><span style="font-size:10px;color:var(--muted);font-family:var(--mono)">'+a.type+'</span><span style="font-size:11px;color:var(--muted)">'+ago(a.created_at)+'</span></div><div style="font-size:13px;font-weight:500;margin-bottom:4px">'+a.title+'</div>'+(a.detail?'<div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+a.detail.slice(0,300)+'</div>':'')+'<div style="display:flex;gap:10px;font-size:11px;color:var(--muted)">'+(a.booking_ref?'<span class="mono">'+a.booking_ref+'</span>':'')+(a.phone?'<span>'+a.phone+'</span>':'')+(a.agency_id?'<span>'+a.agency_id+'</span>':'')+'</div></div>'+(!a.resolved?'<button onclick="resolveAlert(this.dataset.id,this)" data-id="'+a.id+'" style="padding:6px 12px;font-size:11px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;flex-shrink:0">Resolve</button>':'<span style="font-size:11px;color:var(--muted)">Resolved</span>')+'</div></div>').join('');
 }
 async function resolveAlert(id,btn){btn.disabled=true;btn.textContent='Resolving...';try{const r=await fetch('/admin/api/alerts/'+id+'/resolve?key='+encodeURIComponent(ADMIN_KEY),{method:'POST'});const j=await r.json();if(j.success)loadAlerts();else{btn.disabled=false;btn.textContent='Resolve';alert('Failed: '+j.error);}}catch(e){btn.disabled=false;btn.textContent='Resolve';}}
 
@@ -792,7 +787,7 @@ setInterval(async () => {
 loadData();
 </script>
 </body>
-</html>`);
+</html>\`);
 });
 
 module.exports = router;
