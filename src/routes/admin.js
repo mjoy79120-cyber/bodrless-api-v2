@@ -787,7 +787,7 @@ setInterval(async () => {
 loadData();
 </script>
 </body>
-</html>\`);
+</html>`);
 });
 
 module.exports = router;
