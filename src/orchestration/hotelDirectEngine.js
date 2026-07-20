@@ -1,4 +1,4 @@
-// HOTEL DIRECT ENGINE — v6.1
+// HOTEL DIRECT ENGINE — v6.2
 // Conversational AI layer: Groq (llama-3.3-70b) handles intent, context, and follow-ups.
 // Supabase layer: rooms, rates, availability, reservations (unchanged).
 
@@ -36,8 +36,17 @@ ALWAYS respond with valid JSON in this exact shape:
   "intent": "search" | "refine" | "question" | "clarify" | "manage" | "chitchat",
   "replyText": "Your warm, natural reply to the guest (1-3 sentences). For search/refine, briefly confirm what you're looking for. For question, answer it from context. For clarify, ask the one missing thing.",
   "searchParams": {
-    "propertyId": "<uuid or null>",
-    "propertyName": "<name or null>",
+    "legs": [
+      {
+        "propertyId": "<uuid or null>",
+        "propertyName": "<name or null>",
+        "checkIn": "YYYY-MM-DD or null",
+        "checkOut": "YYYY-MM-DD or null",
+        "nights": <number or null>
+      }
+    ],
+    "propertyId": "<uuid or null — first leg or single property>",
+    "propertyName": "<name or null — first leg or single property>",
     "checkIn": "YYYY-MM-DD or null",
     "checkOut": "YYYY-MM-DD or null",
     "nights": <number or null>,
@@ -54,6 +63,7 @@ ALWAYS respond with valid JSON in this exact shape:
 RULES:
 - Today is ${new Date().toISOString().split('T')[0]}.
 - If the guest says yes, sure, go ahead, sounds good, check it, that works — this is a CONFIRMATION. Use the property and params from the previous assistant message and set shouldSearch=true.
+- If the guest mentions multiple properties or destinations (e.g. "mara and mombasa", "3 nights in X then 2 nights in Y"), populate the "legs" array with one entry per property. Set shouldSearch=true if at least one leg is resolvable. Set top-level propertyId/checkIn to the FIRST leg.
 - If the guest doesn't specify a property but we can infer one from context (e.g. "the beach one", "that lodge"), use it.
 - If the guest refines (e.g. "what about full board?", "do you have suites?", "make it 5 nights", "1 adult and 1 child"), update ONLY the changed fields and keep everything else from context.
 - If dates are relative ("this weekend", "next Friday", "tomorrow"), resolve them to YYYY-MM-DD.
@@ -92,7 +102,6 @@ class HotelDirectEngine {
       const systemPrompt  = buildSystemPrompt(group, allProperties);
 
       // Build conversation history for Groq — last 20 turns
-      // Groq requires alternating user/assistant roles with no empty content
       const messages = [];
       const history  = conversationHistory.slice(-20);
       for (const h of history) {
@@ -146,7 +155,7 @@ class HotelDirectEngine {
           replyText || "How can I help?", []);
       }
 
-      // ── Resolve property ──────────────────────────────────────────────
+      // ── Resolve first/single property ────────────────────────────────
       let property = null;
       if (searchParams.propertyId) {
         property = allProperties.find(p => p.id === searchParams.propertyId) || null;
@@ -158,17 +167,9 @@ class HotelDirectEngine {
         ) || null;
       }
 
-      if (!property) {
-        const propList = allProperties
-          .map((p, i) => `${i + 1}. ${p.name} — ${p.destination || p.location || ''}`)
-          .join('\n');
-        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
-          `${replyText || "Which of our properties would you like?"}\n\n${propList}`, []);
-      }
-
-      // ── Build tripParams ──────────────────────────────────────────────
-      const nights   = searchParams.nights   || 3;
-      const checkIn  = searchParams.checkIn  || (() => {
+      // ── Build shared tripParams ───────────────────────────────────────
+      const nights   = searchParams.nights  || 3;
+      const checkIn  = searchParams.checkIn || (() => {
         const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0];
       })();
       const checkOut = searchParams.checkOut || resolveCheckOut(checkIn, nights);
@@ -178,14 +179,80 @@ class HotelDirectEngine {
       const budget   = searchParams.budget   || 'mid';
 
       const tripParams = {
-        propertyId:   property.id,
-        propertyName: property.name,
-        destination:  property.destination || property.location,
+        propertyId:   property?.id || null,
+        propertyName: property?.name || null,
+        destination:  property?.destination || property?.location || null,
         nights, adults, passengers: adults, children, childAges: [],
         mealPlan, departureDate: checkIn, returnDate: checkOut,
         budget, preferences: searchParams.preferences || [],
         groupSlug, _originalPrompt: prompt,
       };
+
+      // ── Multi-leg search ──────────────────────────────────────────────
+      const legs = Array.isArray(searchParams.legs) ? searchParams.legs : [];
+      if (legs.length > 1) {
+        const allPackages = [];
+        let legCheckInCursor = checkIn;
+
+        for (const leg of legs) {
+          let legProperty = null;
+          if (leg.propertyId) {
+            legProperty = allProperties.find(p => p.id === leg.propertyId) || null;
+          }
+          if (!legProperty && leg.propertyName) {
+            const name = (leg.propertyName || '').toLowerCase();
+            legProperty = allProperties.find(p =>
+              p.name.toLowerCase().includes(name) || name.includes(p.name.toLowerCase())
+            ) || null;
+          }
+          if (!legProperty) continue;
+
+          const legNights   = leg.nights || 3;
+          const legCheckIn  = leg.checkIn  || legCheckInCursor;
+          const legCheckOut = leg.checkOut || resolveCheckOut(legCheckIn, legNights);
+          legCheckInCursor  = legCheckOut; // next leg starts where this one ends
+
+          const rooms = await this._searchRooms(legProperty, {
+            checkIn: legCheckIn, checkOut: legCheckOut,
+            nights: legNights, adults, children, childAges: [], mealPlan, budget,
+          });
+          if (!rooms.length) continue;
+
+          const ancillaries = await this._getAncillaryServices(legProperty.id, {
+            ...tripParams, propertyId: legProperty.id, propertyName: legProperty.name,
+            nights: legNights, departureDate: legCheckIn, returnDate: legCheckOut,
+          });
+
+          const legPackages = rooms.slice(0, 12).map(room =>
+            this._buildRoomPackage(room, legProperty, ancillaries, {
+              ...tripParams,
+              propertyId: legProperty.id, propertyName: legProperty.name,
+              nights: legNights, departureDate: legCheckIn, returnDate: legCheckOut,
+            }, group)
+          );
+          allPackages.push(...legPackages);
+        }
+
+        if (allPackages.length) {
+          const matched = await this._applyPriceMatch(allPackages, groupSlug, checkIn, nights);
+          logger.info('Hotel orchestrate', { groupSlug, packages: matched.length });
+          return this._buildResponse(sessionId, tripParams, conversationHistory,
+            replyText || `Here are options across your requested properties:`, matched);
+        }
+
+        // All legs returned no rooms
+        return this._buildResponse(sessionId, tripParams, conversationHistory,
+          replyText || `Unfortunately I couldn't find availability across those properties for your dates. Would you like to try different dates?`, []);
+      }
+
+      // ── Single property fallback ──────────────────────────────────────
+      if (!property) {
+        const propList = allProperties
+          .map((p, i) => `${i + 1}. ${p.name} — ${p.destination || p.location || ''}`)
+          .join('\n');
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          `${replyText || "Which of our properties would you like?"}\n\n${propList}`, []);
+      }
 
       // ── Search rooms ──────────────────────────────────────────────────
       const rooms = await this._searchRooms(property, {
@@ -200,7 +267,7 @@ class HotelDirectEngine {
 
       const ancillaries    = await this._getAncillaryServices(property.id, tripParams);
       const mealPlansFound = new Set(rooms.map(r => r.mealPlan));
-      const packages       = rooms.slice(0, 6).map(room =>
+      const packages       = rooms.slice(0, 12).map(room =>
         this._buildRoomPackage(room, property, ancillaries, tripParams, group)
       );
 
@@ -336,28 +403,30 @@ class HotelDirectEngine {
         const ratePlans = await this._getRatePlans(roomType.id, checkIn, mealPlan, budget);
         if (!ratePlans.length) continue;
 
-        const bestRate    = ratePlans.find(r => r.is_refundable) || ratePlans[0];
-        const extraAdults = Math.max(0, adults - (bestRate.base_occupancy || adults));
-        const nightsCount = nights || 1;
-        const totalPrice  = (bestRate.price_per_night * nightsCount) +
-          ((bestRate.extra_adult_surcharge || 0) * extraAdults * nightsCount) +
-          ((bestRate.child_surcharge       || 0) * children    * nightsCount);
+        // Push a result for every rate plan, not just the best one
+        for (const ratePlan of ratePlans) {
+          const extraAdults = Math.max(0, adults - (ratePlan.base_occupancy || adults));
+          const nightsCount = nights || 1;
+          const totalPrice  = (ratePlan.price_per_night * nightsCount) +
+            ((ratePlan.extra_adult_surcharge || 0) * extraAdults * nightsCount) +
+            ((ratePlan.child_surcharge       || 0) * children    * nightsCount);
 
-        const { data: policy } = await supabase
-          .from('cancellation_policies').select('*')
-          .eq('rate_plan_id', bestRate.id).maybeSingle();
+          const { data: policy } = await supabase
+            .from('cancellation_policies').select('*')
+            .eq('rate_plan_id', ratePlan.id).maybeSingle();
 
-        results.push({
-          roomType, ratePlan: bestRate, property, checkIn,
-          checkOut:           checkOut || this._addDays(checkIn, nights),
-          nights:             nightsCount, adults, children, childAges, totalPrice,
-          pricePerNight:      bestRate.price_per_night,
-          currency:           bestRate.currency || property.currency || 'KES',
-          mealPlan:           bestRate.meal_plan,
-          cancellationPolicy: policy || null,
-          allRates:           ratePlans,
-          mealPlanMatched:    !mealPlan || bestRate.meal_plan === mealPlan,
-        });
+          results.push({
+            roomType, ratePlan, property, checkIn,
+            checkOut:           checkOut || this._addDays(checkIn, nights),
+            nights:             nightsCount, adults, children, childAges, totalPrice,
+            pricePerNight:      ratePlan.price_per_night,
+            currency:           ratePlan.currency || property.currency || 'KES',
+            mealPlan:           ratePlan.meal_plan,
+            cancellationPolicy: policy || null,
+            allRates:           ratePlans,
+            mealPlanMatched:    !mealPlan || ratePlan.meal_plan === mealPlan,
+          });
+        }
       }
       return results;
     } catch (err) {

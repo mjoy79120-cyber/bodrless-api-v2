@@ -114,7 +114,6 @@ router.get('/', (req, res) => {
   '".cancel-policy.refundable{background:#E8F8EE;color:#1B7A3D;}",\n' +
   '".cancel-policy.non-refundable{background:#FFF0F0;color:#A02020;}",\n' +
   '".cancel-policy.neutral{background:#F0EDE8;color:#5A4A3A;}",\n' +
-  // Price match badge
   '".price-match-badge{background:#E8F8EE;border:1px solid #A8D8B8;border-radius:10px;padding:10px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;}",\n' +
   '".pm-icon{font-size:18px;flex-shrink:0;}",\n' +
   '".pm-label{font-size:10px;font-weight:700;color:#1B7A3D;letter-spacing:1px;text-transform:uppercase;}",\n' +
@@ -155,7 +154,6 @@ router.get('/', (req, res) => {
   '".price-alert-actions{display:flex;gap:8px;}",\n' +
   '".price-approve{flex:1;background:var(--et-navy);color:white;border:none;padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}",\n' +
   '".price-cancel{flex:1;background:white;color:var(--et-navy);border:1.5px solid var(--et-border);padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;}",\n' +
-  // Powered by Bodrless
   '".bodrless-powered{text-align:center;padding:8px 0 4px;font-size:10px;color:var(--et-muted);letter-spacing:0.5px;}",\n' +
   '".bodrless-powered a{color:var(--et-muted);text-decoration:none;font-weight:600;}",\n' +
   '".bodrless-powered a:hover{color:var(--et-navy);}"\n' +
@@ -191,7 +189,6 @@ router.get('/', (req, res) => {
   'var messages = document.createElement("div");\n' +
   'messages.id = "bodrless-messages";\n' +
 
-  // Powered by Bodrless footer
   'var poweredBy = document.createElement("div");\n' +
   'poweredBy.className = "bodrless-powered";\n' +
   'poweredBy.innerHTML = "Powered by <a href=\'https://bodrless.com\' target=\'_blank\'>Bodrless</a>";\n' +
@@ -476,7 +473,6 @@ router.get('/', (req, res) => {
   '  messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
   '}\n' +
 
-  // ── HOTEL PACKAGE CARD ────────────────────────────────────────────────────
   'function addHotelPackage(p, idx) {\n' +
   '  var div = document.createElement("div"); div.className = "package";\n' +
   '  var hotel = p.hotel || {}; var summary = p.summary || {};\n' +
@@ -497,7 +493,6 @@ router.get('/', (req, res) => {
   '  var pkgB = document.createElement("div"); pkgB.className = "pkg-body";\n' +
   '  var images = hotel.images||[];\n' +
   '  if (images.length>0) { var img = document.createElement("img"); img.src=images[0]; img.alt=hotel.roomType||"Room"; img.style.cssText="width:100%;height:160px;object-fit:cover;border-radius:10px;margin-bottom:10px;display:block;"; img.onerror=function(){this.style.display="none";}; pkgB.appendChild(img); }\n' +
-  // Price match badge — shown right at top if applied
   '  if (hotel.priceMatchApplied) { pkgB.appendChild(makePriceMatchBadge(hotel.priceMatchOta, hotel.priceMatchSaving, currency)); }\n' +
   '  var stars = hotel.stars?Array(Math.min(Math.round(hotel.stars),5)+1).join("\\u2605"):"";\n' +
   '  pkgB.appendChild(makeRow("Property",(hotel.propertyName||hotel.name||"TBC")+(stars?" "+stars:""),hotel.location||hotel.address||""));\n' +
@@ -623,7 +618,8 @@ router.get('/', (req, res) => {
 
   'function addItinerary(p){ var div=document.createElement("div");div.className="package"; var s=p.summary||{},legs=p.legs||[],cur=s.currency||"KES"; var ph=document.createElement("div");ph.className="pkg-header"; var pt=document.createElement("span");pt.className="pkg-title";pt.innerText="Your Itinerary"; var pr=document.createElement("span");pr.className="pkg-route";pr.innerText=s.route||""; ph.appendChild(pt);ph.appendChild(pr); var pb=document.createElement("div");pb.className="pkg-body"; legs.forEach(function(leg,idx){ var sd=document.createElement("div");sd.className="itin-stop"+(leg.isBufferLeg?" buffer":""); var st=document.createElement("div");st.className="itin-stop-title"; st.innerText=leg.isBufferLeg?"Connection: overnight in "+titleCase(leg.destination):"Stop "+(idx+1)+": "+titleCase(leg.destination)+" ("+leg.nights+" night"+(leg.nights===1?"":"s")+")"; sd.appendChild(st); var tr=leg.transportIn; if(tr){var isb=(tr.transportType||"").toLowerCase()==="bus";var tl=document.createElement("div");tl.className="itin-line";tl.innerText=(isb?"Bus: ":"Flight: ")+(tr.airline||tr.provider||"TBC")+" \u00b7 "+(tr.origin||"TBC")+" \u2192 "+(tr.destination||"TBC")+" \u00b7 "+fmtTime(tr.departureTime)+"-"+fmtTime(tr.arrivalTime)+" \u00b7 "+fmtPrice(tr.price,tr.currency);sd.appendChild(tl);} if(leg.hotel){var h=leg.hotel;var stars=h.stars?Array(Math.min(Math.round(h.stars),5)+1).join("\\u2605"):"";var hl=document.createElement("div");hl.className="itin-line";hl.innerText="Hotel: "+(h.name||"TBC")+(stars?" "+stars:"")+(h.location?" \u00b7 "+h.location:"")+" \u00b7 "+fmtPrice(h.pricePerNight,h.currency)+"/night \u00d7 "+leg.nights;sd.appendChild(hl);} pb.appendChild(sd); }); if(p.returnTransport){var rt=p.returnTransport;var isrb=(rt.transportType||"").toLowerCase()==="bus";var rd=document.createElement("div");rd.className="itin-stop";var rtl=document.createElement("div");rtl.className="itin-stop-title";rtl.innerText="Return";rd.appendChild(rtl);var rl=document.createElement("div");rl.className="itin-line";rl.innerText=(isrb?"Bus: ":"Flight: ")+(rt.origin||"TBC")+" \u2192 "+(rt.destination||"TBC")+" \u00b7 "+fmtTime(rt.departureTime)+"-"+fmtTime(rt.arrivalTime)+" \u00b7 "+fmtPrice(rt.price,rt.currency);rd.appendChild(rl);pb.appendChild(rd);} var pf=document.createElement("div");pf.className="pkg-footer"; var ppd=document.createElement("div");ppd.className="pkg-price";ppd.innerText=fmtPrice(Math.round(s.totalPrice||0),cur); var pps=document.createElement("small");pps.innerText=fmtPrice(Math.round(s.pricePerPerson||0),cur)+"/person \u00b7 "+(s.passengers||1)+" traveller(s)";ppd.appendChild(pps); var bk=document.createElement("button");bk.className="book";bk.innerText="Book Itinerary"; bk.onclick=function(){showNameForm(p,bk);}; pf.appendChild(ppd);pf.appendChild(bk); div.appendChild(ph);div.appendChild(pb);div.appendChild(pf); messages.appendChild(div); return div; }\n' +
 
-  // ── SEND — with scroll-to-first-result fix ────────────────────────────────
+  // ── SEND — FIX 1: only send previousParams if sessionId exists (same session)
+  // ── FIX 2: save tripParams and conversationHistory BEFORE needsClarification early return
   'function send(){\n' +
   '  var text=input.value.trim(); if(!text)return;\n' +
   '  if(isHotelMode){\n' +
@@ -638,33 +634,31 @@ router.get('/', (req, res) => {
   '  input.value=""; showTyping();\n' +
   '  var endpoint=isHotelMode?"' + apiBase + '/api/hotel/orchestrate":"' + apiBase + '/api/trips/orchestrate";\n' +
   '  var hdrs=isHotelMode?{"Content-Type":"application/json","x-hotel-key":"' + agencyKey + '"}:{"Content-Type":"application/json","x-api-key":"' + agencyKey + '"};\n' +
-  '  var body=isHotelMode?JSON.stringify({prompt:text,groupSlug:"' + agencyKey + '",sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams}):JSON.stringify({prompt:text,agencyId:"' + agencyKey + '",channelType:"widget",sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams});\n' +
+  // FIX 1: only pass previousParams if we have a sessionId (same active session)
+  '  var body=isHotelMode?JSON.stringify({prompt:text,groupSlug:"' + agencyKey + '",sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams}):JSON.stringify({prompt:text,agencyId:"' + agencyKey + '",channelType:"widget",sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)});\n' +
   '  fetch(endpoint,{method:"POST",headers:hdrs,body:body})\n' +
   '  .then(function(r){return r.json();})\n' +
   '  .then(function(data){\n' +
   '    hideTyping();\n' +
   '    if(data.sessionId)sessionId=data.sessionId;\n' +
+  // FIX 2: save tripParams and conversationHistory BEFORE the needsClarification early return
   '    if(data.tripParams)previousParams=data.tripParams;\n' +
   '    if(data.conversationHistory)conversationHistory=data.conversationHistory;\n' +
   '    if(data.needsClarification){var ct=data.text||"Could you give me a bit more detail?";addMsg(ct,"bot");transcript.push({type:"bot",text:ct});persistState();return;}\n' +
   '    var pkgs=data&&data.packages?data.packages:[];\n' +
   '    var isHD=data.isHotelDirect||(pkgs.length>0&&pkgs[0]&&pkgs[0].isHotelDirect);\n' +
   '    var isIt=pkgs.length===1&&pkgs[0]&&pkgs[0].isMultiDestination;\n' +
-  // No packages — show bot text
   '    if(!pkgs.length){\n' +
   '      var nt=(data&&data.text)?data.text:"No rooms available for those dates. Try adjusting your dates or tell me more about what you\'re looking for.";\n' +
   '      addMsg(nt,"bot"); transcript.push({type:"bot",text:nt}); persistState(); return;\n' +
   '    }\n' +
-  // Bot reply text — use engine's replyText directly (Claude wrote it)
   '    var rm = data.text || (isHD ? "Here\'s what we have available:" : (isIt ? "Here is your itinerary:" : "I found "+pkgs.length+" option(s) for you:"));\n' +
   '    var botMsg = addMsg(rm,"bot"); transcript.push({type:"bot",text:rm});\n' +
-  // Render packages and track the FIRST card for scroll
   '    var firstCard = null;\n' +
   '    if(isHD&&isIt){ firstCard=addHotelItinerary(pkgs[0]); transcript.push({type:"hotel_itinerary",pkg:pkgs[0]}); }\n' +
   '    else if(isHD){ pkgs.forEach(function(p,i){ var card=addHotelPackage(p,i); if(i===0)firstCard=card; }); transcript.push({type:"hotel_packages",packages:pkgs}); }\n' +
   '    else if(isIt){ firstCard=addItinerary(pkgs[0]); transcript.push({type:"itinerary",pkg:pkgs[0]}); }\n' +
   '    else{ pkgs.slice(0,4).forEach(function(p,i){ var card=addPackage(p,i); if(i===0)firstCard=card; }); transcript.push({type:"packages",packages:pkgs.slice(0,4)}); }\n' +
-  // ── KEY SCROLL FIX: scroll to bot message (just above first card) ──────
   '    scrollToEl(botMsg);\n' +
   '    persistState();\n' +
   '  })\n' +
