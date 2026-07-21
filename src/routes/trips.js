@@ -84,13 +84,15 @@ router.post('/orchestrate', async (req, res) => {
       channel: value.channelType,
     }).catch(err => logger.error('Search save error', { error: err.message }));
 
-    return res.json({
+ return res.json({
       success: true,
       sessionId: result?.sessionId || `sess_${Date.now()}`,
+      text: result?.text || null,
       packages: packages.slice(0, 4),
       tripParams: result?.tripParams || null,
       conversationHistory: result?.conversationHistory || [],
       intent: result?.intent || null,
+      needsClarification: result?.needsClarification || false,
     });
 
   } catch (err) {

@@ -1167,14 +1167,12 @@ class OrchestrationEngine {
     // hotel-only searches don't need a departure date prompt since
     // the engine uses a sensible check-in default.
     if (
-      !tripParams.departureDate &&
-      !intent?.wantsSuggestDates &&
-      intent?.productScope?.needsTransport !== false &&
-      tripParams.destination &&
-      !tripParams._awaitingClarification &&
-      channel !== 'widget' &&
-      channel !== 'whatsapp'
-    ) {
+  !tripParams.departureDate &&
+  !intent?.wantsSuggestDates &&
+  intent?.productScope?.needsTransport !== false &&
+  tripParams.destination &&
+  !tripParams._awaitingClarification
+) {
       const dest = this._titleCase(tripParams.destination);
       return this._buildClarificationResponse({
         sessionId, prompt,
