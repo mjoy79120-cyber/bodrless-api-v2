@@ -1171,7 +1171,9 @@ class OrchestrationEngine {
       !intent?.wantsSuggestDates &&
       intent?.productScope?.needsTransport !== false &&
       tripParams.destination &&
-      !tripParams._awaitingClarification
+      !tripParams._awaitingClarification &&
+      channel !== 'widget' &&
+      channel !== 'whatsapp'
     ) {
       const dest = this._titleCase(tripParams.destination);
       return this._buildClarificationResponse({

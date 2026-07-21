@@ -69,6 +69,7 @@ router.post('/orchestrate', async (req, res) => {
       {
         conversationHistory: value.conversationHistory || [],
         previousParams: value.previousParams || null,
+        channel: value.channelType || 'api',
       }
     );
 
