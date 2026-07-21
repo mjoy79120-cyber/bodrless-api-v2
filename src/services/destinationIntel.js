@@ -27,28 +27,44 @@ const { logger } = require('../utils/logger');
 const STATIC_IATA_CODES = require('../data/staticIataList');
 
 // ─────────────────────────────────────────────
+// HELPER — build a simple city override entry
+// ─────────────────────────────────────────────
+function _cityOverride(name, iata, { transferFrom = null, transferKm = null } = {}) {
+  const isDirect = !transferFrom;
+  return {
+    destination: name,
+    destinationType: 'city',
+    isAirstripDestination: false,
+    airstripCodes: [],
+    accessByMode: {
+      air: {
+        hubName: transferFrom || name,
+        hubCode: iata,
+        directService: isDirect,
+        transferRequired: !isDirect,
+        transferDistanceKm: transferKm || null,
+      },
+      train: { hubName: null, hubCode: null, directService: false, transferRequired: false, transferDistanceKm: null },
+      bus:   { hubName: null, hubCode: null, directService: false, transferRequired: false, transferDistanceKm: null },
+    },
+  };
+}
+
+// ─────────────────────────────────────────────
 // STATIC CORRIDOR OVERRIDES
+// Hand-verified, never go to Groq for these.
 // ─────────────────────────────────────────────
 const STATIC_DESTINATION_OVERRIDES = {
+  // ── Kenya coast ──────────────────────────
   kilifi: {
     destination: 'kilifi',
     destinationType: 'town',
     isAirstripDestination: false,
     airstripCodes: [],
     accessByMode: {
-      air: {
-        hubName: 'malindi', hubCode: 'MYD',
-        directService: false, transferRequired: true, transferDistanceKm: 60,
-      },
-      train: {
-        hubName: 'mombasa', hubCode: null,
-        directService: false, transferRequired: true, transferDistanceKm: 60,
-      },
-      bus: {
-        hubName: null, hubCode: null,
-        directService: true, transferRequired: false, transferDistanceKm: null,
-        searchAs: 'malindi',
-      },
+      air: { hubName: 'malindi', hubCode: 'MYD', directService: false, transferRequired: true, transferDistanceKm: 60 },
+      train: { hubName: 'mombasa', hubCode: null, directService: false, transferRequired: true, transferDistanceKm: 60 },
+      bus: { hubName: null, hubCode: null, directService: true, transferRequired: false, transferDistanceKm: null, searchAs: 'malindi' },
     },
   },
   watamu: {
@@ -57,19 +73,9 @@ const STATIC_DESTINATION_OVERRIDES = {
     isAirstripDestination: false,
     airstripCodes: [],
     accessByMode: {
-      air: {
-        hubName: 'malindi', hubCode: 'MYD',
-        directService: false, transferRequired: true, transferDistanceKm: 25,
-      },
-      train: {
-        hubName: 'mombasa', hubCode: null,
-        directService: false, transferRequired: true, transferDistanceKm: 100,
-      },
-      bus: {
-        hubName: null, hubCode: null,
-        directService: true, transferRequired: false, transferDistanceKm: null,
-        searchAs: 'malindi',
-      },
+      air: { hubName: 'malindi', hubCode: 'MYD', directService: false, transferRequired: true, transferDistanceKm: 25 },
+      train: { hubName: 'mombasa', hubCode: null, directService: false, transferRequired: true, transferDistanceKm: 100 },
+      bus: { hubName: null, hubCode: null, directService: true, transferRequired: false, transferDistanceKm: null, searchAs: 'malindi' },
     },
   },
   diani: {
@@ -78,24 +84,93 @@ const STATIC_DESTINATION_OVERRIDES = {
     isAirstripDestination: false,
     airstripCodes: [],
     accessByMode: {
-      air: {
-        hubName: 'diani', hubCode: 'UKA',
-        directService: true, transferRequired: false, transferDistanceKm: null,
-      },
-      train: {
-        hubName: 'mombasa', hubCode: null,
-        directService: false, transferRequired: true, transferDistanceKm: 35,
-      },
-      bus: {
-        hubName: 'mombasa', hubCode: null,
-        directService: false, transferRequired: true, transferDistanceKm: 35,
-      },
+      air:   { hubName: 'diani', hubCode: 'UKA', directService: true,  transferRequired: false, transferDistanceKm: null },
+      train: { hubName: 'mombasa', hubCode: null, directService: false, transferRequired: true,  transferDistanceKm: 35 },
+      bus:   { hubName: 'mombasa', hubCode: null, directService: false, transferRequired: true,  transferDistanceKm: 35 },
     },
   },
 };
 
+// ── Aliases for existing entries ──────────────
 STATIC_DESTINATION_OVERRIDES['diani beach'] = STATIC_DESTINATION_OVERRIDES['diani'];
 STATIC_DESTINATION_OVERRIDES['ukunda']      = STATIC_DESTINATION_OVERRIDES['diani'];
+
+// ── Indian Ocean islands ──────────────────────
+STATIC_DESTINATION_OVERRIDES['port louis'] = _cityOverride('port louis', 'MRU');
+STATIC_DESTINATION_OVERRIDES['mauritius']  = _cityOverride('port louis', 'MRU');
+STATIC_DESTINATION_OVERRIDES['grand baie'] = _cityOverride('grand baie', 'MRU', { transferFrom: 'port louis', transferKm: 40 });
+STATIC_DESTINATION_OVERRIDES['flic en flac'] = _cityOverride('flic en flac', 'MRU', { transferFrom: 'port louis', transferKm: 30 });
+STATIC_DESTINATION_OVERRIDES['belle mare'] = _cityOverride('belle mare', 'MRU', { transferFrom: 'port louis', transferKm: 45 });
+
+STATIC_DESTINATION_OVERRIDES['mahe']       = _cityOverride('mahe', 'SEZ');
+STATIC_DESTINATION_OVERRIDES['seychelles'] = _cityOverride('mahe', 'SEZ');
+STATIC_DESTINATION_OVERRIDES['praslin']    = _cityOverride('praslin', 'SEZ', { transferFrom: 'mahe', transferKm: 45 });
+
+STATIC_DESTINATION_OVERRIDES['male']       = _cityOverride('male', 'MLE');
+STATIC_DESTINATION_OVERRIDES['maldives']   = _cityOverride('male', 'MLE');
+
+// ── East Africa ───────────────────────────────
+STATIC_DESTINATION_OVERRIDES['zanzibar']      = _cityOverride('zanzibar', 'ZNZ');
+STATIC_DESTINATION_OVERRIDES['dar es salaam'] = _cityOverride('dar es salaam', 'DAR');
+STATIC_DESTINATION_OVERRIDES['addis ababa']   = _cityOverride('addis ababa', 'ADD');
+STATIC_DESTINATION_OVERRIDES['kigali']        = _cityOverride('kigali', 'KGL');
+STATIC_DESTINATION_OVERRIDES['entebbe']       = _cityOverride('entebbe', 'EBB');
+STATIC_DESTINATION_OVERRIDES['kampala']       = _cityOverride('kampala', 'EBB');
+STATIC_DESTINATION_OVERRIDES['maputo']        = _cityOverride('maputo', 'MPM');
+STATIC_DESTINATION_OVERRIDES['antananarivo']  = _cityOverride('antananarivo', 'TNR');
+STATIC_DESTINATION_OVERRIDES['madagascar']    = _cityOverride('antananarivo', 'TNR');
+STATIC_DESTINATION_OVERRIDES['lusaka']        = _cityOverride('lusaka', 'LUN');
+STATIC_DESTINATION_OVERRIDES['harare']        = _cityOverride('harare', 'HRE');
+STATIC_DESTINATION_OVERRIDES['windhoek']      = _cityOverride('windhoek', 'WDH');
+STATIC_DESTINATION_OVERRIDES['luanda']        = _cityOverride('luanda', 'LAD');
+
+// ── Southern Africa ───────────────────────────
+STATIC_DESTINATION_OVERRIDES['johannesburg']  = _cityOverride('johannesburg', 'JNB');
+STATIC_DESTINATION_OVERRIDES['cape town']     = _cityOverride('cape town', 'CPT');
+STATIC_DESTINATION_OVERRIDES['durban']        = _cityOverride('durban', 'DUR');
+
+// ── North & West Africa ───────────────────────
+STATIC_DESTINATION_OVERRIDES['cairo']         = _cityOverride('cairo', 'CAI');
+STATIC_DESTINATION_OVERRIDES['marrakech']     = _cityOverride('marrakech', 'RAK');
+STATIC_DESTINATION_OVERRIDES['casablanca']    = _cityOverride('casablanca', 'CMN');
+STATIC_DESTINATION_OVERRIDES['accra']         = _cityOverride('accra', 'ACC');
+STATIC_DESTINATION_OVERRIDES['lagos']         = _cityOverride('lagos', 'LOS');
+STATIC_DESTINATION_OVERRIDES['abuja']         = _cityOverride('abuja', 'ABV');
+STATIC_DESTINATION_OVERRIDES['dakar']         = _cityOverride('dakar', 'DSS');
+
+// ── Middle East ───────────────────────────────
+STATIC_DESTINATION_OVERRIDES['dubai']         = _cityOverride('dubai', 'DXB');
+STATIC_DESTINATION_OVERRIDES['abu dhabi']     = _cityOverride('abu dhabi', 'AUH');
+STATIC_DESTINATION_OVERRIDES['doha']          = _cityOverride('doha', 'DOH');
+STATIC_DESTINATION_OVERRIDES['muscat']        = _cityOverride('muscat', 'MCT');
+STATIC_DESTINATION_OVERRIDES['istanbul']      = _cityOverride('istanbul', 'IST');
+
+// ── Europe ────────────────────────────────────
+STATIC_DESTINATION_OVERRIDES['london']        = _cityOverride('london', 'LHR');
+STATIC_DESTINATION_OVERRIDES['paris']         = _cityOverride('paris', 'CDG');
+STATIC_DESTINATION_OVERRIDES['amsterdam']     = _cityOverride('amsterdam', 'AMS');
+STATIC_DESTINATION_OVERRIDES['rome']          = _cityOverride('rome', 'FCO');
+STATIC_DESTINATION_OVERRIDES['madrid']        = _cityOverride('madrid', 'MAD');
+STATIC_DESTINATION_OVERRIDES['barcelona']     = _cityOverride('barcelona', 'BCN');
+STATIC_DESTINATION_OVERRIDES['athens']        = _cityOverride('athens', 'ATH');
+
+// ── Asia ──────────────────────────────────────
+STATIC_DESTINATION_OVERRIDES['bali']          = _cityOverride('bali', 'DPS');
+STATIC_DESTINATION_OVERRIDES['phuket']        = _cityOverride('phuket', 'HKT');
+STATIC_DESTINATION_OVERRIDES['bangkok']       = _cityOverride('bangkok', 'BKK');
+STATIC_DESTINATION_OVERRIDES['singapore']     = _cityOverride('singapore', 'SIN');
+STATIC_DESTINATION_OVERRIDES['kuala lumpur']  = _cityOverride('kuala lumpur', 'KUL');
+STATIC_DESTINATION_OVERRIDES['delhi']         = _cityOverride('delhi', 'DEL');
+STATIC_DESTINATION_OVERRIDES['mumbai']        = _cityOverride('mumbai', 'BOM');
+STATIC_DESTINATION_OVERRIDES['goa']           = _cityOverride('goa', 'GOI');
+STATIC_DESTINATION_OVERRIDES['tokyo']         = _cityOverride('tokyo', 'TYO');
+
+// ── Americas ──────────────────────────────────
+STATIC_DESTINATION_OVERRIDES['new york']      = _cityOverride('new york', 'JFK');
+STATIC_DESTINATION_OVERRIDES['miami']         = _cityOverride('miami', 'MIA');
+STATIC_DESTINATION_OVERRIDES['cancun']        = _cityOverride('cancun', 'CUN');
+STATIC_DESTINATION_OVERRIDES['sydney']        = _cityOverride('sydney', 'SYD');
+
 
 class DestinationIntel {
 
@@ -212,7 +287,26 @@ Rules:
       );
 
       const content = response.data.choices[0].message.content;
-      return JSON.parse(content);
+      const parsed = JSON.parse(content);
+
+      // ── SANITY CHECK: hubCode must be a valid 3-letter IATA code ──
+      // Groq occasionally hallucinates codes like "mrUganda". Reject
+      // anything that doesn't look like a real IATA before it poisons
+      // the flight search.
+      const airHub = parsed?.accessByMode?.air;
+      if (airHub?.hubCode) {
+        const clean = String(airHub.hubCode).toUpperCase().trim();
+        if (!/^[A-Z]{3}$/.test(clean)) {
+          logger.warn('DestinationIntel: Groq returned invalid hubCode — clearing it', {
+            destination: destinationName, hubCode: airHub.hubCode,
+          });
+          airHub.hubCode = null;
+        } else {
+          airHub.hubCode = clean;
+        }
+      }
+
+      return parsed;
     } catch (err) {
       logger.error('DestinationIntel: Groq resolution failed', { error: err.message, destination: destinationName });
       return null;
@@ -252,7 +346,7 @@ Rules:
         return result;
       }
 
-      // 3. Fallback: If it's a valid 3-letter code, trust it for concurrent/Duffel routing
+      // 3. Fallback: If it's a valid 3-letter code, trust it for Duffel routing
       if (/^[A-Z]{3}$/.test(cleanCode)) {
         result.accessByMode.air.bookable = true;
         result.accessByMode.air.supplier = 'duffel';
