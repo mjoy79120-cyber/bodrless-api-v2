@@ -134,7 +134,6 @@ class OrchestrationEngine {
   async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null) {
     this._validateTripParams(tripParams);
 
-    // Track whether dates came from the user or were assumed
     let datesWereAssumed = false;
 
     if (!tripParams.departureDate) {
@@ -257,8 +256,6 @@ class OrchestrationEngine {
         : '';
       responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
     } else {
-      // No results — try alternative nearby date windows and come
-      // back with something concrete instead of just saying "try shifting"
       const altResults = await this._searchAlternativeDates(tripParams, sessionId);
 
       if (altResults.length > 0) {
@@ -447,6 +444,421 @@ class OrchestrationEngine {
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // LEG ROLE CLASSIFIER
+  // ─────────────────────────────────────────────────────────────────────────────
+  _classifyTripLegs(trips) {
+    if (!trips || trips.length === 0) return [];
+
+    const originCity    = this._normalizeCity(trips[0].origin);
+    const visitedCities = new Map();
+
+    return trips.map((leg, index) => {
+      const dest      = this._normalizeCity(leg.destination);
+      const isLastLeg = index === trips.length - 1;
+      const isOrigin  = dest === originCity;
+      const hasNights = (leg.nights ?? 0) > 0;
+      const alreadySeen = visitedCities.has(dest);
+
+      let role;
+
+      if (isLastLeg && isOrigin) {
+        role = 'departure';
+      } else if (index === 0) {
+        role = 'arrival';
+        visitedCities.set(dest, index);
+      } else if (!hasNights && !isOrigin) {
+        role = 'stopover';
+      } else if (alreadySeen) {
+        role = 'return_stay';
+      } else {
+        role = 'internal';
+        visitedCities.set(dest, index);
+      }
+
+      return {
+        ...leg,
+        _role:           role,
+        _firstVisitIndex: alreadySeen ? visitedCities.get(dest) : index,
+        _isRevisit:      alreadySeen,
+      };
+    });
+  }
+
+  _normalizeCity(name) {
+    return (name || '').toLowerCase().trim().replace(/[^a-z\s]/g, '').trim();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TRANSPORT MODE RESOLVER
+  // ─────────────────────────────────────────────────────────────────────────────
+  _resolveInternalTransportModes(origin, destination) {
+    const o = this._normalizeCity(origin);
+    const d = this._normalizeCity(destination);
+
+    const KNOWN_RAIL = [
+      ['nairobi',    'mombasa'],
+      ['barcelona',  'madrid'],    ['madrid',     'barcelona'],
+      ['london',     'paris'],     ['paris',      'london'],
+      ['tokyo',      'osaka'],     ['osaka',      'tokyo'],
+      ['amsterdam',  'brussels'],  ['brussels',   'amsterdam'],
+      ['new york',   'washington'],['washington', 'new york'],
+      ['berlin',     'frankfurt'], ['frankfurt',  'berlin'],
+      ['rome',       'florence'],  ['florence',   'rome'],
+    ];
+
+    const KNOWN_BUS = [
+      ['nairobi',   'mombasa'],   ['nairobi',   'kampala'],
+      ['nairobi',   'arusha'],    ['nairobi',   'dar es salaam'],
+      ['mombasa',   'dar es salaam'],
+      ['barcelona', 'madrid'],    ['madrid',    'barcelona'],
+      ['london',    'edinburgh'], ['edinburgh', 'london'],
+    ];
+
+    const hasRail = KNOWN_RAIL.some(([a, b]) => (o.includes(a) && d.includes(b)) || (o.includes(b) && d.includes(a)));
+    const hasBus  = KNOWN_BUS.some(([a, b])  => (o.includes(a) && d.includes(b)) || (o.includes(b) && d.includes(a)));
+
+    const modes = ['flight'];
+    if (hasRail) modes.push('train');
+    if (hasBus)  modes.push('bus');
+
+    return modes;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // CLASSIFIED MULTI-TRIP ORCHESTRATOR
+  // ─────────────────────────────────────────────────────────────────────────────
+  async _orchestrateClassifiedTrip(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone) {
+    const classifiedLegs = this._classifyTripLegs(tripParams.trips);
+
+    console.log('CLASSIFIED LEGS:', classifiedLegs.map(l => ({
+      origin: l.origin, destination: l.destination,
+      role: l._role, nights: l.nights, date: l.departureDate,
+    })));
+
+    const cityHotelMemory = new Map();
+    const legResults = [];
+
+    for (const leg of classifiedLegs) {
+      if (leg._role === 'stopover') {
+        console.log(`SKIP stopover: ${leg.origin} → ${leg.destination}`);
+        continue;
+      }
+
+      const role             = leg._role;
+      const needsFlight      = ['arrival', 'internal', 'return_stay', 'departure'].includes(role);
+      const needsHotel       = ['arrival', 'internal', 'return_stay'].includes(role);
+      const needsArrTransfer = ['arrival', 'internal'].includes(role);
+      const needsDepTransfer = ['arrival', 'internal', 'return_stay', 'departure'].includes(role);
+
+      const destNorm  = this._normalizeCity(leg.destination);
+      const isRevisit = leg._isRevisit;
+
+      const legParams = {
+        ...tripParams,
+        trips:              undefined,
+        isMultiDestination: false,
+        legs:               undefined,
+        origin:             leg.origin      || tripParams.origin,
+        destination:        leg.destination,
+        departureDate:      leg.departureDate,
+        returnDate:         leg.returnDate,
+        nights:             leg.nights,
+      };
+
+      // ── Transport ───────────────────────────────────────────────────────────
+      let outboundFlights = [];
+      let outboundBuses   = [];
+      let outboundTrains  = [];
+
+      if (needsFlight) {
+        const transportModes = this._resolveInternalTransportModes(leg.origin, leg.destination);
+        const destAccess     = await this._resolveDestinationAccess(leg.destination);
+
+        const [flightResult, buses, trains] = await Promise.all([
+          this._searchFlightsWithHubFallback(legParams, 'outbound', destAccess),
+          transportModes.includes('bus')   ? this._searchBusesWithStaticFallback(legParams, 'outbound', destAccess) : Promise.resolve([]),
+          transportModes.includes('train') ? this._searchTrain(legParams, 'outbound', destAccess)                   : Promise.resolve([]),
+        ]);
+
+        outboundFlights = this._dedupeEquivalentFlights(flightResult.results);
+        outboundBuses   = buses;
+        outboundTrains  = trains;
+      }
+
+      // ── Return flight (fetched on arrival leg) ─────────────────────────────
+      let returnFlights = [];
+      if (role === 'arrival' && tripParams.returnDate) {
+        const lastLeg      = classifiedLegs[classifiedLegs.length - 1];
+        const returnParams = {
+          ...legParams,
+          origin:        lastLeg.origin      || leg.destination,
+          destination:   lastLeg.destination || leg.origin,
+          departureDate: lastLeg.departureDate,
+          returnDate:    lastLeg.returnDate,
+        };
+        const returnAccess  = await this._resolveDestinationAccess(returnParams.destination);
+        const retResult     = await this._searchFlightsWithHubFallback(returnParams, 'outbound', returnAccess);
+        returnFlights       = this._dedupeEquivalentFlights(retResult.results);
+      }
+
+      // ── Hotel ───────────────────────────────────────────────────────────────
+      let hotels = [];
+
+      if (needsHotel) {
+        if (isRevisit && cityHotelMemory.has(destNorm)) {
+          const remembered = cityHotelMemory.get(destNorm);
+          hotels = remembered ? [remembered] : [];
+          console.log(`HOTEL MEMORY: reusing "${remembered?.name}" for return stay in ${leg.destination}`);
+        } else {
+          hotels = await this._searchHotels(legParams);
+          if (hotels.length > 0) {
+            cityHotelMemory.set(destNorm, hotels[0]);
+          }
+        }
+      }
+
+      // ── Transfers ───────────────────────────────────────────────────────────
+      const primaryTransport = [...outboundFlights, ...outboundTrains, ...outboundBuses][0] || null;
+      const selectedHotel    = hotels[0] || null;
+      let transfers          = [];
+
+      if (needsArrTransfer && primaryTransport && selectedHotel) {
+        transfers = await this._buildTransferLegs(legParams, primaryTransport, selectedHotel);
+      } else if (needsDepTransfer && primaryTransport) {
+        const rate      = await this._getTransferRate(legParams);
+        const originHub = primaryTransport.originAirport || `${this._titleCase(leg.origin)} Airport`;
+        transfers = [{
+          legType:     'departure',
+          provider:    rate?.provider || 'Bodrless Standard Transfer',
+          description: `Hotel → ${originHub}`,
+          pickup:      'Hotel',
+          dropoff:     originHub,
+          price:       rate?.price ?? 1500,
+          currency:    rate?.currency || 'KES',
+        }];
+      }
+
+      // ── Build packages for this leg ─────────────────────────────────────────
+      const allOutbound = [...outboundFlights, ...outboundTrains, ...outboundBuses];
+      const packages    = await this._buildLegPackages({
+        role,
+        outboundTransport: allOutbound,
+        returnTransport:   returnFlights,
+        hotels,
+        transfers,
+        tripParams:        legParams,
+        isRevisit,
+      });
+
+      legResults.push({
+        role,
+        label:     `${leg.origin} → ${leg.destination}`,
+        roleLabel: { arrival: '✈️ Outbound + Hotel + Transfers', internal: '🔀 Next Leg', return_stay: '🏨 Return Stay', departure: '✈️ Return Flight' }[role] || role,
+        isRevisit,
+        packages,
+        text: this._buildLegResponseText(role, leg, packages, isRevisit),
+      });
+    }
+
+    const allPackages = legResults.flatMap(r => r.packages);
+    const totalCount  = allPackages.length;
+
+    const updatedHistory = [
+      ...conversationHistory,
+      { role: 'user', content: prompt },
+      {
+        role:         'assistant',
+        content:      `Built ${legResults.length} classified legs — ${totalCount} packages total`,
+        params:       tripParams,
+        packageCount: totalCount,
+      },
+    ].slice(-10);
+
+    this._logSearch({
+      sessionId, agencyId, prompt,
+      tripParams:       { ...tripParams, destination: legResults.map(r => r.label).join(' → ') },
+      packagesReturned: totalCount,
+      packages:         allPackages,
+      channel:          channel || 'widget',
+    }).catch(err => logger.error('Failed to log classified trip search', { error: err.message }));
+
+    tracking.logTurn({
+      sessionId, agencyId,
+      channel:            channel || 'widget',
+      phone:              phone   || null,
+      userMessage:        prompt,
+      engineResponse:     `Classified trip — ${legResults.length} legs`,
+      packagesCount:      totalCount,
+      needsClarification: false,
+      tripParams,
+      packages:           allPackages,
+    });
+
+    return {
+      sessionId,
+      text:                `Here's your complete trip broken down by leg:`,
+      packages:            allPackages,
+      tripResults:         legResults,
+      tripParams,
+      intent,
+      conversationHistory: updatedHistory,
+      generatedAt:         new Date().toISOString(),
+      isClassifiedTrip:    true,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // LEG PACKAGE BUILDER
+  // ─────────────────────────────────────────────────────────────────────────────
+  async _buildLegPackages({ role, outboundTransport, returnTransport, hotels, transfers, tripParams, isRevisit }) {
+    const hasOutbound = outboundTransport.length > 0;
+    const hasReturn   = returnTransport.length   > 0;
+    const hasHotels   = hotels.length            > 0;
+
+    if (!hasOutbound && !hasHotels) return [];
+
+    if (role === 'departure') {
+      return Promise.all(outboundTransport.slice(0, 4).map(async (t) => {
+        const priceKES   = await toKES(t.price, t.currency || 'KES');
+        const transKES   = transfers.reduce((s, x) => s + (x.price || 0), 0);
+        const totalPrice = priceKES + transKES;
+        return {
+          packageId: uuidv4(),
+          _legRole:  'departure',
+          summary: {
+            route:          `${tripParams.origin} → ${tripParams.destination}`,
+            passengers:     tripParams.passengers || 1,
+            nights:         0,
+            totalPrice,
+            pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+            currency:       CANONICAL_CURRENCY,
+            transportType:  t.transportType || 'flight',
+          },
+          transport:       this._formatTransportDisplay(t, tripParams.origin, tripParams.destination),
+          returnTransport: null,
+          hotel:           null,
+          transfers,
+          status:          'available',
+        };
+      }));
+    }
+
+    if (role === 'arrival') {
+      const maxOpts = Math.max(hasOutbound ? outboundTransport.length : 0, hasHotels ? hotels.length : 0, 1);
+      const built   = await Promise.all(
+        Array.from({ length: Math.min(maxOpts, 4) }, (_, i) => i).map(async (i) => {
+          const ob    = hasOutbound ? outboundTransport[i % outboundTransport.length] : null;
+          const ret   = hasReturn   ? returnTransport[i % returnTransport.length]     : null;
+          const hotel = hasHotels   ? hotels[i % hotels.length]                       : null;
+          if (!ob && !hotel) return null;
+
+          const nights = tripParams.nights || 1;
+          const obKES  = ob?.priceOnRequest  ? 0 : await toKES(ob?.price  || 0, ob?.currency  || 'KES');
+          const retKES = ret?.priceOnRequest ? 0 : await toKES(ret?.price || 0, ret?.currency || 'KES');
+          const htlKES = await toKES((hotel?.pricePerNight || 0) * nights, hotel?.currency || 'KES');
+          const trnKES = transfers.reduce((s, x) => s + (x.price || 0), 0);
+          const totalPrice = obKES + retKES + htlKES + trnKES;
+
+          return {
+            packageId: uuidv4(),
+            _legRole:  'arrival',
+            summary: {
+              route:          `${tripParams.origin} → ${tripParams.destination}`,
+              passengers:     tripParams.passengers || 1,
+              nights,
+              totalPrice,
+              pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+              currency:       CANONICAL_CURRENCY,
+              transportType:  ob?.transportType || 'flight',
+              priceCaveat:    ob?.priceOnRequest || ret?.priceOnRequest
+                ? 'Total excludes bus/operator fare — contact them directly for pricing.'
+                : null,
+            },
+            transport:       ob  ? this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination) : null,
+            returnTransport: ret ? this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin)      : null,
+            hotel,
+            transfers,
+            status: 'available',
+          };
+        })
+      );
+      return built.filter(Boolean);
+    }
+
+    // INTERNAL / RETURN_STAY
+    const maxOpts = Math.max(hasOutbound ? outboundTransport.length : 0, hasHotels ? hotels.length : 0, 1);
+    const built   = await Promise.all(
+      Array.from({ length: Math.min(maxOpts, 4) }, (_, i) => i).map(async (i) => {
+        const ob    = hasOutbound ? outboundTransport[i % outboundTransport.length] : null;
+        const hotel = hasHotels   ? hotels[i % hotels.length]                       : null;
+        if (!ob && !hotel) return null;
+
+        const nights = tripParams.nights || 1;
+        const obKES  = ob?.priceOnRequest ? 0 : await toKES(ob?.price || 0, ob?.currency || 'KES');
+        const htlKES = await toKES((hotel?.pricePerNight || 0) * nights, hotel?.currency || 'KES');
+        const trnKES = transfers.reduce((s, x) => s + (x.price || 0), 0);
+        const totalPrice = obKES + htlKES + trnKES;
+
+        return {
+          packageId:  uuidv4(),
+          _legRole:   role,
+          _isRevisit: isRevisit,
+          summary: {
+            route:          `${tripParams.origin} → ${tripParams.destination}`,
+            passengers:     tripParams.passengers || 1,
+            nights,
+            totalPrice,
+            pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+            currency:       CANONICAL_CURRENCY,
+            transportType:  ob?.transportType || 'flight',
+            hotelNote:      isRevisit
+              ? `Same hotel as your first stay in ${this._titleCase(tripParams.destination)} — reply "different hotel" if you'd like other options.`
+              : null,
+          },
+          transport:       ob    ? this._formatTransportDisplay(ob, tripParams.origin, tripParams.destination) : null,
+          returnTransport: null,
+          hotel,
+          transfers,
+          status: 'available',
+        };
+      })
+    );
+    return built.filter(Boolean);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // LEG RESPONSE TEXT
+  // ─────────────────────────────────────────────────────────────────────────────
+  _buildLegResponseText(role, leg, packages, isRevisit) {
+    const origin = this._titleCase(leg.origin);
+    const dest   = this._titleCase(leg.destination);
+    const count  = packages.length;
+    const depFmt = this._formatDateHuman(leg.departureDate);
+
+    switch (role) {
+      case 'arrival':
+        return `**Leg 1 — ${origin} → ${dest}** (${depFmt})\n` +
+               `Here are ${count} package${count !== 1 ? 's' : ''} including your outbound flight, hotel in ${dest}, and transfers. ` +
+               `Your return flight back to ${origin} is bundled in each package.`;
+      case 'internal':
+        return `**${origin} → ${dest}** (${depFmt})\n` +
+               `${count} option${count !== 1 ? 's' : ''} for getting to ${dest} — includes transport, hotel, and transfers.`;
+      case 'return_stay':
+        return isRevisit
+          ? `**Back to ${dest}** (${depFmt})\n` +
+            `${count} transport option${count !== 1 ? 's' : ''} back to ${dest}. ` +
+            `I've kept the same hotel from your first stay — reply "different hotel" if you'd prefer other options.`
+          : `**${origin} → ${dest}** (${depFmt})\n` +
+            `${count} option${count !== 1 ? 's' : ''} including transport and hotel for your stay in ${dest}.`;
+      case 'departure':
+        return `**Return flight — ${origin} → ${dest}** (${depFmt})\n` +
+               `${count} flight option${count !== 1 ? 's' : ''} back home. Transfer from your hotel to the airport is included.`;
+      default:
+        return `${origin} → ${dest}: ${count} option${count !== 1 ? 's' : ''}.`;
+    }
+  }
+
   _classifyMultiDestinationLegs(tripParams) {
     const legs = tripParams.legs || [];
     const groups = [];
@@ -504,6 +916,11 @@ class OrchestrationEngine {
     return { groups };
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // MULTI-DESTINATION ORCHESTRATOR
+  // Builds a full package per stop: transport in, hotel, arrival + departure
+  // transfers. Returns a single itinerary package with per-leg breakdown.
+  // ─────────────────────────────────────────────────────────────────────────────
   async _orchestrateMultiDestination(tripParams, sessionId) {
     const origin = tripParams.origin || 'nairobi';
 
@@ -536,6 +953,8 @@ class OrchestrationEngine {
     const lastStop = stops[stops.length - 1];
 
     const _tTransitions = Date.now();
+
+    // Build transition pairs: for each stop, we need transport from the prior city
     const transitionPairs = stops.map((toStop, i) => {
       const fromStop = i === 0
         ? { destination: origin, checkOut: stops[0]?.checkIn || tripParams.departureDate, isAirstripDestination: false }
@@ -553,62 +972,88 @@ class OrchestrationEngine {
         tripParams
       ),
     ]);
+
     console.log(`[TIMING] multi-dest transitions (${stops.length} stops + return): ${Date.now() - _tTransitions}ms`);
 
+    // ── Per-stop: hotels ───────────────────────────────────────────────────────
     const legResults = await Promise.all(
-      stops.map(async (stop) => {
+      stops.map(async (stop, i) => {
         const legTripParams = {
           ...tripParams,
-          destination: stop.destination,
+          // FIX: use the actual from-city as origin so hotel search and
+          // transfer building have the correct departure point
+          origin:        transitions[i]?.from || origin,
+          destination:   stop.destination,
           departureDate: stop.checkIn,
-          returnDate: stop.checkOut,
-          nights: stop.nights,
+          returnDate:    stop.checkOut,
+          nights:        stop.nights,
         };
 
         const hotels = await this._searchHotels(legTripParams);
         const cheapestHotel = this._pickCheapest(hotels, h => h.pricePerNight);
 
         return {
-          destination: stop.destination,
-          nights: stop.nights,
-          checkIn: stop.checkIn,
-          checkOut: stop.checkOut,
-          isBufferLeg: stop.isBufferLeg || false,
+          destination:           stop.destination,
+          nights:                stop.nights,
+          checkIn:               stop.checkIn,
+          checkOut:              stop.checkOut,
+          isBufferLeg:           stop.isBufferLeg || false,
           isAirstripDestination: stop.isAirstripDestination || false,
-          hotel: cheapestHotel || null,
-          transfers: null,
+          hotel:                 cheapestHotel || null,
+          allHotels:             hotels,          // kept for potential upsell
+          legTripParams,                          // retained for transfer building below
+          transfers:             null,
         };
       })
     );
 
+    // ── Attach transport and transfers ─────────────────────────────────────────
     for (let i = 0; i < legResults.length; i++) {
-      legResults[i].transportIn = this._formatTransportDisplay(
+      const leg = legResults[i];
+
+      leg.transportIn = this._formatTransportDisplay(
         transitions[i]?.transport,
         transitions[i]?.from,
         transitions[i]?.to
       );
-      legResults[i].connectsVia = transitions[i]?.connectsVia || null;
-      legResults[i].bufferNight = transitions[i]?.bufferNight || false;
+      leg.connectsVia  = transitions[i]?.connectsVia  || null;
+      leg.bufferNight  = transitions[i]?.bufferNight  || false;
     }
 
+    // FIX: build transfers with the correct origin (from-city) and the chosen hotel
     await Promise.all(
       legResults.map(async (leg, i) => {
         if (leg.isBufferLeg) return;
-        const legTripParams = {
-          ...tripParams,
-          origin: transitions[i]?.from || tripParams.origin,
-          destination: leg.destination,
-        };
-        leg.transfers = await this._buildTransferLegs(legTripParams, transitions[i]?.transport, leg.hotel);
+        leg.transfers = await this._buildTransferLegs(
+          leg.legTripParams,        // has correct origin from fix above
+          transitions[i]?.transport,
+          leg.hotel
+        );
       })
     );
 
+    // ── Return leg ─────────────────────────────────────────────────────────────
     const finalReturnTransport = this._formatTransportDisplay(
       returnTransition?.transport,
       returnTransition?.from,
       returnTransition?.to
     );
 
+    // Departure transfer: last stop hotel → departure airport
+    const returnTransfers = lastStop && returnTransition?.transport
+      ? await this._buildTransferLegs(
+          {
+            ...tripParams,
+            origin:      lastStop.destination,
+            destination: origin,
+            agencyId:    tripParams.agencyId,
+          },
+          returnTransition.transport,
+          legResults[legResults.length - 1]?.hotel
+        )
+      : [];
+
+    // ── Totals ─────────────────────────────────────────────────────────────────
     const transportCosts = [...transitions, returnTransition].map(t => ({
       amount:   t?.transport?.price,
       currency: t?.transport?.currency || 'KES',
@@ -619,17 +1064,21 @@ class OrchestrationEngine {
       currency: leg.hotel?.currency || 'KES',
     }));
 
-    const transferCosts = legResults.flatMap(leg =>
-      (leg.transfers || []).map(t => ({ amount: t.price, currency: t.currency || 'KES' }))
-    );
+    const transferCosts = [
+      ...legResults.flatMap(leg => (leg.transfers || []).map(t => ({ amount: t.price, currency: t.currency || 'KES' }))),
+      ...returnTransfers.map(t => ({ amount: t.price, currency: t.currency || 'KES' })),
+    ];
 
     const totalPrice = await sumToKES([...transportCosts, ...hotelCosts, ...transferCosts]);
 
     const totalNights = legResults.reduce((sum, leg) => sum + (leg.nights || 0), 0);
-    const routeLabel = [origin, ...stops.map(s => s.destination)].join(' → ');
+    const routeLabel  = [origin, ...stops.map(s => s.destination)].join(' → ');
+
+    // Strip legTripParams from output (internal only)
+    const cleanLegs = legResults.map(({ legTripParams: _drop, allHotels: _drop2, ...rest }) => rest);
 
     return {
-      packageId: uuidv4(),
+      packageId:          uuidv4(),
       isMultiDestination: true,
       summary: {
         route:          routeLabel,
@@ -639,9 +1088,10 @@ class OrchestrationEngine {
         currency:       CANONICAL_CURRENCY,
         passengers:     tripParams.passengers || 1,
       },
-      legs: legResults,
+      legs:            cleanLegs,
       returnTransport: finalReturnTransport,
-      status: "available",
+      returnTransfers,
+      status:          'available',
     };
   }
 
@@ -650,7 +1100,7 @@ class OrchestrationEngine {
     let cursorDate = departureDate || this._defaultStartDate();
 
     for (let i = 0; i < resolvedLegs.length; i++) {
-      const current = resolvedLegs[i];
+      const current  = resolvedLegs[i];
       const previous = i === 0 ? null : resolvedLegs[i - 1];
 
       const needsBuffer = previous && (previous.isAirstripDestination || current.isAirstripDestination);
@@ -658,23 +1108,24 @@ class OrchestrationEngine {
       if (needsBuffer) {
         const bufferCheckOut = this._addDaysStr(cursorDate, 1);
         stops.push({
-          destination: origin,
-          checkIn:     cursorDate,
-          checkOut:    bufferCheckOut,
-          nights:      1,
-          isBufferLeg: true,
+          destination:           origin,
+          checkIn:               cursorDate,
+          checkOut:              bufferCheckOut,
+          nights:                1,
+          isBufferLeg:           true,
+          isAirstripDestination: false,
         });
         cursorDate = bufferCheckOut;
       }
 
       const checkOut = this._addDaysStr(cursorDate, current.nights);
       stops.push({
-        destination: current.destination,
-        checkIn:     cursorDate,
+        destination:           current.destination,
+        checkIn:               cursorDate,
         checkOut,
-        nights:      current.nights,
+        nights:                current.nights,
         isAirstripDestination: current.isAirstripDestination,
-        intel: current.intel,
+        intel:                 current.intel,
       });
       cursorDate = checkOut;
     }
@@ -682,37 +1133,72 @@ class OrchestrationEngine {
     return stops;
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TRANSITION RESOLVER
+  // FIX: fallback path now actually routes origin→hub→destination instead of
+  // repeating the same direct search with unchanged params.
+  // ─────────────────────────────────────────────────────────────────────────────
   async _resolveTransition(fromStop, toStop, tripParams) {
     const fromIsAirstrip = fromStop.isAirstripDestination;
     const toIsAirstrip   = toStop.isAirstripDestination;
-    const origin = tripParams.origin || 'nairobi';
+    const hubOrigin      = tripParams.origin || 'nairobi';
 
     if (fromIsAirstrip || toIsAirstrip) {
-      const transport = await this._searchCheapestDirect(fromStop.destination, toStop.destination, fromStop.checkOut, tripParams);
+      // Airstrip routes always connect via the trip origin hub
+      const transport = await this._searchCheapestDirect(
+        fromStop.destination,
+        toStop.destination,
+        fromStop.checkOut,
+        tripParams
+      );
       return {
-        from: fromStop.destination,
-        to: toStop.destination,
+        from:        fromStop.destination,
+        to:          toStop.destination,
         transport,
-        connectsVia: origin,
+        connectsVia: hubOrigin,
         bufferNight: true,
       };
     }
 
-    const direct = await this._searchCheapestDirect(fromStop.destination, toStop.destination, fromStop.checkOut, tripParams);
+    // Try direct route first
+    const direct = await this._searchCheapestDirect(
+      fromStop.destination,
+      toStop.destination,
+      fromStop.checkOut,
+      tripParams
+    );
+
     if (direct) {
-      return { from: fromStop.destination, to: toStop.destination, transport: direct, connectsVia: null, bufferNight: false };
+      return {
+        from:        fromStop.destination,
+        to:          toStop.destination,
+        transport:   direct,
+        connectsVia: null,
+        bufferNight: false,
+      };
     }
 
-    logger.info('MultiDest: no direct route, falling back via origin', {
-      from: fromStop.destination, to: toStop.destination,
+    // FIX: no direct route — try via the trip origin hub.
+    // Search leg 1: fromStop.destination → hubOrigin
+    // Search leg 2: hubOrigin → toStop.destination
+    // Return the second leg (what we can book from the hub) and flag the gap.
+    logger.info('MultiDest: no direct route — trying via origin hub', {
+      from: fromStop.destination, to: toStop.destination, hub: hubOrigin,
     });
-    const viaOrigin = await this._searchCheapestDirect(fromStop.destination, toStop.destination, fromStop.checkOut, tripParams);
+
+    const [_legToHub, legFromHub] = await Promise.all([
+      this._searchCheapestDirect(fromStop.destination, hubOrigin, fromStop.checkOut, tripParams),
+      this._searchCheapestDirect(hubOrigin, toStop.destination, fromStop.checkOut, tripParams),
+    ]);
+
     return {
-      from: fromStop.destination,
-      to: toStop.destination,
-      transport: viaOrigin,
-      connectsVia: origin,
+      from:        fromStop.destination,
+      to:          toStop.destination,
+      transport:   legFromHub || null,   // bookable leg (hub → dest)
+      connectsVia: hubOrigin,
       bufferNight: false,
+      // connectingLegBookable lets the UI warn the user about the gap leg
+      connectingLegBookable: !!_legToHub,
     };
   }
 
@@ -816,13 +1302,12 @@ class OrchestrationEngine {
     const looksLikeFreshPrompt = wordCount > 10;
 
     if (looksLikeFreshPrompt) {
-      logger.info('Clarification answer looks like a fresh prompt, not a short answer — re-parsing instead of treating as a fragment', {
+      logger.info('Clarification answer looks like a fresh prompt — re-parsing', {
         wordCount, preview: answer.slice(0, 120),
       });
       const freshTripParams = await parsePrompt(prompt);
       freshTripParams.agencyId = agencyId;
       const freshIntent = this._detectIntent(prompt, null);
-      console.log('CLARIFICATION BYPASSED — treated as fresh prompt:', freshTripParams);
       return this._continueOrchestration(freshTripParams, agencyId, prompt, conversationHistory, sessionId, freshIntent, channel, phone);
     }
 
@@ -852,7 +1337,6 @@ class OrchestrationEngine {
       const tripParams = { ...previousParams };
       delete tripParams._awaitingClarification;
       tripParams.destination = cleanedDest;
-      console.log("RESUMED CLARIFICATION (destination) — completed params:", tripParams);
       return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
     }
 
@@ -860,23 +1344,18 @@ class OrchestrationEngine {
       const tripParams = { ...previousParams };
       delete tripParams._awaitingClarification;
 
-      // Try to parse their date answer — handles formats like:
-      // "July 20", "20th July", "next Friday", "20/07", "2026-07-20"
       const parsedDate = this._parseDateAnswer(answer);
 
       if (parsedDate) {
         tripParams.departureDate = parsedDate;
-        // Derive return date if nights known
         if (tripParams.nights && !tripParams.returnDate) {
           const dep = new Date(parsedDate);
           dep.setDate(dep.getDate() + tripParams.nights);
           tripParams.returnDate = dep.toISOString().split('T')[0];
         }
-        console.log('RESUMED CLARIFICATION (departure_date) — completed params:', tripParams);
         return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
       }
 
-      // Couldn't parse — ask again more specifically
       return this._buildClarificationResponse({
         sessionId, prompt,
         question: `I didn't quite catch that — what date are you thinking? Something like "20 July" or "early August" works perfectly.`,
@@ -907,7 +1386,6 @@ class OrchestrationEngine {
         });
       }
 
-      console.log("RESUMED CLARIFICATION (child_age) — completed params:", tripParams);
       return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
     }
 
@@ -933,85 +1411,18 @@ class OrchestrationEngine {
       tripParams.needsOriginClarification = false;
     }
 
-    console.log("RESUMED CLARIFICATION — completed params:", tripParams);
-
     return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
   }
 
   async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone = null) {
     tripParams.agencyId = agencyId;
 
-    // ── Multi-trip: independent separate trips ────────────────────────────────
+    // ── Multi-trip: classified leg orchestration ──────────────────────────────
     if (Array.isArray(tripParams.trips) && tripParams.trips.length > 1) {
-      const tripResults = [];
-
-      for (const trip of tripParams.trips) {
-        const legParams = {
-          ...tripParams,
-          trips:              undefined,
-          isMultiDestination: false,
-          legs:               undefined,
-          destination:        trip.destination,
-          origin:             trip.origin || tripParams.origin,
-          departureDate:      trip.departureDate,
-          returnDate:         trip.returnDate,
-          nights:             trip.nights,
-        };
-
-        const result = await this._runSingleDestinationSearch(legParams, sessionId, prompt, intent);
-
-        tripResults.push({
-          text:     result.text,
-          packages: result.packages,
-          label:    `${legParams.origin} → ${trip.destination} (${trip.departureDate})`,
-        });
-      }
-
-      const updatedHistory = [
-        ...conversationHistory,
-        { role: 'user', content: prompt },
-        {
-          role:         'assistant',
-          content:      `Built ${tripResults.length} separate trip searches`,
-          params:       tripParams,
-          packageCount: tripResults.reduce((s, t) => s + t.packages.length, 0),
-        },
-      ].slice(-10);
-
-      this._logSearch({
-        sessionId,
-        agencyId,
-        prompt,
-        tripParams:       { ...tripParams, destination: tripResults.map(t => t.label).join(' + ') },
-        packagesReturned: tripResults.reduce((s, t) => s + t.packages.length, 0),
-        channel:          channel || 'widget',
-      }).catch(err => logger.error('Failed to log multi-trip search', { error: err.message }));
-
-      tracking.logTurn({
-        sessionId,
-        agencyId,
-        channel:            channel || 'widget',
-        phone:              phone || null,
-        userMessage:        prompt,
-        engineResponse:     `Found options for ${tripResults.length} trips`,
-        packagesCount:      tripResults.reduce((s, t) => s + t.packages.length, 0),
-        needsClarification: false,
-        tripParams,
-        packages:           tripResults.flatMap(t => t.packages),
-      });
-
-      return {
-        sessionId,
-        text:                `I found options for your ${tripResults.length} trips:`,
-        packages:            tripResults.flatMap(t => t.packages),
-        tripResults,
-        tripParams,
-        intent,
-        conversationHistory: updatedHistory,
-        generatedAt:         new Date().toISOString(),
-      };
+      return await this._orchestrateClassifiedTrip(
+        tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone
+      );
     }
-    // ── End multi-trip ────────────────────────────────────────────────────────
 
     if (tripParams.isMultiDestination) {
       try {
@@ -1158,21 +1569,13 @@ class OrchestrationEngine {
       });
     }
 
-    // ── DATE CLARIFICATION GATE ──────────────────────────────
-    // If no departure date was given AND the traveler isn't asking
-    // us to suggest dates AND this is a transport search — ask
-    // before searching. Silently using tomorrow as a fallback and
-    // showing prices for a random date is worse than just asking.
-    // Only fires for single-destination transport searches —
-    // hotel-only searches don't need a departure date prompt since
-    // the engine uses a sensible check-in default.
     if (
-  !tripParams.departureDate &&
-  !intent?.wantsSuggestDates &&
-  intent?.productScope?.needsTransport !== false &&
-  tripParams.destination &&
-  !tripParams._awaitingClarification
-) {
+      !tripParams.departureDate &&
+      !intent?.wantsSuggestDates &&
+      intent?.productScope?.needsTransport !== false &&
+      tripParams.destination &&
+      !tripParams._awaitingClarification
+    ) {
       const dest = this._titleCase(tripParams.destination);
       return this._buildClarificationResponse({
         sessionId, prompt,
@@ -1183,13 +1586,7 @@ class OrchestrationEngine {
         awaitingClarification: { type: 'departure_date' },
       });
     }
-    // ── END DATE CLARIFICATION GATE ───────────────────────────
 
-    // ── SUGGEST DATES ─────────────────────────────────────────
-    // Traveler asked for date suggestions ("suggest dates", "when
-    // should I go?") — run the alternative date search directly
-    // and surface the best window found rather than searching
-    // tomorrow's date (the fallback) and returning no results.
     if (intent?.wantsSuggestDates && tripParams.destination && !tripParams.departureDate) {
       const altResults = await this._searchAlternativeDates(
         { ...tripParams, departureDate: new Date().toISOString().split('T')[0] },
@@ -1209,8 +1606,6 @@ class OrchestrationEngine {
           { role: 'assistant', content: text, params: { ...tripParams, departureDate: best.departureDate }, packageCount: best.packages.length },
         ].slice(-10);
 
-        // Package cache save is handled by the caller (webhooks.js) after receiving packages
-
         return {
           sessionId,
           text,
@@ -1222,7 +1617,6 @@ class OrchestrationEngine {
         };
       }
 
-      // No dates found at all — ask them directly
       const dest = this._titleCase(tripParams.destination);
       return {
         sessionId,
@@ -1235,7 +1629,6 @@ class OrchestrationEngine {
         generatedAt: new Date().toISOString(),
       };
     }
-    // ── END SUGGEST DATES ──────────────────────────────────────
 
     const singleResult = await this._runSingleDestinationSearch(tripParams, sessionId, prompt, intent);
 
@@ -1442,10 +1835,6 @@ class OrchestrationEngine {
 
       logger.info('Booking saved', { bookingRef, agencyId });
 
-      // ── TRIP MONITORING — start monitoring this booking ───────
-      // Fire-and-forget: a monitoring failure must never break the
-      // booking confirmation. The traveler already has their
-      // confirmed booking — this is additive, not load-bearing.
       tripMonitoringService.createTripFromBooking({
         id:                         booking.id,
         booking_ref:                bookingRef,
@@ -1468,7 +1857,6 @@ class OrchestrationEngine {
           bookingRef, error: err.message,
         });
       });
-      // ── END TRIP MONITORING ───────────────────────────────────
 
       return { bookingRef, bookingId: booking.id };
 
@@ -1478,6 +1866,11 @@ class OrchestrationEngine {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // INTENT DETECTION
+  // FIX: bus regex now excludes "Airbus" and other compound words by requiring
+  // the match to NOT be preceded by a letter (negative lookbehind).
+  // ─────────────────────────────────────────────────────────────────────────────
   _detectIntent(prompt, previousParams) {
     const lower = prompt.toLowerCase();
 
@@ -1495,7 +1888,9 @@ class OrchestrationEngine {
       lower.match(/different hotel|another hotel|change hotel/i) ||
       lower.match(/different flight|another airline|change flight/i) ||
       lower.match(/mid budget|moderate/i) ||
-      lower.match(/bus|train|flight|fly|drive/i)
+      // FIX: negative lookbehind prevents "Airbus" → bus, "minibus" → bus etc.
+      lower.match(/(?<![a-z])bus(?:es)?\b/i) ||
+      lower.match(/\btrain\b|\bflight\b|\bfly\b|\bflying\b/i)
     );
 
     const freshTripPattern = /\b[a-z\s]{2,30}?\s+to\s+[a-z\s]{2,30}\b/i;
@@ -1517,8 +1912,9 @@ class OrchestrationEngine {
     const flightExclusive = lower.match(
       /\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only|\bcheapest\s+flight(s)?\b|\bcheapest\s+fare\b/i
     );
+    // FIX: same negative lookbehind applied to exclusive bus pattern
     const busExclusive = lower.match(
-      /\bonly\s+(a\s+)?bus(es)?\b|bus(es)?\s+only|just\s+(a\s+)?bus(es)?\b/i
+      /\bonly\s+(a\s+)?(?<![a-z])bus(?:es)?\b|(?<![a-z])bus(?:es)?\s+only|just\s+(a\s+)?(?<![a-z])bus(?:es)?\b/i
     );
     const hotelExclusive = lower.match(
       /\bonly\s+(a\s+)?hotel\b|hotel\s+only|just\s+(a\s+)?hotel\b|stay\s+only|accommodation\s+only/i
@@ -1541,7 +1937,8 @@ class OrchestrationEngine {
       if (!additivePhrase) {
         if (lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)) {
           adjustments.transportMode = 'flight';
-        } else if (lower.match(/\bbus(es)?\b/i)) {
+        } else if (lower.match(/(?<![a-z])bus(?:es)?\b/i)) {
+          // FIX: same guard here
           adjustments.transportMode = 'bus';
         }
       }
@@ -1573,10 +1970,6 @@ class OrchestrationEngine {
     }
     if (newDestination) adjustments.destination = newDestination;
 
-    // "suggest dates" / "what dates" / "recommend dates" — traveler
-    // wants us to propose good travel dates rather than running a
-    // full search. Detected here so _continueOrchestration can
-    // route it to the alternative date search instead of a normal search.
     const wantsSuggestDates = /\b(suggest|recommend|propose|what|any good)\s+(dates?|times?|days?)\b/i.test(lower)
       || /\bdates?\s+(suggestion|recommendation|ideas?)\b/i.test(lower)
       || /\bwhen\s+(should|can|is good)\b/i.test(lower);
@@ -2194,13 +2587,16 @@ class OrchestrationEngine {
     ];
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // FIX: was padding d.getSeconds() instead of d.getMinutes()
+  // ─────────────────────────────────────────────────────────────────────────────
   _toTransferDateTime(value) {
     if (!value) return null;
     try {
       const d = new Date(value);
       if (isNaN(d.getTime())) return null;
       const pad = n => String(n).padStart(2, '0');
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getSeconds())}`;
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     } catch {
       return null;
     }
@@ -2525,16 +2921,8 @@ class OrchestrationEngine {
     return [outboundNote, returnNote].filter(Boolean).join(' ');
   }
 
-
-  // ─────────────────────────────────────────────
-  // SEARCH ALTERNATIVE DATES
-  // When no results found for requested date, try the next 3
-  // windows (3, 7, 14 days out) and return the first that has
-  // results. Gives the traveler something concrete immediately
-  // rather than just "try different dates".
-  // ─────────────────────────────────────────────
   async _searchAlternativeDates(tripParams, sessionId) {
-    const offsets = [3, 7, 14]; // days from original departure
+    const offsets = [3, 7, 14];
     const results = [];
 
     for (const offset of offsets) {
@@ -2568,7 +2956,7 @@ class OrchestrationEngine {
 
           if (packages.length > 0) {
             results.push({ departureDate: altDep, returnDate: altRet, packages: packages.slice(0, 3) });
-            break; // found one — stop searching
+            break;
           }
         }
       } catch (err) {
@@ -2579,10 +2967,6 @@ class OrchestrationEngine {
     return results;
   }
 
-  // ─────────────────────────────────────────────
-  // FORMAT DATE HUMAN
-  // Converts YYYY-MM-DD to "Mon 14 Jul" for display in messages
-  // ─────────────────────────────────────────────
   _formatDateHuman(dateStr) {
     if (!dateStr) return null;
     try {
@@ -2593,19 +2977,10 @@ class OrchestrationEngine {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // PARSE DATE ANSWER
-  // Converts a traveler's free-text date reply into YYYY-MM-DD.
-  // Handles the formats people actually type:
-  //   "20 July", "July 20", "20th July 2026", "20/07", "next month",
-  //   "early August", "August", ISO "2026-07-20"
-  // Returns null if nothing recognizable — caller re-asks.
-  // ─────────────────────────────────────────────
   _parseDateAnswer(text) {
     if (!text) return null;
     const t = text.trim().toLowerCase();
 
-    // Already ISO format
     if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
 
     const now = new Date();
@@ -2618,7 +2993,6 @@ class OrchestrationEngine {
       oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
     };
 
-    // "20 July", "20th July", "July 20", "July 20th"
     const dayMonthMatch = t.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i)
       || t.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?/i);
 
@@ -2633,7 +3007,6 @@ class OrchestrationEngine {
       }
       const month = MONTHS[monthStr] || MONTHS[dayMonthMatch[1]?.toLowerCase().slice(0, 3)];
       if (month && day >= 1 && day <= 31) {
-        // Pick year: if the month is already past this year, use next year
         let year = currentYear;
         const candidate = new Date(year, month - 1, day);
         if (candidate < now) year = currentYear + 1;
@@ -2641,7 +3014,6 @@ class OrchestrationEngine {
       }
     }
 
-    // "20/07" or "07/20" (ambiguous — assume DD/MM for East Africa)
     const slashMatch = t.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
     if (slashMatch) {
       const day = parseInt(slashMatch[1], 10);
@@ -2652,11 +3024,10 @@ class OrchestrationEngine {
       }
     }
 
-    // "next week" → 7 days, "next month" → 30 days, "in 2 weeks" → 14 days
     const relativeMatch = t.match(/next\s+(week|month|weekend)/i) || t.match(/in\s+(\d+)\s+(days?|weeks?)/i);
     if (relativeMatch) {
       const d = new Date(now);
-      if (relativeMatch[1] === 'week')    d.setDate(d.getDate() + 7);
+      if (relativeMatch[1] === 'week')         d.setDate(d.getDate() + 7);
       else if (relativeMatch[1] === 'month')   d.setDate(d.getDate() + 30);
       else if (relativeMatch[1] === 'weekend') d.setDate(d.getDate() + (6 - d.getDay() + 7) % 7 || 7);
       else {
@@ -2667,7 +3038,6 @@ class OrchestrationEngine {
       return d.toISOString().split('T')[0];
     }
 
-    // "early July" → 5th, "mid July" → 15th, "late July" / "end of July" → 25th
     const earlyMidLate = t.match(/(early|mid|late|end\s+of)\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i);
     if (earlyMidLate) {
       const qualifier = earlyMidLate[1].toLowerCase();
@@ -2682,7 +3052,6 @@ class OrchestrationEngine {
       }
     }
 
-    // Just a month name — use the 1st of that month
     for (const [name, num] of Object.entries(MONTHS)) {
       if (t === name || t.startsWith(name + ' ') || t.endsWith(' ' + name)) {
         let year = currentYear;
@@ -2692,14 +3061,8 @@ class OrchestrationEngine {
       }
     }
 
-    // Try native Date parsing as last resort
-    try {
-      const d = new Date(text);
-      if (!isNaN(d.getTime()) && d.getFullYear() >= currentYear) {
-        return d.toISOString().split('T')[0];
-      }
-    } catch {}
-
+    // Intentionally NOT falling back to new Date(text) — too many false positives
+    // e.g. "August" parses as a valid date in some environments
     return null;
   }
 
