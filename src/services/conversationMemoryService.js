@@ -15,6 +15,9 @@
  *      the conversation context so the user can pivot immediately
  *   5. Platform memory — "what did I search last time?" works
  *      across sessions because history is in Supabase not RAM
+ *   6. Leg flow state machine — for multi-leg trips, tracks which
+ *      leg is currently being presented, what the user selected
+ *      per leg, and the running total so far
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -31,6 +34,11 @@ const DROP_OFF_THRESHOLD_MS = 30 * 60 * 1000;
 // modifies params mid-conversation (e.g. "change it to 7 nights").
 // After this, the package is cleared and a fresh search runs.
 const PACKAGE_HOLD_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// How long a leg flow stays active before it expires.
+// A traveler might take time between legs — give them 4 hours
+// before we consider the flow abandoned.
+const LEG_FLOW_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 class ConversationMemoryService {
 
@@ -104,7 +112,7 @@ class ConversationMemoryService {
         { role: 'assistant', content: engineResponse, timestamp: new Date().toISOString() },
       ];
 
-      const history = [...existing, ...newTurns].slice(-20); // keep last 20 turns
+      const history = [...existing, ...newTurns].slice(-20);
 
       const updates = {
         conversation_history: history,
@@ -154,7 +162,6 @@ class ConversationMemoryService {
       const age = Date.now() - new Date(selectedAt).getTime();
 
       if (age > PACKAGE_HOLD_TTL_MS) {
-        // Expired — clear it
         await this.upsertContact(phone, agencyId, { selected_package: null });
         return null;
       }
@@ -168,7 +175,6 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // CLEAR SELECTED PACKAGE
-  // Called after booking completes or when user cancels mid-booking.
   // ─────────────────────────────────────────────
   async clearSelectedPackage(phone, agencyId) {
     try {
@@ -178,25 +184,259 @@ class ConversationMemoryService {
     }
   }
 
+  // ═════════════════════════════════════════════════════════════
+  // LEG FLOW STATE MACHINE
+  // ─────────────────────────────────────────────────────────────
+  // Used for multi-leg trips (classified trip orchestration).
+  // The engine returns all legs at once with their packages.
+  // Rather than dumping everything on the traveler, we present
+  // one leg at a time, save their selection, show a running total,
+  // then advance to the next leg.
+  //
+  // State shape stored in whatsapp_contacts.leg_flow:
+  // {
+  //   active: true,
+  //   startedAt: ISO string,
+  //   tripParams: { ... },         // original full trip params
+  //   legs: [                      // all classified legs from engine
+  //     {
+  //       role: 'arrival' | 'internal' | 'return_stay' | 'departure',
+  //       label: 'NBO → ZNZ',
+  //       roleLabel: '✈️ Outbound + Hotel + Transfers',
+  //       packages: [...],          // options for this leg
+  //       text: '...',              // intro text for this leg
+  //     },
+  //     ...
+  //   ],
+  //   currentLegIndex: 0,          // which leg is being presented now
+  //   selections: {                // what the traveler picked per leg
+  //     0: { packageId, package, label },
+  //     1: { packageId, package, label },
+  //   },
+  //   runningTotalKES: 0,          // sum of selected leg prices so far
+  // }
+  // ═════════════════════════════════════════════════════════════
+
+  // ─────────────────────────────────────────────
+  // START LEG FLOW
+  // Called when the engine returns a classified trip result.
+  // Stores all legs and kicks off from leg 0.
+  // ─────────────────────────────────────────────
+  async startLegFlow(phone, agencyId, { legs, tripParams }) {
+    try {
+      // Filter to only legs that have packages — no point
+      // presenting an empty leg (e.g. a stopover with nothing to pick)
+      const actionableLegs = legs.filter(l => l.packages && l.packages.length > 0);
+
+      if (actionableLegs.length === 0) {
+        logger.warn('LegFlow: no actionable legs — not starting flow', { phone });
+        return null;
+      }
+
+      const flow = {
+        active:           true,
+        startedAt:        new Date().toISOString(),
+        tripParams,
+        legs:             actionableLegs,
+        currentLegIndex:  0,
+        selections:       {},
+        runningTotalKES:  0,
+      };
+
+      await this.upsertContact(phone, agencyId, { leg_flow: flow });
+      logger.info('LegFlow: started', { phone, legCount: actionableLegs.length });
+      return flow;
+    } catch (err) {
+      logger.error('ConversationMemory: startLegFlow threw', { phone, error: err.message });
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // LOAD LEG FLOW
+  // Returns the active flow or null if none / expired.
+  // ─────────────────────────────────────────────
+  async loadLegFlow(phone, agencyId) {
+    try {
+      const contact = await this.loadContact(phone, agencyId);
+      const flow = contact?.leg_flow;
+
+      if (!flow?.active) return null;
+
+      const age = Date.now() - new Date(flow.startedAt).getTime();
+      if (age > LEG_FLOW_TTL_MS) {
+        logger.info('LegFlow: expired — clearing', { phone, ageMs: age });
+        await this.upsertContact(phone, agencyId, { leg_flow: null });
+        return null;
+      }
+
+      return flow;
+    } catch (err) {
+      logger.error('ConversationMemory: loadLegFlow threw', { phone, error: err.message });
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // SAVE LEG SELECTION
+  // Records the traveler's chosen package for the current leg,
+  // adds its price to the running total, and advances the index.
+  // Returns the updated flow.
+  // ─────────────────────────────────────────────
+  async saveLegSelection(phone, agencyId, { legIndex, selectedPackage }) {
+    try {
+      const flow = await this.loadLegFlow(phone, agencyId);
+      if (!flow) {
+        logger.warn('LegFlow: saveLegSelection called but no active flow', { phone });
+        return null;
+      }
+
+      const leg = flow.legs[legIndex];
+      if (!leg) {
+        logger.warn('LegFlow: invalid legIndex', { phone, legIndex });
+        return null;
+      }
+
+      // Record selection
+      flow.selections[legIndex] = {
+        packageId: selectedPackage.packageId,
+        package:   selectedPackage,
+        label:     leg.label,
+        role:      leg.role,
+      };
+
+      // Add this leg's price to running total
+      const legPrice = selectedPackage.summary?.totalPrice || 0;
+      flow.runningTotalKES = (flow.runningTotalKES || 0) + legPrice;
+
+      // Advance to next leg
+      flow.currentLegIndex = legIndex + 1;
+
+      // Check if all legs are done
+      flow.active = flow.currentLegIndex < flow.legs.length;
+
+      await this.upsertContact(phone, agencyId, { leg_flow: flow });
+      logger.info('LegFlow: leg selected', {
+        phone, legIndex, nextIndex: flow.currentLegIndex,
+        runningTotal: flow.runningTotalKES, flowComplete: !flow.active,
+      });
+
+      return flow;
+    } catch (err) {
+      logger.error('ConversationMemory: saveLegSelection threw', { phone, error: err.message });
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // CLEAR LEG FLOW
+  // Called when the flow completes or the traveler abandons it.
+  // ─────────────────────────────────────────────
+  async clearLegFlow(phone, agencyId) {
+    try {
+      await this.upsertContact(phone, agencyId, { leg_flow: null });
+    } catch (err) {
+      logger.error('ConversationMemory: clearLegFlow threw', { phone, error: err.message });
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // GET LEG FLOW SUMMARY
+  // Returns a formatted summary of all selections made so far,
+  // used to show the traveler what they've picked before asking
+  // about the next leg or presenting the final total.
+  // ─────────────────────────────────────────────
+  getLegFlowSummary(flow) {
+    const lines = [];
+    const selectionCount = Object.keys(flow.selections).length;
+    if (selectionCount === 0) return null;
+
+    lines.push('*Your selections so far:*');
+    lines.push('─────────────────');
+
+    for (let i = 0; i < flow.currentLegIndex; i++) {
+      const sel = flow.selections[i];
+      if (!sel) continue;
+      const leg = flow.legs[i];
+      const pkg = sel.package;
+      const price = pkg.summary?.totalPrice || 0;
+      const currency = pkg.summary?.currency || 'KES';
+      lines.push(`${leg.roleLabel || leg.label}: *${currency} ${price.toLocaleString()}*`);
+    }
+
+    lines.push('─────────────────');
+    lines.push(`*Running total: KES ${(flow.runningTotalKES || 0).toLocaleString()}*`);
+
+    return lines.join('\n');
+  }
+
+  // ─────────────────────────────────────────────
+  // BUILD FINAL LEG FLOW SUMMARY
+  // Full breakdown shown when all legs are selected,
+  // before offering to pay.
+  // ─────────────────────────────────────────────
+  buildFinalLegSummary(flow) {
+    const lines = [];
+    lines.push('*🎉 Your complete trip is ready!*');
+    lines.push('━━━━━━━━━━━━━━━━');
+
+    for (let i = 0; i < flow.legs.length; i++) {
+      const sel = flow.selections[i];
+      if (!sel) continue;
+
+      const leg = flow.legs[i];
+      const pkg = sel.package;
+      const price = pkg.summary?.totalPrice || 0;
+      const currency = pkg.summary?.currency || 'KES';
+
+      lines.push('');
+      lines.push(`*${leg.roleLabel || leg.label}*`);
+      lines.push(`  Route: ${pkg.summary?.route || leg.label}`);
+
+      if (pkg.transport) {
+        const t = pkg.transport;
+        const icon = t.transportType === 'bus' ? '🚌' : t.transportType === 'train' ? '🚆' : '✈️';
+        lines.push(`  ${icon} ${t.airline || t.provider || 'TBC'} · ${t.origin || ''} → ${t.destination || ''}`);
+      }
+
+      if (pkg.hotel) {
+        const stars = pkg.hotel.stars ? '⭐'.repeat(Math.min(Number(pkg.hotel.stars) || 0, 5)) : '';
+        lines.push(`  🏨 ${pkg.hotel.name || 'TBC'} ${stars}`.trimEnd());
+      }
+
+      lines.push(`  *${currency} ${price.toLocaleString()}*`);
+    }
+
+    lines.push('');
+    lines.push('━━━━━━━━━━━━━━━━');
+    lines.push(`*Total trip cost: KES ${(flow.runningTotalKES || 0).toLocaleString()}*`);
+
+    const passengers = flow.tripParams?.passengers || 1;
+    if (passengers > 1) {
+      const perPerson = Math.round(flow.runningTotalKES / passengers);
+      lines.push(`_(KES ${perPerson.toLocaleString()} per person for ${passengers} travelers)_`);
+    }
+
+    lines.push('');
+    lines.push('How would you like to proceed?');
+    lines.push('*1.* Pay in full now');
+    lines.push('*2.* Pay per leg (I\'ll send you each booking separately)');
+    lines.push('*3.* Change something');
+
+    return lines.join('\n');
+  }
+
   // ─────────────────────────────────────────────
   // CHECK DROP-OFF
-  // Returns the drop-off state for a returning traveler:
-  //   { isDropOff: false }  — new user or recent message, proceed normally
-  //   { isDropOff: true, contact, minutesAway, hasPreviousSearch }
-  //                         — show resume prompt before doing anything
   // ─────────────────────────────────────────────
   async checkDropOff(phone, agencyId) {
     try {
       const contact = await this.loadContact(phone, agencyId);
 
-      // Brand new traveler — no drop-off possible
       if (!contact) return { isDropOff: false };
-
-      // No drop_off_at recorded yet — old row before this feature
       if (!contact.drop_off_at) return { isDropOff: false };
 
       const gapMs = Date.now() - new Date(contact.drop_off_at).getTime();
-
       if (gapMs < DROP_OFF_THRESHOLD_MS) return { isDropOff: false };
 
       const hasPreviousSearch = !!(
@@ -224,9 +464,6 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // GET CONVERSATION CONTEXT
-  // Returns what the orchestrator needs for a new message:
-  // the last N turns of history and the previous trip params.
-  // This is what gets threaded into orchestrate() as `context`.
   // ─────────────────────────────────────────────
   async getConversationContext(phone, agencyId) {
     try {
@@ -239,6 +476,7 @@ class ConversationMemoryService {
         cachedPackages: contact.cached_packages || [],
         selectedPackage: contact.selected_package?.package || null,
         sessionId: contact.session_id || null,
+        legFlow: contact.leg_flow || null,
       };
     } catch (err) {
       logger.error('ConversationMemory: getConversationContext threw', { phone, error: err.message });
@@ -248,8 +486,6 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // BUILD DROP-OFF WELCOME MESSAGE
-  // Returns a friendly welcome-back string based on how long
-  // they were away and what they were last doing.
   // ─────────────────────────────────────────────
   buildDropOffWelcome({ minutesAway, previousDestination, hasPreviousSearch }) {
     const hoursAway = Math.round(minutesAway / 60);
@@ -274,24 +510,11 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // HANDLE MODIFY MID-CONVERSATION
-  // Called when the orchestrator detects a modification intent
-  // (change nights, budget, hotel etc.) while a package is selected.
-  //
-  // Strategy:
-  //   - If package is held AND the change is to a field that doesn't
-  //     require a new supplier search (nights/dates only) → patch
-  //     the package in place and return it
-  //   - If the change requires a new search (budget, destination,
-  //     airline, hotel) → clear the package hold and let the
-  //     orchestrator run a fresh search with the adjusted params
-  //
-  // Returns: { action: 'patch'|'resarch', updatedPackage?, updatedParams }
   // ─────────────────────────────────────────────
   async handleModify(phone, agencyId, intent, previousParams) {
     const heldPackage = await this.loadSelectedPackage(phone, agencyId);
     const adjustments = intent.adjustments || {};
 
-    // Fields that require a full re-search
     const needsResearch = !!(
       adjustments.destination ||
       adjustments.budget      ||
@@ -300,12 +523,10 @@ class ConversationMemoryService {
     );
 
     if (needsResearch || !heldPackage) {
-      // Clear the held package — fresh search will run
       await this.clearSelectedPackage(phone, agencyId);
       return { action: 'research', updatedPackage: null, updatedParams: previousParams };
     }
 
-    // Only nights/dates changed — patch in place
     if (adjustments.nights) {
       const nights = adjustments.nights;
       const depDate = previousParams?.departureDate;
@@ -320,30 +541,25 @@ class ConversationMemoryService {
       const updatedParams = { ...previousParams, nights, returnDate };
       const updatedPackage = this._patchPackageNights(heldPackage, nights, returnDate);
 
-      // Save the updated package back
       await this.saveSelectedPackage(phone, agencyId, updatedPackage);
 
       return { action: 'patch', updatedPackage, updatedParams };
     }
 
-    // No recognised field changed — treat as research
     await this.clearSelectedPackage(phone, agencyId);
     return { action: 'research', updatedPackage: null, updatedParams: previousParams };
   }
 
   // ─────────────────────────────────────────────
   // PATCH PACKAGE NIGHTS
-  // Updates nights and hotel total in an existing package object
-  // without re-searching. Recalculates totalPrice based on the
-  // new night count × existing pricePerNight.
   // ─────────────────────────────────────────────
   _patchPackageNights(pkg, newNights, newReturnDate) {
-    const updated = JSON.parse(JSON.stringify(pkg)); // deep clone
+    const updated = JSON.parse(JSON.stringify(pkg));
 
     if (updated.summary) {
       updated.summary.nights = newNights;
       if (updated.summary.occupancy) {
-        updated.summary.occupancy.nights  = newNights;
+        updated.summary.occupancy.nights   = newNights;
         updated.summary.occupancy.checkOut = newReturnDate || updated.summary.occupancy.checkOut;
       }
     }
@@ -352,11 +568,10 @@ class ConversationMemoryService {
       const pricePerNight = updated.hotel.pricePerNight || 0;
       const hotelTotal    = pricePerNight * newNights;
 
-      updated.hotel.nights   = newNights;
-      updated.hotel.checkOut = newReturnDate || updated.hotel.checkOut;
+      updated.hotel.nights    = newNights;
+      updated.hotel.checkOut  = newReturnDate || updated.hotel.checkOut;
       updated.hotel.totalRate = hotelTotal;
 
-      // Recalculate package total
       if (updated.summary) {
         const flightPrice   = updated.transport?.price || 0;
         const retFlight     = updated.returnTransport?.price || 0;
@@ -371,9 +586,6 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // CLEAR CONVERSATION
-  // Called when user explicitly asks to start over.
-  // Clears history, params, and package hold but keeps
-  // the contact record itself (name, etc).
   // ─────────────────────────────────────────────
   async clearConversation(phone, agencyId) {
     try {
@@ -385,6 +597,7 @@ class ConversationMemoryService {
         pending_trip_params:  null,
         drop_off_at:          null,
         session_id:           null,
+        leg_flow:             null,
       });
     } catch (err) {
       logger.error('ConversationMemory: clearConversation threw', { phone, error: err.message });
@@ -393,20 +606,15 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // CANCEL MID-BOOKING
-  // Clears the whatsapp_booking_session without touching the
-  // conversation memory — so the user can immediately pivot
-  // to a different package or search without losing context.
   // ─────────────────────────────────────────────
   async cancelMidBooking(phone, agencyId) {
     try {
-      // Delete active booking session
       const supabaseClient = require('../utils/supabase');
       await supabaseClient
         .from('whatsapp_booking_sessions')
         .delete()
         .eq('phone', phone);
 
-      // Clear the selected package hold — they abandoned it
       await this.clearSelectedPackage(phone, agencyId);
 
       logger.info('ConversationMemory: mid-booking cancel, context preserved', { phone });

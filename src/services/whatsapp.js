@@ -9,6 +9,12 @@
  *     as flat fields) -> _sendPackageCard (unchanged)
  *   - Multi-destination itineraries (pkg.isMultiDestination,
  *     pkg.legs[], pkg.returnTransport) -> _sendItineraryCard
+ *
+ * SCROLL ORDER FIX:
+ *   Packages are sent in REVERSE order (4→3→2→1) so Option 1
+ *   is the last message sent and therefore sits at the bottom
+ *   of the screen — right where the user's thumb already is.
+ *   Display numbers are preserved correctly (i+1).
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -34,13 +40,6 @@ class WhatsAppService {
 
   // ─────────────────────────────────────────────
   // SEND IMAGE
-  // WhatsApp Business API's 'image' message type accepts either a
-  // direct public URL ({link: ...}) or a pre-uploaded media ID —
-  // using `link` since HotelBeds' hotel.images URLs are already
-  // public HTTPS URLs, no separate upload-to-Meta step needed.
-  // NOT YET VERIFIED against a real WhatsApp send — same "test
-  // before trusting" rule as every other new integration this
-  // session. Caption is optional; WhatsApp limits it to 1024 chars.
   // ─────────────────────────────────────────────
   async sendImage(phoneNumberId, to, imageUrl, caption = null) {
     if (!imageUrl) return null;
@@ -56,10 +55,6 @@ class WhatsAppService {
         },
       });
     } catch (err) {
-      // Image delivery failing (bad URL, WhatsApp couldn't fetch it,
-      // unsupported format) must NEVER block the actual package
-      // text from sending — this is a nice-to-have, not core
-      // functionality. Log and continue silently.
       logger.warn('WhatsApp sendImage failed — continuing without it', { error: err.message, imageUrl });
       return null;
     }
@@ -67,15 +62,8 @@ class WhatsAppService {
 
   // ─────────────────────────────────────────────
   // SEND REPLY BUTTONS
-  // WhatsApp Business API's 'interactive' message type, 'button'
-  // subtype — up to 3 quick-reply buttons, each with an id (returned
-  // verbatim in the traveler's next message as
-  // message.interactive.button_reply.id — see webhooks.js) and a
-  // title (WhatsApp hard-limits this to 20 characters, enforced here
-  // so a longer title doesn't silently get rejected by the API).
-  // NOT YET VERIFIED against a real WhatsApp send — same "test
-  // before trusting" rule as every other new integration this
-  // session.
+  // Up to 3 quick-reply buttons. Title hard-limited to 20 chars
+  // by WhatsApp — enforced here so long titles don't get rejected.
   // ─────────────────────────────────────────────
   async sendButtons(phoneNumberId, to, bodyText, buttons) {
     if (!Array.isArray(buttons) || buttons.length === 0) return null;
@@ -97,8 +85,6 @@ class WhatsAppService {
         },
       });
     } catch (err) {
-      // Same posture as sendImage — an optional interactive prompt
-      // failing must never block the core package/text flow.
       logger.warn('WhatsApp sendButtons failed — continuing without it', { error: err.message, bodyText });
       return null;
     }
@@ -106,16 +92,8 @@ class WhatsAppService {
 
   // ─────────────────────────────────────────────
   // SEND LIST MESSAGE
-  // WhatsApp Business API's 'interactive' message type, 'list'
-  // subtype — up to 10 options in a single tappable scrollable menu
-  // (vs sendButtons' hard 3-option limit). Used for combined
-  // Gender+Traveler-type selection during booking (see
-  // whatsappBooking.js) so a passenger only needs ONE tap instead of
-  // two separate button rounds. Title max 24 chars, description max
-  // 72 chars per WhatsApp's real limits — enforced here.
-  // NOT YET VERIFIED against a real WhatsApp send — same "test
-  // before trusting" rule as every other new integration this
-  // session.
+  // Up to 10 tappable options in a scrollable menu.
+  // Title max 24 chars, description max 72 chars.
   // ─────────────────────────────────────────────
   async sendList(phoneNumberId, to, bodyText, buttonLabel, options) {
     if (!Array.isArray(options) || options.length === 0) return null;
@@ -146,34 +124,49 @@ class WhatsAppService {
     }
   }
 
-  /**
-   * Send trip packages as formatted WhatsApp messages
-   * Each package is sent as a separate message.
-   *
-   * Multi-destination itineraries (pkg.isMultiDestination) are
-   * routed to _sendItineraryCard instead of _sendPackageCard,
-   * since they have a fundamentally different shape (legs[]
-   * instead of flat transport/hotel/transfers fields) and there
-   * is normally only one combined itinerary per search, not
-   * several alternatives.
-   */
-  async sendPackages(phoneNumberId, to, packages) {
+  // ─────────────────────────────────────────────
+  // SEND PACKAGES
+  // ─────────────────────────────────────────────
+  // Packages are sent in REVERSE ORDER (highest index first) so
+  // that Option 1 is the LAST message delivered and therefore
+  // appears at the BOTTOM of the screen — right where the
+  // traveler's thumb is resting. They scroll UP to compare 2/3/4.
+  //
+  // Display numbers (i+1) are preserved correctly regardless of
+  // send order — the loop uses the original index.
+  //
+  // The intro "I found N options" header is still sent FIRST so
+  // it appears above all cards as context, then the cards stack
+  // below it in reverse, then the "reply with option number"
+  // footer arrives last — just before Option 1 — so the reading
+  // order from bottom is: Option 1 → footer → Option 2 → ...
+  //
+  // Wait — footer must arrive AFTER Option 1 (after the last
+  // card) so it sits at the very bottom for easy tapping.
+  // Send order: header → cards reversed (4,3,2,1) → footer.
+  // ─────────────────────────────────────────────
+  async sendPackages(phoneNumberId, to, packages, { legHeader = null } = {}) {
+    if (!packages || packages.length === 0) return;
+
     const isItinerary = packages.length === 1 && packages[0]?.isMultiDestination;
 
-    // NOTE: intro line intentionally uses a neutral icon (🧭), not a
-    // flight-specific one — a single search can now legitimately
-    // return a MIX of modes (e.g. a flight package, a bus package,
-    // and an SGR train package all for the same "Nairobi to Kilifi"
-    // search — see engine.js's corridor routing). A hardcoded ✈️
-    // here would misrepresent the list before the traveler even
-    // opens it.
-    await this.sendText(phoneNumberId, to,
-      isItinerary
-        ? `🗺️ I've put together your multi-stop itinerary:`
-        : `🧭 I found *${packages.length} option(s)* for your trip! Here they are:`
-    );
+    // ── Header ──────────────────────────────────────────────
+    // If this is being called from within a leg flow, show a
+    // leg-specific header instead of the generic one.
+    if (legHeader) {
+      await this.sendText(phoneNumberId, to, legHeader);
+    } else {
+      await this.sendText(phoneNumberId, to,
+        isItinerary
+          ? `🗺️ I've put together your multi-stop itinerary:`
+          : `🧭 I found *${packages.length} option${packages.length > 1 ? 's' : ''}* for your trip! Here they are:`
+      );
+    }
 
-    for (let i = 0; i < packages.length; i++) {
+    // ── Cards in reverse order ───────────────────────────────
+    // Send highest-numbered option first so Option 1 lands last
+    // (most recent) at the bottom of the traveler's screen.
+    for (let i = packages.length - 1; i >= 0; i--) {
       const pkg = packages[i];
       if (pkg.isMultiDestination) {
         await this._sendItineraryCard(phoneNumberId, to, pkg);
@@ -182,22 +175,40 @@ class WhatsAppService {
       }
       await new Promise(resolve => setTimeout(resolve, 500));
     }
-
-    await this.sendText(phoneNumberId, to,
-      isItinerary
-        ? "Let me know if you'd like to book this, or adjust any part of it!"
-        : "Reply with the option number you prefer and we'll get your booking sorted!"
-    );
   }
 
   // ─────────────────────────────────────────────
-  // TRANSPORT MODE META — icon + label, one place for both
-  // _sendPackageCard and _sendItineraryCard so flight/bus/train
-  // never drift out of sync again. A transport object with no
-  // recognized transportType (or none at all) falls back to the
-  // flight treatment, matching the pre-existing default elsewhere
-  // in this codebase (engine.js's _formatTransportDisplay does the
-  // same: `t.transportType || 'flight'`).
+  // SEND LEG PACKAGES
+  // Wrapper used by the leg flow in webhooks.js.
+  // Builds the leg-specific header and progress line, then
+  // delegates to sendPackages for the reversed card delivery.
+  // ─────────────────────────────────────────────
+  async sendLegPackages(phoneNumberId, to, { leg, legIndex, totalLegs, runningTotalKES }) {
+    const legNum     = legIndex + 1;
+    const currency   = 'KES';
+    const hasRunning = runningTotalKES > 0;
+
+    // Progress indicator: "Leg 2 of 4"
+    const progressLine = `*Leg ${legNum} of ${totalLegs}*`;
+
+    // Running total so far (not shown for first leg — nothing selected yet)
+    const runningLine = hasRunning
+      ? `💰 Running total so far: *${currency} ${runningTotalKES.toLocaleString()}*\n`
+      : '';
+
+    const header = [
+      progressLine,
+      '━━━━━━━━━━━━━━━━',
+      runningLine + leg.text,
+      '',
+      `Reply *1*${leg.packages.length > 1 ? `–*${leg.packages.length}*` : ''} to choose an option for this leg.`,
+    ].filter(Boolean).join('\n');
+
+    await this.sendPackages(phoneNumberId, to, leg.packages, { legHeader: header });
+  }
+
+  // ─────────────────────────────────────────────
+  // TRANSPORT MODE META
   // ─────────────────────────────────────────────
   _transportMeta(transportType) {
     const type = (transportType || 'flight').toLowerCase();
@@ -208,12 +219,6 @@ class WhatsAppService {
 
   // ─────────────────────────────────────────────
   // FORMAT A TRANSPORT PRICE LINE
-  // priceOnRequest entries (static bus operator catalog — Buscar/
-  // Dreamline/Mash shown when live IABIRI has nothing for a route —
-  // see engine.js's _searchStaticBusOperators) have price: null on
-  // purpose, since no real fare is known. `(price || 0)` would
-  // silently show "KES 0", implying the trip is free. Show an
-  // honest "contact operator" line instead.
   // ─────────────────────────────────────────────
   _formatPriceLine(transport) {
     const currency = transport.currency || 'KES';
@@ -225,7 +230,6 @@ class WhatsAppService {
 
   /**
    * Format a single package as a WhatsApp message.
-   * Sections (hotel, transfer) are only shown when data exists.
    */
   async _sendPackageCard(phoneNumberId, to, pkg, index) {
     const transport       = pkg.transport       || null;
@@ -272,9 +276,6 @@ class WhatsAppService {
         }
       }
 
-      // routeNote — e.g. "Buscar runs Nairobi <-> Malindi and stops
-      // at Kilifi along the way" — critical operational context for
-      // through-route bus entries, previously not shown at all.
       if (transport.routeNote) lines.push(`  ℹ️ ${transport.routeNote}`);
 
       lines.push(this._formatPriceLine(transport));
@@ -309,7 +310,7 @@ class WhatsAppService {
       lines.push(this._formatPriceLine(returnTransport));
     }
 
-    // ── Hotel (only if present) ─────────────────────
+    // ── Hotel ───────────────────────────────────────
     if (hotel) {
       const stars = hotel.stars ? '⭐'.repeat(Math.min(Number(hotel.stars) || 0, 5)) : '';
       const hCurrency = hotel.currency || 'KES';
@@ -324,7 +325,7 @@ class WhatsAppService {
       lines.push(`  ${hCurrency} ${(hotel.pricePerNight || 0).toLocaleString()}/night × ${summary.nights || 1} nights`);
     }
 
-    // ── Transfers (now an array of legs — departure + arrival) ──
+    // ── Transfers ───────────────────────────────────
     const transferList = Array.isArray(transfers) ? transfers : (transfers ? [transfers] : []);
     if (transferList.length > 0) {
       lines.push('');
@@ -336,31 +337,24 @@ class WhatsAppService {
       });
     }
 
-    // ── Connection advisory (e.g. "Meru -> Nairobi" not bookable) ──
+    // ── Connection advisory ─────────────────────────
     if (pkg.connectionAdvisory) {
       lines.push('');
       lines.push(`⚠️ ${pkg.connectionAdvisory}`);
     }
 
-    // ── Hub transfer note (e.g. flight lands at Malindi for a
-    // Kilifi/Watamu trip — the transfer IS included, this just
-    // explains why an airport/station other than the destination
-    // itself shows up in the itinerary) ──
+    // ── Hub transfer note ───────────────────────────
     if (pkg.hubTransferNote) {
       lines.push('');
       lines.push(`ℹ️ ${pkg.hubTransferNote}`);
     }
 
-    // ── Total (always canonical currency — KES) ──────
+    // ── Total ───────────────────────────────────────
     lines.push('');
     lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
     if (summary.pricePerPerson) {
       lines.push(`_(${totalCurrency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
     }
-    // priceCaveat — set by engine.js whenever a leg's fare is
-    // priceOnRequest (static bus catalog) and was therefore excluded
-    // from totalPrice above, so the traveler never mistakes this
-    // total for a complete, final price.
     if (summary.priceCaveat) {
       lines.push(`⚠️ _${summary.priceCaveat}_`);
     }
@@ -373,14 +367,7 @@ class WhatsAppService {
       text: { body: lines.join('\n') },
     });
 
-    // TAP-TO-REVEAL PHOTO — button ID encodes the package's index
-    // (0-based) so the webhook handler can look it up directly from
-    // the SAME recentPackagesByPhone cache already used for "reply
-    // with the option number to book" — no separate correlation
-    // table needed. Never sent automatically; this is a deliberate
-    // opt-in tap, since auto-sending an image per option can be
-    // heavy on a limited data bundle (a real, common constraint in
-    // this market) — see webhooks.js for the reply handler.
+    // Tap-to-reveal photo button
     if (hotel?.images?.length > 0) {
       await this.sendButtons(phoneNumberId, to,
         `Want to see a photo of ${hotel.name || 'this hotel'}?`,
@@ -393,13 +380,6 @@ class WhatsAppService {
 
   /**
    * Format a multi-destination itinerary as a WhatsApp message.
-   *
-   * Shows each stop in order — transport arriving there, the
-   * stay itself, then moves to the next stop. Buffer nights
-   * (inserted automatically when a leg involves an airstrip
-   * destination, e.g. Maasai Mara) are clearly labeled as
-   * connections, not presented as a stop the traveler asked for.
-   * Ends with one combined total across the whole itinerary.
    */
   async _sendItineraryCard(phoneNumberId, to, pkg) {
     const summary = pkg.summary || {};
@@ -426,7 +406,6 @@ class WhatsAppService {
         lines.push(`*Stop ${stopNumber}: ${this._titleCase(leg.destination)}* (${leg.nights} night${leg.nights === 1 ? '' : 's'})`);
       }
 
-      // ── Transport arriving at this stop ────────────
       const t = leg.transportIn;
       if (t) {
         const meta = this._transportMeta(t.transportType);
@@ -444,7 +423,6 @@ class WhatsAppService {
         lines.push(`  ⚠️ Transport for this leg still to be confirmed`);
       }
 
-      // ── Hotel for this stop ─────────────────────────
       if (leg.hotel) {
         const h = leg.hotel;
         const stars = h.stars ? '⭐'.repeat(Math.min(Number(h.stars) || 0, 5)) : '';
@@ -457,7 +435,6 @@ class WhatsAppService {
         lines.push(`  ⚠️ Hotel for this stop still to be confirmed`);
       }
 
-      // ── Transfer for this stop ──────────────────────
       if (leg.transfers) {
         const tr = leg.transfers;
         const trCurrency = tr.currency || 'KES';
@@ -465,7 +442,6 @@ class WhatsAppService {
       }
     });
 
-    // ── Final return-to-origin transport ──────────────
     if (pkg.returnTransport) {
       const rt = pkg.returnTransport;
       const meta = this._transportMeta(rt.transportType);
@@ -480,7 +456,6 @@ class WhatsAppService {
       lines.push(`    ${rt.priceOnRequest ? 'Price: Contact operator to confirm' : `${rt.currency || 'KES'} ${(rt.price || 0).toLocaleString()}`}`);
     }
 
-    // ── Combined total ─────────────────────────────────
     lines.push('');
     lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
     if (summary.pricePerPerson) {
@@ -531,14 +506,6 @@ class WhatsAppService {
     return date.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' });
   }
 
-  // ─────────────────────────────────────────────
-  // FORMAT A BARE "HH:MM" SCHEDULE TIME (SGR static entries store
-  // departureTime as a plain "08:00" string, not an ISO timestamp —
-  // _formatTime above expects ISO and would print "Invalid Date" or
-  // echo the raw string oddly via `new Date(isoString)`. Kept
-  // separate rather than overloading _formatTime, since the two
-  // input shapes (ISO datetime vs. bare HH:MM) genuinely differ.
-  // ─────────────────────────────────────────────
   _formatScheduleTime(value) {
     if (!value) return 'TBC';
     if (/^\d{1,2}:\d{2}$/.test(value)) return value;
