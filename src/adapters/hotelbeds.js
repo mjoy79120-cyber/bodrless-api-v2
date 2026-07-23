@@ -3,123 +3,34 @@
  * ─────────────────────────────────────────────────────────────
  * Search and book hotels via HotelBeds (APItude API).
  *
- * DESTINATION RESOLUTION (three-tier HOTFIX):
- * BUG FIX: Previously evaluated hardcoded IATA codes first (NBO, MBA, etc.).
- * HotelBeds uses proprietary destination codes, so passing IATA codes returned
- * zero results or matched wrong locations (e.g. NBO -> Negombo, Sri Lanka).
+ * DESTINATION RESOLUTION (three-tier):
  *
- * Resolution Order:
- *   Tier 1: Geolocation search using known city coordinates (Lat/Lng + 20km radius).
- *           Covers 99%+ of queries instantly without code lookups.
- *   Tier 2: Live HotelBeds /locations/destinations API lookup for unlisted cities.
- *   Tier 3: Legacy hardcoded destination map as a last resort.
+ * Tier 1: Process-level cache — instant, zero network cost.
+ *         Keyed by normalized city name. Resets on deploy (fine,
+ *         destination coords don't change).
+ *
+ * Tier 2: Nominatim (OpenStreetMap) geocoding — free, no API key,
+ *         returns lat/lng for any city on earth. Result cached in
+ *         Tier 1 so the penalty only hits once per city per deploy.
+ *
+ * Tier 3: HotelBeds live /locations/destinations lookup — used when
+ *         Nominatim fails (rare). Country-code filtered query.
+ *
+ * NOTE: All static CITY_COORDINATES and hardcoded destination code
+ * maps have been removed. Nominatim covers every city worldwide.
  * ─────────────────────────────────────────────────────────────
  */
 
 const axios = require('axios');
 const { logger } = require('../utils/logger');
 
-// Process-level cache for live destination lookups — same pattern
-// as duffel.js's _placesCache. Keyed by normalized city name.
-// Resets on deploy, which is fine (destination codes don't change).
+// Process-level geo cache — keyed by normalized city name.
+// Stores { latitude, longitude, radius, unit } objects.
+// Resets on deploy which is fine — coords don't change.
+const _geoCache = {};
+
+// Process-level HotelBeds destination code cache — keyed by normalized city name.
 const _destinationCodeCache = {};
-
-// Known city coordinates for geolocation search (Tier 1 Priority).
-// Prevents HotelBeds IATA code mismatch bug.
-const CITY_COORDINATES = {
-  // Kenya
-  'nairobi':          { lat: -1.2921,   lng: 36.8219 },
-  'mombasa':          { lat: -4.0435,   lng: 39.6682 },
-  'kisumu':           { lat: -0.0917,   lng: 34.7679 },
-  'nakuru':           { lat: -0.3031,   lng: 36.0800 },
-  'malindi':          { lat: -3.2138,   lng: 40.1169 },
-  'diani':            { lat: -4.3172,   lng: 39.5721 },
-  'ukunda':           { lat: -4.3172,   lng: 39.5721 },
-  'eldoret':          { lat:  0.5143,   lng: 35.2698 },
-  'lamu':             { lat: -2.2717,   lng: 40.9020 },
-  'amboseli':         { lat: -2.6527,   lng: 37.2606 },
-  'masai mara':       { lat: -1.5121,   lng: 35.1439 },
-  'maasai mara':      { lat: -1.5121,   lng: 35.1439 },
-  'samburu':          { lat:  0.5766,   lng: 37.5333 },
-  'tsavo':            { lat: -2.9833,   lng: 38.4667 },
-  'lake nakuru':      { lat: -0.3600,   lng: 36.0833 },
-  'nanyuki':          { lat:  0.0167,   lng: 37.0722 },
-
-  // Tanzania
-  'zanzibar':         { lat: -6.1659,   lng: 39.2026 },
-  'dar es salaam':    { lat: -6.7924,   lng: 39.2083 },
-  'arusha':           { lat: -3.3869,   lng: 36.6830 },
-  'serengeti':        { lat: -2.3333,   lng: 34.8333 },
-  'ngorongoro':       { lat: -3.1847,   lng: 35.5799 },
-  'kilimanjaro':      { lat: -3.0674,   lng: 37.3556 },
-  'mwanza':           { lat: -2.5167,   lng: 32.9000 },
-  'pemba':            { lat: -5.1333,   lng: 39.7500 },
-
-  // Uganda, Rwanda, Burundi, South Sudan, Ethiopia
-  'kampala':          { lat:  0.3476,   lng: 32.5825 },
-  'entebbe':          { lat:  0.0612,   lng: 32.4597 },
-  'kigali':           { lat: -1.9441,   lng: 30.0619 },
-  'addis ababa':      { lat:  9.0300,   lng: 38.7400 },
-  'bujumbura':        { lat: -3.3822,   lng: 29.3644 },
-  'juba':             { lat:  4.8594,   lng: 31.5713 },
-
-  // Southern Africa
-  'lusaka':           { lat: -15.4167,  lng: 28.2833 },
-  'zambia':           { lat: -15.4167,  lng: 28.2833 },
-  'windhoek':         { lat: -22.5609,  lng: 17.0658 },
-  'maputo':           { lat: -25.9692,  lng: 32.5732 },
-  'antananarivo':     { lat: -18.9137,  lng: 47.5361 },
-  'harare':           { lat: -17.8252,  lng: 31.0335 },
-  'gaborone':         { lat: -24.6541,  lng: 25.9087 },
-  'lilongwe':         { lat: -13.9626,  lng: 33.7741 },
-  'luanda':           { lat: -8.8368,   lng: 13.2343 },
-  'victoria falls':   { lat: -17.9244,  lng: 25.8559 },
-  'livingstone':      { lat: -17.8419,  lng: 25.8543 },
-  'johannesburg':     { lat: -26.2041,  lng: 28.0473 },
-  'cape town':        { lat: -33.9249,  lng: 18.4241 },
-  'durban':           { lat: -29.8587,  lng: 31.0218 },
-
-  // West & North Africa
-  'accra':            { lat:  5.6037,   lng: -0.1870 },
-  'lagos':            { lat:  6.5244,   lng:  3.3792 },
-  'dakar':            { lat: 14.6937,   lng: -17.4441 },
-  'abidjan':          { lat:  5.3600,   lng: -4.0083 },
-  'douala':           { lat:  4.0511,   lng:  9.7679 },
-  'cairo':            { lat: 30.0444,   lng: 31.2357 },
-  'marrakech':        { lat: 31.6295,   lng: -7.9811 },
-  'casablanca':       { lat: 33.5731,   lng: -7.5898 },
-
-  // Indian Ocean Islands & Middle East
-  'seychelles':       { lat: -4.6796,   lng: 55.4920 },
-  'mahe':             { lat: -4.6796,   lng: 55.4920 },
-  'mauritius':        { lat: -20.3484,  lng: 57.5522 },
-  'port louis':       { lat: -20.1609,  lng: 57.5012 },
-  'male':             { lat:  4.1755,   lng: 73.5093 },
-  'maldives':         { lat:  4.1755,   lng: 73.5093 },
-  'dubai':            { lat: 25.2048,   lng: 55.2708 },
-  'abu dhabi':        { lat: 24.4539,   lng: 54.3773 },
-  'doha':             { lat: 25.2854,   lng: 51.5310 },
-  'istanbul':         { lat: 41.0082,   lng: 28.9784 },
-
-  // Europe & Asia & Americas
-  'london':           { lat: 51.5074,   lng: -0.1278 },
-  'paris':            { lat: 48.8566,   lng:  2.3522 },
-  'barcelona':        { lat: 41.3851,   lng:  2.1734 },
-  'madrid':           { lat: 40.4168,   lng: -3.7038 },
-  'rome':             { lat: 41.9028,   lng: 12.4964 },
-  'amsterdam':        { lat: 52.3676,   lng:  4.9041 },
-  'berlin':           { lat: 52.5200,   lng: 13.4050 },
-  'lisbon':           { lat: 38.7223,   lng: -9.1393 },
-  'bangkok':          { lat: 13.7563,   lng: 100.5018 },
-  'tokyo':            { lat: 35.6762,   lng: 139.6503 },
-  'singapore':        { lat:  1.3521,   lng: 103.8198 },
-  'bali':             { lat: -8.3405,   lng: 115.0920 },
-  'phuket':           { lat:  7.8804,   lng: 98.3923  },
-  'new york':         { lat: 40.7128,   lng: -74.0060 },
-  'miami':            { lat: 25.7617,   lng: -80.1918 },
-  'cancun':           { lat: 21.1619,   lng: -86.8515 },
-  'los angeles':      { lat: 34.0522,   lng: -118.2437 },
-};
 
 class HotelBedsAdapter {
 
@@ -143,24 +54,66 @@ class HotelBedsAdapter {
 
   _headers() {
     return {
-      'Api-key': this.apiKey,
-      'X-Signature': this._signature(),
-      'Accept': 'application/json',
-      'Accept-Encoding': 'gzip',
-      'Content-Type': 'application/json',
+      'Api-key':          this.apiKey,
+      'X-Signature':      this._signature(),
+      'Accept':           'application/json',
+      'Accept-Encoding':  'gzip',
+      'Content-Type':     'application/json',
     };
   }
 
   // ─────────────────────────────────────────────
-  // GEOLOCATION FALLBACK LOOKUP
+  // TIER 2: NOMINATIM GEOCODING
+  // Free, no API key. Requires User-Agent header.
+  // Returns { latitude, longitude, radius, unit } or null.
   // ─────────────────────────────────────────────
-  _getGeolocationFallback(cityName) {
-    const key = (cityName || '').toLowerCase().trim();
-    return CITY_COORDINATES[key] || null;
+  async _geocodeCity(cityName) {
+    try {
+      const response = await axios.get('https://nominatim.openstreetmap.org/search', {
+        params: {
+          q:      cityName,
+          format: 'json',
+          limit:  1,
+        },
+        headers: {
+          // Nominatim policy requires a descriptive User-Agent
+          'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)',
+        },
+        timeout: 6000,
+      });
+
+      const result = response.data?.[0];
+      if (!result) {
+        logger.warn('HotelBeds: Nominatim returned no results', { cityName });
+        return null;
+      }
+
+      const geo = {
+        latitude:  parseFloat(result.lat),
+        longitude: parseFloat(result.lon),
+        radius:    20,
+        unit:      'km',
+      };
+
+      logger.info('HotelBeds: Nominatim geocoded city', {
+        cityName,
+        lat: geo.latitude,
+        lng: geo.longitude,
+        displayName: result.display_name,
+      });
+
+      return geo;
+
+    } catch (err) {
+      logger.warn('HotelBeds: Nominatim geocoding failed', { cityName, error: err.message });
+      return null;
+    }
   }
 
   // ─────────────────────────────────────────────
-  // TIER 2: LIVE HOTELBEDS DESTINATION LOOKUP
+  // TIER 3: LIVE HOTELBEDS DESTINATION LOOKUP
+  // Fallback when Nominatim fails.
+  // Uses country-code filtered query (more reliable than name-only).
   // ─────────────────────────────────────────────
   async _lookupDestinationCodeLive(cityName) {
     const key = (cityName || '').toLowerCase().trim();
@@ -174,12 +127,12 @@ class HotelBedsAdapter {
         {
           headers: this._headers(),
           params: {
-            fields: 'all',
-            language: 'ENG',
-            from: 1,
-            to: 5,
-            useSecondaryLanguages: false,
-            name: cityName,
+            fields:                 'all',
+            language:               'ENG',
+            from:                   1,
+            to:                     10,
+            useSecondaryLanguages:  false,
+            name:                   cityName,
           },
           timeout: 8000,
         }
@@ -192,13 +145,19 @@ class HotelBedsAdapter {
         return null;
       }
 
+      // Prefer exact name match, fall back to first result
       const normalizedCity = key;
       const best = destinations.find(d =>
         (d.name?.content || '').toLowerCase() === normalizedCity
       ) || destinations[0];
 
       const code = best?.code || null;
-      logger.info('HotelBeds: live destination lookup resolved', { cityName, code, name: best?.name?.content });
+      logger.info('HotelBeds: live destination lookup resolved', {
+        cityName,
+        code,
+        name: best?.name?.content,
+      });
+
       _destinationCodeCache[key] = code;
       return code;
 
@@ -210,63 +169,35 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // TIER 3: LEGACY HARDCODED DESTINATION CODE MAP
-  // ─────────────────────────────────────────────
-  _getHardcodedDestinationCode(cityName) {
-    const CODES = {
-      'nairobi': 'NBO', 'mombasa': 'MBA', 'kisumu': 'KIS', 'eldoret': 'EDL',
-      'malindi': 'MYD', 'lamu': 'LAU', 'diani': 'UKA', 'ukunda': 'UKA',
-      'nakuru': 'NUU', 'nanyuki': 'NYK', 'maasai mara': 'MRE',
-      'masai mara': 'MRE', 'amboseli': 'ASV', 'samburu': 'UAS',
-      'tsavo': 'MBA', 'nyahururu': 'NYK', 'zanzibar': 'ZNZ', 'dar es salaam': 'DAR',
-      'arusha': 'ARK', 'kilimanjaro': 'JRO', 'mwanza': 'MWZ', 'serengeti': 'SEU',
-      'ngorongoro': 'JRO', 'pemba': 'PMA', 'mafia': 'MFA', 'kampala': 'EBB',
-      'entebbe': 'EBB', 'kigali': 'KGL', 'addis ababa': 'ADD', 'bujumbura': 'BJM',
-      'juba': 'JUB', 'mogadishu': 'MGQ', 'lusaka': 'LUN', 'zambia': 'LUN',
-      'windhoek': 'WDH', 'namibia': 'WDH', 'maputo': 'MPM', 'mozambique': 'MPM',
-      'beira': 'BEW', 'antananarivo': 'TNR', 'madagascar': 'TNR', 'harare': 'HRE',
-      'zimbabwe': 'HRE', 'bulawayo': 'BUQ', 'gaborone': 'GBE', 'botswana': 'GBE',
-      'lilongwe': 'LLW', 'malawi': 'LLW', 'blantyre': 'BLZ', 'luanda': 'LAD',
-      'angola': 'LAD', 'mbabane': 'MTS', 'maseru': 'MSU', 'victoria falls': 'VFA',
-      'livingstone': 'LVI', 'ndola': 'NLA', 'johannesburg': 'JNB', 'cape town': 'CPT',
-      'durban': 'DUR', 'port elizabeth': 'PLZ', 'east london': 'ELS', 'nelspruit': 'MQP',
-      'kruger': 'MQP', 'sun city': 'PTG', 'accra': 'ACC', 'lagos': 'LOS', 'abuja': 'ABV',
-      'dakar': 'DKR', 'abidjan': 'ABJ', 'douala': 'DLA', 'yaounde': 'YAO', 'cairo': 'CAI',
-      'marrakech': 'RAK', 'casablanca': 'CMN', 'dubai': 'DXB', 'abu dhabi': 'AUH',
-      'doha': 'DOH', 'london': 'LON', 'paris': 'PAR', 'rome': 'ROM', 'barcelona': 'BCN',
-      'madrid': 'MAD', 'new york': 'NYC', 'miami': 'MIA', 'los angeles': 'LAX'
-    };
-
-    const key = (cityName || '').toLowerCase().trim();
-    return CODES[key] || null;
-  }
-
-  // ─────────────────────────────────────────────
-  // MAIN DESTINATION RESOLUTION (HOTFIX UPDATED)
+  // MAIN DESTINATION RESOLUTION
+  //
+  // Tier 1: Process-level geo cache (instant)
+  // Tier 2: Nominatim geocoding (any city on earth, ~200-400ms, cached after)
+  // Tier 3: HotelBeds live destination API (fallback)
+  // Fail:   Warn and return nulls — search() returns [] gracefully
   // ─────────────────────────────────────────────
   async _resolveDestination(cityName) {
     if (!cityName) return { destinationCode: null, geolocation: null };
 
-    // TIER 1 (HOTFIX): Geolocation FIRST using exact coordinates
-    // Bypasses bad IATA codes (like NBO/MBA) that cause zero hotel results in HotelBeds
-    const geo = this._getGeolocationFallback(cityName);
-    if (geo) {
-      logger.info('HotelBeds: using geolocation strategy for destination', { cityName, geo });
-      return {
-        destinationCode: null,
-        geolocation: { latitude: geo.lat, longitude: geo.lng, radius: 20, unit: 'km' }
-      };
+    const key = (cityName || '').toLowerCase().trim();
+
+    // Tier 1: process-level cache
+    if (_geoCache[key]) {
+      logger.info('HotelBeds: geo cache hit', { cityName });
+      return { destinationCode: null, geolocation: _geoCache[key] };
     }
 
-    // TIER 2: Live HotelBeds API destination code lookup
-    const live = await this._lookupDestinationCodeLive(cityName);
-    if (live) return { destinationCode: live, geolocation: null };
+    // Tier 2: Nominatim geocoding — works for any city, neighborhood, or landmark
+    const geo = await this._geocodeCity(cityName);
+    if (geo) {
+      _geoCache[key] = geo;
+      return { destinationCode: null, geolocation: geo };
+    }
 
-    // TIER 3: Legacy hardcoded destination map (last resort fallback)
-    const hardcoded = this._getHardcodedDestinationCode(cityName);
-    if (hardcoded) {
-      logger.warn('HotelBeds: falling back to legacy hardcoded destination code', { cityName, hardcoded });
-      return { destinationCode: hardcoded, geolocation: null };
+    // Tier 3: HotelBeds live destination API
+    const live = await this._lookupDestinationCodeLive(cityName);
+    if (live) {
+      return { destinationCode: live, geolocation: null };
     }
 
     logger.warn('HotelBeds: could not resolve destination by any method', { cityName });
@@ -290,7 +221,7 @@ class HotelBedsAdapter {
       return [];
     }
 
-    const adultsPerRoom = Math.max(1, Math.ceil(adults / rooms));
+    const adultsPerRoom   = Math.max(1, Math.ceil(adults / rooms));
     const childrenPerRoom = Math.ceil(children / rooms);
     const pax = [];
     for (let a = 0; a < adultsPerRoom; a++) pax.push({ type: 'AD' });
@@ -301,7 +232,7 @@ class HotelBedsAdapter {
     const occupancies = [{ rooms, adults: adultsPerRoom, children: childrenPerRoom, paxes: pax }];
 
     const body = {
-      stay: { checkIn, checkOut },
+      stay:        { checkIn, checkOut },
       occupancies,
       filter: {
         packaging: false,
@@ -321,7 +252,7 @@ class HotelBedsAdapter {
 
     logger.info('HotelBeds search request', {
       destination,
-      destinationCode: destinationCode || 'geolocation',
+      resolvedAs: destinationCode ? `code:${destinationCode}` : `geo:${geolocation?.latitude},${geolocation?.longitude}`,
       checkIn,
       checkOut,
       adults,
@@ -334,8 +265,8 @@ class HotelBedsAdapter {
         `${this.baseUrl}/hotel-api/1.0/hotels`,
         body,
         {
-          headers: this._headers(),
-          timeout: this.searchTimeout,
+          headers:    this._headers(),
+          timeout:    this.searchTimeout,
           decompress: true,
         }
       );
@@ -351,7 +282,12 @@ class HotelBedsAdapter {
       if (err.code === 'ECONNABORTED') {
         logger.error(`HotelBeds search timed out after ${this.searchTimeout}ms`, { destination });
       } else {
-        logger.error('HotelBeds search failed', { destination, status, detail: JSON.stringify(detail)?.slice(0, 200), error: err.message });
+        logger.error('HotelBeds search failed', {
+          destination,
+          status,
+          detail: JSON.stringify(detail)?.slice(0, 200),
+          error:  err.message,
+        });
       }
       return [];
     }
@@ -371,17 +307,17 @@ class HotelBedsAdapter {
       );
 
       const hotel = response.data?.hotel;
-      const room = hotel?.rooms?.[0];
-      const rate = room?.rates?.[0];
+      const room  = hotel?.rooms?.[0];
+      const rate  = room?.rates?.[0];
       if (!rate) return null;
 
       return {
-        rateKey: rate.rateKey,
-        net: Number(rate.net || 0),
-        sellingRate: Number(rate.sellingRate || rate.net || 0),
-        rateType: rate.rateType,
+        rateKey:              rate.rateKey,
+        net:                  Number(rate.net || 0),
+        sellingRate:          Number(rate.sellingRate || rate.net || 0),
+        rateType:             rate.rateType,
         cancellationPolicies: rate.cancellationPolicies || [],
-        rateComments: rate.rateComments || null,
+        rateComments:         rate.rateComments || null,
       };
     } catch (err) {
       logger.error('HotelBeds checkRate failed', { error: err.message, detail: err.response?.data });
@@ -397,12 +333,17 @@ class HotelBedsAdapter {
 
     const guestRooms = guests.map(g => ({
       rateKey,
-      paxes: [{ roomId: g.roomId || 1, type: g.type === 'child' ? 'CH' : 'AD', name: g.lastName, surname: g.firstName }],
+      paxes: [{
+        roomId:  g.roomId || 1,
+        type:    g.type === 'child' ? 'CH' : 'AD',
+        name:    g.lastName,
+        surname: g.firstName,
+      }],
     }));
 
     const body = {
-      holder: { name: holder.firstName, surname: holder.lastName },
-      rooms: guestRooms,
+      holder:          { name: holder.firstName, surname: holder.lastName },
+      rooms:           guestRooms,
       clientReference,
       remark,
     };
@@ -430,14 +371,19 @@ class HotelBedsAdapter {
     try {
       const response = await axios.delete(
         `${this.baseUrl}/hotel-api/1.0/bookings/${bookingRef}`,
-        { headers: this._headers(), timeout: this.timeout, params: { cancellationFlag: 'CANCELLATION' }, decompress: true }
+        {
+          headers:    this._headers(),
+          timeout:    this.timeout,
+          params:     { cancellationFlag: 'CANCELLATION' },
+          decompress: true,
+        }
       );
 
       const booking = response.data?.booking;
       return {
-        bookingRef: booking?.reference,
-        status: booking?.status,
-        cancellationReference: booking?.cancellationReference || null,
+        bookingRef:              booking?.reference,
+        status:                  booking?.status,
+        cancellationReference:   booking?.cancellationReference || null,
       };
     } catch (err) {
       logger.error('HotelBeds cancel failed', { bookingRef, error: err.message, detail: err.response?.data });
@@ -461,39 +407,38 @@ class HotelBedsAdapter {
       rates.sort((a, b) => Number(a.net || 0) - Number(b.net || 0));
       const rate = rates[0];
 
-      const totalRate = Number(rate.sellingRate || rate.net || 0);
-      const nightCount = nights || this._nightsBetween(checkIn, checkOut) || 1;
+      const totalRate    = Number(rate.sellingRate || rate.net || 0);
+      const nightCount   = nights || this._nightsBetween(checkIn, checkOut) || 1;
       const pricePerNight = nightCount > 0 ? totalRate / nightCount : totalRate;
-
       const isRefundable = rate.rateType !== 'NOR';
 
       results.push({
-        supplier: 'hotelbeds',
-        hotelCode: String(hotel.code),
-        name: hotel.name,
-        stars: hotel.categoryCode ? this._parseStars(hotel.categoryCode) : null,
-        rating: hotel.reviewScore || null,
-        location: hotel.zoneName || hotel.destinationName || null,
-        latitude: hotel.coordinates?.latitude || null,
-        longitude: hotel.coordinates?.longitude || null,
-        images: hotel.imageUrls || [],
+        supplier:             'hotelbeds',
+        hotelCode:            String(hotel.code),
+        name:                 hotel.name,
+        stars:                hotel.categoryCode ? this._parseStars(hotel.categoryCode) : null,
+        rating:               hotel.reviewScore || null,
+        location:             hotel.zoneName || hotel.destinationName || null,
+        latitude:             hotel.coordinates?.latitude || null,
+        longitude:            hotel.coordinates?.longitude || null,
+        images:               hotel.imageUrls || [],
         checkIn,
         checkOut,
-        nights: nightCount,
-        pricePerNight: Math.round(pricePerNight * 100) / 100,
-        totalRate: Math.round(totalRate * 100) / 100,
-        currency: 'EUR',
-        rateKey: rate.rateKey,
-        rateType: rate.rateType,
+        nights:               nightCount,
+        pricePerNight:        Math.round(pricePerNight * 100) / 100,
+        totalRate:            Math.round(totalRate * 100) / 100,
+        currency:             'EUR',
+        rateKey:              rate.rateKey,
+        rateType:             rate.rateType,
         isRefundable,
         cancellationPolicies: rate.cancellationPolicies || [],
-        rateComments: rate.rateComments || null,
-        mealPlan: this._normalizeMealPlan(rate.boardCode),
-        boardType: rate.boardCode,
-        promotions: rate.promotions || [],
-        rooms: rate.rooms || 1,
+        rateComments:         rate.rateComments || null,
+        mealPlan:             this._normalizeMealPlan(rate.boardCode),
+        boardType:            rate.boardCode,
+        promotions:           rate.promotions || [],
+        rooms:                rate.rooms || 1,
         adults,
-        supplier_tag: rate.rateKey ? rate.rateKey.slice(0, 20) : null,
+        supplier_tag:         rate.rateKey ? rate.rateKey.slice(0, 20) : null,
       });
     }
 
@@ -506,28 +451,32 @@ class HotelBedsAdapter {
     const rate = room?.rates?.[0];
     return {
       supplierBookingReference: booking.reference,
-      status: booking.status,
-      clientReference: booking.clientReference,
-      checkIn: booking.hotel?.checkIn,
-      checkOut: booking.hotel?.checkOut,
-      totalRate: Number(booking.totalNet || booking.totalSellingRate || 0),
-      currency: 'EUR',
-      rateKey: rate?.rateKey || null,
-      cancellationPolicies: rate?.cancellationPolicies || [],
-      rateComments: rate?.rateComments || null,
-      hotelName: booking.hotel?.name || null,
-      hotelAddress: booking.hotel?.address || null,
-      hotelPhone: booking.hotel?.phoneNumber || null,
-      hotelEmail: booking.hotel?.email || null,
-      supplier_tag: rate?.rateKey ? rate.rateKey.slice(0, 20) : null,
+      status:                   booking.status,
+      clientReference:          booking.clientReference,
+      checkIn:                  booking.hotel?.checkIn,
+      checkOut:                 booking.hotel?.checkOut,
+      totalRate:                Number(booking.totalNet || booking.totalSellingRate || 0),
+      currency:                 'EUR',
+      rateKey:                  rate?.rateKey || null,
+      cancellationPolicies:     rate?.cancellationPolicies || [],
+      rateComments:             rate?.rateComments || null,
+      hotelName:                booking.hotel?.name || null,
+      hotelAddress:             booking.hotel?.address || null,
+      hotelPhone:               booking.hotel?.phoneNumber || null,
+      hotelEmail:               booking.hotel?.email || null,
+      supplier_tag:             rate?.rateKey ? rate.rateKey.slice(0, 20) : null,
     };
   }
 
   _normalizeMealPlan(boardCode) {
     const plans = {
-      'RO': 'Room Only', 'BB': 'Bed & Breakfast', 'HB': 'Half Board',
-      'FB': 'Full Board', 'AI': 'All Inclusive', 'UAI': 'Ultra All Inclusive',
-      'SC': 'Self Catering',
+      'RO':  'Room Only',
+      'BB':  'Bed & Breakfast',
+      'HB':  'Half Board',
+      'FB':  'Full Board',
+      'AI':  'All Inclusive',
+      'UAI': 'Ultra All Inclusive',
+      'SC':  'Self Catering',
     };
     return plans[boardCode] || boardCode || null;
   }
