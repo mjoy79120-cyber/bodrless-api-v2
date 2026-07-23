@@ -12,6 +12,7 @@
  * Tier 2: Nominatim (OpenStreetMap) geocoding — free, no API key,
  *         returns lat/lng for any city on earth. Result cached in
  *         Tier 1 so the penalty only hits once per city per deploy.
+ *         Rate limited to 1 req/sec per Nominatim usage policy.
  *
  * Tier 3: HotelBeds live /locations/destinations lookup — used when
  *         Nominatim fails (rare). Country-code filtered query.
@@ -31,6 +32,45 @@ const _geoCache = {};
 
 // Process-level HotelBeds destination code cache — keyed by normalized city name.
 const _destinationCodeCache = {};
+
+// Nominatim rate limiter — enforces 1 req/sec per OSM usage policy.
+// Shared across all instances so concurrent searches queue correctly.
+let _nominatimLastCall = 0;
+const _nominatimQueue = [];
+let _nominatimRunning = false;
+
+/**
+ * Wraps a Nominatim call in a serial queue so concurrent hotel searches
+ * never fire more than one geocoding request per second.
+ * @param {Function} fn - async function to execute
+ * @returns {Promise<any>}
+ */
+function _enqueueNominatim(fn) {
+  return new Promise((resolve, reject) => {
+    _nominatimQueue.push({ fn, resolve, reject });
+    if (!_nominatimRunning) _drainNominatimQueue();
+  });
+}
+
+async function _drainNominatimQueue() {
+  _nominatimRunning = true;
+  while (_nominatimQueue.length > 0) {
+    const { fn, resolve, reject } = _nominatimQueue.shift();
+
+    // Enforce minimum 1100ms gap between requests
+    const now = Date.now();
+    const wait = 1100 - (now - _nominatimLastCall);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    _nominatimLastCall = Date.now();
+
+    try {
+      resolve(await fn());
+    } catch (err) {
+      reject(err);
+    }
+  }
+  _nominatimRunning = false;
+}
 
 class HotelBedsAdapter {
 
@@ -65,49 +105,52 @@ class HotelBedsAdapter {
   // ─────────────────────────────────────────────
   // TIER 2: NOMINATIM GEOCODING
   // Free, no API key. Requires User-Agent header.
+  // Queued to respect 1 req/sec OSM usage policy.
   // Returns { latitude, longitude, radius, unit } or null.
   // ─────────────────────────────────────────────
   async _geocodeCity(cityName) {
-    try {
-      const response = await axios.get('https://nominatim.openstreetmap.org/search', {
-        params: {
-          q:      cityName,
-          format: 'json',
-          limit:  1,
-        },
-        headers: {
-          // Nominatim policy requires a descriptive User-Agent
-          'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)',
-        },
-        timeout: 6000,
-      });
+    return _enqueueNominatim(async () => {
+      try {
+        const response = await axios.get('https://nominatim.openstreetmap.org/search', {
+          params: {
+            q:      cityName,
+            format: 'json',
+            limit:  1,
+          },
+          headers: {
+            // Nominatim policy requires a descriptive User-Agent
+            'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)',
+          },
+          timeout: 6000,
+        });
 
-      const result = response.data?.[0];
-      if (!result) {
-        logger.warn('HotelBeds: Nominatim returned no results', { cityName });
+        const result = response.data?.[0];
+        if (!result) {
+          logger.warn('HotelBeds: Nominatim returned no results', { cityName });
+          return null;
+        }
+
+        const geo = {
+          latitude:  parseFloat(result.lat),
+          longitude: parseFloat(result.lon),
+          radius:    20,
+          unit:      'km',
+        };
+
+        logger.info('HotelBeds: Nominatim geocoded city', {
+          cityName,
+          lat: geo.latitude,
+          lng: geo.longitude,
+          displayName: result.display_name,
+        });
+
+        return geo;
+
+      } catch (err) {
+        logger.warn('HotelBeds: Nominatim geocoding failed', { cityName, error: err.message });
         return null;
       }
-
-      const geo = {
-        latitude:  parseFloat(result.lat),
-        longitude: parseFloat(result.lon),
-        radius:    20,
-        unit:      'km',
-      };
-
-      logger.info('HotelBeds: Nominatim geocoded city', {
-        cityName,
-        lat: geo.latitude,
-        lng: geo.longitude,
-        displayName: result.display_name,
-      });
-
-      return geo;
-
-    } catch (err) {
-      logger.warn('HotelBeds: Nominatim geocoding failed', { cityName, error: err.message });
-      return null;
-    }
+    });
   }
 
   // ─────────────────────────────────────────────
@@ -162,7 +205,12 @@ class HotelBedsAdapter {
       return code;
 
     } catch (err) {
-      logger.warn('HotelBeds: live destination lookup failed', { cityName, error: err.message });
+      logger.warn('HotelBeds: live destination lookup failed', {
+        cityName,
+        error:  err.message,
+        status: err.response?.status,
+        detail: JSON.stringify(err.response?.data)?.slice(0, 300),
+      });
       _destinationCodeCache[key] = null;
       return null;
     }
@@ -172,7 +220,7 @@ class HotelBedsAdapter {
   // MAIN DESTINATION RESOLUTION
   //
   // Tier 1: Process-level geo cache (instant)
-  // Tier 2: Nominatim geocoding (any city on earth, ~200-400ms, cached after)
+  // Tier 2: Nominatim geocoding (any city on earth, ~200-400ms, queued)
   // Tier 3: HotelBeds live destination API (fallback)
   // Fail:   Warn and return nulls — search() returns [] gracefully
   // ─────────────────────────────────────────────
