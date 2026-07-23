@@ -96,80 +96,204 @@ STATIC_DESTINATION_OVERRIDES['diani beach'] = STATIC_DESTINATION_OVERRIDES['dian
 STATIC_DESTINATION_OVERRIDES['ukunda']      = STATIC_DESTINATION_OVERRIDES['diani'];
 
 // ── Indian Ocean islands ──────────────────────
-STATIC_DESTINATION_OVERRIDES['port louis'] = _cityOverride('port louis', 'MRU');
-STATIC_DESTINATION_OVERRIDES['mauritius']  = _cityOverride('port louis', 'MRU');
-STATIC_DESTINATION_OVERRIDES['grand baie'] = _cityOverride('grand baie', 'MRU', { transferFrom: 'port louis', transferKm: 40 });
-STATIC_DESTINATION_OVERRIDES['flic en flac'] = _cityOverride('flic en flac', 'MRU', { transferFrom: 'port louis', transferKm: 30 });
-STATIC_DESTINATION_OVERRIDES['belle mare'] = _cityOverride('belle mare', 'MRU', { transferFrom: 'port louis', transferKm: 45 });
+STATIC_DESTINATION_OVERRIDES['port louis']   = _cityOverride('port louis',   'MRU');
+STATIC_DESTINATION_OVERRIDES['mauritius']    = _cityOverride('mauritius',    'MRU');
+STATIC_DESTINATION_OVERRIDES['grand baie']   = _cityOverride('grand baie',   'MRU', { transferFrom: 'port louis',  transferKm: 40 });
+STATIC_DESTINATION_OVERRIDES['flic en flac'] = _cityOverride('flic en flac', 'MRU', { transferFrom: 'port louis',  transferKm: 30 });
+STATIC_DESTINATION_OVERRIDES['belle mare']   = _cityOverride('belle mare',   'MRU', { transferFrom: 'port louis',  transferKm: 45 });
+STATIC_DESTINATION_OVERRIDES['mahe']         = _cityOverride('mahe',         'SEZ');
+STATIC_DESTINATION_OVERRIDES['seychelles']   = _cityOverride('seychelles',   'SEZ');
+STATIC_DESTINATION_OVERRIDES['praslin']      = _cityOverride('praslin',      'SEZ', { transferFrom: 'mahe',        transferKm: 45 });
+STATIC_DESTINATION_OVERRIDES['male']         = _cityOverride('male',         'MLE');
+STATIC_DESTINATION_OVERRIDES['maldives']     = _cityOverride('maldives',     'MLE');
+STATIC_DESTINATION_OVERRIDES['nosy be']      = _cityOverride('nosy be',      'NOS');
+STATIC_DESTINATION_OVERRIDES['la reunion']   = _cityOverride('la reunion',   'RUN');
+STATIC_DESTINATION_OVERRIDES['reunion']      = _cityOverride('reunion',      'RUN');
+STATIC_DESTINATION_OVERRIDES['comoros']      = _cityOverride('comoros',      'HAH');
+STATIC_DESTINATION_OVERRIDES['pemba']        = _cityOverride('pemba',        'PMA');
 
-STATIC_DESTINATION_OVERRIDES['mahe']       = _cityOverride('mahe', 'SEZ');
-STATIC_DESTINATION_OVERRIDES['seychelles'] = _cityOverride('mahe', 'SEZ');
-STATIC_DESTINATION_OVERRIDES['praslin']    = _cityOverride('praslin', 'SEZ', { transferFrom: 'mahe', transferKm: 45 });
-
-STATIC_DESTINATION_OVERRIDES['male']       = _cityOverride('male', 'MLE');
-STATIC_DESTINATION_OVERRIDES['maldives']   = _cityOverride('male', 'MLE');
-
-// ── East Africa ───────────────────────────────
-STATIC_DESTINATION_OVERRIDES['zanzibar']      = _cityOverride('zanzibar', 'ZNZ');
+// ── East Africa — major cities ────────────────
+STATIC_DESTINATION_OVERRIDES['zanzibar']      = _cityOverride('zanzibar',      'ZNZ');
+STATIC_DESTINATION_OVERRIDES['stone town']    = _cityOverride('stone town',    'ZNZ');
 STATIC_DESTINATION_OVERRIDES['dar es salaam'] = _cityOverride('dar es salaam', 'DAR');
-STATIC_DESTINATION_OVERRIDES['addis ababa']   = _cityOverride('addis ababa', 'ADD');
-STATIC_DESTINATION_OVERRIDES['kigali']        = _cityOverride('kigali', 'KGL');
-STATIC_DESTINATION_OVERRIDES['entebbe']       = _cityOverride('entebbe', 'EBB');
-STATIC_DESTINATION_OVERRIDES['kampala']       = _cityOverride('kampala', 'EBB');
-STATIC_DESTINATION_OVERRIDES['maputo']        = _cityOverride('maputo', 'MPM');
-STATIC_DESTINATION_OVERRIDES['antananarivo']  = _cityOverride('antananarivo', 'TNR');
-STATIC_DESTINATION_OVERRIDES['madagascar']    = _cityOverride('antananarivo', 'TNR');
-STATIC_DESTINATION_OVERRIDES['lusaka']        = _cityOverride('lusaka', 'LUN');
-STATIC_DESTINATION_OVERRIDES['harare']        = _cityOverride('harare', 'HRE');
-STATIC_DESTINATION_OVERRIDES['windhoek']      = _cityOverride('windhoek', 'WDH');
-STATIC_DESTINATION_OVERRIDES['luanda']        = _cityOverride('luanda', 'LAD');
+STATIC_DESTINATION_OVERRIDES['addis ababa']   = _cityOverride('addis ababa',   'ADD');
+STATIC_DESTINATION_OVERRIDES['kigali']        = _cityOverride('kigali',        'KGL');
+STATIC_DESTINATION_OVERRIDES['rwanda']        = _cityOverride('rwanda',        'KGL');
+STATIC_DESTINATION_OVERRIDES['entebbe']       = _cityOverride('entebbe',       'EBB');
+STATIC_DESTINATION_OVERRIDES['kampala']       = _cityOverride('kampala',       'EBB', { transferFrom: 'entebbe',       transferKm: 45 });
+STATIC_DESTINATION_OVERRIDES['maputo']        = _cityOverride('maputo',        'MPM');
+STATIC_DESTINATION_OVERRIDES['antananarivo']  = _cityOverride('antananarivo',  'TNR');
+STATIC_DESTINATION_OVERRIDES['madagascar']    = _cityOverride('madagascar',    'TNR');
+STATIC_DESTINATION_OVERRIDES['lusaka']        = _cityOverride('lusaka',        'LUN');
+STATIC_DESTINATION_OVERRIDES['harare']        = _cityOverride('harare',        'HRE');
+STATIC_DESTINATION_OVERRIDES['windhoek']      = _cityOverride('windhoek',      'WDH');
+STATIC_DESTINATION_OVERRIDES['luanda']        = _cityOverride('luanda',        'LAD');
+
+// ── East Africa — safari / non-airport towns ──
+STATIC_DESTINATION_OVERRIDES['malindi']       = _cityOverride('malindi',       'MYD');
+STATIC_DESTINATION_OVERRIDES['lamu']          = _cityOverride('lamu',          'LAU');
+STATIC_DESTINATION_OVERRIDES['nanyuki']       = _cityOverride('nanyuki',       'NYK');
+STATIC_DESTINATION_OVERRIDES['naivasha']      = _cityOverride('naivasha',      'NBO', { transferFrom: 'nairobi',       transferKm: 90 });
+STATIC_DESTINATION_OVERRIDES['lake nakuru']   = _cityOverride('lake nakuru',   'NBO', { transferFrom: 'nairobi',       transferKm: 160 });
+STATIC_DESTINATION_OVERRIDES['amboseli']      = _cityOverride('amboseli',      'NBO', { transferFrom: 'nairobi',       transferKm: 240 });
+STATIC_DESTINATION_OVERRIDES['tsavo']         = _cityOverride('tsavo',         'MBA', { transferFrom: 'mombasa',       transferKm: 130 });
+STATIC_DESTINATION_OVERRIDES['samburu']       = _cityOverride('samburu',       'NBO', { transferFrom: 'nairobi',       transferKm: 330 });
+STATIC_DESTINATION_OVERRIDES['maasai mara']   = _cityOverride('maasai mara',   'NBO', { transferFrom: 'nairobi',       transferKm: 270 });
+STATIC_DESTINATION_OVERRIDES['masai mara']    = STATIC_DESTINATION_OVERRIDES['maasai mara'];
+STATIC_DESTINATION_OVERRIDES['arusha']        = _cityOverride('arusha',        'JRO', { transferFrom: 'kilimanjaro',   transferKm: 46 });
+STATIC_DESTINATION_OVERRIDES['kilimanjaro']   = _cityOverride('kilimanjaro',   'JRO');
+STATIC_DESTINATION_OVERRIDES['serengeti']     = _cityOverride('serengeti',     'JRO', { transferFrom: 'kilimanjaro',   transferKm: 330 });
+STATIC_DESTINATION_OVERRIDES['ngorongoro']    = _cityOverride('ngorongoro',    'JRO', { transferFrom: 'kilimanjaro',   transferKm: 180 });
+STATIC_DESTINATION_OVERRIDES['bwindi']        = _cityOverride('bwindi',        'EBB', { transferFrom: 'entebbe',       transferKm: 500 });
+STATIC_DESTINATION_OVERRIDES['lake victoria'] = _cityOverride('lake victoria', 'EBB', { transferFrom: 'entebbe',       transferKm: 35 });
 
 // ── Southern Africa ───────────────────────────
-STATIC_DESTINATION_OVERRIDES['johannesburg']  = _cityOverride('johannesburg', 'JNB');
-STATIC_DESTINATION_OVERRIDES['cape town']     = _cityOverride('cape town', 'CPT');
-STATIC_DESTINATION_OVERRIDES['durban']        = _cityOverride('durban', 'DUR');
+STATIC_DESTINATION_OVERRIDES['johannesburg']  = _cityOverride('johannesburg',  'JNB');
+STATIC_DESTINATION_OVERRIDES['cape town']     = _cityOverride('cape town',     'CPT');
+STATIC_DESTINATION_OVERRIDES['durban']        = _cityOverride('durban',        'DUR');
+STATIC_DESTINATION_OVERRIDES['port elizabeth']= _cityOverride('port elizabeth','PLZ');
+STATIC_DESTINATION_OVERRIDES['gqeberha']      = _cityOverride('gqeberha',      'PLZ');
+STATIC_DESTINATION_OVERRIDES['stellenbosch']  = _cityOverride('stellenbosch',  'CPT', { transferFrom: 'cape town',     transferKm: 50 });
+STATIC_DESTINATION_OVERRIDES['franschhoek']   = _cityOverride('franschhoek',   'CPT', { transferFrom: 'cape town',     transferKm: 75 });
+STATIC_DESTINATION_OVERRIDES['hermanus']      = _cityOverride('hermanus',      'CPT', { transferFrom: 'cape town',     transferKm: 120 });
+STATIC_DESTINATION_OVERRIDES['knysna']        = _cityOverride('knysna',        'GRJ', { transferFrom: 'george',        transferKm: 70 });
+STATIC_DESTINATION_OVERRIDES['garden route']  = _cityOverride('garden route',  'GRJ', { transferFrom: 'george',        transferKm: 10 });
+STATIC_DESTINATION_OVERRIDES['sun city']      = _cityOverride('sun city',      'JNB', { transferFrom: 'johannesburg',  transferKm: 185 });
+STATIC_DESTINATION_OVERRIDES['kruger']        = _cityOverride('kruger',        'MQP', { transferFrom: 'kruger mpumalanga', transferKm: 60 });
+STATIC_DESTINATION_OVERRIDES['kruger park']   = _cityOverride('kruger park',   'MQP', { transferFrom: 'kruger mpumalanga', transferKm: 60 });
 
 // ── North & West Africa ───────────────────────
-STATIC_DESTINATION_OVERRIDES['cairo']         = _cityOverride('cairo', 'CAI');
-STATIC_DESTINATION_OVERRIDES['marrakech']     = _cityOverride('marrakech', 'RAK');
-STATIC_DESTINATION_OVERRIDES['casablanca']    = _cityOverride('casablanca', 'CMN');
-STATIC_DESTINATION_OVERRIDES['accra']         = _cityOverride('accra', 'ACC');
-STATIC_DESTINATION_OVERRIDES['lagos']         = _cityOverride('lagos', 'LOS');
-STATIC_DESTINATION_OVERRIDES['abuja']         = _cityOverride('abuja', 'ABV');
-STATIC_DESTINATION_OVERRIDES['dakar']         = _cityOverride('dakar', 'DSS');
+STATIC_DESTINATION_OVERRIDES['cairo']         = _cityOverride('cairo',         'CAI');
+STATIC_DESTINATION_OVERRIDES['marrakech']     = _cityOverride('marrakech',     'RAK');
+STATIC_DESTINATION_OVERRIDES['casablanca']    = _cityOverride('casablanca',    'CMN');
+STATIC_DESTINATION_OVERRIDES['accra']         = _cityOverride('accra',         'ACC');
+STATIC_DESTINATION_OVERRIDES['lagos']         = _cityOverride('lagos',         'LOS');
+STATIC_DESTINATION_OVERRIDES['abuja']         = _cityOverride('abuja',         'ABV');
+STATIC_DESTINATION_OVERRIDES['dakar']         = _cityOverride('dakar',         'DSS');
 
 // ── Middle East ───────────────────────────────
-STATIC_DESTINATION_OVERRIDES['dubai']         = _cityOverride('dubai', 'DXB');
-STATIC_DESTINATION_OVERRIDES['abu dhabi']     = _cityOverride('abu dhabi', 'AUH');
-STATIC_DESTINATION_OVERRIDES['doha']          = _cityOverride('doha', 'DOH');
-STATIC_DESTINATION_OVERRIDES['muscat']        = _cityOverride('muscat', 'MCT');
-STATIC_DESTINATION_OVERRIDES['istanbul']      = _cityOverride('istanbul', 'IST');
+STATIC_DESTINATION_OVERRIDES['dubai']         = _cityOverride('dubai',         'DXB');
+STATIC_DESTINATION_OVERRIDES['abu dhabi']     = _cityOverride('abu dhabi',     'AUH');
+STATIC_DESTINATION_OVERRIDES['doha']          = _cityOverride('doha',          'DOH');
+STATIC_DESTINATION_OVERRIDES['muscat']        = _cityOverride('muscat',        'MCT');
+STATIC_DESTINATION_OVERRIDES['istanbul']      = _cityOverride('istanbul',      'IST');
+STATIC_DESTINATION_OVERRIDES['sharjah']       = _cityOverride('sharjah',       'SHJ');
+STATIC_DESTINATION_OVERRIDES['riyadh']        = _cityOverride('riyadh',        'RUH');
+STATIC_DESTINATION_OVERRIDES['jeddah']        = _cityOverride('jeddah',        'JED');
+STATIC_DESTINATION_OVERRIDES['amman']         = _cityOverride('amman',         'AMM');
+STATIC_DESTINATION_OVERRIDES['beirut']        = _cityOverride('beirut',        'BEY');
+STATIC_DESTINATION_OVERRIDES['tel aviv']      = _cityOverride('tel aviv',      'TLV');
+STATIC_DESTINATION_OVERRIDES['jerusalem']     = _cityOverride('jerusalem',     'TLV', { transferFrom: 'tel aviv',      transferKm: 60 });
+STATIC_DESTINATION_OVERRIDES['petra']         = _cityOverride('petra',         'AMM', { transferFrom: 'amman',         transferKm: 230 });
+STATIC_DESTINATION_OVERRIDES['aqaba']         = _cityOverride('aqaba',         'AQJ');
 
 // ── Europe ────────────────────────────────────
-STATIC_DESTINATION_OVERRIDES['london']        = _cityOverride('london', 'LHR');
-STATIC_DESTINATION_OVERRIDES['paris']         = _cityOverride('paris', 'CDG');
-STATIC_DESTINATION_OVERRIDES['amsterdam']     = _cityOverride('amsterdam', 'AMS');
-STATIC_DESTINATION_OVERRIDES['rome']          = _cityOverride('rome', 'FCO');
-STATIC_DESTINATION_OVERRIDES['madrid']        = _cityOverride('madrid', 'MAD');
-STATIC_DESTINATION_OVERRIDES['barcelona']     = _cityOverride('barcelona', 'BCN');
-STATIC_DESTINATION_OVERRIDES['athens']        = _cityOverride('athens', 'ATH');
+STATIC_DESTINATION_OVERRIDES['london']        = _cityOverride('london',        'LHR');
+STATIC_DESTINATION_OVERRIDES['paris']         = _cityOverride('paris',         'CDG');
+STATIC_DESTINATION_OVERRIDES['amsterdam']     = _cityOverride('amsterdam',     'AMS');
+STATIC_DESTINATION_OVERRIDES['rome']          = _cityOverride('rome',          'FCO');
+STATIC_DESTINATION_OVERRIDES['madrid']        = _cityOverride('madrid',        'MAD');
+STATIC_DESTINATION_OVERRIDES['barcelona']     = _cityOverride('barcelona',     'BCN');
+STATIC_DESTINATION_OVERRIDES['athens']        = _cityOverride('athens',        'ATH');
+STATIC_DESTINATION_OVERRIDES['venice']        = _cityOverride('venice',        'VCE');
+STATIC_DESTINATION_OVERRIDES['florence']      = _cityOverride('florence',      'FCO', { transferFrom: 'rome',          transferKm: 280 });
+STATIC_DESTINATION_OVERRIDES['tuscany']       = _cityOverride('tuscany',       'FCO', { transferFrom: 'rome',          transferKm: 280 });
+STATIC_DESTINATION_OVERRIDES['amalfi coast']  = _cityOverride('amalfi coast',  'NAP', { transferFrom: 'naples',        transferKm: 60 });
+STATIC_DESTINATION_OVERRIDES['positano']      = _cityOverride('positano',      'NAP', { transferFrom: 'naples',        transferKm: 55 });
+STATIC_DESTINATION_OVERRIDES['santorini']     = _cityOverride('santorini',     'JTR');
+STATIC_DESTINATION_OVERRIDES['mykonos']       = _cityOverride('mykonos',       'JMK');
+STATIC_DESTINATION_OVERRIDES['crete']         = _cityOverride('crete',         'HER');
+STATIC_DESTINATION_OVERRIDES['ibiza']         = _cityOverride('ibiza',         'IBZ');
+STATIC_DESTINATION_OVERRIDES['mallorca']      = _cityOverride('mallorca',      'PMI');
+STATIC_DESTINATION_OVERRIDES['lisbon']        = _cityOverride('lisbon',        'LIS');
+STATIC_DESTINATION_OVERRIDES['porto']         = _cityOverride('porto',         'OPO');
+STATIC_DESTINATION_OVERRIDES['brussels']      = _cityOverride('brussels',      'BRU');
+STATIC_DESTINATION_OVERRIDES['zurich']        = _cityOverride('zurich',        'ZRH');
+STATIC_DESTINATION_OVERRIDES['geneva']        = _cityOverride('geneva',        'GVA');
+STATIC_DESTINATION_OVERRIDES['vienna']        = _cityOverride('vienna',        'VIE');
+STATIC_DESTINATION_OVERRIDES['prague']        = _cityOverride('prague',        'PRG');
+STATIC_DESTINATION_OVERRIDES['budapest']      = _cityOverride('budapest',      'BUD');
+STATIC_DESTINATION_OVERRIDES['copenhagen']    = _cityOverride('copenhagen',    'CPH');
+STATIC_DESTINATION_OVERRIDES['stockholm']     = _cityOverride('stockholm',     'ARN');
+STATIC_DESTINATION_OVERRIDES['oslo']          = _cityOverride('oslo',          'OSL');
+STATIC_DESTINATION_OVERRIDES['helsinki']      = _cityOverride('helsinki',      'HEL');
+STATIC_DESTINATION_OVERRIDES['edinburgh']     = _cityOverride('edinburgh',     'EDI');
+STATIC_DESTINATION_OVERRIDES['manchester']    = _cityOverride('manchester',    'MAN');
+STATIC_DESTINATION_OVERRIDES['dubrovnik']     = _cityOverride('dubrovnik',     'DBV');
+STATIC_DESTINATION_OVERRIDES['split']         = _cityOverride('split',         'SPU');
+STATIC_DESTINATION_OVERRIDES['zagreb']        = _cityOverride('zagreb',        'ZAG');
+STATIC_DESTINATION_OVERRIDES['reykjavik']     = _cityOverride('reykjavik',     'KEF');
 
 // ── Asia ──────────────────────────────────────
-STATIC_DESTINATION_OVERRIDES['bali']          = _cityOverride('bali', 'DPS');
-STATIC_DESTINATION_OVERRIDES['phuket']        = _cityOverride('phuket', 'HKT');
-STATIC_DESTINATION_OVERRIDES['bangkok']       = _cityOverride('bangkok', 'BKK');
-STATIC_DESTINATION_OVERRIDES['singapore']     = _cityOverride('singapore', 'SIN');
-STATIC_DESTINATION_OVERRIDES['kuala lumpur']  = _cityOverride('kuala lumpur', 'KUL');
-STATIC_DESTINATION_OVERRIDES['delhi']         = _cityOverride('delhi', 'DEL');
-STATIC_DESTINATION_OVERRIDES['mumbai']        = _cityOverride('mumbai', 'BOM');
-STATIC_DESTINATION_OVERRIDES['goa']           = _cityOverride('goa', 'GOI');
-STATIC_DESTINATION_OVERRIDES['tokyo']         = _cityOverride('tokyo', 'TYO');
+STATIC_DESTINATION_OVERRIDES['bali']          = _cityOverride('bali',          'DPS');
+STATIC_DESTINATION_OVERRIDES['ubud']          = _cityOverride('ubud',          'DPS', { transferFrom: 'bali',          transferKm: 75 });
+STATIC_DESTINATION_OVERRIDES['seminyak']      = _cityOverride('seminyak',      'DPS', { transferFrom: 'bali',          transferKm: 10 });
+STATIC_DESTINATION_OVERRIDES['lombok']        = _cityOverride('lombok',        'LOP');
+STATIC_DESTINATION_OVERRIDES['phuket']        = _cityOverride('phuket',        'HKT');
+STATIC_DESTINATION_OVERRIDES['koh samui']     = _cityOverride('koh samui',     'USM');
+STATIC_DESTINATION_OVERRIDES['krabi']         = _cityOverride('krabi',         'KBV');
+STATIC_DESTINATION_OVERRIDES['chiang mai']    = _cityOverride('chiang mai',    'CNX');
+STATIC_DESTINATION_OVERRIDES['bangkok']       = _cityOverride('bangkok',       'BKK');
+STATIC_DESTINATION_OVERRIDES['singapore']     = _cityOverride('singapore',     'SIN');
+STATIC_DESTINATION_OVERRIDES['kuala lumpur']  = _cityOverride('kuala lumpur',  'KUL');
+STATIC_DESTINATION_OVERRIDES['delhi']         = _cityOverride('delhi',         'DEL');
+STATIC_DESTINATION_OVERRIDES['mumbai']        = _cityOverride('mumbai',        'BOM');
+STATIC_DESTINATION_OVERRIDES['goa']           = _cityOverride('goa',           'GOI');
+STATIC_DESTINATION_OVERRIDES['kathmandu']     = _cityOverride('kathmandu',     'KTM');
+STATIC_DESTINATION_OVERRIDES['colombo']       = _cityOverride('colombo',       'CMB');
+STATIC_DESTINATION_OVERRIDES['sri lanka']     = _cityOverride('sri lanka',     'CMB');
+STATIC_DESTINATION_OVERRIDES['dhaka']         = _cityOverride('dhaka',         'DAC');
+STATIC_DESTINATION_OVERRIDES['karachi']       = _cityOverride('karachi',       'KHI');
+STATIC_DESTINATION_OVERRIDES['lahore']        = _cityOverride('lahore',        'LHE');
+STATIC_DESTINATION_OVERRIDES['islamabad']     = _cityOverride('islamabad',     'ISB');
+STATIC_DESTINATION_OVERRIDES['tokyo']         = _cityOverride('tokyo',         'TYO');
+STATIC_DESTINATION_OVERRIDES['osaka']         = _cityOverride('osaka',         'KIX');
+STATIC_DESTINATION_OVERRIDES['beijing']       = _cityOverride('beijing',       'PEK');
+STATIC_DESTINATION_OVERRIDES['shanghai']      = _cityOverride('shanghai',      'PVG');
+STATIC_DESTINATION_OVERRIDES['hong kong']     = _cityOverride('hong kong',     'HKG');
+STATIC_DESTINATION_OVERRIDES['seoul']         = _cityOverride('seoul',         'ICN');
+STATIC_DESTINATION_OVERRIDES['manila']        = _cityOverride('manila',        'MNL');
+STATIC_DESTINATION_OVERRIDES['ho chi minh']   = _cityOverride('ho chi minh',   'SGN');
+STATIC_DESTINATION_OVERRIDES['saigon']        = STATIC_DESTINATION_OVERRIDES['ho chi minh'];
+STATIC_DESTINATION_OVERRIDES['hanoi']         = _cityOverride('hanoi',         'HAN');
+STATIC_DESTINATION_OVERRIDES['hoi an']        = _cityOverride('hoi an',        'DAD', { transferFrom: 'da nang',       transferKm: 30 });
+STATIC_DESTINATION_OVERRIDES['ha long bay']   = _cityOverride('ha long bay',   'HAN', { transferFrom: 'hanoi',         transferKm: 170 });
+STATIC_DESTINATION_OVERRIDES['phnom penh']    = _cityOverride('phnom penh',    'PNH');
+STATIC_DESTINATION_OVERRIDES['siem reap']     = _cityOverride('siem reap',     'REP');
+STATIC_DESTINATION_OVERRIDES['yangon']        = _cityOverride('yangon',        'RGN');
 
 // ── Americas ──────────────────────────────────
-STATIC_DESTINATION_OVERRIDES['new york']      = _cityOverride('new york', 'JFK');
-STATIC_DESTINATION_OVERRIDES['miami']         = _cityOverride('miami', 'MIA');
-STATIC_DESTINATION_OVERRIDES['cancun']        = _cityOverride('cancun', 'CUN');
-STATIC_DESTINATION_OVERRIDES['sydney']        = _cityOverride('sydney', 'SYD');
+STATIC_DESTINATION_OVERRIDES['new york']      = _cityOverride('new york',      'JFK');
+STATIC_DESTINATION_OVERRIDES['miami']         = _cityOverride('miami',         'MIA');
+STATIC_DESTINATION_OVERRIDES['los angeles']   = _cityOverride('los angeles',   'LAX');
+STATIC_DESTINATION_OVERRIDES['san francisco'] = _cityOverride('san francisco', 'SFO');
+STATIC_DESTINATION_OVERRIDES['las vegas']     = _cityOverride('las vegas',     'LAS');
+STATIC_DESTINATION_OVERRIDES['cancun']        = _cityOverride('cancun',        'CUN');
+STATIC_DESTINATION_OVERRIDES['toronto']       = _cityOverride('toronto',       'YYZ');
+STATIC_DESTINATION_OVERRIDES['vancouver']     = _cityOverride('vancouver',     'YVR');
+STATIC_DESTINATION_OVERRIDES['montreal']      = _cityOverride('montreal',      'YUL');
+STATIC_DESTINATION_OVERRIDES['sao paulo']     = _cityOverride('sao paulo',     'GRU');
+STATIC_DESTINATION_OVERRIDES['rio de janeiro']= _cityOverride('rio de janeiro','GIG');
+STATIC_DESTINATION_OVERRIDES['buenos aires']  = _cityOverride('buenos aires',  'EZE');
+STATIC_DESTINATION_OVERRIDES['bogota']        = _cityOverride('bogota',        'BOG');
+STATIC_DESTINATION_OVERRIDES['lima']          = _cityOverride('lima',          'LIM');
+STATIC_DESTINATION_OVERRIDES['cusco']         = _cityOverride('cusco',         'CUZ');
+STATIC_DESTINATION_OVERRIDES['machu picchu']  = _cityOverride('machu picchu',  'CUZ', { transferFrom: 'cusco',         transferKm: 80 });
+STATIC_DESTINATION_OVERRIDES['mexico city']   = _cityOverride('mexico city',   'MEX');
+STATIC_DESTINATION_OVERRIDES['havana']        = _cityOverride('havana',        'HAV');
+STATIC_DESTINATION_OVERRIDES['punta cana']    = _cityOverride('punta cana',    'PUJ');
+STATIC_DESTINATION_OVERRIDES['montego bay']   = _cityOverride('montego bay',   'MBJ');
+STATIC_DESTINATION_OVERRIDES['nassau']        = _cityOverride('nassau',        'NAS');
+
+// ── Australia / Pacific ───────────────────────
+STATIC_DESTINATION_OVERRIDES['sydney']        = _cityOverride('sydney',        'SYD');
+STATIC_DESTINATION_OVERRIDES['melbourne']     = _cityOverride('melbourne',     'MEL');
+STATIC_DESTINATION_OVERRIDES['brisbane']      = _cityOverride('brisbane',      'BNE');
+STATIC_DESTINATION_OVERRIDES['perth']         = _cityOverride('perth',         'PER');
+STATIC_DESTINATION_OVERRIDES['auckland']      = _cityOverride('auckland',      'AKL');
+STATIC_DESTINATION_OVERRIDES['queenstown']    = _cityOverride('queenstown',    'ZQN');
+STATIC_DESTINATION_OVERRIDES['fiji']          = _cityOverride('fiji',          'NAN');
+STATIC_DESTINATION_OVERRIDES['nadi']          = _cityOverride('nadi',          'NAN');
 
 
 class DestinationIntel {
