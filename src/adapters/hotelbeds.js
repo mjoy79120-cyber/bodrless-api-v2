@@ -6,45 +6,24 @@
  * DESTINATION RESOLUTION (three-tier):
  *
  * Tier 1: Process-level cache — instant, zero network cost.
- *         Keyed by normalized city name. Resets on deploy (fine,
- *         destination coords don't change).
- *
- * Tier 2: Nominatim (OpenStreetMap) geocoding — free, no API key,
- *         returns lat/lng for any city on earth. Result cached in
- *         Tier 1 so the penalty only hits once per city per deploy.
- *         Rate limited to 1 req/sec per Nominatim usage policy.
- *
- * Tier 3: HotelBeds live /locations/destinations lookup — used when
- *         Nominatim fails (rare). Country-code filtered query.
- *
- * NOTE: All static CITY_COORDINATES and hardcoded destination code
- * maps have been removed. Nominatim covers every city worldwide.
+ * Tier 2: Nominatim geocoding — free, no API key, any city on earth.
+ *         Rate limited to 1 req/sec per OSM usage policy.
+ *         Radius is scaled by location type (city vs park vs neighborhood).
+ * Tier 3: HotelBeds live /locations/destinations lookup — fallback.
  * ─────────────────────────────────────────────────────────────
  */
 
 const axios = require('axios');
 const { logger } = require('../utils/logger');
 
-// Process-level geo cache — keyed by normalized city name.
-// Stores { latitude, longitude, radius, unit } objects.
-// Resets on deploy which is fine — coords don't change.
 const _geoCache = {};
-
-// Process-level HotelBeds destination code cache — keyed by normalized city name.
 const _destinationCodeCache = {};
 
-// Nominatim rate limiter — enforces 1 req/sec per OSM usage policy.
-// Shared across all instances so concurrent searches queue correctly.
+// Nominatim rate limiter — 1 req/sec per OSM policy
 let _nominatimLastCall = 0;
-const _nominatimQueue = [];
-let _nominatimRunning = false;
+const _nominatimQueue  = [];
+let _nominatimRunning  = false;
 
-/**
- * Wraps a Nominatim call in a serial queue so concurrent hotel searches
- * never fire more than one geocoding request per second.
- * @param {Function} fn - async function to execute
- * @returns {Promise<any>}
- */
 function _enqueueNominatim(fn) {
   return new Promise((resolve, reject) => {
     _nominatimQueue.push({ fn, resolve, reject });
@@ -56,20 +35,75 @@ async function _drainNominatimQueue() {
   _nominatimRunning = true;
   while (_nominatimQueue.length > 0) {
     const { fn, resolve, reject } = _nominatimQueue.shift();
-
-    // Enforce minimum 1100ms gap between requests
-    const now = Date.now();
+    const now  = Date.now();
     const wait = 1100 - (now - _nominatimLastCall);
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     _nominatimLastCall = Date.now();
-
-    try {
-      resolve(await fn());
-    } catch (err) {
-      reject(err);
-    }
+    try { resolve(await fn()); } catch (err) { reject(err); }
   }
   _nominatimRunning = false;
+}
+
+// ─────────────────────────────────────────────
+// RADIUS SCALING
+// Different location types need different search radii.
+// A tight radius misses hotels; a huge radius pulls in wrong cities.
+// ─────────────────────────────────────────────
+const RADIUS_OVERRIDES = {
+  // Kenya national parks & reserves — very spread out
+  'masai mara':    80,
+  'maasai mara':   80,
+  'amboseli':      60,
+  'tsavo':         80,
+  'samburu':       60,
+  'lake nakuru':   40,
+  'aberdare':      50,
+  'mount kenya':   50,
+  'ol pejeta':     40,
+
+  // Tanzania parks
+  'serengeti':     80,
+  'ngorongoro':    60,
+  'tarangire':     60,
+  'selous':        60,
+
+  // Kenya lake & rift towns — hotels spread around the lake
+  'naivasha':      50,
+  'nakuru':        40,
+  'elementaita':   40,
+  'bogoria':       40,
+  'baringo':       50,
+
+  // Kenya coast — resorts spread along the beach
+  'diani':         30,
+  'malindi':       30,
+  'watamu':        30,
+  'lamu':          20,
+
+  // Safari lodges and small towns
+  'nanyuki':       40,
+  'laikipia':      60,
+
+  // Major cities — tighter to avoid pulling in suburbs of a different city
+  'nairobi':       25,
+  'mombasa':       20,
+  'kampala':       25,
+  'dar es salaam': 25,
+  'addis ababa':   25,
+  'kigali':        20,
+  'zanzibar':      25,
+
+  // International cities
+  'dubai':         20,
+  'london':        20,
+  'paris':         15,
+  'new york':      15,
+  'bangkok':       20,
+};
+
+function _getRadius(cityName) {
+  const key = (cityName || '').toLowerCase().trim();
+  return RADIUS_OVERRIDES[key] || 30; // default 30km (was 20km — increased for better coverage)
 }
 
 class HotelBedsAdapter {
@@ -83,44 +117,33 @@ class HotelBedsAdapter {
   }
 
   _signature() {
-    const crypto = require('crypto');
+    const crypto    = require('crypto');
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const hash = crypto
+    return crypto
       .createHash('sha256')
       .update(this.apiKey + this.apiSecret + timestamp)
       .digest('hex');
-    return hash;
   }
 
   _headers() {
     return {
-      'Api-key':          this.apiKey,
-      'X-Signature':      this._signature(),
-      'Accept':           'application/json',
-      'Accept-Encoding':  'gzip',
-      'Content-Type':     'application/json',
+      'Api-key':         this.apiKey,
+      'X-Signature':     this._signature(),
+      'Accept':          'application/json',
+      'Accept-Encoding': 'gzip',
+      'Content-Type':    'application/json',
     };
   }
 
   // ─────────────────────────────────────────────
   // TIER 2: NOMINATIM GEOCODING
-  // Free, no API key. Requires User-Agent header.
-  // Queued to respect 1 req/sec OSM usage policy.
-  // Returns { latitude, longitude, radius, unit } or null.
   // ─────────────────────────────────────────────
   async _geocodeCity(cityName) {
     return _enqueueNominatim(async () => {
       try {
         const response = await axios.get('https://nominatim.openstreetmap.org/search', {
-          params: {
-            q:      cityName,
-            format: 'json',
-            limit:  1,
-          },
-          headers: {
-            // Nominatim policy requires a descriptive User-Agent
-            'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)',
-          },
+          params:  { q: cityName, format: 'json', limit: 1 },
+          headers: { 'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)' },
           timeout: 6000,
         });
 
@@ -130,17 +153,19 @@ class HotelBedsAdapter {
           return null;
         }
 
-        const geo = {
+        const radius = _getRadius(cityName);
+        const geo    = {
           latitude:  parseFloat(result.lat),
           longitude: parseFloat(result.lon),
-          radius:    20,
-          unit:      'km',
+          radius,
+          unit: 'km',
         };
 
         logger.info('HotelBeds: Nominatim geocoded city', {
           cityName,
-          lat: geo.latitude,
-          lng: geo.longitude,
+          lat:         geo.latitude,
+          lng:         geo.longitude,
+          radius,
           displayName: result.display_name,
         });
 
@@ -155,27 +180,23 @@ class HotelBedsAdapter {
 
   // ─────────────────────────────────────────────
   // TIER 3: LIVE HOTELBEDS DESTINATION LOOKUP
-  // Fallback when Nominatim fails.
-  // Uses country-code filtered query (more reliable than name-only).
   // ─────────────────────────────────────────────
   async _lookupDestinationCodeLive(cityName) {
     const key = (cityName || '').toLowerCase().trim();
-    if (_destinationCodeCache[key] !== undefined) {
-      return _destinationCodeCache[key];
-    }
+    if (_destinationCodeCache[key] !== undefined) return _destinationCodeCache[key];
 
     try {
       const response = await axios.get(
         `${this.baseUrl}/hotel-content-api/1.0/locations/destinations`,
         {
           headers: this._headers(),
-          params: {
-            fields:                 'all',
-            language:               'ENG',
-            from:                   1,
-            to:                     10,
-            useSecondaryLanguages:  false,
-            name:                   cityName,
+          params:  {
+            fields:               'all',
+            language:             'ENG',
+            from:                 1,
+            to:                   10,
+            useSecondaryLanguages: false,
+            name:                 cityName,
           },
           timeout: 8000,
         }
@@ -188,19 +209,12 @@ class HotelBedsAdapter {
         return null;
       }
 
-      // Prefer exact name match, fall back to first result
-      const normalizedCity = key;
       const best = destinations.find(d =>
-        (d.name?.content || '').toLowerCase() === normalizedCity
+        (d.name?.content || '').toLowerCase() === key
       ) || destinations[0];
 
       const code = best?.code || null;
-      logger.info('HotelBeds: live destination lookup resolved', {
-        cityName,
-        code,
-        name: best?.name?.content,
-      });
-
+      logger.info('HotelBeds: live destination lookup resolved', { cityName, code, name: best?.name?.content });
       _destinationCodeCache[key] = code;
       return code;
 
@@ -218,35 +232,28 @@ class HotelBedsAdapter {
 
   // ─────────────────────────────────────────────
   // MAIN DESTINATION RESOLUTION
-  //
-  // Tier 1: Process-level geo cache (instant)
-  // Tier 2: Nominatim geocoding (any city on earth, ~200-400ms, queued)
-  // Tier 3: HotelBeds live destination API (fallback)
-  // Fail:   Warn and return nulls — search() returns [] gracefully
   // ─────────────────────────────────────────────
   async _resolveDestination(cityName) {
     if (!cityName) return { destinationCode: null, geolocation: null };
 
     const key = (cityName || '').toLowerCase().trim();
 
-    // Tier 1: process-level cache
+    // Tier 1: cache
     if (_geoCache[key]) {
       logger.info('HotelBeds: geo cache hit', { cityName });
       return { destinationCode: null, geolocation: _geoCache[key] };
     }
 
-    // Tier 2: Nominatim geocoding — works for any city, neighborhood, or landmark
+    // Tier 2: Nominatim
     const geo = await this._geocodeCity(cityName);
     if (geo) {
       _geoCache[key] = geo;
       return { destinationCode: null, geolocation: geo };
     }
 
-    // Tier 3: HotelBeds live destination API
+    // Tier 3: HotelBeds live API
     const live = await this._lookupDestinationCodeLive(cityName);
-    if (live) {
-      return { destinationCode: live, geolocation: null };
-    }
+    if (live) return { destinationCode: live, geolocation: null };
 
     logger.warn('HotelBeds: could not resolve destination by any method', { cityName });
     return { destinationCode: null, geolocation: null };
@@ -282,9 +289,7 @@ class HotelBedsAdapter {
     const body = {
       stay:        { checkIn, checkOut },
       occupancies,
-      filter: {
-        packaging: false,
-      },
+      filter:      { packaging: false },
     };
 
     if (destinationCode) {
@@ -300,7 +305,9 @@ class HotelBedsAdapter {
 
     logger.info('HotelBeds search request', {
       destination,
-      resolvedAs: destinationCode ? `code:${destinationCode}` : `geo:${geolocation?.latitude},${geolocation?.longitude}`,
+      resolvedAs: destinationCode
+        ? `code:${destinationCode}`
+        : `geo:${geolocation?.latitude},${geolocation?.longitude} radius:${geolocation?.radius}km`,
       checkIn,
       checkOut,
       adults,
@@ -312,15 +319,21 @@ class HotelBedsAdapter {
       const response = await axios.post(
         `${this.baseUrl}/hotel-api/1.0/hotels`,
         body,
-        {
-          headers:    this._headers(),
-          timeout:    this.searchTimeout,
-          decompress: true,
-        }
+        { headers: this._headers(), timeout: this.searchTimeout, decompress: true }
       );
 
       const hotels = response.data?.hotels?.hotels || [];
-      logger.info('HotelBeds search results', { destination, count: hotels.length });
+      logger.info('HotelBeds search results', { destination, count: hotels.length, radius: geolocation?.radius });
+
+      // If zero results and we used geolocation, log a hint for diagnosis
+      if (hotels.length === 0 && geolocation) {
+        logger.warn('HotelBeds: zero results — may be test sandbox inventory gap or radius too small', {
+          destination,
+          radius: geolocation.radius,
+          lat:    geolocation.latitude,
+          lng:    geolocation.longitude,
+        });
+      }
 
       return this._normalizeHotels(hotels, { checkIn, checkOut, nights, adults, budget });
 
@@ -429,9 +442,9 @@ class HotelBedsAdapter {
 
       const booking = response.data?.booking;
       return {
-        bookingRef:              booking?.reference,
-        status:                  booking?.status,
-        cancellationReference:   booking?.cancellationReference || null,
+        bookingRef:            booking?.reference,
+        status:                booking?.status,
+        cancellationReference: booking?.cancellationReference || null,
       };
     } catch (err) {
       logger.error('HotelBeds cancel failed', { bookingRef, error: err.message, detail: err.response?.data });
@@ -455,10 +468,10 @@ class HotelBedsAdapter {
       rates.sort((a, b) => Number(a.net || 0) - Number(b.net || 0));
       const rate = rates[0];
 
-      const totalRate    = Number(rate.sellingRate || rate.net || 0);
-      const nightCount   = nights || this._nightsBetween(checkIn, checkOut) || 1;
+      const totalRate     = Number(rate.sellingRate || rate.net || 0);
+      const nightCount    = nights || this._nightsBetween(checkIn, checkOut) || 1;
       const pricePerNight = nightCount > 0 ? totalRate / nightCount : totalRate;
-      const isRefundable = rate.rateType !== 'NOR';
+      const isRefundable  = rate.rateType !== 'NOR';
 
       results.push({
         supplier:             'hotelbeds',
@@ -518,12 +531,9 @@ class HotelBedsAdapter {
 
   _normalizeMealPlan(boardCode) {
     const plans = {
-      'RO':  'Room Only',
-      'BB':  'Bed & Breakfast',
-      'HB':  'Half Board',
-      'FB':  'Full Board',
-      'AI':  'All Inclusive',
-      'UAI': 'Ultra All Inclusive',
+      'RO':  'Room Only',       'BB':  'Bed & Breakfast',
+      'HB':  'Half Board',      'FB':  'Full Board',
+      'AI':  'All Inclusive',   'UAI': 'Ultra All Inclusive',
       'SC':  'Self Catering',
     };
     return plans[boardCode] || boardCode || null;
