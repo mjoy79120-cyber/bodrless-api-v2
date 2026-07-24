@@ -29,6 +29,17 @@ class OrchestrationEngine {
 
   static SUPPLIER_TIMEOUT_MS = Number(process.env.SUPPLIER_TIMEOUT_MS) || 10000;
 
+  // East Africa bus cities — IABIRI only operates within this network.
+  // Never attempt a bus search for origins/destinations outside this set.
+  static EA_BUS_CITIES = new Set([
+    'nairobi', 'mombasa', 'kisumu', 'nakuru', 'eldoret', 'thika', 'malindi',
+    'kampala', 'entebbe',
+    'dar es salaam', 'arusha', 'mwanza',
+    'kigali',
+    'addis ababa',
+    'juba',
+  ]);
+
   _withTimeout(promise, fallback, label) {
     let timer;
     const timeout = new Promise((resolve) => {
@@ -131,7 +142,7 @@ class OrchestrationEngine {
   // ─────────────────────────────
   // SINGLE-DESTINATION SEARCH
   // ─────────────────────────────
-  async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null) {
+  async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null, context = {}) {
     this._validateTripParams(tripParams);
 
     let datesWereAssumed = false;
@@ -231,11 +242,16 @@ class OrchestrationEngine {
     });
     console.log(`[TIMING] single-dest package build (${tripParams.destination}): ${Date.now() - _tBuild}ms`);
 
+    // ── Traveler Intelligence: learn from this prompt + enrich search params ──
     let travelerProfile = null;
     try {
-      travelerProfile = travelerIntelligence.analyze(tripParams, prompt);
+      const phone = context?.phone || null;
+      travelerProfile = await travelerIntelligence.analyzeAndLearn(tripParams, prompt, phone);
+      if (phone) {
+        tripParams = await travelerIntelligence.applyToSearchParams(phone, tripParams);
+      }
     } catch (err) {
-      logger.warn('TravelerIntelligence.analyze failed — ranking without a profile', { error: err.message });
+      logger.warn('TravelerIntelligence.analyzeAndLearn failed — ranking without a profile', { error: err.message });
     }
 
     const rankedPackages = rankPackages(packages, tripParams, travelerProfile).slice(0, 4);
@@ -916,11 +932,6 @@ class OrchestrationEngine {
     return { groups };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // MULTI-DESTINATION ORCHESTRATOR
-  // Builds a full package per stop: transport in, hotel, arrival + departure
-  // transfers. Returns a single itinerary package with per-leg breakdown.
-  // ─────────────────────────────────────────────────────────────────────────────
   async _orchestrateMultiDestination(tripParams, sessionId) {
     const origin = tripParams.origin || 'nairobi';
 
@@ -954,7 +965,6 @@ class OrchestrationEngine {
 
     const _tTransitions = Date.now();
 
-    // Build transition pairs: for each stop, we need transport from the prior city
     const transitionPairs = stops.map((toStop, i) => {
       const fromStop = i === 0
         ? { destination: origin, checkOut: stops[0]?.checkIn || tripParams.departureDate, isAirstripDestination: false }
@@ -975,13 +985,10 @@ class OrchestrationEngine {
 
     console.log(`[TIMING] multi-dest transitions (${stops.length} stops + return): ${Date.now() - _tTransitions}ms`);
 
-    // ── Per-stop: hotels ───────────────────────────────────────────────────────
     const legResults = await Promise.all(
       stops.map(async (stop, i) => {
         const legTripParams = {
           ...tripParams,
-          // FIX: use the actual from-city as origin so hotel search and
-          // transfer building have the correct departure point
           origin:        transitions[i]?.from || origin,
           destination:   stop.destination,
           departureDate: stop.checkIn,
@@ -1000,14 +1007,13 @@ class OrchestrationEngine {
           isBufferLeg:           stop.isBufferLeg || false,
           isAirstripDestination: stop.isAirstripDestination || false,
           hotel:                 cheapestHotel || null,
-          allHotels:             hotels,          // kept for potential upsell
-          legTripParams,                          // retained for transfer building below
+          allHotels:             hotels,
+          legTripParams,
           transfers:             null,
         };
       })
     );
 
-    // ── Attach transport and transfers ─────────────────────────────────────────
     for (let i = 0; i < legResults.length; i++) {
       const leg = legResults[i];
 
@@ -1020,26 +1026,23 @@ class OrchestrationEngine {
       leg.bufferNight  = transitions[i]?.bufferNight  || false;
     }
 
-    // FIX: build transfers with the correct origin (from-city) and the chosen hotel
     await Promise.all(
       legResults.map(async (leg, i) => {
         if (leg.isBufferLeg) return;
         leg.transfers = await this._buildTransferLegs(
-          leg.legTripParams,        // has correct origin from fix above
+          leg.legTripParams,
           transitions[i]?.transport,
           leg.hotel
         );
       })
     );
 
-    // ── Return leg ─────────────────────────────────────────────────────────────
     const finalReturnTransport = this._formatTransportDisplay(
       returnTransition?.transport,
       returnTransition?.from,
       returnTransition?.to
     );
 
-    // Departure transfer: last stop hotel → departure airport
     const returnTransfers = lastStop && returnTransition?.transport
       ? await this._buildTransferLegs(
           {
@@ -1053,7 +1056,6 @@ class OrchestrationEngine {
         )
       : [];
 
-    // ── Totals ─────────────────────────────────────────────────────────────────
     const transportCosts = [...transitions, returnTransition].map(t => ({
       amount:   t?.transport?.price,
       currency: t?.transport?.currency || 'KES',
@@ -1074,7 +1076,6 @@ class OrchestrationEngine {
     const totalNights = legResults.reduce((sum, leg) => sum + (leg.nights || 0), 0);
     const routeLabel  = [origin, ...stops.map(s => s.destination)].join(' → ');
 
-    // Strip legTripParams from output (internal only)
     const cleanLegs = legResults.map(({ legTripParams: _drop, allHotels: _drop2, ...rest }) => rest);
 
     return {
@@ -1133,18 +1134,12 @@ class OrchestrationEngine {
     return stops;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // TRANSITION RESOLVER
-  // FIX: fallback path now actually routes origin→hub→destination instead of
-  // repeating the same direct search with unchanged params.
-  // ─────────────────────────────────────────────────────────────────────────────
   async _resolveTransition(fromStop, toStop, tripParams) {
     const fromIsAirstrip = fromStop.isAirstripDestination;
     const toIsAirstrip   = toStop.isAirstripDestination;
     const hubOrigin      = tripParams.origin || 'nairobi';
 
     if (fromIsAirstrip || toIsAirstrip) {
-      // Airstrip routes always connect via the trip origin hub
       const transport = await this._searchCheapestDirect(
         fromStop.destination,
         toStop.destination,
@@ -1160,7 +1155,6 @@ class OrchestrationEngine {
       };
     }
 
-    // Try direct route first
     const direct = await this._searchCheapestDirect(
       fromStop.destination,
       toStop.destination,
@@ -1178,10 +1172,6 @@ class OrchestrationEngine {
       };
     }
 
-    // FIX: no direct route — try via the trip origin hub.
-    // Search leg 1: fromStop.destination → hubOrigin
-    // Search leg 2: hubOrigin → toStop.destination
-    // Return the second leg (what we can book from the hub) and flag the gap.
     logger.info('MultiDest: no direct route — trying via origin hub', {
       from: fromStop.destination, to: toStop.destination, hub: hubOrigin,
     });
@@ -1194,10 +1184,9 @@ class OrchestrationEngine {
     return {
       from:        fromStop.destination,
       to:          toStop.destination,
-      transport:   legFromHub || null,   // bookable leg (hub → dest)
+      transport:   legFromHub || null,
       connectsVia: hubOrigin,
       bufferNight: false,
-      // connectingLegBookable lets the UI warn the user about the gap leg
       connectingLegBookable: !!_legToHub,
     };
   }
@@ -1417,7 +1406,6 @@ class OrchestrationEngine {
   async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone = null) {
     tripParams.agencyId = agencyId;
 
-    // ── Multi-trip: classified leg orchestration ──────────────────────────────
     if (Array.isArray(tripParams.trips) && tripParams.trips.length > 1) {
       return await this._orchestrateClassifiedTrip(
         tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone
@@ -1500,7 +1488,7 @@ class OrchestrationEngine {
             returnDate: legReturnDate,
             nights: group.leg.nights,
           };
-          const result = await this._runSingleDestinationSearch(legParams, sessionId, prompt);
+          const result = await this._runSingleDestinationSearch(legParams, sessionId, prompt, null, { phone });
 
           const assumptionNote = dateWasAssumed
             ? ` (I've scheduled this for ${legDepartureDate} to ${legReturnDate}, right after your previous trip — let me know if you meant different dates.)`
@@ -1630,7 +1618,7 @@ class OrchestrationEngine {
       };
     }
 
-    const singleResult = await this._runSingleDestinationSearch(tripParams, sessionId, prompt, intent);
+    const singleResult = await this._runSingleDestinationSearch(tripParams, sessionId, prompt, intent, { phone });
 
     const updatedHistory = [
       ...conversationHistory,
@@ -1866,11 +1854,6 @@ class OrchestrationEngine {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // INTENT DETECTION
-  // FIX: bus regex now excludes "Airbus" and other compound words by requiring
-  // the match to NOT be preceded by a letter (negative lookbehind).
-  // ─────────────────────────────────────────────────────────────────────────────
   _detectIntent(prompt, previousParams) {
     const lower = prompt.toLowerCase();
 
@@ -1888,7 +1871,6 @@ class OrchestrationEngine {
       lower.match(/different hotel|another hotel|change hotel/i) ||
       lower.match(/different flight|another airline|change flight/i) ||
       lower.match(/mid budget|moderate/i) ||
-      // FIX: negative lookbehind prevents "Airbus" → bus, "minibus" → bus etc.
       lower.match(/(?<![a-z])bus(?:es)?\b/i) ||
       lower.match(/\btrain\b|\bflight\b|\bfly\b|\bflying\b/i)
     );
@@ -1912,7 +1894,6 @@ class OrchestrationEngine {
     const flightExclusive = lower.match(
       /\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only|\bcheapest\s+flight(s)?\b|\bcheapest\s+fare\b/i
     );
-    // FIX: same negative lookbehind applied to exclusive bus pattern
     const busExclusive = lower.match(
       /\bonly\s+(a\s+)?(?<![a-z])bus(?:es)?\b|(?<![a-z])bus(?:es)?\s+only|just\s+(a\s+)?(?<![a-z])bus(?:es)?\b/i
     );
@@ -1938,7 +1919,6 @@ class OrchestrationEngine {
         if (lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)) {
           adjustments.transportMode = 'flight';
         } else if (lower.match(/(?<![a-z])bus(?:es)?\b/i)) {
-          // FIX: same guard here
           adjustments.transportMode = 'bus';
         }
       }
@@ -2170,6 +2150,21 @@ class OrchestrationEngine {
   }
 
   async _searchBuses(tripParams, leg = 'outbound', destinationAccess = null) {
+    // ── EA-only gate ──────────────────────────────────────────────────────────
+    // IABIRI only operates East African bus routes. Skip entirely for any
+    // origin or destination outside the EA network to avoid wasted API calls
+    // and misleading "unmapped city" warnings in the logs.
+    const busOrigin = ((leg === 'return' ? tripParams.destination : tripParams.origin) || '').toLowerCase().trim();
+    const busDest   = ((leg === 'return' ? tripParams.origin : tripParams.destination) || '').toLowerCase().trim();
+    const eaCities  = OrchestrationEngine.EA_BUS_CITIES;
+    const eitherCityIsEA = [...eaCities].some(c => busOrigin.includes(c) || busDest.includes(c));
+
+    if (!eitherCityIsEA) {
+      logger.info('IABIRI: skipping bus search — neither city is in EA network', { busOrigin, busDest });
+      return [];
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     if (!this._busEligibleForLeg(tripParams, leg, destinationAccess)) return [];
 
     const explicitLegMode = leg === 'return'
@@ -2587,9 +2582,6 @@ class OrchestrationEngine {
     ];
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // FIX: was padding d.getSeconds() instead of d.getMinutes()
-  // ─────────────────────────────────────────────────────────────────────────────
   _toTransferDateTime(value) {
     if (!value) return null;
     try {
@@ -3061,8 +3053,6 @@ class OrchestrationEngine {
       }
     }
 
-    // Intentionally NOT falling back to new Date(text) — too many false positives
-    // e.g. "August" parses as a valid date in some environments
     return null;
   }
 
