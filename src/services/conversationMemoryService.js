@@ -18,34 +18,24 @@
  *   6. Leg flow state machine — for multi-leg trips, tracks which
  *      leg is currently being presented, what the user selected
  *      per leg, and the running total so far
+ *   7. Traveler intelligence — links every contact to a global
+ *      travelers row so preferences and loyalty follow the traveler
+ *      across agencies and channels (WhatsApp + web)
  * ─────────────────────────────────────────────────────────────
  */
 
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
+const travelerIntelligence = require('./travelerIntelligence');
 
-// How long before we consider a conversation "dropped off"
-// and offer the resume prompt. 30 minutes felt right —
-// long enough that a quick bathroom break doesn't trigger it,
-// short enough that someone returning the next day always gets it.
 const DROP_OFF_THRESHOLD_MS = 30 * 60 * 1000;
-
-// How long to keep a selected package in context while the user
-// modifies params mid-conversation (e.g. "change it to 7 nights").
-// After this, the package is cleared and a fresh search runs.
-const PACKAGE_HOLD_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-// How long a leg flow stays active before it expires.
-// A traveler might take time between legs — give them 4 hours
-// before we consider the flow abandoned.
-const LEG_FLOW_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+const PACKAGE_HOLD_TTL_MS   = 60 * 60 * 1000;
+const LEG_FLOW_TTL_MS       = 4 * 60 * 60 * 1000;
 
 class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // LOAD CONTACT
-  // Returns the full whatsapp_contacts row for this phone,
-  // or null if this is a brand new traveler.
   // ─────────────────────────────────────────────
   async loadContact(phone, agencyId) {
     try {
@@ -68,8 +58,6 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // UPSERT CONTACT
-  // Creates or updates the contact row. Called on every message
-  // so the contact record is always current.
   // ─────────────────────────────────────────────
   async upsertContact(phone, agencyId, updates = {}) {
     try {
@@ -77,7 +65,7 @@ class ConversationMemoryService {
         .from('whatsapp_contacts')
         .upsert({
           phone,
-          agency_id: agencyId,
+          agency_id:  agencyId,
           updated_at: new Date().toISOString(),
           ...updates,
         }, { onConflict: 'phone' });
@@ -91,10 +79,78 @@ class ConversationMemoryService {
   }
 
   // ─────────────────────────────────────────────
+  // LINK CONTACT TO GLOBAL TRAVELER
+  // Call on every inbound message — ensures whatsapp_contacts
+  // is linked to the global travelers row.
+  // This is what makes preferences cross-agency.
+  // ─────────────────────────────────────────────
+  async linkTraveler(phone, agencyId) {
+    try {
+      const traveler = await travelerIntelligence.getOrCreateTraveler(phone);
+      if (!traveler) return null;
+
+      await this.upsertContact(phone, agencyId, {
+        traveler_id: traveler.id,
+      });
+
+      return traveler;
+    } catch (err) {
+      logger.error('ConversationMemory: linkTraveler threw', { phone, error: err.message });
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // PROCESS MESSAGE FOR PREFERENCES
+  // Call on every inbound user message.
+  // Silently extracts preferences + loyalty from text.
+  // Returns a short confirmation string if anything was detected,
+  // null otherwise — append to your response if not null.
+  // ─────────────────────────────────────────────
+  async processMessageForPreferences(phone, message) {
+    try {
+      const { changed } = await travelerIntelligence.extractAndSave(phone, message);
+      return travelerIntelligence.buildPreferenceConfirmation(changed);
+    } catch (err) {
+      logger.error('ConversationMemory: processMessageForPreferences threw', { phone, error: err.message });
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // LOAD TRAVELER PREFERENCES
+  // Returns the full travelers row for this phone.
+  // Call before every search.
+  // ─────────────────────────────────────────────
+  async loadTravelerPreferences(phone) {
+    return travelerIntelligence.loadPreferences(phone);
+  }
+
+  // ─────────────────────────────────────────────
+  // APPLY PREFERENCES TO SEARCH
+  // Enriches search params with stored traveler preferences.
+  // Always call before running a hotel or flight search.
+  //
+  // Usage:
+  //   const enrichedParams = await memoryService.applyPreferencesToSearch(phone, rawParams);
+  //   const results = await flightEngine.search(enrichedParams);
+  // ─────────────────────────────────────────────
+  async applyPreferencesToSearch(phone, searchParams) {
+    return travelerIntelligence.applyToSearchParams(phone, searchParams);
+  }
+
+  // ─────────────────────────────────────────────
+  // GET POINTS SUMMARY
+  // Returns WhatsApp-formatted points summary for this traveler.
+  // Pass airline codes to filter to relevant balances,
+  // or [] to return all balances.
+  // ─────────────────────────────────────────────
+  async getPointsSummary(phone, airlines = []) {
+    return travelerIntelligence.buildPointsSummary(phone, airlines);
+  }
+
+  // ─────────────────────────────────────────────
   // SAVE TURN
-  // Appends user + assistant turn to conversation_history,
-  // updates previous_params, and caches packages shown.
-  // Keeps last 20 turns (10 exchanges) to stay within context limits.
   // ─────────────────────────────────────────────
   async saveTurn(phone, agencyId, {
     userMessage,
@@ -104,7 +160,7 @@ class ConversationMemoryService {
     sessionId = null,
   }) {
     try {
-      const contact = await this.loadContact(phone, agencyId);
+      const contact  = await this.loadContact(phone, agencyId);
       const existing = contact?.conversation_history || [];
 
       const newTurns = [
@@ -116,12 +172,12 @@ class ConversationMemoryService {
 
       const updates = {
         conversation_history: history,
-        drop_off_at: new Date().toISOString(),
-        session_id: sessionId || contact?.session_id || null,
+        drop_off_at:          new Date().toISOString(),
+        session_id:           sessionId || contact?.session_id || null,
       };
 
-      if (tripParams) updates.previous_params = tripParams;
-      if (packages && packages.length > 0) updates.cached_packages = packages;
+      if (tripParams)                   updates.previous_params  = tripParams;
+      if (packages && packages.length)  updates.cached_packages  = packages;
 
       await this.upsertContact(phone, agencyId, updates);
     } catch (err) {
@@ -131,15 +187,12 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // SAVE SELECTED PACKAGE
-  // Called when the user taps "Book" on a package — holds it in
-  // whatsapp_contacts so mid-conversation modifications know which
-  // package to modify rather than starting over.
   // ─────────────────────────────────────────────
   async saveSelectedPackage(phone, agencyId, pkg) {
     try {
       await this.upsertContact(phone, agencyId, {
         selected_package: {
-          package: pkg,
+          package:    pkg,
           selectedAt: new Date().toISOString(),
         },
       });
@@ -150,8 +203,6 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // LOAD SELECTED PACKAGE
-  // Returns the held package if it's still within the TTL,
-  // null if it's expired or never set.
   // ─────────────────────────────────────────────
   async loadSelectedPackage(phone, agencyId) {
     try {
@@ -186,61 +237,24 @@ class ConversationMemoryService {
 
   // ═════════════════════════════════════════════════════════════
   // LEG FLOW STATE MACHINE
-  // ─────────────────────────────────────────────────────────────
-  // Used for multi-leg trips (classified trip orchestration).
-  // The engine returns all legs at once with their packages.
-  // Rather than dumping everything on the traveler, we present
-  // one leg at a time, save their selection, show a running total,
-  // then advance to the next leg.
-  //
-  // State shape stored in whatsapp_contacts.leg_flow:
-  // {
-  //   active: true,
-  //   startedAt: ISO string,
-  //   tripParams: { ... },         // original full trip params
-  //   legs: [                      // all classified legs from engine
-  //     {
-  //       role: 'arrival' | 'internal' | 'return_stay' | 'departure',
-  //       label: 'NBO → ZNZ',
-  //       roleLabel: '✈️ Outbound + Hotel + Transfers',
-  //       packages: [...],          // options for this leg
-  //       text: '...',              // intro text for this leg
-  //     },
-  //     ...
-  //   ],
-  //   currentLegIndex: 0,          // which leg is being presented now
-  //   selections: {                // what the traveler picked per leg
-  //     0: { packageId, package, label },
-  //     1: { packageId, package, label },
-  //   },
-  //   runningTotalKES: 0,          // sum of selected leg prices so far
-  // }
   // ═════════════════════════════════════════════════════════════
 
-  // ─────────────────────────────────────────────
-  // START LEG FLOW
-  // Called when the engine returns a classified trip result.
-  // Stores all legs and kicks off from leg 0.
-  // ─────────────────────────────────────────────
   async startLegFlow(phone, agencyId, { legs, tripParams }) {
     try {
-      // Filter to only legs that have packages — no point
-      // presenting an empty leg (e.g. a stopover with nothing to pick)
       const actionableLegs = legs.filter(l => l.packages && l.packages.length > 0);
-
       if (actionableLegs.length === 0) {
         logger.warn('LegFlow: no actionable legs — not starting flow', { phone });
         return null;
       }
 
       const flow = {
-        active:           true,
-        startedAt:        new Date().toISOString(),
+        active:          true,
+        startedAt:       new Date().toISOString(),
         tripParams,
-        legs:             actionableLegs,
-        currentLegIndex:  0,
-        selections:       {},
-        runningTotalKES:  0,
+        legs:            actionableLegs,
+        currentLegIndex: 0,
+        selections:      {},
+        runningTotalKES: 0,
       };
 
       await this.upsertContact(phone, agencyId, { leg_flow: flow });
@@ -252,15 +266,10 @@ class ConversationMemoryService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // LOAD LEG FLOW
-  // Returns the active flow or null if none / expired.
-  // ─────────────────────────────────────────────
   async loadLegFlow(phone, agencyId) {
     try {
       const contact = await this.loadContact(phone, agencyId);
-      const flow = contact?.leg_flow;
-
+      const flow    = contact?.leg_flow;
       if (!flow?.active) return null;
 
       const age = Date.now() - new Date(flow.startedAt).getTime();
@@ -277,12 +286,6 @@ class ConversationMemoryService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // SAVE LEG SELECTION
-  // Records the traveler's chosen package for the current leg,
-  // adds its price to the running total, and advances the index.
-  // Returns the updated flow.
-  // ─────────────────────────────────────────────
   async saveLegSelection(phone, agencyId, { legIndex, selectedPackage }) {
     try {
       const flow = await this.loadLegFlow(phone, agencyId);
@@ -297,7 +300,6 @@ class ConversationMemoryService {
         return null;
       }
 
-      // Record selection
       flow.selections[legIndex] = {
         packageId: selectedPackage.packageId,
         package:   selectedPackage,
@@ -305,15 +307,10 @@ class ConversationMemoryService {
         role:      leg.role,
       };
 
-      // Add this leg's price to running total
-      const legPrice = selectedPackage.summary?.totalPrice || 0;
+      const legPrice       = selectedPackage.summary?.totalPrice || 0;
       flow.runningTotalKES = (flow.runningTotalKES || 0) + legPrice;
-
-      // Advance to next leg
       flow.currentLegIndex = legIndex + 1;
-
-      // Check if all legs are done
-      flow.active = flow.currentLegIndex < flow.legs.length;
+      flow.active          = flow.currentLegIndex < flow.legs.length;
 
       await this.upsertContact(phone, agencyId, { leg_flow: flow });
       logger.info('LegFlow: leg selected', {
@@ -328,10 +325,6 @@ class ConversationMemoryService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // CLEAR LEG FLOW
-  // Called when the flow completes or the traveler abandons it.
-  // ─────────────────────────────────────────────
   async clearLegFlow(phone, agencyId) {
     try {
       await this.upsertContact(phone, agencyId, { leg_flow: null });
@@ -340,14 +333,8 @@ class ConversationMemoryService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // GET LEG FLOW SUMMARY
-  // Returns a formatted summary of all selections made so far,
-  // used to show the traveler what they've picked before asking
-  // about the next leg or presenting the final total.
-  // ─────────────────────────────────────────────
   getLegFlowSummary(flow) {
-    const lines = [];
+    const lines         = [];
     const selectionCount = Object.keys(flow.selections).length;
     if (selectionCount === 0) return null;
 
@@ -357,9 +344,9 @@ class ConversationMemoryService {
     for (let i = 0; i < flow.currentLegIndex; i++) {
       const sel = flow.selections[i];
       if (!sel) continue;
-      const leg = flow.legs[i];
-      const pkg = sel.package;
-      const price = pkg.summary?.totalPrice || 0;
+      const leg      = flow.legs[i];
+      const pkg      = sel.package;
+      const price    = pkg.summary?.totalPrice || 0;
       const currency = pkg.summary?.currency || 'KES';
       lines.push(`${leg.roleLabel || leg.label}: *${currency} ${price.toLocaleString()}*`);
     }
@@ -370,11 +357,6 @@ class ConversationMemoryService {
     return lines.join('\n');
   }
 
-  // ─────────────────────────────────────────────
-  // BUILD FINAL LEG FLOW SUMMARY
-  // Full breakdown shown when all legs are selected,
-  // before offering to pay.
-  // ─────────────────────────────────────────────
   buildFinalLegSummary(flow) {
     const lines = [];
     lines.push('*🎉 Your complete trip is ready!*');
@@ -384,9 +366,9 @@ class ConversationMemoryService {
       const sel = flow.selections[i];
       if (!sel) continue;
 
-      const leg = flow.legs[i];
-      const pkg = sel.package;
-      const price = pkg.summary?.totalPrice || 0;
+      const leg      = flow.legs[i];
+      const pkg      = sel.package;
+      const price    = pkg.summary?.totalPrice || 0;
       const currency = pkg.summary?.currency || 'KES';
 
       lines.push('');
@@ -394,7 +376,7 @@ class ConversationMemoryService {
       lines.push(`  Route: ${pkg.summary?.route || leg.label}`);
 
       if (pkg.transport) {
-        const t = pkg.transport;
+        const t    = pkg.transport;
         const icon = t.transportType === 'bus' ? '🚌' : t.transportType === 'train' ? '🚆' : '✈️';
         lines.push(`  ${icon} ${t.airline || t.provider || 'TBC'} · ${t.origin || ''} → ${t.destination || ''}`);
       }
@@ -432,8 +414,7 @@ class ConversationMemoryService {
   async checkDropOff(phone, agencyId) {
     try {
       const contact = await this.loadContact(phone, agencyId);
-
-      if (!contact) return { isDropOff: false };
+      if (!contact)            return { isDropOff: false };
       if (!contact.drop_off_at) return { isDropOff: false };
 
       const gapMs = Date.now() - new Date(contact.drop_off_at).getTime();
@@ -441,20 +422,20 @@ class ConversationMemoryService {
 
       const hasPreviousSearch = !!(
         contact.previous_params?.destination ||
-        (contact.cached_packages?.length > 0)
+        contact.cached_packages?.length > 0
       );
 
       const minutesAway = Math.round(gapMs / 60000);
 
       return {
-        isDropOff: true,
+        isDropOff:           true,
         contact,
         minutesAway,
         hasPreviousSearch,
         previousDestination: contact.previous_params?.destination || null,
-        cachedPackages: contact.cached_packages || [],
+        cachedPackages:      contact.cached_packages || [],
         conversationHistory: contact.conversation_history || [],
-        previousParams: contact.previous_params || null,
+        previousParams:      contact.previous_params || null,
       };
     } catch (err) {
       logger.error('ConversationMemory: checkDropOff threw', { phone, error: err.message });
@@ -472,11 +453,11 @@ class ConversationMemoryService {
 
       return {
         conversationHistory: (contact.conversation_history || []).slice(-10),
-        previousParams: contact.previous_params || null,
-        cachedPackages: contact.cached_packages || [],
-        selectedPackage: contact.selected_package?.package || null,
-        sessionId: contact.session_id || null,
-        legFlow: contact.leg_flow || null,
+        previousParams:      contact.previous_params || null,
+        cachedPackages:      contact.cached_packages || [],
+        selectedPackage:     contact.selected_package?.package || null,
+        sessionId:           contact.session_id || null,
+        legFlow:             contact.leg_flow || null,
       };
     } catch (err) {
       logger.error('ConversationMemory: getConversationContext threw', { phone, error: err.message });
@@ -492,10 +473,10 @@ class ConversationMemoryService {
     const daysAway  = Math.round(hoursAway / 24);
 
     let timePhrase;
-    if (minutesAway < 60)      timePhrase = `${minutesAway} minutes`;
-    else if (hoursAway < 24)   timePhrase = `${hoursAway} hour${hoursAway > 1 ? 's' : ''}`;
-    else if (daysAway === 1)   timePhrase = 'yesterday';
-    else                       timePhrase = `${daysAway} days`;
+    if (minutesAway < 60)     timePhrase = `${minutesAway} minutes`;
+    else if (hoursAway < 24)  timePhrase = `${hoursAway} hour${hoursAway > 1 ? 's' : ''}`;
+    else if (daysAway === 1)  timePhrase = 'yesterday';
+    else                      timePhrase = `${daysAway} days`;
 
     const destPhrase = previousDestination
       ? ` for ${this._titleCase(previousDestination)}`
@@ -512,12 +493,12 @@ class ConversationMemoryService {
   // HANDLE MODIFY MID-CONVERSATION
   // ─────────────────────────────────────────────
   async handleModify(phone, agencyId, intent, previousParams) {
-    const heldPackage = await this.loadSelectedPackage(phone, agencyId);
-    const adjustments = intent.adjustments || {};
+    const heldPackage  = await this.loadSelectedPackage(phone, agencyId);
+    const adjustments  = intent.adjustments || {};
 
     const needsResearch = !!(
-      adjustments.destination ||
-      adjustments.budget      ||
+      adjustments.destination   ||
+      adjustments.budget        ||
       adjustments.transportMode ||
       adjustments.passengers
     );
@@ -528,8 +509,8 @@ class ConversationMemoryService {
     }
 
     if (adjustments.nights) {
-      const nights = adjustments.nights;
-      const depDate = previousParams?.departureDate;
+      const nights   = adjustments.nights;
+      const depDate  = previousParams?.departureDate;
       let returnDate = previousParams?.returnDate;
 
       if (depDate) {
@@ -538,11 +519,10 @@ class ConversationMemoryService {
         returnDate = dep.toISOString().split('T')[0];
       }
 
-      const updatedParams = { ...previousParams, nights, returnDate };
+      const updatedParams  = { ...previousParams, nights, returnDate };
       const updatedPackage = this._patchPackageNights(heldPackage, nights, returnDate);
 
       await this.saveSelectedPackage(phone, agencyId, updatedPackage);
-
       return { action: 'patch', updatedPackage, updatedParams };
     }
 
@@ -565,8 +545,8 @@ class ConversationMemoryService {
     }
 
     if (updated.hotel) {
-      const pricePerNight = updated.hotel.pricePerNight || 0;
-      const hotelTotal    = pricePerNight * newNights;
+      const pricePerNight  = updated.hotel.pricePerNight || 0;
+      const hotelTotal     = pricePerNight * newNights;
 
       updated.hotel.nights    = newNights;
       updated.hotel.checkOut  = newReturnDate || updated.hotel.checkOut;
@@ -616,7 +596,6 @@ class ConversationMemoryService {
         .eq('phone', phone);
 
       await this.clearSelectedPackage(phone, agencyId);
-
       logger.info('ConversationMemory: mid-booking cancel, context preserved', { phone });
     } catch (err) {
       logger.error('ConversationMemory: cancelMidBooking threw', { phone, error: err.message });
