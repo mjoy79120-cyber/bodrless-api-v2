@@ -460,50 +460,101 @@ class OrchestrationEngine {
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // LEG ROLE CLASSIFIER
-  // ─────────────────────────────────────────────────────────────────────────────
-  _classifyTripLegs(trips) {
-    if (!trips || trips.length === 0) return [];
-
-    const originCity    = this._normalizeCity(trips[0].origin);
-    const visitedCities = new Map();
-
-    return trips.map((leg, index) => {
-      const dest      = this._normalizeCity(leg.destination);
-      const isLastLeg = index === trips.length - 1;
-      const isOrigin  = dest === originCity;
-      const hasNights = (leg.nights ?? 0) > 0;
-      const alreadySeen = visitedCities.has(dest);
-
-      let role;
-
-      if (isLastLeg && isOrigin) {
-        role = 'departure';
-      } else if (index === 0) {
-        role = 'arrival';
-        visitedCities.set(dest, index);
-      } else if (!hasNights && !isOrigin) {
-        role = 'stopover';
-      } else if (alreadySeen) {
-        role = 'return_stay';
-      } else {
-        role = 'internal';
-        visitedCities.set(dest, index);
-      }
-
-      return {
-        ...leg,
-        _role:           role,
-        _firstVisitIndex: alreadySeen ? visitedCities.get(dest) : index,
-        _isRevisit:      alreadySeen,
-      };
+  // ═════════════════════════════════════════════════════════════
+// CHANGE 1: Replace _classifyTripLegs() entirely
+// ─────────────────────────────────────────────────────────────
+// Find this line in orchestrationEngine.js:
+//   _classifyTripLegs(trips) {
+// Replace the ENTIRE method (up to and including its closing })
+// with the method below.
+//
+// What changed:
+//   - After classifying all legs, checks if the last leg returns
+//     home. If not, AUTO-INJECTS a synthetic departure leg.
+//   - This is the engine-level safety net for when Groq misses
+//     the return leg in its trips[] output.
+// ═════════════════════════════════════════════════════════════
+ 
+_classifyTripLegs(trips) {
+  if (!trips || trips.length === 0) return [];
+ 
+  const homeOrigin    = this._normalizeCity(trips[0].origin);
+  const visitedCities = new Map();
+ 
+  const classified = trips.map((leg, index) => {
+    const dest        = this._normalizeCity(leg.destination);
+    const isLastLeg   = index === trips.length - 1;
+    const isOrigin    = dest === homeOrigin;
+    const hasNights   = (leg.nights ?? 0) > 0;
+    const alreadySeen = visitedCities.has(dest);
+ 
+    let role;
+ 
+    if (isLastLeg && isOrigin) {
+      role = 'departure';
+    } else if (index === 0) {
+      role = 'arrival';
+      visitedCities.set(dest, index);
+    } else if (!hasNights && !isOrigin) {
+      role = 'stopover';
+    } else if (alreadySeen) {
+      role = 'return_stay';
+    } else {
+      role = 'internal';
+      visitedCities.set(dest, index);
+    }
+ 
+    return {
+      ...leg,
+      _role:            role,
+      _firstVisitIndex: alreadySeen ? visitedCities.get(dest) : index,
+      _isRevisit:       alreadySeen,
+    };
+  });
+ 
+  // ── AUTO-INJECT DEPARTURE LEG ──────────────────────────────
+  // Safety net: if Groq missed the return leg, inject it here.
+  // Triggered when the last classified leg is NOT a departure
+  // back to the home origin city.
+  const lastClassified = classified[classified.length - 1];
+  const lastDest       = this._normalizeCity(lastClassified.destination);
+ 
+  if (lastClassified._role !== 'departure' && lastDest !== homeOrigin) {
+    // Fly home date = last leg departure date + nights stayed there
+    const lastNights      = lastClassified.nights || 0;
+    const lastDepartDate  = lastClassified.departureDate;
+ 
+    let syntheticDate = null;
+    if (lastDepartDate) {
+      const d = new Date(lastDepartDate);
+      d.setDate(d.getDate() + lastNights);
+      syntheticDate = d.toISOString().split('T')[0];
+    }
+ 
+    // Fallback: use tripParams returnDate from the first leg
+    const fallbackDate = trips[0]?.returnDate || null;
+ 
+    classified.push({
+      origin:           lastClassified.destination,
+      destination:      trips[0].origin,
+      departureDate:    syntheticDate || fallbackDate,
+      returnDate:       null,
+      nights:           0,
+      _role:            'departure',
+      _synthetic:       true,
+      _firstVisitIndex: classified.length,
+      _isRevisit:       false,
+    });
+ 
+    logger.info('OrchestrationEngine: auto-injected synthetic departure leg', {
+      from: lastClassified.destination,
+      to:   trips[0].origin,
+      date: syntheticDate || fallbackDate,
     });
   }
-
-  _normalizeCity(name) {
-    return (name || '').toLowerCase().trim().replace(/[^a-z\s]/g, '').trim();
-  }
+ 
+  return classified;
+}
 
   // ─────────────────────────────────────────────────────────────────────────────
   // TRANSPORT MODE RESOLVER
@@ -602,35 +653,55 @@ class OrchestrationEngine {
         outboundTrains  = trains;
       }
 
-      // ── Return flight (fetched on arrival leg only) ────────────────────────
-      // Always searches from the LAST leg's destination back to the trip's
-      // home origin city (e.g. Mombasa → Nairobi), not from the current leg.
+      // ═════════════════════════════════════════════════════════════
+// CHANGE 2: Replace return flight search block
+// ─────────────────────────────────────────────────────────────
+// Inside _orchestrateClassifiedTrip(), find this comment:
+//
+//   // ── Return flight (fetched on arrival leg only) ────────────────────────
+//
+// Replace EVERYTHING from that comment down to and including
+// the closing } of the if block (ends at "console.log(`RETURN FLIGHTS FOUND...")
+// with the block below.
+//
+// What changed:
+//   - Now finds the departure leg (synthetic or explicit) and
+//     uses ITS date for the return flight search.
+//   - Fixes the bug where it used lastLeg.departureDate
+//     (arrival date at Mombasa) instead of the actual fly-home date.
+// ═════════════════════════════════════════════════════════════
+ 
+      // ── Return flight (fetched on arrival leg only) ──────────────────────
+      // Finds the departure leg (auto-injected or explicit from Groq)
+      // and searches the return flight using its date — not the internal
+      // leg's date which caused the wrong-date bug.
       let returnFlights = [];
-      if (role === 'arrival' && tripParams.returnDate) {
-        const lastLeg = classifiedLegs[classifiedLegs.length - 1];
-
-        // The final city the traveler will be in before flying home
-        const returnOrigin      = lastLeg.destination || leg.destination;
-        // Always back to the trip's home origin
-        const returnDestination = tripParams.origin;
-        // Date they actually fly home = last leg's departure date
-        const returnDate        = lastLeg.departureDate || tripParams.returnDate;
-
-        const returnParams = {
-          ...legParams,
-          origin:        returnOrigin,
-          destination:   returnDestination,
-          departureDate: returnDate,
-          returnDate:    null,
-        };
-
-        console.log(`RETURN FLIGHT SEARCH: ${returnOrigin} → ${returnDestination} on ${returnDate}`);
-
-        const returnAccess = await this._resolveDestinationAccess(returnDestination);
-        const retResult    = await this._searchFlightsWithHubFallback(returnParams, 'outbound', returnAccess);
-        returnFlights      = this._dedupeEquivalentFlights(retResult.results);
-
-        console.log(`RETURN FLIGHTS FOUND: ${returnFlights.length}`);
+      if (role === 'arrival') {
+        const departureLeg = classifiedLegs.find(l => l._role === 'departure');
+ 
+        if (departureLeg) {
+          const returnOrigin      = departureLeg.origin;
+          const returnDestination = departureLeg.destination;
+          const returnDate        = departureLeg.departureDate || tripParams.returnDate;
+ 
+          const returnParams = {
+            ...legParams,
+            origin:        returnOrigin,
+            destination:   returnDestination,
+            departureDate: returnDate,
+            returnDate:    null,
+          };
+ 
+          console.log(`RETURN FLIGHT SEARCH: ${returnOrigin} → ${returnDestination} on ${returnDate}`);
+ 
+          const returnAccess = await this._resolveDestinationAccess(returnDestination);
+          const retResult    = await this._searchFlightsWithHubFallback(returnParams, 'outbound', returnAccess);
+          returnFlights      = this._dedupeEquivalentFlights(retResult.results);
+ 
+          console.log(`RETURN FLIGHTS FOUND: ${returnFlights.length}`);
+        } else {
+          console.log('RETURN FLIGHT: no departure leg found — skipping');
+        }
       }
 
       // ── Hotel ───────────────────────────────────────────────────────────────

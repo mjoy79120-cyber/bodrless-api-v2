@@ -5,6 +5,7 @@
  * Post-Processing Sanitization Layer.
  * Fixed: Universal destination normalizer for worldwide cities.
  * Fixed: Multi-trip support — returns trips[] for independent trips.
+ * Fixed: Groq now captures return legs as explicit trips[].
  */
 
 const Groq = require('groq-sdk');
@@ -74,7 +75,6 @@ const CITY_CODES = {
 // DESTINATION NORMALIZER
 // ─────────────────────────────────────────────
 const DESTINATION_FIXES = {
-  // Africa
   'capetown': 'Cape Town', 'cape-town': 'Cape Town', 'cpt': 'Cape Town',
   'joburg': 'Johannesburg', 'jozi': 'Johannesburg', 'jhb': 'Johannesburg',
   'johanesburg': 'Johannesburg', 'johannesberg': 'Johannesburg',
@@ -83,16 +83,13 @@ const DESTINATION_FIXES = {
   'nbi': 'Nairobi', 'msa': 'Mombasa',
   'masaimara': 'Masai Mara', 'maasaimara': 'Masai Mara',
   'sharmelsheikh': 'Sharm el Sheikh', 'sharmelshekh': 'Sharm el Sheikh', 'sharm': 'Sharm el Sheikh',
-  // Middle East
   'abudhabi': 'Abu Dhabi', 'abu-dhabi': 'Abu Dhabi',
-  // Asia
   'kualalumpur': 'Kuala Lumpur', 'kuala-lumpur': 'Kuala Lumpur', 'kl': 'Kuala Lumpur',
   'hongkong': 'Hong Kong', 'hong-kong': 'Hong Kong', 'hk': 'Hong Kong',
   'siemreap': 'Siem Reap', 'siem-reap': 'Siem Reap',
   'hochiminhcity': 'Ho Chi Minh City', 'hochiminh': 'Ho Chi Minh City', 'hcmc': 'Ho Chi Minh City',
   'phnompenh': 'Phnom Penh', 'phnom-penh': 'Phnom Penh',
   'koalumpur': 'Kuala Lumpur',
-  // Americas
   'newyork': 'New York', 'new-york': 'New York', 'nyc': 'New York',
   'losangeles': 'Los Angeles', 'los-angeles': 'Los Angeles', 'la': 'Los Angeles',
   'sanfrancisco': 'San Francisco', 'san-francisco': 'San Francisco', 'sf': 'San Francisco',
@@ -101,7 +98,6 @@ const DESTINATION_FIXES = {
   'buenosaires': 'Buenos Aires', 'buenos-aires': 'Buenos Aires',
   'mexicocity': 'Mexico City', 'mexico-city': 'Mexico City', 'cdmx': 'Mexico City',
   'costarica': 'San Jose',
-  // Europe
   'newyorkcity': 'New York',
 };
 
@@ -202,7 +198,6 @@ function _parseWithRules(prompt) {
     nums.forEach(n => { const age = parseInt(n, 10); if (age < 18 && age >= 0) childAges.push(age); });
   });
 
-  // ── DATE PARSING ──────────────────────────
   let departureDate = null;
   const months = {
     jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12,
@@ -301,7 +296,22 @@ try {
 const GROQ_SYSTEM_PROMPT = `You are a travel intent parser. Extract structured trip information. Return ONLY valid JSON.
 ALWAYS assume the current year is 2026. If a user says "August 15th", resolve it to "2026-08-15".
 
-CRITICAL: If the user mentions MULTIPLE SEPARATE TRIPS (different destinations with different dates, e.g. "two trips", "first trip...second trip", "one to X and another to Y"), you MUST use the "trips" array to capture ALL of them. Never drop a trip.
+CRITICAL RULE — CAPTURE ALL LEGS INCLUDING RETURN:
+If the user describes a journey visiting multiple cities and then returning home,
+EVERY leg must appear as a separate entry in trips[]. This includes the final
+return leg home ("fly back to Nairobi", "then back home", "return to Nairobi").
+
+Example: "Nairobi to Zanzibar on Aug 10, 4 nights, then Mombasa for 5 nights, fly back to Nairobi"
+CORRECT trips[]:
+  1. origin: Nairobi,  destination: Zanzibar,  departureDate: 2026-08-10, nights: 4, returnDate: 2026-08-14
+  2. origin: Zanzibar, destination: Mombasa,   departureDate: 2026-08-14, nights: 5, returnDate: 2026-08-19
+  3. origin: Mombasa,  destination: Nairobi,   departureDate: 2026-08-19, nights: 0, returnDate: null
+
+WRONG — never drop the return leg. Never emit only 2 trips when 3 are described.
+
+CRITICAL: If the user mentions MULTIPLE SEPARATE TRIPS (different destinations with
+different dates, e.g. "two trips", "first trip...second trip", "one to X and another to Y"),
+you MUST use the "trips" array to capture ALL of them. Never drop a trip.
 
 Return this shape for a SINGLE trip:
 {
@@ -327,35 +337,43 @@ Return this shape for a SINGLE trip:
   "preferredHotel": null
 }
 
-Return this shape for MULTIPLE SEPARATE TRIPS:
+Return this shape for MULTIPLE TRIPS (including multi-city with return leg):
 {
   "trips": [
     {
       "destination": "Zanzibar",
       "origin": "Nairobi",
-      "nights": 5,
-      "departureDate": "2026-08-15",
-      "returnDate": "2026-08-20",
+      "nights": 4,
+      "departureDate": "2026-08-10",
+      "returnDate": "2026-08-14",
       "needsOriginClarification": false
     },
     {
-      "destination": "Lagos",
-      "origin": "Nairobi",
+      "destination": "Mombasa",
+      "origin": "Zanzibar",
       "nights": 5,
-      "departureDate": "2026-09-12",
-      "returnDate": "2026-09-17",
+      "departureDate": "2026-08-14",
+      "returnDate": "2026-08-19",
+      "needsOriginClarification": false
+    },
+    {
+      "destination": "Nairobi",
+      "origin": "Mombasa",
+      "nights": 0,
+      "departureDate": "2026-08-19",
+      "returnDate": null,
       "needsOriginClarification": false
     }
   ],
   "destination": "Zanzibar",
   "origin": "Nairobi",
-  "nights": 5,
+  "nights": 9,
   "passengers": 1,
   "children": 0,
   "childAges": [],
   "budget": null,
-  "departureDate": "2026-08-15",
-  "returnDate": "2026-08-20",
+  "departureDate": "2026-08-10",
+  "returnDate": "2026-08-19",
   "outboundTransportMode": null,
   "returnTransportMode": null,
   "mealPlan": null,
@@ -371,7 +389,9 @@ Return this shape for MULTIPLE SEPARATE TRIPS:
 Rules:
 - destination must be a real place name (1-4 words max). Never a sentence.
 - When trips[] is present, it must contain ALL trips mentioned — never drop one.
-- Shared fields (passengers, budget, etc.) go at the top level.`;
+- Always include the return-to-origin leg as the final trips[] entry when the user mentions flying/going back.
+- Shared fields (passengers, budget, etc.) go at the top level.
+- nights: 0 and returnDate: null for the final return-home leg.`;
 
 async function _parseWithGroq(prompt) {
   if (!groqClient) return null;
@@ -385,7 +405,6 @@ async function _parseWithGroq(prompt) {
     if (!content) return null;
     const parsed = JSON.parse(content);
 
-    // ── SANITIZATION: force current/future year ───────────
     const currentYear = new Date().getFullYear();
     const sanitizeDate = (dateStr) => {
       if (!dateStr || typeof dateStr !== 'string') return dateStr;
@@ -395,11 +414,9 @@ async function _parseWithGroq(prompt) {
       return dateStr;
     };
 
-    // ── SANITIZE top-level dates ──────────────────────────
     if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
     if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
 
-    // ── SANITIZE trips[] dates ────────────────────────────
     if (Array.isArray(parsed.trips)) {
       parsed.trips = parsed.trips.map(t => ({
         ...t,
@@ -409,10 +426,8 @@ async function _parseWithGroq(prompt) {
         origin:        t.origin      ? resolveCountryToCity(t.origin)      : t.origin,
       }));
 
-      // Guard: drop any trip missing a destination
       parsed.trips = parsed.trips.filter(t => t.destination && _isPlausiblePlaceName(t.destination));
 
-      // If only one trip survived, fall back to single-trip shape
       if (parsed.trips.length === 1) {
         const sole = parsed.trips[0];
         parsed.destination    = sole.destination;
@@ -426,7 +441,6 @@ async function _parseWithGroq(prompt) {
       }
     }
 
-    // ── SANITY CHECK: top-level destination ───────────────
     if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) {
       logger.warn('Groq returned implausible destination — falling back to rule parser', {
         returned: parsed.destination?.slice(0, 80),
@@ -434,11 +448,9 @@ async function _parseWithGroq(prompt) {
       return null;
     }
 
-    // ── NORMALIZE top-level destinations ──────────────────
     if (parsed.destination) parsed.destination = resolveCountryToCity(parsed.destination);
     if (parsed.origin)      parsed.origin      = resolveCountryToCity(parsed.origin);
 
-    // ── FILL MISSING ORIGIN from rule parser ──────────────
     if (!parsed.origin) {
       const ruleResult = _parseWithRules(prompt);
       if (ruleResult.origin) {
@@ -447,7 +459,6 @@ async function _parseWithGroq(prompt) {
       }
     }
 
-    // ── FILL MISSING DESTINATION from rule parser ─────────
     if (!parsed.destination && !Array.isArray(parsed.trips)) {
       const ruleResult = _parseWithRules(prompt);
       if (ruleResult.destination) {
@@ -456,7 +467,6 @@ async function _parseWithGroq(prompt) {
       }
     }
 
-    // ── ENSURE default fields present ─────────────────────
     parsed.preferredTransportProvider = parsed.preferredTransportProvider ?? null;
     parsed.preferredHotel             = parsed.preferredHotel             ?? null;
     parsed.legs                       = parsed.legs                       ?? [];
