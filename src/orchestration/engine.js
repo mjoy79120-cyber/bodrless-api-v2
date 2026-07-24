@@ -602,20 +602,35 @@ class OrchestrationEngine {
         outboundTrains  = trains;
       }
 
-      // ── Return flight (fetched on arrival leg) ─────────────────────────────
+      // ── Return flight (fetched on arrival leg only) ────────────────────────
+      // Always searches from the LAST leg's destination back to the trip's
+      // home origin city (e.g. Mombasa → Nairobi), not from the current leg.
       let returnFlights = [];
       if (role === 'arrival' && tripParams.returnDate) {
-        const lastLeg      = classifiedLegs[classifiedLegs.length - 1];
+        const lastLeg = classifiedLegs[classifiedLegs.length - 1];
+
+        // The final city the traveler will be in before flying home
+        const returnOrigin      = lastLeg.destination || leg.destination;
+        // Always back to the trip's home origin
+        const returnDestination = tripParams.origin;
+        // Date they actually fly home = last leg's departure date
+        const returnDate        = lastLeg.departureDate || tripParams.returnDate;
+
         const returnParams = {
           ...legParams,
-          origin:        lastLeg.origin      || leg.destination,
-          destination:   lastLeg.destination || leg.origin,
-          departureDate: lastLeg.departureDate,
-          returnDate:    lastLeg.returnDate,
+          origin:        returnOrigin,
+          destination:   returnDestination,
+          departureDate: returnDate,
+          returnDate:    null,
         };
-        const returnAccess  = await this._resolveDestinationAccess(returnParams.destination);
-        const retResult     = await this._searchFlightsWithHubFallback(returnParams, 'outbound', returnAccess);
-        returnFlights       = this._dedupeEquivalentFlights(retResult.results);
+
+        console.log(`RETURN FLIGHT SEARCH: ${returnOrigin} → ${returnDestination} on ${returnDate}`);
+
+        const returnAccess = await this._resolveDestinationAccess(returnDestination);
+        const retResult    = await this._searchFlightsWithHubFallback(returnParams, 'outbound', returnAccess);
+        returnFlights      = this._dedupeEquivalentFlights(retResult.results);
+
+        console.log(`RETURN FLIGHTS FOUND: ${returnFlights.length}`);
       }
 
       // ── Hotel ───────────────────────────────────────────────────────────────
@@ -1901,6 +1916,13 @@ class OrchestrationEngine {
       /\bonly\s+(a\s+)?hotel\b|hotel\s+only|just\s+(a\s+)?hotel\b|stay\s+only|accommodation\s+only/i
     );
 
+    // ── Hotel-intent detection (broader than hotelExclusive) ──────────────────
+    // "find me a hotel in X", "looking for a hotel", "hotel in X", etc.
+    // When detected with no origin and no transport mention, suppress transport.
+    const hotelIntent = !flightExclusive && !busExclusive && lower.match(
+      /\b(find\s+(me\s+)?a\s+hotel|looking\s+for\s+(a\s+)?hotel|need\s+(a\s+)?hotel|hotel\s+in|hotels?\s+near|where\s+to\s+stay|accommodation\s+in)\b/i
+    );
+
     if (flightExclusive) {
       productScope.needsHotel      = false;
       productScope.needsTransfers  = false;
@@ -1909,7 +1931,7 @@ class OrchestrationEngine {
       productScope.needsHotel      = false;
       productScope.needsTransfers  = false;
       adjustments.transportMode    = 'bus';
-    } else if (hotelExclusive) {
+    } else if (hotelExclusive || hotelIntent) {
       productScope.needsTransport  = false;
       productScope.needsTransfers  = false;
     } else {
@@ -2150,10 +2172,6 @@ class OrchestrationEngine {
   }
 
   async _searchBuses(tripParams, leg = 'outbound', destinationAccess = null) {
-    // ── EA-only gate ──────────────────────────────────────────────────────────
-    // IABIRI only operates East African bus routes. Skip entirely for any
-    // origin or destination outside the EA network to avoid wasted API calls
-    // and misleading "unmapped city" warnings in the logs.
     const busOrigin = ((leg === 'return' ? tripParams.destination : tripParams.origin) || '').toLowerCase().trim();
     const busDest   = ((leg === 'return' ? tripParams.origin : tripParams.destination) || '').toLowerCase().trim();
     const eaCities  = OrchestrationEngine.EA_BUS_CITIES;
@@ -2163,7 +2181,6 @@ class OrchestrationEngine {
       logger.info('IABIRI: skipping bus search — neither city is in EA network', { busOrigin, busDest });
       return [];
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
     if (!this._busEligibleForLeg(tripParams, leg, destinationAccess)) return [];
 
