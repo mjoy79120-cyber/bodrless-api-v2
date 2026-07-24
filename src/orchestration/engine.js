@@ -460,6 +460,11 @@ class OrchestrationEngine {
     });
   }
 
+  _normalizeCity(cityStr) {
+    if (!cityStr) return '';
+    return cityStr.trim().toLowerCase();
+  }
+  
   // ═════════════════════════════════════════════════════════════
 // CHANGE 1: Replace _classifyTripLegs() entirely
 // ─────────────────────────────────────────────────────────────
