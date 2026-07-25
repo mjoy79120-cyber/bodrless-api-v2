@@ -1,11 +1,14 @@
 /**
  * PROMPT PARSER
  * ─────────────────────────────────────────────────────────────
- * Fixed: Added Year-2026 enforcement to System Prompt and 
+ * Fixed: Added Year-2026 enforcement to System Prompt and
  * Post-Processing Sanitization Layer.
  * Fixed: Universal destination normalizer for worldwide cities.
  * Fixed: Multi-trip support — returns trips[] for independent trips.
  * Fixed: Groq now captures return legs as explicit trips[].
+ * Fixed: Post-processor enforces bookend dates, distributes nights,
+ *        injects transit legs for non-flyable destinations (Mara etc),
+ *        and fixes impossible return legs (Mara → Washington).
  */
 
 const Groq = require('groq-sdk');
@@ -20,6 +23,147 @@ function _normalizeYear(yearInput) {
   if (yr < 100) yr += 2000;
   if (yr < currentYear) return currentYear;
   return yr;
+}
+
+// ─────────────────────────────────────────────
+// DATE HELPERS
+// ─────────────────────────────────────────────
+function _addDays(dateStr, days) {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+function _diffDays(a, b) {
+  return Math.round((new Date(b) - new Date(a)) / 86400000);
+}
+
+// ─────────────────────────────────────────────
+// NON-FLYABLE DESTINATIONS
+// Places with no commercial airport — traveler must
+// transit through a hub before flying home.
+// ─────────────────────────────────────────────
+const NON_FLYABLE_HUBS = {
+  'masai mara':   'Nairobi',
+  'maasai mara':  'Nairobi',
+  'serengeti':    'Arusha',
+  'ngorongoro':   'Arusha',
+  'amboseli':     'Nairobi',
+  'tsavo':        'Mombasa',
+  'samburu':      'Nairobi',
+  'lake nakuru':  'Nairobi',
+  'naivasha':     'Nairobi',
+  'bwindi':       'Entebbe',
+  'kruger':       'Johannesburg',
+  'kruger park':  'Johannesburg',
+  'machu picchu': 'Cusco',
+  'ha long bay':  'Hanoi',
+  'positano':     'Naples',
+  'amalfi coast': 'Naples',
+  'tuscany':      'Rome',
+  'garden route': 'George',
+  'franschhoek':  'Cape Town',
+  'hermanus':     'Cape Town',
+  'sun city':     'Johannesburg',
+  'petra':        'Amman',
+  'ubud':         'Bali',
+  'hoi an':       'Da Nang',
+};
+
+function _isNonFlyable(dest) {
+  return !!(NON_FLYABLE_HUBS[(dest || '').toLowerCase().trim()]);
+}
+
+function _hubFor(dest) {
+  return NON_FLYABLE_HUBS[(dest || '').toLowerCase().trim()] || null;
+}
+
+// ─────────────────────────────────────────────
+// MULTI-LEG POST-PROCESSOR
+//
+// Called after Groq returns trips[] for a bookend trip
+// (e.g. Washington → Nairobi 10th, back 20th, with internal stops).
+//
+// Fixes:
+// 1. Removes fake return leg Groq adds (Mara → Washington)
+// 2. Injects transit leg if last internal stop is non-flyable
+// 3. Distributes leftover nights to first destination
+// 4. Rebuilds all dates from the locked bookend dates
+// 5. Appends the real return-home leg on returnDate
+// ─────────────────────────────────────────────
+function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
+  if (!Array.isArray(trips) || trips.length < 2) return trips;
+  if (!departureDate || !returnDate) return trips;
+
+  // Only run when the top-level returnDate differs from what Groq computed
+  // (i.e. traveler gave hard bookend dates)
+  const groqEndDate = trips[trips.length - 1]?.departureDate;
+  const bookendLocked = returnDate && groqEndDate && groqEndDate !== returnDate;
+  const hasImpossibledep = _isNonFlyable(trips[trips.length - 1]?.origin || '');
+
+  if (!bookendLocked && !hasImpossibledep) return trips;
+
+  const homeNorm = (homeOrigin || '').toLowerCase().trim();
+
+  // Step 1: Strip any leg where destination === homeOrigin (Groq's fake return)
+  let internal = trips.filter(t =>
+    (t.destination || '').toLowerCase().trim() !== homeNorm
+  );
+
+  if (internal.length === 0) return trips;
+
+  // Step 2: Inject transit leg if last internal stop is non-flyable
+  const lastInternal = internal[internal.length - 1];
+  if (_isNonFlyable(lastInternal.destination)) {
+    const hub = _hubFor(lastInternal.destination);
+    if (hub && hub.toLowerCase() !== homeNorm) {
+      internal.push({
+        destination:  hub,
+        origin:       lastInternal.destination,
+        nights:       0,
+        departureDate: null, // will be set in rebuild
+        returnDate:   null,
+        _transitLeg:  true,
+      });
+    }
+  }
+
+  // Step 3: Calculate how many nights the first destination gets
+  const totalNights   = _diffDays(departureDate, returnDate);
+  const internalNights = internal.slice(1).reduce((s, t) => s + (t.nights || 0), 0);
+  const firstNights   = Math.max(0, totalNights - internalNights);
+
+  // Step 4: Rebuild with correct sequential dates
+  let cursor = departureDate;
+  const rebuilt = internal.map((leg, i) => {
+    const nights = i === 0 ? firstNights : (leg.nights || 0);
+    const depDate = cursor;
+    const retDate = nights > 0 ? _addDays(cursor, nights) : null;
+    cursor = _addDays(cursor, nights);
+    return { ...leg, departureDate: depDate, nights, returnDate: retDate };
+  });
+
+  // Step 5: Append real return-home leg on the hard returnDate
+  const lastRebuilt = rebuilt[rebuilt.length - 1];
+  rebuilt.push({
+    destination:  homeOrigin,
+    origin:       lastRebuilt.destination,
+    nights:       0,
+    departureDate: returnDate,
+    returnDate:   null,
+    _returnLeg:   true,
+  });
+
+  logger.info('PromptParser: post-processed bookend trip', {
+    homeOrigin,
+    departureDate,
+    returnDate,
+    firstNights,
+    totalLegs: rebuilt.length,
+    legs: rebuilt.map(t => `${t.origin}→${t.destination} (${t.departureDate}, ${t.nights}n)`),
+  });
+
+  return rebuilt;
 }
 
 // ─────────────────────────────────────────────
@@ -99,6 +243,7 @@ const DESTINATION_FIXES = {
   'mexicocity': 'Mexico City', 'mexico-city': 'Mexico City', 'cdmx': 'Mexico City',
   'costarica': 'San Jose',
   'newyorkcity': 'New York',
+  'washington dc': 'Washington', 'washington d.c.': 'Washington', 'dc': 'Washington',
 };
 
 function normalizeDestination(name) {
@@ -273,7 +418,7 @@ function _parseWithRules(prompt) {
   else if (/\b(evening|night)\s+flight\b/i.test(lower)) timePreference = 'evening';
   else if (/\bafternoon\s+flight\b/i.test(lower)) timePreference = 'afternoon';
 
-  const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only)\b/i.test(lower);
+  const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only|find me a hotel|looking for a hotel|need a hotel|hotel in|hotels? near|where to stay)\b/i.test(lower);
   const needsOriginClarification = !origin && !isHotelOnly;
 
   return {
@@ -308,6 +453,12 @@ CORRECT trips[]:
   3. origin: Mombasa,  destination: Nairobi,   departureDate: 2026-08-19, nights: 0, returnDate: null
 
 WRONG — never drop the return leg. Never emit only 2 trips when 3 are described.
+
+BOOKEND TRIPS — when the user gives a hard departure AND return date with internal stops in between:
+- Set departureDate on trips[0] to the stated departure date
+- Set the last trips[] entry destination to the home origin city (not a safari/park)
+- Distribute nights across internal stops as stated; leave remaining nights on the first destination
+- The final leg must always be a flyable city (airport city), never a safari park or rural area
 
 CRITICAL: If the user mentions MULTIPLE SEPARATE TRIPS (different destinations with
 different dates, e.g. "two trips", "first trip...second trip", "one to X and another to Y"),
@@ -391,7 +542,8 @@ Rules:
 - When trips[] is present, it must contain ALL trips mentioned — never drop one.
 - Always include the return-to-origin leg as the final trips[] entry when the user mentions flying/going back.
 - Shared fields (passengers, budget, etc.) go at the top level.
-- nights: 0 and returnDate: null for the final return-home leg.`;
+- nights: 0 and returnDate: null for the final return-home leg.
+- The final leg destination must ALWAYS be an airport city. Never end on Masai Mara, Serengeti, Amboseli, or any safari/park/rural destination.`;
 
 async function _parseWithGroq(prompt) {
   if (!groqClient) return null;
@@ -427,6 +579,21 @@ async function _parseWithGroq(prompt) {
       }));
 
       parsed.trips = parsed.trips.filter(t => t.destination && _isPlausiblePlaceName(t.destination));
+
+      // ── BOOKEND POST-PROCESSOR ────────────────────────────────────────────
+      // Runs when:
+      // (a) there are 2+ internal legs AND
+      // (b) a hard returnDate exists on the top level (traveler gave bookend dates)
+      // Fixes date distribution, non-flyable last stops, impossible return legs.
+      if (parsed.trips.length >= 2 && parsed.returnDate) {
+        const homeOrigin = parsed.trips[0]?.origin || parsed.origin;
+        parsed.trips = _postProcessBookendTrip(
+          parsed.trips,
+          homeOrigin,
+          parsed.departureDate,
+          parsed.returnDate
+        );
+      }
 
       if (parsed.trips.length === 1) {
         const sole = parsed.trips[0];
