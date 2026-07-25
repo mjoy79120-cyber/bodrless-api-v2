@@ -9,6 +9,7 @@
  * Fixed: Post-processor enforces bookend dates, distributes nights,
  *        injects transit legs for non-flyable destinations (Mara etc),
  *        and fixes impossible return legs (Mara → Washington).
+ * Updated: Groq model → qwen/qwen3.6-27b (deepseek-r1 decommissioned)
  */
 
 const Groq = require('groq-sdk');
@@ -40,8 +41,6 @@ function _diffDays(a, b) {
 
 // ─────────────────────────────────────────────
 // NON-FLYABLE DESTINATIONS
-// Places with no commercial airport — traveler must
-// transit through a hub before flying home.
 // ─────────────────────────────────────────────
 const NON_FLYABLE_HUBS = {
   'masai mara':   'Nairobi',
@@ -80,23 +79,11 @@ function _hubFor(dest) {
 
 // ─────────────────────────────────────────────
 // MULTI-LEG POST-PROCESSOR
-//
-// Called after Groq returns trips[] for a bookend trip
-// (e.g. Washington → Nairobi 10th, back 20th, with internal stops).
-//
-// Fixes:
-// 1. Removes fake return leg Groq adds (Mara → Washington)
-// 2. Injects transit leg if last internal stop is non-flyable
-// 3. Distributes leftover nights to first destination
-// 4. Rebuilds all dates from the locked bookend dates
-// 5. Appends the real return-home leg on returnDate
 // ─────────────────────────────────────────────
 function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
   if (!Array.isArray(trips) || trips.length < 2) return trips;
   if (!departureDate || !returnDate) return trips;
 
-  // Only run when the top-level returnDate differs from what Groq computed
-  // (i.e. traveler gave hard bookend dates)
   const groqEndDate = trips[trips.length - 1]?.departureDate;
   const bookendLocked = returnDate && groqEndDate && groqEndDate !== returnDate;
   const hasImpossibledep = _isNonFlyable(trips[trips.length - 1]?.origin || '');
@@ -105,14 +92,12 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
 
   const homeNorm = (homeOrigin || '').toLowerCase().trim();
 
-  // Step 1: Strip any leg where destination === homeOrigin (Groq's fake return)
   let internal = trips.filter(t =>
     (t.destination || '').toLowerCase().trim() !== homeNorm
   );
 
   if (internal.length === 0) return trips;
 
-  // Step 2: Inject transit leg if last internal stop is non-flyable
   const lastInternal = internal[internal.length - 1];
   if (_isNonFlyable(lastInternal.destination)) {
     const hub = _hubFor(lastInternal.destination);
@@ -121,29 +106,26 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
         destination:  hub,
         origin:       lastInternal.destination,
         nights:       0,
-        departureDate: null, // will be set in rebuild
+        departureDate: null,
         returnDate:   null,
         _transitLeg:  true,
       });
     }
   }
 
-  // Step 3: Calculate how many nights the first destination gets
-  const totalNights   = _diffDays(departureDate, returnDate);
+  const totalNights    = _diffDays(departureDate, returnDate);
   const internalNights = internal.slice(1).reduce((s, t) => s + (t.nights || 0), 0);
-  const firstNights   = Math.max(0, totalNights - internalNights);
+  const firstNights    = Math.max(0, totalNights - internalNights);
 
-  // Step 4: Rebuild with correct sequential dates
   let cursor = departureDate;
   const rebuilt = internal.map((leg, i) => {
-    const nights = i === 0 ? firstNights : (leg.nights || 0);
+    const nights  = i === 0 ? firstNights : (leg.nights || 0);
     const depDate = cursor;
     const retDate = nights > 0 ? _addDays(cursor, nights) : null;
     cursor = _addDays(cursor, nights);
     return { ...leg, departureDate: depDate, nights, returnDate: retDate };
   });
 
-  // Step 5: Append real return-home leg on the hard returnDate
   const lastRebuilt = rebuilt[rebuilt.length - 1];
   rebuilt.push({
     destination:  homeOrigin,
@@ -155,10 +137,7 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
   });
 
   logger.info('PromptParser: post-processed bookend trip', {
-    homeOrigin,
-    departureDate,
-    returnDate,
-    firstNights,
+    homeOrigin, departureDate, returnDate, firstNights,
     totalLegs: rebuilt.length,
     legs: rebuilt.map(t => `${t.origin}→${t.destination} (${t.departureDate}, ${t.nights}n)`),
   });
@@ -549,7 +528,7 @@ async function _parseWithGroq(prompt) {
   if (!groqClient) return null;
   try {
     const completion = await groqClient.chat.completions.create({
-      model: 'deepseek-r1-distill-llama-70b',
+      model: 'qwen/qwen3.6-27b',
       messages: [{ role: 'system', content: GROQ_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
       temperature: 0.1, max_tokens: 800, response_format: { type: 'json_object' },
     });
@@ -580,11 +559,6 @@ async function _parseWithGroq(prompt) {
 
       parsed.trips = parsed.trips.filter(t => t.destination && _isPlausiblePlaceName(t.destination));
 
-      // ── BOOKEND POST-PROCESSOR ────────────────────────────────────────────
-      // Runs when:
-      // (a) there are 2+ internal legs AND
-      // (b) a hard returnDate exists on the top level (traveler gave bookend dates)
-      // Fixes date distribution, non-flyable last stops, impossible return legs.
       if (parsed.trips.length >= 2 && parsed.returnDate) {
         const homeOrigin = parsed.trips[0]?.origin || parsed.origin;
         parsed.trips = _postProcessBookendTrip(
