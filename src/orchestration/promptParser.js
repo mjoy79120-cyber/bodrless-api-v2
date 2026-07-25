@@ -9,7 +9,9 @@
  * Fixed: Post-processor enforces bookend dates, distributes nights,
  *        injects transit legs for non-flyable destinations (Mara etc),
  *        and fixes impossible return legs (Mara → Washington).
- * Updated: Groq model → qwen/qwen3.6-27b (deepseek-r1 decommissioned)
+ * Fixed: Retry logic on json_validate_failed.
+ * Fixed: Washington DC normalization.
+ * Updated: Groq model → qwen/qwen3.6-27b
  */
 
 const Groq = require('groq-sdk');
@@ -41,6 +43,7 @@ function _diffDays(a, b) {
 
 // ─────────────────────────────────────────────
 // NON-FLYABLE DESTINATIONS
+// Places you can't fly directly into — need a hub transfer
 // ─────────────────────────────────────────────
 const NON_FLYABLE_HUBS = {
   'masai mara':   'Nairobi',
@@ -52,6 +55,7 @@ const NON_FLYABLE_HUBS = {
   'samburu':      'Nairobi',
   'lake nakuru':  'Nairobi',
   'naivasha':     'Nairobi',
+  'ol pejeta':    'Nanyuki',
   'bwindi':       'Entebbe',
   'kruger':       'Johannesburg',
   'kruger park':  'Johannesburg',
@@ -67,6 +71,8 @@ const NON_FLYABLE_HUBS = {
   'petra':        'Amman',
   'ubud':         'Bali',
   'hoi an':       'Da Nang',
+  'diani':        'Mombasa',
+  'diani beach':  'Mombasa',
 };
 
 function _isNonFlyable(dest) {
@@ -80,24 +86,40 @@ function _hubFor(dest) {
 // ─────────────────────────────────────────────
 // MULTI-LEG POST-PROCESSOR
 // ─────────────────────────────────────────────
+// Called when Groq emits trips[] with a hard bookend return date.
+// Fixes:
+//   - Impossible return leg (Mara → Washington) by injecting transit
+//   - Wrong dates when Groq distributes nights incorrectly
+//   - Missing transit legs through hub cities
+// ─────────────────────────────────────────────
 function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
   if (!Array.isArray(trips) || trips.length < 2) return trips;
   if (!departureDate || !returnDate) return trips;
 
-  const groqEndDate = trips[trips.length - 1]?.departureDate;
-  const bookendLocked = returnDate && groqEndDate && groqEndDate !== returnDate;
-  const hasImpossibledep = _isNonFlyable(trips[trips.length - 1]?.origin || '');
-
-  if (!bookendLocked && !hasImpossibledep) return trips;
-
   const homeNorm = (homeOrigin || '').toLowerCase().trim();
 
+  // Check if post-processing is actually needed
+  const lastLeg     = trips[trips.length - 1];
+  const lastDest    = (lastLeg.destination || '').toLowerCase().trim();
+  const lastOrigin  = (lastLeg.origin      || '').toLowerCase().trim();
+
+  // If last leg is already a clean return home from a flyable city — no fix needed
+  const lastIsReturnHome = lastDest === homeNorm;
+  const lastOriginFlyable = !_isNonFlyable(lastLeg.origin || '');
+  const datesCorrect = lastLeg.departureDate === returnDate;
+
+  if (lastIsReturnHome && lastOriginFlyable && datesCorrect) {
+    return trips; // Already correct — don't touch it
+  }
+
+  // Strip any existing return-home leg — we'll rebuild it correctly
   let internal = trips.filter(t =>
     (t.destination || '').toLowerCase().trim() !== homeNorm
   );
 
   if (internal.length === 0) return trips;
 
+  // If last internal stop is non-flyable, inject transit through hub
   const lastInternal = internal[internal.length - 1];
   if (_isNonFlyable(lastInternal.destination)) {
     const hub = _hubFor(lastInternal.destination);
@@ -113,19 +135,24 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
     }
   }
 
+  // Redistribute nights across the window
   const totalNights    = _diffDays(departureDate, returnDate);
-  const internalNights = internal.slice(1).reduce((s, t) => s + (t.nights || 0), 0);
-  const firstNights    = Math.max(0, totalNights - internalNights);
+  const specifiedNights = internal
+    .filter((_, i) => i > 0)
+    .reduce((s, t) => s + (t.nights || 0), 0);
+  const firstNights = Math.max(0, totalNights - specifiedNights);
 
+  // Rebuild with correct dates
   let cursor = departureDate;
   const rebuilt = internal.map((leg, i) => {
     const nights  = i === 0 ? firstNights : (leg.nights || 0);
     const depDate = cursor;
     const retDate = nights > 0 ? _addDays(cursor, nights) : null;
-    cursor = _addDays(cursor, nights);
+    if (nights > 0) cursor = _addDays(cursor, nights);
     return { ...leg, departureDate: depDate, nights, returnDate: retDate };
   });
 
+  // Add correct return-home leg
   const lastRebuilt = rebuilt[rebuilt.length - 1];
   rebuilt.push({
     destination:  homeOrigin,
@@ -134,6 +161,7 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
     departureDate: returnDate,
     returnDate:   null,
     _returnLeg:   true,
+    needsOriginClarification: false,
   });
 
   logger.info('PromptParser: post-processed bookend trip', {
@@ -164,6 +192,10 @@ const COUNTRY_TO_CITY = {
   'madagascar': 'antananarivo', 'zimbabwe': 'harare',
   'zambia': 'lusaka', 'namibia': 'windhoek', 'mozambique': 'maputo',
   'angola': 'luanda', 'cameroon': 'douala', 'senegal': 'dakar',
+  // US cities that get confused as countries
+  'washington': 'Washington',
+  'washington dc': 'Washington',
+  'washington d.c.': 'Washington',
 };
 
 const CITY_CODES = {
@@ -183,7 +215,7 @@ const CITY_CODES = {
   'delhi': 'DEL', 'mumbai': 'BOM', 'goa': 'GOI',
   'tokyo': 'TYO', 'osaka': 'KIX', 'paris': 'CDG', 'amsterdam': 'AMS',
   'istanbul': 'IST', 'doha': 'DOH', 'abu dhabi': 'AUH', 'muscat': 'MCT',
-  'dubai': 'DXB', 'london': 'LHR', 'new york': 'JFK',
+  'dubai': 'DXB', 'london': 'LHR', 'new york': 'JFK', 'washington': 'IAD',
   'los angeles': 'LAX', 'miami': 'MIA', 'cancun': 'CUN',
   'sydney': 'SYD', 'auckland': 'AKL',
   'santorini': 'JTR', 'mykonos': 'JMK', 'athens': 'ATH',
@@ -222,7 +254,11 @@ const DESTINATION_FIXES = {
   'mexicocity': 'Mexico City', 'mexico-city': 'Mexico City', 'cdmx': 'Mexico City',
   'costarica': 'San Jose',
   'newyorkcity': 'New York',
-  'washington dc': 'Washington', 'washington d.c.': 'Washington', 'dc': 'Washington',
+  // Washington fixes
+  'washington dc': 'Washington',
+  'washington d.c.': 'Washington',
+  'washingtondc': 'Washington',
+  'dc': 'Washington',
 };
 
 function normalizeDestination(name) {
@@ -360,8 +396,20 @@ function _parseWithRules(prompt) {
     else if (/tomorrow/i.test(lower)) { today.setDate(today.getDate() + 1); departureDate = today.toISOString().split('T')[0]; }
   }
 
+  // Parse explicit return date ("returning 20th August", "return on 20 Aug")
   let returnDate = null;
-  if (departureDate && nights) {
+  const returnDateMatch = lower.match(/\b(?:return(?:ing)?|back|fly\s+back)\s+(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i);
+  if (returnDateMatch) {
+    const day   = parseInt(returnDateMatch[1], 10);
+    const mKey  = returnDateMatch[2].toLowerCase().slice(0, 3);
+    const month = months[mKey];
+    const yr    = new Date().getFullYear();
+    if (day && month) {
+      returnDate = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+
+  if (!returnDate && departureDate && nights) {
     const dep = new Date(departureDate);
     dep.setDate(dep.getDate() + nights);
     returnDate = dep.toISOString().split('T')[0];
@@ -431,17 +479,25 @@ CORRECT trips[]:
   2. origin: Zanzibar, destination: Mombasa,   departureDate: 2026-08-14, nights: 5, returnDate: 2026-08-19
   3. origin: Mombasa,  destination: Nairobi,   departureDate: 2026-08-19, nights: 0, returnDate: null
 
-WRONG — never drop the return leg. Never emit only 2 trips when 3 are described.
+BOOKEND TRIPS — when the user gives a hard departure AND return date with internal stops:
+Example: "Washington to Nairobi Aug 10 returning Aug 20, 3 nights Mombasa and 2 nights Masai Mara"
+CORRECT trips[]:
+  1. origin: Washington, destination: Nairobi,    departureDate: 2026-08-10, nights: 5
+  2. origin: Nairobi,    destination: Mombasa,    departureDate: 2026-08-15, nights: 3
+  3. origin: Mombasa,    destination: Masai Mara, departureDate: 2026-08-18, nights: 2
+  4. origin: Masai Mara, destination: Nairobi,    departureDate: 2026-08-20, nights: 0 (transit to airport)
+  5. origin: Nairobi,    destination: Washington, departureDate: 2026-08-20, nights: 0
 
-BOOKEND TRIPS — when the user gives a hard departure AND return date with internal stops in between:
-- Set departureDate on trips[0] to the stated departure date
-- Set the last trips[] entry destination to the home origin city (not a safari/park)
-- Distribute nights across internal stops as stated; leave remaining nights on the first destination
-- The final leg must always be a flyable city (airport city), never a safari park or rural area
+WRONG — never end on Masai Mara, Serengeti, Amboseli or any safari/park destination.
+WRONG — never drop the return leg. Never emit only 2 trips when 3+ are described.
 
-CRITICAL: If the user mentions MULTIPLE SEPARATE TRIPS (different destinations with
-different dates, e.g. "two trips", "first trip...second trip", "one to X and another to Y"),
-you MUST use the "trips" array to capture ALL of them. Never drop a trip.
+Rules:
+- destination must be a real place name (1-4 words max). Never a sentence.
+- When trips[] is present, it must contain ALL trips — never drop one.
+- Always include the return-to-origin leg as the final trips[] entry.
+- nights: 0 and returnDate: null for transit/return-home legs.
+- The final leg destination must ALWAYS be an airport city — never a safari park.
+- Shared fields (passengers, budget, etc.) go at the top level.
 
 Return this shape for a SINGLE trip:
 {
@@ -467,33 +523,12 @@ Return this shape for a SINGLE trip:
   "preferredHotel": null
 }
 
-Return this shape for MULTIPLE TRIPS (including multi-city with return leg):
+Return this shape for MULTIPLE TRIPS:
 {
   "trips": [
-    {
-      "destination": "Zanzibar",
-      "origin": "Nairobi",
-      "nights": 4,
-      "departureDate": "2026-08-10",
-      "returnDate": "2026-08-14",
-      "needsOriginClarification": false
-    },
-    {
-      "destination": "Mombasa",
-      "origin": "Zanzibar",
-      "nights": 5,
-      "departureDate": "2026-08-14",
-      "returnDate": "2026-08-19",
-      "needsOriginClarification": false
-    },
-    {
-      "destination": "Nairobi",
-      "origin": "Mombasa",
-      "nights": 0,
-      "departureDate": "2026-08-19",
-      "returnDate": null,
-      "needsOriginClarification": false
-    }
+    { "destination": "Zanzibar",  "origin": "Nairobi",  "nights": 4, "departureDate": "2026-08-10", "returnDate": "2026-08-14", "needsOriginClarification": false },
+    { "destination": "Mombasa",   "origin": "Zanzibar", "nights": 5, "departureDate": "2026-08-14", "returnDate": "2026-08-19", "needsOriginClarification": false },
+    { "destination": "Nairobi",   "origin": "Mombasa",  "nights": 0, "departureDate": "2026-08-19", "returnDate": null,          "needsOriginClarification": false }
   ],
   "destination": "Zanzibar",
   "origin": "Nairobi",
@@ -514,29 +549,65 @@ Return this shape for MULTIPLE TRIPS (including multi-city with return leg):
   "legs": [],
   "preferredTransportProvider": null,
   "preferredHotel": null
-}
+}`;
 
-Rules:
-- destination must be a real place name (1-4 words max). Never a sentence.
-- When trips[] is present, it must contain ALL trips mentioned — never drop one.
-- Always include the return-to-origin leg as the final trips[] entry when the user mentions flying/going back.
-- Shared fields (passengers, budget, etc.) go at the top level.
-- nights: 0 and returnDate: null for the final return-home leg.
-- The final leg destination must ALWAYS be an airport city. Never end on Masai Mara, Serengeti, Amboseli, or any safari/park/rural destination.`;
+// Simplified fallback prompt — used on retry when first attempt fails
+const GROQ_SYSTEM_PROMPT_SIMPLE = `Extract travel info. Return ONLY valid JSON. Current year is 2026.
 
-async function _parseWithGroq(prompt) {
-  if (!groqClient) return null;
+For multi-city trips use trips[]. Include ALL legs including the return home.
+Never end trips[] on a safari park — always end on an airport city.
+
+{
+  "trips": [
+    { "origin": "city", "destination": "city", "nights": number, "departureDate": "YYYY-MM-DD", "returnDate": "YYYY-MM-DD", "needsOriginClarification": false }
+  ],
+  "destination": "first destination city",
+  "origin": "departure city",
+  "nights": total_nights_number,
+  "passengers": 1,
+  "children": 0,
+  "childAges": [],
+  "budget": null,
+  "departureDate": "YYYY-MM-DD",
+  "returnDate": "YYYY-MM-DD",
+  "outboundTransportMode": null,
+  "returnTransportMode": null,
+  "mealPlan": null,
+  "seatPreference": null,
+  "timePreference": null,
+  "needsOriginClarification": false,
+  "isMultiDestination": false,
+  "legs": [],
+  "preferredTransportProvider": null,
+  "preferredHotel": null
+}`;
+
+// ─────────────────────────────────────────────
+// GROQ ATTEMPT — single model call with sanitization
+// ─────────────────────────────────────────────
+async function _groqAttempt(prompt, systemPrompt) {
   try {
     const completion = await groqClient.chat.completions.create({
-      model: 'qwen/qwen3.6-27b',
-      messages: [{ role: 'system', content: GROQ_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
-      temperature: 0.1, max_tokens: 800, response_format: { type: 'json_object' },
+      model:           'qwen/qwen3.6-27b',
+      messages:        [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }],
+      temperature:     0.1,
+      max_tokens:      1000,
+      response_format: { type: 'json_object' },
     });
+
     const content = completion.choices[0]?.message?.content;
     if (!content) return null;
-    const parsed = JSON.parse(content);
 
-    const currentYear = new Date().getFullYear();
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      // Strip any thinking tags some models emit
+      const cleaned = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      parsed = JSON.parse(cleaned);
+    }
+
+    const currentYear  = new Date().getFullYear();
     const sanitizeDate = (dateStr) => {
       if (!dateStr || typeof dateStr !== 'string') return dateStr;
       const d = new Date(dateStr);
@@ -557,8 +628,10 @@ async function _parseWithGroq(prompt) {
         origin:        t.origin      ? resolveCountryToCity(t.origin)      : t.origin,
       }));
 
+      // Drop implausible destinations
       parsed.trips = parsed.trips.filter(t => t.destination && _isPlausiblePlaceName(t.destination));
 
+      // Apply bookend post-processor when we have a hard return date
       if (parsed.trips.length >= 2 && parsed.returnDate) {
         const homeOrigin = parsed.trips[0]?.origin || parsed.origin;
         parsed.trips = _postProcessBookendTrip(
@@ -569,13 +642,14 @@ async function _parseWithGroq(prompt) {
         );
       }
 
+      // Collapse to single trip if only one survived
       if (parsed.trips.length === 1) {
-        const sole = parsed.trips[0];
-        parsed.destination    = sole.destination;
-        parsed.origin         = sole.origin || parsed.origin;
-        parsed.departureDate  = sole.departureDate || parsed.departureDate;
-        parsed.returnDate     = sole.returnDate    || parsed.returnDate;
-        parsed.nights         = sole.nights        || parsed.nights;
+        const sole        = parsed.trips[0];
+        parsed.destination   = sole.destination;
+        parsed.origin        = sole.origin || parsed.origin;
+        parsed.departureDate = sole.departureDate || parsed.departureDate;
+        parsed.returnDate    = sole.returnDate    || parsed.returnDate;
+        parsed.nights        = sole.nights        || parsed.nights;
         parsed.trips = null;
       } else if (parsed.trips.length === 0) {
         parsed.trips = null;
@@ -583,29 +657,21 @@ async function _parseWithGroq(prompt) {
     }
 
     if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) {
-      logger.warn('Groq returned implausible destination — falling back to rule parser', {
-        returned: parsed.destination?.slice(0, 80),
-      });
+      logger.warn('Groq returned implausible destination', { returned: parsed.destination?.slice(0, 80) });
       return null;
     }
 
     if (parsed.destination) parsed.destination = resolveCountryToCity(parsed.destination);
     if (parsed.origin)      parsed.origin      = resolveCountryToCity(parsed.origin);
 
+    // Fill missing origin/destination from rule parser
     if (!parsed.origin) {
-      const ruleResult = _parseWithRules(prompt);
-      if (ruleResult.origin) {
-        parsed.origin = ruleResult.origin;
-        logger.info('Groq missed origin — filled from rule parser', { origin: parsed.origin });
-      }
+      const rule = _parseWithRules(prompt);
+      if (rule.origin) { parsed.origin = rule.origin; logger.info('Groq missed origin — filled from rules', { origin: parsed.origin }); }
     }
-
     if (!parsed.destination && !Array.isArray(parsed.trips)) {
-      const ruleResult = _parseWithRules(prompt);
-      if (ruleResult.destination) {
-        parsed.destination = ruleResult.destination;
-        logger.info('Groq missed destination — filled from rule parser', { destination: parsed.destination });
-      }
+      const rule = _parseWithRules(prompt);
+      if (rule.destination) { parsed.destination = rule.destination; logger.info('Groq missed destination — filled from rules', { destination: parsed.destination }); }
     }
 
     parsed.preferredTransportProvider = parsed.preferredTransportProvider ?? null;
@@ -614,13 +680,29 @@ async function _parseWithGroq(prompt) {
     parsed.isMultiDestination         = parsed.isMultiDestination         ?? false;
     parsed.children                   = parsed.children                   ?? 0;
     parsed.childAges                  = parsed.childAges                  ?? [];
-
     parsed._parsedBy = 'groq';
+
     return parsed;
+
   } catch (err) {
-    logger.warn('Groq parsing failed — falling back to rule parser', { error: err.message });
+    logger.warn('Groq attempt failed', { error: err.message });
     return null;
   }
+}
+
+// ─────────────────────────────────────────────
+// MAIN GROQ PARSER — with retry on failure
+// ─────────────────────────────────────────────
+async function _parseWithGroq(prompt) {
+  if (!groqClient) return null;
+
+  // First attempt with full system prompt
+  const result = await _groqAttempt(prompt, GROQ_SYSTEM_PROMPT);
+  if (result) return result;
+
+  // Retry with simplified prompt on json_validate_failed or other errors
+  logger.info('Groq: retrying with simplified prompt', { prompt: prompt.slice(0, 80) });
+  return await _groqAttempt(prompt, GROQ_SYSTEM_PROMPT_SIMPLE);
 }
 
 // ─────────────────────────────────────────────
@@ -632,7 +714,7 @@ async function parsePrompt(prompt) {
   if (groqResult) {
     if (Array.isArray(groqResult.trips) && groqResult.trips.length > 1) {
       logger.info('Prompt parsed via Groq — multi-trip', {
-        tripCount: groqResult.trips.length,
+        tripCount:    groqResult.trips.length,
         destinations: groqResult.trips.map(t => t.destination).join(', '),
       });
     } else {
