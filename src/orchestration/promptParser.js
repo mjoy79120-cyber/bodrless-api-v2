@@ -549,7 +549,7 @@ async function _parseWithGroq(prompt) {
   if (!groqClient) return null;
   try {
     const completion = await groqClient.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
+      model: 'deepseek-r1-distill-llama-70b',
       messages: [{ role: 'system', content: GROQ_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
       temperature: 0.1, max_tokens: 800, response_format: { type: 'json_object' },
     });
