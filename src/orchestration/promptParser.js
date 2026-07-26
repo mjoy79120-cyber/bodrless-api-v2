@@ -11,7 +11,11 @@
  *        and fixes impossible return legs (Mara → Washington).
  * Fixed: Retry logic on json_validate_failed.
  * Fixed: Washington DC normalization.
- * Updated: Groq model → openai/gpt-oss-120b
+ * Fixed: Groq model corrected to llama-3.3-70b-versatile (was broken
+ *        openai/gpt-oss-120b which caused all json_validate_failed errors).
+ * Fixed: Markdown fence strip in Groq response catch block.
+ * Fixed: Rule-based fallback now detects multi-stop trips and emits
+ *        trips[] so Mombasa/Maasai Mara are never silently dropped.
  */
 
 const Groq = require('groq-sdk');
@@ -448,6 +452,93 @@ function _parseWithRules(prompt) {
   const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only|find me a hotel|looking for a hotel|need a hotel|hotel in|hotels? near|where to stay)\b/i.test(lower);
   const needsOriginClarification = !origin && !isHotelOnly;
 
+  // ── Multi-stop detection ──────────────────────────────────────────
+  // Scan for "X nights [in] CityName" patterns beyond the first stop.
+  // Runs when we have a hard bookend (origin + destination + both dates)
+  // so we can distribute nights correctly. This is the safety net that
+  // preserves Mombasa, Maasai Mara etc. when Groq fails.
+  // ─────────────────────────────────────────────────────────────────
+  const stopPattern = /(\d+)\s*nights?\s+(?:in\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/g;
+  const stops = [];
+  let stopMatch;
+
+  while ((stopMatch = stopPattern.exec(prompt)) !== null) {
+    const stopNights = parseInt(stopMatch[1], 10);
+    const stopCity   = resolveCountryToCity(stopMatch[2].trim());
+    // Skip if it resolves to the same city as the primary destination
+    if (stopCity.toLowerCase() !== (destination || '').toLowerCase()) {
+      stops.push({ destination: stopCity, nights: stopNights });
+    }
+  }
+
+  if (stops.length > 0 && destination && origin && departureDate && returnDate) {
+    const totalNights    = _diffDays(departureDate, returnDate);
+    const knownNights    = stops.reduce((s, st) => s + st.nights, 0);
+    const firstNights    = Math.max(0, totalNights - knownNights);
+    const allStops       = [{ destination, nights: firstNights }, ...stops];
+
+    let cursor = departureDate;
+    const trips = allStops.map((st, i) => {
+      const legOrigin = i === 0 ? origin : allStops[i - 1].destination;
+      const depDate   = cursor;
+      const retDate   = st.nights > 0 ? _addDays(cursor, st.nights) : null;
+      if (st.nights > 0) cursor = _addDays(cursor, st.nights);
+      return {
+        origin:       legOrigin,
+        destination:  st.destination,
+        nights:       st.nights,
+        departureDate: depDate,
+        returnDate:   retDate,
+        needsOriginClarification: false,
+      };
+    });
+
+    // If the last internal stop is non-flyable, inject a transit leg to its hub
+    const lastStop = allStops[allStops.length - 1];
+    const lastHub  = _isNonFlyable(lastStop.destination)
+      ? (_hubFor(lastStop.destination) || lastStop.destination)
+      : lastStop.destination;
+
+    if (_isNonFlyable(lastStop.destination) && lastHub.toLowerCase() !== lastStop.destination.toLowerCase()) {
+      trips.push({
+        origin:       lastStop.destination,
+        destination:  lastHub,
+        nights:       0,
+        departureDate: returnDate,
+        returnDate:   null,
+        needsOriginClarification: false,
+        _transitLeg:  true,
+      });
+    }
+
+    // Final return-home leg
+    trips.push({
+      origin:       lastHub,
+      destination:  origin,
+      nights:       0,
+      departureDate: returnDate,
+      returnDate:   null,
+      needsOriginClarification: false,
+      _returnLeg:   true,
+    });
+
+    logger.info('Rule parser: detected multi-stop trip', {
+      stops: trips.map(l => `${l.origin}→${l.destination} (${l.departureDate}, ${l.nights}n)`),
+    });
+
+    return {
+      destination, origin, nights: totalNights, passengers, children, childAges, budget,
+      departureDate, returnDate, outboundTransportMode, returnTransportMode, mealPlan,
+      seatPreference, timePreference, needsOriginClarification: false,
+      isMultiDestination: true,
+      trips,
+      legs: [],
+      preferredTransportProvider: null, preferredHotel: null,
+      _parsedBy: 'rules-multi',
+    };
+  }
+  // ── end multi-stop detection ──────────────────────────────────────
+
   return {
     destination, origin, nights: nights || null, passengers, children, childAges, budget,
     departureDate, returnDate, outboundTransportMode, returnTransportMode, mealPlan,
@@ -588,7 +679,7 @@ Never end trips[] on a safari park — always end on an airport city.
 async function _groqAttempt(prompt, systemPrompt) {
   try {
     const completion = await groqClient.chat.completions.create({
-      model:           'openai/gpt-oss-120b',
+      model:           'llama-3.3-70b-versatile',  // Fixed: was 'openai/gpt-oss-120b' which is not a valid Groq model and caused all json_validate_failed errors
       messages:        [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }],
       temperature:     0.1,
       max_tokens:      1000,
@@ -602,8 +693,11 @@ async function _groqAttempt(prompt, systemPrompt) {
     try {
       parsed = JSON.parse(content);
     } catch {
-      // Strip any thinking tags some models emit
-      const cleaned = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      // Strip thinking tags and markdown fences that some models emit before the JSON
+      const cleaned = content
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/```json|```/g, '')  // Fixed: strip markdown fences that cause silent JSON parse failures
+        .trim();
       parsed = JSON.parse(cleaned);
     }
 

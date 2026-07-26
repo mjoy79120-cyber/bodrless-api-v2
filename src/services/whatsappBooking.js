@@ -229,6 +229,24 @@ class WhatsAppBookingFlow {
     return !!session;
   }
 
+  // ─────────────────────────────────────────────
+  // CLEAR SESSION
+  // Called externally (e.g. from webhooks.js) to forcibly end a
+  // booking session — e.g. when the user starts a new search mid-
+  // booking, or on webhook error recovery. Safe to call even when
+  // no session exists (Supabase delete is a no-op in that case).
+  // ─────────────────────────────────────────────
+  async clearSession(from) {
+    try {
+      await supabase
+        .from('whatsapp_booking_sessions')
+        .delete()
+        .eq('phone', from);
+    } catch (err) {
+      logger.warn('clearSession: failed to delete session', { from, error: err.message });
+    }
+  }
+
   async handleMessage({ phoneNumberId, from, text, interactive = null }) {
     const { data: session } = await supabase
       .from('whatsapp_booking_sessions')
