@@ -11,7 +11,7 @@
  *        and fixes impossible return legs (Mara → Washington).
  * Fixed: Retry logic on json_validate_failed.
  * Fixed: Washington DC normalization.
- * Updated: Groq model → qwen/qwen3.6-27b
+ * Updated: Groq model → openai/gpt-oss-120b
  */
 
 const Groq = require('groq-sdk');
@@ -588,7 +588,7 @@ Never end trips[] on a safari park — always end on an airport city.
 async function _groqAttempt(prompt, systemPrompt) {
   try {
     const completion = await groqClient.chat.completions.create({
-      model:           'qwen/qwen3.6-27b',
+      model:           'openai/gpt-oss-120b',
       messages:        [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }],
       temperature:     0.1,
       max_tokens:      1000,
