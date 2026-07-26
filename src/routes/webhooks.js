@@ -190,7 +190,9 @@ router.post('/whatsapp', async (req, res) => {
         }
       }
 
+      // PATCH 1: Clear both the conversation history AND the booking session for a true fresh start
       await conversationMemory.clearConversation(from, agencyId);
+      await whatsappBookingFlow.clearSession(from);
       await whatsappService.sendText(phoneNumberId, from,
         "Fresh start! Tell me about your next trip — where to, when, and how many of you?"
       );
@@ -252,10 +254,37 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── ACTIVE BOOKING SESSION ─────────────────────────────
-    const handledByBooking = await whatsappBookingFlow.handleMessage({
-      phoneNumberId, from, text: prompt, interactive: null,
-    });
-    if (handledByBooking) return;
+    // PATCH 2: Only intercept if the message looks like a booking detail,
+    // NOT a fresh trip search. Prevents the session from swallowing new searches.
+    const _looksLikeFreshSearch = (text) => {
+      const t = text.trim();
+      
+      // Catch explicit restart commands (added based on earlier discussion)
+      if (/^(new booking|new search|start over|restart|cancel)$/i.test(t)) return true;
+      
+      // Multi-word trip prompts: "Nairobi to Zanzibar", "Washington to Nairobi 10th August..."
+      if (/\b(to|from)\b.{3,}/i.test(t) && t.split(/\s+/).length >= 4) return true;
+      // Explicit nights/dates
+      if (/\d+\s*nights?\b/i.test(t)) return true;
+      // Month names with numbers
+      if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(t)) return true;
+      if (/\d+\s*(st|nd|rd|th)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(t)) return true;
+      return false;
+    };
+
+    if (_looksLikeFreshSearch(prompt)) {
+      // Clear stale booking session — user has moved on
+      const hadStaleSession = await whatsappBookingFlow.hasActiveSession(from);
+      if (hadStaleSession) {
+        logger.info('Booking session: clearing stale session — fresh search detected', { from, preview: prompt.slice(0, 80) });
+        await whatsappBookingFlow.clearSession(from);
+      }
+    } else {
+      const handledByBooking = await whatsappBookingFlow.handleMessage({
+        phoneNumberId, from, text: prompt, interactive: null,
+      });
+      if (handledByBooking) return;
+    }
 
     // ═══════════════════════════════════════════════════════
     // LEG FLOW STATE MACHINE
@@ -276,7 +305,6 @@ router.post('/whatsapp', async (req, res) => {
       // fresh trip search) — fall through to normal orchestration,
       // which will clear the leg flow and start fresh.
     }
-
     // ─────────────────────────────────────────────────────
     // END LEG FLOW STATE MACHINE
     // ═══════════════════════════════════════════════════════
@@ -306,6 +334,7 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── STRAY PASSENGER DETAILS ────────────────────────────
+    // PATCH 3: Handles edge case where user sends passenger details while NOT in an active session
     if (PASSENGER_DETAIL_LINE.test(prompt.trim())) {
       const hasSession = await whatsappBookingFlow.hasActiveSession(from);
       if (!hasSession) {
@@ -314,6 +343,7 @@ router.post('/whatsapp', async (req, res) => {
         );
         return;
       }
+      // Has session — let it fall through to booking flow (already handled above)
     }
 
     // ── MID-CONVERSATION MODIFY ────────────────────────────
@@ -444,7 +474,7 @@ router.post('/whatsapp', async (req, res) => {
       const allPackages = [];
 
       for (let i = 0; i < result.tripResults.length; i++) {
-        const trip     = result.tripResults[i];
+        const trip      = result.tripResults[i];
         const introLine = i === 0
           ? `Here are options for *Trip 1 — ${trip.label}*:`
           : `And here are options for *Trip ${i + 1} — ${trip.label}*:`;
