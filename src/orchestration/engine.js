@@ -185,8 +185,6 @@ class OrchestrationEngine {
     tripParams.wantsAffordableSort = !!resolvedIntent.wantsAffordableSort;
 
     // ── ROUTE GRAPH HINTS ─────────────────────────────────────────────────────
-    // Check route graph before hitting suppliers.
-    // Never blocks — returns empty hints if service unavailable.
     let routeHints = null;
     if (routeLearning) {
       try {
@@ -195,7 +193,6 @@ class OrchestrationEngine {
           tripParams.destination,
           tripParams.budget
         );
-        // Apply optimal hotel search radius if we have one from past searches
         if (routeHints.optimalRadius) {
           tripParams._optimalHotelRadius = routeHints.optimalRadius;
           logger.info('RouteLearning: applying optimal hotel radius', {
@@ -212,7 +209,6 @@ class OrchestrationEngine {
     const _tSearch = Date.now();
     const destinationAccess = await this._resolveDestinationAccess(tripParams.destination);
 
-    // Skip flight search if route graph says confidence too low
     const skipFlight = routeHints?.skipFlight || false;
     if (skipFlight) {
       logger.info('RouteLearning: skipping flight search — low confidence on this route', {
@@ -280,14 +276,11 @@ class OrchestrationEngine {
     returnTransport    = this._dedupeEquivalentFlights(returnTransport);
 
     // ── ADD COMPOUND ROUTES FROM ROUTE GRAPH ─────────────────────────────────
-    // e.g. Nairobi → Zanzibar via bus + ferry when no direct flight
     if (routeHints?.compoundRoutes?.length > 0) {
       logger.info('RouteLearning: found compound routes', {
         count: routeHints.compoundRoutes.length,
         destination: tripParams.destination,
       });
-      // Compound routes surface as a note in the response for now.
-      // Full compound package building is a future enhancement.
       tripParams._compoundRoutes = routeHints.compoundRoutes;
     }
     // ─────────────────────────────────────────────────────────────────────────
@@ -366,13 +359,11 @@ class OrchestrationEngine {
         : '';
       responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
 
-      // Surface compound routes as an additional option when no direct flights found
       if (outboundTransport.filter(t => t.transportType === 'flight').length === 0 && tripParams._compoundRoutes?.length > 0) {
         const compound = tripParams._compoundRoutes[0];
         responseText += `\n\n_💡 No direct flights found. There's also a ${compound.notes || 'multi-leg route'} available — reply "show me the route" for details._`;
       }
     } else {
-      // No packages — check if compound routes exist as fallback
       if (tripParams._compoundRoutes?.length > 0 && routeLearning) {
         const compound = tripParams._compoundRoutes[0];
         const formatted = routeLearning.formatCompoundRoute(compound);
@@ -569,7 +560,7 @@ class OrchestrationEngine {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // LEG ROLE CLASSIFIER — FIX: auto-injects departure leg when Groq misses it
+  // LEG ROLE CLASSIFIER
   // ─────────────────────────────────────────────────────────────────────────────
   _classifyTripLegs(trips) {
     if (!trips || trips.length === 0) return [];
@@ -609,8 +600,6 @@ class OrchestrationEngine {
     });
 
     // ── AUTO-INJECT DEPARTURE LEG ─────────────────────────────────────────────
-    // Safety net: if Groq missed the return-home leg, inject it here so the
-    // engine always searches the final flight back.
     const lastClassified = classified[classified.length - 1];
     const lastDest       = this._normalizeCity(lastClassified.destination);
 
@@ -750,7 +739,6 @@ class OrchestrationEngine {
         outboundBuses   = buses;
         outboundTrains  = trains;
 
-        // Log flight outcome to route graph
         if (routeLearning) {
           routeLearning.logOutcome({
             origin:       leg.origin,
@@ -764,7 +752,6 @@ class OrchestrationEngine {
       }
 
       // ── Return flight (fetched on arrival leg only) ────────────────────────
-      // FIX: finds departure leg by role, uses ITS date not lastLeg.departureDate
       let returnFlights = [];
       if (role === 'arrival') {
         const departureLeg = classifiedLegs.find(l => l._role === 'departure');
@@ -790,7 +777,6 @@ class OrchestrationEngine {
 
           console.log(`RETURN FLIGHTS FOUND: ${returnFlights.length}`);
 
-          // Log return flight outcome
           if (routeLearning) {
             routeLearning.logOutcome({
               origin:       returnOrigin,
@@ -820,7 +806,6 @@ class OrchestrationEngine {
             cityHotelMemory.set(destNorm, hotels[0]);
           }
 
-          // Log hotel outcome to route graph
           if (routeLearning) {
             routeLearning.logOutcome({
               origin:      leg.origin,
@@ -1365,6 +1350,64 @@ class OrchestrationEngine {
     return { question, missing };
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // FLEXIBLE DATE DETECTOR
+  // Catches vague / range answers that _parseDateAnswer can't handle:
+  //   "I'm flexible", "anytime", "July or August", "maybe July", "around Sep"
+  // Returns { earliestDate: 'YYYY-MM-DD' } or null.
+  // ─────────────────────────────────────────────────────────────────────────────
+  _detectFlexibleDateAnswer(text) {
+    if (!text) return null;
+    const t = text.toLowerCase().trim();
+
+    // Explicit flexibility / open-ended signals
+    const isFlexible = /\b(flexible|anytime|any time|open|not sure|don'?t mind|whenever|no preference|up to you|surprise me|no specific|doesn'?t matter|whatever works)\b/i.test(t);
+    if (isFlexible) {
+      const d = new Date();
+      d.setDate(d.getDate() + 14);
+      return { earliestDate: d.toISOString().split('T')[0] };
+    }
+
+    const MONTHS = {
+      jan:1, january:1, feb:2, february:2, mar:3, march:3,
+      apr:4, april:4, may:5, jun:6, june:6, jul:7, july:7,
+      aug:8, august:8, sep:9, sept:9, september:9,
+      oct:10, october:10, nov:11, november:11, dec:12, december:12,
+    };
+
+    // Month range: "July or August", "July/August", "between July and August", "July to August"
+    const monthRangeMatch = t.match(
+      /(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s*(?:or|\/|and|to|-)\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i
+    );
+    if (monthRangeMatch) {
+      const monthStr = monthRangeMatch[1].toLowerCase().replace(/[^a-z]/g, '').slice(0, 3);
+      const month = MONTHS[monthStr];
+      if (month) {
+        const now = new Date();
+        let year = now.getFullYear();
+        if (new Date(year, month - 1, 1) < now) year++;
+        return { earliestDate: `${year}-${String(month).padStart(2, '0')}-01` };
+      }
+    }
+
+    // Single bare month with optional prefix: "July", "in August", "around September", "maybe October", "sometime in November"
+    const singleMonthMatch = t.match(
+      /^(?:in|around|during|sometime\s+in|maybe|perhaps|probably|likely)?\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s*$|\s+(?:or|maybe|ish|time)?$)/i
+    );
+    if (singleMonthMatch) {
+      const monthStr = singleMonthMatch[1].toLowerCase().replace(/[^a-z]/g, '').slice(0, 3);
+      const month = MONTHS[monthStr];
+      if (month) {
+        const now = new Date();
+        let year = now.getFullYear();
+        if (new Date(year, month - 1, 1) < now) year++;
+        return { earliestDate: `${year}-${String(month).padStart(2, '0')}-01` };
+      }
+    }
+
+    return null;
+  }
+
   async _resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, channel, phone = null) {
     const marker = previousParams._awaitingClarification;
     const answer = String(prompt || '').trim().toLowerCase();
@@ -1401,6 +1444,8 @@ class OrchestrationEngine {
     if (marker?.type === 'departure_date') {
       const tripParams = { ...previousParams };
       delete tripParams._awaitingClarification;
+
+      // 1. Try exact / specific date parse first
       const parsedDate = this._parseDateAnswer(answer);
       if (parsedDate) {
         tripParams.departureDate = parsedDate;
@@ -1411,9 +1456,20 @@ class OrchestrationEngine {
         }
         return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
       }
+
+      // 2. Detect flexible / month-range answers — route to suggest-dates flow
+      const flexibleAnswer = this._detectFlexibleDateAnswer(answer);
+      if (flexibleAnswer) {
+        logger.info('Flexible date answer detected — routing to suggest-dates flow', { answer, earliestDate: flexibleAnswer.earliestDate });
+        const flexIntent = { ...neutralIntent, wantsSuggestDates: true };
+        tripParams.departureDate = flexibleAnswer.earliestDate;
+        return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, flexIntent, channel, phone);
+      }
+
+      // 3. Still unparseable — re-ask once more with a helpful nudge
       return this._buildClarificationResponse({
         sessionId, prompt,
-        question: `I didn't quite catch that — what date are you thinking? Something like "20 July" or "early August" works perfectly.`,
+        question: `I didn't quite catch that — what date are you thinking? Something like "20 July", "early August", or even just "July" works perfectly.`,
         tripParams: { ...previousParams }, intent: neutralIntent, conversationHistory,
         awaitingClarification: { type: 'departure_date' },
       });
@@ -1599,7 +1655,6 @@ class OrchestrationEngine {
 
       logger.info('Booking saved', { bookingRef, agencyId });
 
-      // Log booking as selection to route graph (traveler picked this route)
       if (routeLearning && selectedPackage.transport) {
         routeLearning.logSelection({
           origin:      tripParams.origin,
