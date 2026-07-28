@@ -11,15 +11,82 @@
  *        and fixes impossible return legs (Mara → Washington).
  * Fixed: Retry logic on json_validate_failed.
  * Fixed: Washington DC normalization.
- * Fixed: Groq model corrected to llama-3.3-70b-versatile (was broken
- *        openai/gpt-oss-120b which caused all json_validate_failed errors).
+ * Fixed: Groq model corrected to llama-3.3-70b-versatile.
  * Fixed: Markdown fence strip in Groq response catch block.
  * Fixed: Rule-based fallback now detects multi-stop trips and emits
  *        trips[] so Mombasa/Maasai Mara are never silently dropped.
+ * Fixed: activityRequests extraction (safari, snorkelling, etc).
+ * Fixed: propertyType vs preferredHotel distinction — "beachfront"
+ *        is a property type, not a hotel name, and must never be
+ *        passed as preferredHotel or it wipes out all hotel results.
  */
 
 const Groq = require('groq-sdk');
 const { logger } = require('../utils/logger');
+
+// ─────────────────────────────────────────────
+// PROPERTY TYPE DESCRIPTORS
+// Words that describe a hotel's location/style, NOT a hotel name.
+// When Groq or rules detect these, they go into propertyType,
+// never into preferredHotel.
+// ─────────────────────────────────────────────
+const PROPERTY_TYPE_KEYWORDS = new Set([
+  'beachfront', 'beach front', 'beach-front', 'beachside', 'on the beach',
+  'oceanfront', 'ocean front', 'seafront', 'sea front',
+  'lakefront', 'lake front', 'lakeside', 'lake side',
+  'poolside', 'pool', 'with pool', 'has pool',
+  'city view', 'city centre', 'city center', 'downtown',
+  'mountain view', 'mountain', 'hillside', 'hilltop',
+  'garden view', 'garden', 'jungle', 'forest',
+  'boutique', 'resort', 'lodge', 'tented camp', 'camp', 'eco lodge',
+  'all inclusive', 'adults only', 'family friendly',
+  'budget', 'hostel', 'guesthouse', 'airbnb',
+  'rooftop', 'infinity pool', 'private pool', 'villa',
+  'overwater', 'water bungalow',
+]);
+
+function _extractPropertyType(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase().trim();
+  for (const kw of PROPERTY_TYPE_KEYWORDS) {
+    if (lower.includes(kw)) return kw;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// ACTIVITY KEYWORDS
+// Phrases that signal day-trip or excursion requests.
+// ─────────────────────────────────────────────
+const ACTIVITY_PATTERNS = [
+  { pattern: /\bsafari\b(?:\s+day\s+trip)?/i,        label: 'safari' },
+  { pattern: /\bday\s+trip\b/i,                       label: 'day_trip' },
+  { pattern: /\bsnorkel(?:ling|ing)?\b/i,             label: 'snorkelling' },
+  { pattern: /\bscuba\s+diving\b|\bdiving\b/i,        label: 'scuba_diving' },
+  { pattern: /\bsunset\s+cruise\b|\bdhow\s+cruise\b|\bcruise\b/i, label: 'cruise' },
+  { pattern: /\bspice\s+tour\b/i,                     label: 'spice_tour' },
+  { pattern: /\bstone\s+town\s+tour\b/i,              label: 'stone_town_tour' },
+  { pattern: /\bkitesurfing\b|\bkite\s+surfing\b/i,  label: 'kitesurfing' },
+  { pattern: /\bsurfing\b/i,                          label: 'surfing' },
+  { pattern: /\bhiking\b|\btrekking\b/i,              label: 'hiking' },
+  { pattern: /\bgame\s+drive\b/i,                     label: 'game_drive' },
+  { pattern: /\bmount\s+kilimanjaro\b|\bkili\b/i,     label: 'kilimanjaro_climb' },
+  { pattern: /\bgorilla\s+trekking\b/i,               label: 'gorilla_trekking' },
+  { pattern: /\bcultural\s+tour\b/i,                  label: 'cultural_tour' },
+  { pattern: /\bcooking\s+class\b/i,                  label: 'cooking_class' },
+  { pattern: /\bspa\b/i,                              label: 'spa' },
+];
+
+function _extractActivities(text) {
+  if (!text) return [];
+  const found = [];
+  for (const { pattern, label } of ACTIVITY_PATTERNS) {
+    if (pattern.test(text) && !found.includes(label)) {
+      found.push(label);
+    }
+  }
+  return found;
+}
 
 // ─────────────────────────────────────────────
 // DATE NORMALIZATION HELPER
@@ -47,7 +114,6 @@ function _diffDays(a, b) {
 
 // ─────────────────────────────────────────────
 // NON-FLYABLE DESTINATIONS
-// Places you can't fly directly into — need a hub transfer
 // ─────────────────────────────────────────────
 const NON_FLYABLE_HUBS = {
   'masai mara':   'Nairobi',
@@ -90,40 +156,28 @@ function _hubFor(dest) {
 // ─────────────────────────────────────────────
 // MULTI-LEG POST-PROCESSOR
 // ─────────────────────────────────────────────
-// Called when Groq emits trips[] with a hard bookend return date.
-// Fixes:
-//   - Impossible return leg (Mara → Washington) by injecting transit
-//   - Wrong dates when Groq distributes nights incorrectly
-//   - Missing transit legs through hub cities
-// ─────────────────────────────────────────────
 function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
   if (!Array.isArray(trips) || trips.length < 2) return trips;
   if (!departureDate || !returnDate) return trips;
 
   const homeNorm = (homeOrigin || '').toLowerCase().trim();
 
-  // Check if post-processing is actually needed
   const lastLeg     = trips[trips.length - 1];
   const lastDest    = (lastLeg.destination || '').toLowerCase().trim();
-  const lastOrigin  = (lastLeg.origin      || '').toLowerCase().trim();
-
-  // If last leg is already a clean return home from a flyable city — no fix needed
   const lastIsReturnHome = lastDest === homeNorm;
   const lastOriginFlyable = !_isNonFlyable(lastLeg.origin || '');
   const datesCorrect = lastLeg.departureDate === returnDate;
 
   if (lastIsReturnHome && lastOriginFlyable && datesCorrect) {
-    return trips; // Already correct — don't touch it
+    return trips;
   }
 
-  // Strip any existing return-home leg — we'll rebuild it correctly
   let internal = trips.filter(t =>
     (t.destination || '').toLowerCase().trim() !== homeNorm
   );
 
   if (internal.length === 0) return trips;
 
-  // If last internal stop is non-flyable, inject transit through hub
   const lastInternal = internal[internal.length - 1];
   if (_isNonFlyable(lastInternal.destination)) {
     const hub = _hubFor(lastInternal.destination);
@@ -139,14 +193,12 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
     }
   }
 
-  // Redistribute nights across the window
   const totalNights    = _diffDays(departureDate, returnDate);
   const specifiedNights = internal
     .filter((_, i) => i > 0)
     .reduce((s, t) => s + (t.nights || 0), 0);
   const firstNights = Math.max(0, totalNights - specifiedNights);
 
-  // Rebuild with correct dates
   let cursor = departureDate;
   const rebuilt = internal.map((leg, i) => {
     const nights  = i === 0 ? firstNights : (leg.nights || 0);
@@ -156,7 +208,6 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
     return { ...leg, departureDate: depDate, nights, returnDate: retDate };
   });
 
-  // Add correct return-home leg
   const lastRebuilt = rebuilt[rebuilt.length - 1];
   rebuilt.push({
     destination:  homeOrigin,
@@ -196,7 +247,6 @@ const COUNTRY_TO_CITY = {
   'madagascar': 'antananarivo', 'zimbabwe': 'harare',
   'zambia': 'lusaka', 'namibia': 'windhoek', 'mozambique': 'maputo',
   'angola': 'luanda', 'cameroon': 'douala', 'senegal': 'dakar',
-  // US cities that get confused as countries
   'washington': 'Washington',
   'washington dc': 'Washington',
   'washington d.c.': 'Washington',
@@ -258,7 +308,6 @@ const DESTINATION_FIXES = {
   'mexicocity': 'Mexico City', 'mexico-city': 'Mexico City', 'cdmx': 'Mexico City',
   'costarica': 'San Jose',
   'newyorkcity': 'New York',
-  // Washington fixes
   'washington dc': 'Washington',
   'washington d.c.': 'Washington',
   'washingtondc': 'Washington',
@@ -400,7 +449,6 @@ function _parseWithRules(prompt) {
     else if (/tomorrow/i.test(lower)) { today.setDate(today.getDate() + 1); departureDate = today.toISOString().split('T')[0]; }
   }
 
-  // Parse explicit return date ("returning 20th August", "return on 20 Aug")
   let returnDate = null;
   const returnDateMatch = lower.match(/\b(?:return(?:ing)?|back|fly\s+back)\s+(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i);
   if (returnDateMatch) {
@@ -449,15 +497,30 @@ function _parseWithRules(prompt) {
   else if (/\b(evening|night)\s+flight\b/i.test(lower)) timePreference = 'evening';
   else if (/\bafternoon\s+flight\b/i.test(lower)) timePreference = 'afternoon';
 
+  // ── Property type vs hotel name ───────────────────────────────────────────
+  // Check for property type descriptors FIRST. If matched, don't set preferredHotel.
+  const propertyType = _extractPropertyType(prompt);
+  let preferredHotel = null;
+
+  // Only set preferredHotel if it looks like an actual hotel brand/name
+  const hotelNameMatch = lower.match(/\b(?:at|in|stay(?:ing)?\s+at|book(?:ing)?\s+at|hotel)\s+([a-z][a-z\s]{2,30}?)(?:\s+hotel)?\b/i);
+  if (hotelNameMatch) {
+    const candidate = hotelNameMatch[1].trim();
+    // Make sure it's not a property type descriptor
+    if (!_extractPropertyType(candidate)) {
+      preferredHotel = candidate;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ── Activity extraction ───────────────────────────────────────────────────
+  const activityRequests = _extractActivities(prompt);
+  // ─────────────────────────────────────────────────────────────────────────
+
   const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only|find me a hotel|looking for a hotel|need a hotel|hotel in|hotels? near|where to stay)\b/i.test(lower);
   const needsOriginClarification = !origin && !isHotelOnly;
 
-  // ── Multi-stop detection ──────────────────────────────────────────
-  // Scan for "X nights [in] CityName" patterns beyond the first stop.
-  // Runs when we have a hard bookend (origin + destination + both dates)
-  // so we can distribute nights correctly. This is the safety net that
-  // preserves Mombasa, Maasai Mara etc. when Groq fails.
-  // ─────────────────────────────────────────────────────────────────
+  // ── Multi-stop detection ──────────────────────────────────────────────────
   const stopPattern = /(\d+)\s*nights?\s+(?:in\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/g;
   const stops = [];
   let stopMatch;
@@ -465,7 +528,6 @@ function _parseWithRules(prompt) {
   while ((stopMatch = stopPattern.exec(prompt)) !== null) {
     const stopNights = parseInt(stopMatch[1], 10);
     const stopCity   = resolveCountryToCity(stopMatch[2].trim());
-    // Skip if it resolves to the same city as the primary destination
     if (stopCity.toLowerCase() !== (destination || '').toLowerCase()) {
       stops.push({ destination: stopCity, nights: stopNights });
     }
@@ -493,7 +555,6 @@ function _parseWithRules(prompt) {
       };
     });
 
-    // If the last internal stop is non-flyable, inject a transit leg to its hub
     const lastStop = allStops[allStops.length - 1];
     const lastHub  = _isNonFlyable(lastStop.destination)
       ? (_hubFor(lastStop.destination) || lastStop.destination)
@@ -511,7 +572,6 @@ function _parseWithRules(prompt) {
       });
     }
 
-    // Final return-home leg
     trips.push({
       origin:       lastHub,
       destination:  origin,
@@ -533,17 +593,23 @@ function _parseWithRules(prompt) {
       isMultiDestination: true,
       trips,
       legs: [],
-      preferredTransportProvider: null, preferredHotel: null,
+      preferredTransportProvider: null,
+      preferredHotel,
+      propertyType,
+      activityRequests,
       _parsedBy: 'rules-multi',
     };
   }
-  // ── end multi-stop detection ──────────────────────────────────────
+  // ── end multi-stop detection ──────────────────────────────────────────────
 
   return {
     destination, origin, nights: nights || null, passengers, children, childAges, budget,
     departureDate, returnDate, outboundTransportMode, returnTransportMode, mealPlan,
     seatPreference, timePreference, needsOriginClarification, isMultiDestination: false, legs: [],
-    preferredTransportProvider: null, preferredHotel: null,
+    preferredTransportProvider: null,
+    preferredHotel,
+    propertyType,
+    activityRequests,
     _parsedBy: 'rules',
   };
 }
@@ -576,11 +642,20 @@ CORRECT trips[]:
   1. origin: Washington, destination: Nairobi,    departureDate: 2026-08-10, nights: 5
   2. origin: Nairobi,    destination: Mombasa,    departureDate: 2026-08-15, nights: 3
   3. origin: Mombasa,    destination: Masai Mara, departureDate: 2026-08-18, nights: 2
-  4. origin: Masai Mara, destination: Nairobi,    departureDate: 2026-08-20, nights: 0 (transit to airport)
+  4. origin: Masai Mara, destination: Nairobi,    departureDate: 2026-08-20, nights: 0
   5. origin: Nairobi,    destination: Washington, departureDate: 2026-08-20, nights: 0
 
 WRONG — never end on Masai Mara, Serengeti, Amboseli or any safari/park destination.
 WRONG — never drop the return leg. Never emit only 2 trips when 3+ are described.
+
+PROPERTY TYPE vs HOTEL NAME:
+- "beachfront hotel", "ocean view", "with a pool", "lodge", "tented camp" → propertyType field, preferredHotel: null
+- "Sarova", "Serena", "Marriott", "Hilton", "Hemingways" → preferredHotel field, propertyType: null
+- NEVER put descriptive words like "beachfront" or "ocean view" into preferredHotel
+
+ACTIVITIES:
+- "safari", "day trip", "snorkelling", "game drive", "diving", "spice tour", "sunset cruise" → activityRequests[]
+- These are excursions, not destinations. List all mentioned.
 
 Rules:
 - destination must be a real place name (1-4 words max). Never a sentence.
@@ -611,7 +686,9 @@ Return this shape for a SINGLE trip:
   "isMultiDestination": false,
   "legs": [],
   "preferredTransportProvider": null,
-  "preferredHotel": null
+  "preferredHotel": null,
+  "propertyType": "beachfront"|"oceanfront"|"lodge"|"tented camp"|"villa"|"boutique"|null,
+  "activityRequests": []
 }
 
 Return this shape for MULTIPLE TRIPS:
@@ -639,14 +716,17 @@ Return this shape for MULTIPLE TRIPS:
   "isMultiDestination": false,
   "legs": [],
   "preferredTransportProvider": null,
-  "preferredHotel": null
+  "preferredHotel": null,
+  "propertyType": null,
+  "activityRequests": []
 }`;
 
-// Simplified fallback prompt — used on retry when first attempt fails
 const GROQ_SYSTEM_PROMPT_SIMPLE = `Extract travel info. Return ONLY valid JSON. Current year is 2026.
 
 For multi-city trips use trips[]. Include ALL legs including the return home.
 Never end trips[] on a safari park — always end on an airport city.
+"beachfront", "oceanfront", "with pool" → propertyType (not preferredHotel).
+"safari", "day trip", "snorkelling" → activityRequests[].
 
 {
   "trips": [
@@ -670,16 +750,18 @@ Never end trips[] on a safari park — always end on an airport city.
   "isMultiDestination": false,
   "legs": [],
   "preferredTransportProvider": null,
-  "preferredHotel": null
+  "preferredHotel": null,
+  "propertyType": null,
+  "activityRequests": []
 }`;
 
 // ─────────────────────────────────────────────
-// GROQ ATTEMPT — single model call with sanitization
+// GROQ ATTEMPT
 // ─────────────────────────────────────────────
 async function _groqAttempt(prompt, systemPrompt) {
   try {
     const completion = await groqClient.chat.completions.create({
-      model:           'llama-3.3-70b-versatile',  // Fixed: was 'openai/gpt-oss-120b' which is not a valid Groq model and caused all json_validate_failed errors
+      model:           'llama-3.3-70b-versatile',
       messages:        [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }],
       temperature:     0.1,
       max_tokens:      1000,
@@ -693,10 +775,9 @@ async function _groqAttempt(prompt, systemPrompt) {
     try {
       parsed = JSON.parse(content);
     } catch {
-      // Strip thinking tags and markdown fences that some models emit before the JSON
       const cleaned = content
         .replace(/<think>[\s\S]*?<\/think>/gi, '')
-        .replace(/```json|```/g, '')  // Fixed: strip markdown fences that cause silent JSON parse failures
+        .replace(/```json|```/g, '')
         .trim();
       parsed = JSON.parse(cleaned);
     }
@@ -722,10 +803,8 @@ async function _groqAttempt(prompt, systemPrompt) {
         origin:        t.origin      ? resolveCountryToCity(t.origin)      : t.origin,
       }));
 
-      // Drop implausible destinations
       parsed.trips = parsed.trips.filter(t => t.destination && _isPlausiblePlaceName(t.destination));
 
-      // Apply bookend post-processor when we have a hard return date
       if (parsed.trips.length >= 2 && parsed.returnDate) {
         const homeOrigin = parsed.trips[0]?.origin || parsed.origin;
         parsed.trips = _postProcessBookendTrip(
@@ -736,7 +815,6 @@ async function _groqAttempt(prompt, systemPrompt) {
         );
       }
 
-      // Collapse to single trip if only one survived
       if (parsed.trips.length === 1) {
         const sole        = parsed.trips[0];
         parsed.destination   = sole.destination;
@@ -758,7 +836,6 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (parsed.destination) parsed.destination = resolveCountryToCity(parsed.destination);
     if (parsed.origin)      parsed.origin      = resolveCountryToCity(parsed.origin);
 
-    // Fill missing origin/destination from rule parser
     if (!parsed.origin) {
       const rule = _parseWithRules(prompt);
       if (rule.origin) { parsed.origin = rule.origin; logger.info('Groq missed origin — filled from rules', { origin: parsed.origin }); }
@@ -768,8 +845,30 @@ async function _groqAttempt(prompt, systemPrompt) {
       if (rule.destination) { parsed.destination = rule.destination; logger.info('Groq missed destination — filled from rules', { destination: parsed.destination }); }
     }
 
+    // ── Property type safety net ──────────────────────────────────────────
+    // If Groq put a property descriptor into preferredHotel, rescue it.
+    if (parsed.preferredHotel) {
+      const pt = _extractPropertyType(parsed.preferredHotel);
+      if (pt) {
+        logger.info('PromptParser: rescued property type from preferredHotel', {
+          was: parsed.preferredHotel, now: pt,
+        });
+        parsed.propertyType   = parsed.propertyType || pt;
+        parsed.preferredHotel = null;
+      }
+    }
+
+    // ── Activity requests: merge Groq output with rule-based extraction ───
+    const ruleActivities = _extractActivities(prompt);
+    const groqActivities = Array.isArray(parsed.activityRequests) ? parsed.activityRequests : [];
+    const mergedActivities = [...new Set([...groqActivities, ...ruleActivities])];
+    parsed.activityRequests = mergedActivities;
+    // ─────────────────────────────────────────────────────────────────────
+
     parsed.preferredTransportProvider = parsed.preferredTransportProvider ?? null;
     parsed.preferredHotel             = parsed.preferredHotel             ?? null;
+    parsed.propertyType               = parsed.propertyType               ?? null;
+    parsed.activityRequests           = parsed.activityRequests           ?? [];
     parsed.legs                       = parsed.legs                       ?? [];
     parsed.isMultiDestination         = parsed.isMultiDestination         ?? false;
     parsed.children                   = parsed.children                   ?? 0;
@@ -790,11 +889,9 @@ async function _groqAttempt(prompt, systemPrompt) {
 async function _parseWithGroq(prompt) {
   if (!groqClient) return null;
 
-  // First attempt with full system prompt
   const result = await _groqAttempt(prompt, GROQ_SYSTEM_PROMPT);
   if (result) return result;
 
-  // Retry with simplified prompt on json_validate_failed or other errors
   logger.info('Groq: retrying with simplified prompt', { prompt: prompt.slice(0, 80) });
   return await _groqAttempt(prompt, GROQ_SYSTEM_PROMPT_SIMPLE);
 }
