@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const supabase = require("../utils/supabase");
 const { logger } = require("../utils/logger");
-const { parsePrompt, resolveCountryToCity } = require("./promptParser");
+const { parsePrompt, resolveCountryToCity, resolveSafariDestination } = require("./promptParser");
 const { rankPackages } = require("./packageRanker");
 const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
 const destinationIntel = require("../services/destinationIntel");
@@ -358,6 +358,9 @@ class OrchestrationEngine {
         ? ` — ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''}`
         : '';
       responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
+
+      const excursionNote = this._buildExcursionNote(tripParams.activityRequests);
+      if (excursionNote) responseText += `\n\n${excursionNote}`;
 
       if (outboundTransport.filter(t => t.transportType === 'flight').length === 0 && tripParams._compoundRoutes?.length > 0) {
         const compound = tripParams._compoundRoutes[0];
@@ -897,9 +900,21 @@ class OrchestrationEngine {
       packages:           allPackages,
     });
 
+    // Build top-level response text, appending excursion and safari lodge notes
+    const excursionNote = this._buildExcursionNote(tripParams.activityRequests);
+    const safariLodgeNote = tripParams._safariLodgeNeeded
+      ? `_🏕️ I've added **${tripParams._safariDestination}** as a 2-night safari leg with a lodge — reply "show me lodge options" if you'd like to see alternatives or adjust the nights._`
+      : null;
+
+    const noteParts = [excursionNote, safariLodgeNote].filter(Boolean);
+    const responseText = [
+      `Here's your complete trip broken down by leg:`,
+      ...noteParts,
+    ].join('\n\n');
+
     return {
       sessionId,
-      text:                `Here's your complete trip broken down by leg:`,
+      text:                responseText,
       packages:            allPackages,
       tripResults:         legResults,
       tripParams,
@@ -1507,8 +1522,154 @@ class OrchestrationEngine {
     return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // EXCURSION NOTE BUILDER
+  // Formats in-destination excursion requests into a friendly note for the
+  // response text. These are NOT trip legs — just things to flag.
+  // ─────────────────────────────────────────────────────────────────────────
+  _buildExcursionNote(activityRequests) {
+    if (!Array.isArray(activityRequests) || activityRequests.length === 0) return null;
+    const labels = {
+      snorkelling:    'snorkelling',
+      scuba_diving:   'scuba diving',
+      sunset_cruise:  'sunset/dhow cruise',
+      spice_tour:     'spice tour',
+      stone_town_tour:'Stone Town tour',
+      jozani_forest:  'Jozani Forest tour',
+      dolphin_tour:   'dolphin tour',
+      kitesurfing:    'kitesurfing',
+      surfing:        'surfing',
+      hiking:         'hiking',
+      gorilla_trekking:'gorilla trekking',
+      spice_garden:   'spice garden visit',
+      cultural_tour:  'cultural tour',
+      cooking_class:  'cooking class',
+      spa:            'spa',
+      boat_trip:      'boat trip',
+      sandbank_trip:  'sandbank picnic',
+      kayaking:       'kayaking',
+      prison_island:  'Prison Island trip',
+      day_trip:       'day trip',
+    };
+    const named = activityRequests.map(a => labels[a] || a.replace(/_/g, ' ')).filter(Boolean);
+    if (named.length === 0) return null;
+    const list = named.length === 1
+      ? named[0]
+      : named.slice(0, -1).join(', ') + ' and ' + named[named.length - 1];
+    return `_💡 You mentioned ${list} — these are in-destination excursions and can be arranged locally once you arrive. Let me know if you'd like recommendations._`;
+  }
+
   async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone = null) {
     tripParams.agencyId = agencyId;
+
+    // ── SAFARI LEG INJECTION ──────────────────────────────────────────────
+    // If the parser detected a safari request, add the game reserve as a
+    // proper trip leg (with lodge + transfers) before routing.
+    // Only inject if the safari destination isn't already in trips[].
+    if (tripParams.safariDestination) {
+      const safariDest = tripParams.safariDestination;
+      const safariDestNorm = this._normalizeCity(safariDest);
+
+      const alreadyInTrips = Array.isArray(tripParams.trips) &&
+        tripParams.trips.some(t => this._normalizeCity(t.destination) === safariDestNorm);
+
+      if (!alreadyInTrips) {
+        logger.info('OrchestrationEngine: injecting safari leg', {
+          safariDest,
+          baseDestination: tripParams.destination,
+        });
+
+        // Work out dates: safari goes after the main stay, 1-2 nights
+        const safariNights = 2;
+        const mainReturnDate = tripParams.returnDate;
+        const mainDepartureDate = tripParams.departureDate;
+
+        // Calculate safari dates: carve out the last safariNights from the trip window
+        let safariDepDate = null;
+        let safariRetDate = null;
+        if (mainReturnDate) {
+          const ret = new Date(mainReturnDate);
+          ret.setDate(ret.getDate() - safariNights);
+          safariDepDate = ret.toISOString().split('T')[0];
+          safariRetDate = mainReturnDate;
+        } else if (mainDepartureDate) {
+          const dep = new Date(mainDepartureDate);
+          dep.setDate(dep.getDate() + (tripParams.nights || 5));
+          safariDepDate = dep.toISOString().split('T')[0];
+          const ret = new Date(safariDepDate);
+          ret.setDate(ret.getDate() + safariNights);
+          safariRetDate = ret.toISOString().split('T')[0];
+        }
+
+        // Build the safari leg
+        const safariOrigin = tripParams.destination || tripParams.origin;
+
+        const safariLeg = {
+          origin:        safariOrigin,
+          destination:   safariDest,
+          nights:        safariNights,
+          departureDate: safariDepDate,
+          returnDate:    safariRetDate,
+          needsOriginClarification: false,
+          _safariLeg:    true,
+        };
+
+        // If we already have trips[], splice safari in before the departure leg.
+        // Otherwise, build trips[] from scratch.
+        if (Array.isArray(tripParams.trips) && tripParams.trips.length > 0) {
+          const depIdx = tripParams.trips.findIndex(t => t._role === 'departure' || this._normalizeCity(t.destination) === this._normalizeCity(tripParams.origin || ''));
+          if (depIdx > 0) {
+            tripParams.trips.splice(depIdx, 0, safariLeg);
+          } else {
+            tripParams.trips.push(safariLeg);
+          }
+          // Re-add a departure leg back home from safari
+          const homeLeg = {
+            origin:        safariDest,
+            destination:   tripParams.origin || tripParams.trips[0]?.origin,
+            nights:        0,
+            departureDate: safariRetDate,
+            returnDate:    null,
+            needsOriginClarification: false,
+            _returnLeg: true,
+          };
+          // Remove any existing departure-home leg and re-add correctly
+          tripParams.trips = tripParams.trips.filter(t =>
+            !(t._returnLeg && this._normalizeCity(t.origin) !== safariDestNorm)
+          );
+          tripParams.trips.push(homeLeg);
+        } else {
+          // Build full trips[] from scratch
+          const mainLeg = {
+            origin:        tripParams.origin,
+            destination:   tripParams.destination,
+            nights:        tripParams.nights ? tripParams.nights - safariNights : 5,
+            departureDate: mainDepartureDate,
+            returnDate:    safariDepDate,
+            needsOriginClarification: false,
+          };
+          const returnLeg = {
+            origin:        safariDest,
+            destination:   tripParams.origin,
+            nights:        0,
+            departureDate: safariRetDate,
+            returnDate:    null,
+            needsOriginClarification: false,
+            _returnLeg: true,
+          };
+          tripParams.trips = [mainLeg, safariLeg, returnLeg];
+        }
+
+        // Flag that a lodge is needed for the safari leg
+        tripParams._safariLodgeNeeded = true;
+        tripParams._safariDestination  = safariDest;
+
+        logger.info('OrchestrationEngine: safari trips[] after injection', {
+          legs: tripParams.trips.map(t => `${t.origin}→${t.destination} (${t.departureDate}, ${t.nights}n)`),
+        });
+      }
+    }
+    // ── END SAFARI INJECTION ──────────────────────────────────────────────
 
     if (Array.isArray(tripParams.trips) && tripParams.trips.length > 1) {
       return await this._orchestrateClassifiedTrip(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone);
@@ -2052,6 +2213,24 @@ class OrchestrationEngine {
 
     let finalHotels = results;
     if (tripParams.budget) finalHotels = await this._filterHotelsByBudget(finalHotels, tripParams.budget);
+
+    // Property type filter — "beachfront", "lodge", "tented camp" etc.
+    // This is a soft filter: only applied if it narrows the list, never wipes it.
+    if (tripParams.propertyType && finalHotels.length > 0) {
+      const pt = (tripParams.propertyType || '').toLowerCase();
+      const byType = finalHotels.filter(h => {
+        const name = (h.name || '').toLowerCase();
+        const desc = (h.description || h.category || h.type || '').toLowerCase();
+        return name.includes(pt) || desc.includes(pt);
+      });
+      if (byType.length > 0) {
+        logger.info('PropertyType filter applied', { propertyType: pt, before: finalHotels.length, after: byType.length });
+        finalHotels = byType;
+      } else {
+        logger.info('PropertyType filter found no matches — returning all hotels', { propertyType: pt });
+      }
+    }
+
     console.log("MATCHED HOTELS:", finalHotels.length);
     return finalHotels;
   }

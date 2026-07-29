@@ -56,36 +56,83 @@ function _extractPropertyType(text) {
 
 // ─────────────────────────────────────────────
 // ACTIVITY KEYWORDS
-// Phrases that signal day-trip or excursion requests.
+// Split into two categories:
+//   SAFARI  — full game-reserve trip leg; needs lodge + transport
+//   EXCURSION — in-destination activity; noted in response only
 // ─────────────────────────────────────────────
-const ACTIVITY_PATTERNS = [
-  { pattern: /\bsafari\b(?:\s+day\s+trip)?/i,        label: 'safari' },
-  { pattern: /\bday\s+trip\b/i,                       label: 'day_trip' },
-  { pattern: /\bsnorkel(?:ling|ing)?\b/i,             label: 'snorkelling' },
-  { pattern: /\bscuba\s+diving\b|\bdiving\b/i,        label: 'scuba_diving' },
-  { pattern: /\bsunset\s+cruise\b|\bdhow\s+cruise\b|\bcruise\b/i, label: 'cruise' },
-  { pattern: /\bspice\s+tour\b/i,                     label: 'spice_tour' },
-  { pattern: /\bstone\s+town\s+tour\b/i,              label: 'stone_town_tour' },
-  { pattern: /\bkitesurfing\b|\bkite\s+surfing\b/i,  label: 'kitesurfing' },
-  { pattern: /\bsurfing\b/i,                          label: 'surfing' },
-  { pattern: /\bhiking\b|\btrekking\b/i,              label: 'hiking' },
-  { pattern: /\bgame\s+drive\b/i,                     label: 'game_drive' },
-  { pattern: /\bmount\s+kilimanjaro\b|\bkili\b/i,     label: 'kilimanjaro_climb' },
-  { pattern: /\bgorilla\s+trekking\b/i,               label: 'gorilla_trekking' },
-  { pattern: /\bcultural\s+tour\b/i,                  label: 'cultural_tour' },
-  { pattern: /\bcooking\s+class\b/i,                  label: 'cooking_class' },
-  { pattern: /\bspa\b/i,                              label: 'spa' },
+
+// Safari = game reserve destination, treated as a full trip leg.
+// The actual park/reserve is resolved from the traveler's base city.
+const SAFARI_PATTERN = /\bsafari\b|\bgame\s+(?:drive|park|reserve)\b|\bgame\s+viewing\b/i;
+
+// Excursions = in-destination activities, NOT booked as trip legs.
+const EXCURSION_PATTERNS = [
+  { pattern: /\bsnorkel(?:ling|ing)?\b/i,                         label: 'snorkelling' },
+  { pattern: /\bscuba\s+diving\b|\bdiving\b/i,                    label: 'scuba_diving' },
+  { pattern: /\bsunset\s+cruise\b|\bdhow\s+cruise\b|\bdau\s+cruise\b/i, label: 'sunset_cruise' },
+  { pattern: /\bspice\s+tour\b/i,                                 label: 'spice_tour' },
+  { pattern: /\bstone\s+town\s+(?:tour|walk)\b/i,                 label: 'stone_town_tour' },
+  { pattern: /\bjozani\s+forest\b/i,                              label: 'jozani_forest' },
+  { pattern: /\bdolphin\s+(?:tour|watching|swim)\b/i,             label: 'dolphin_tour' },
+  { pattern: /\bkitesurfing\b|\bkite\s+surfing\b/i,               label: 'kitesurfing' },
+  { pattern: /\bsurfing\b/i,                                      label: 'surfing' },
+  { pattern: /\bhiking\b|\btrekking\b(?!\s+gorilla)/i,            label: 'hiking' },
+  { pattern: /\bgorilla\s+trekking\b/i,                           label: 'gorilla_trekking' },
+  { pattern: /\bspice\s+garden\b/i,                               label: 'spice_garden' },
+  { pattern: /\bcultural\s+tour\b/i,                              label: 'cultural_tour' },
+  { pattern: /\bcooking\s+class\b/i,                              label: 'cooking_class' },
+  { pattern: /\bspa\b/i,                                          label: 'spa' },
+  { pattern: /\bboat\s+trip\b|\bboat\s+tour\b/i,                  label: 'boat_trip' },
+  { pattern: /\bsandbank\s+(?:trip|picnic)\b/i,                   label: 'sandbank_trip' },
+  { pattern: /\bkayak(?:ing)?\b/i,                                label: 'kayaking' },
+  { pattern: /\bprison\s+island\b/i,                              label: 'prison_island' },
 ];
 
+// Safari destination resolver:
+// Given the traveler's primary destination / origin city, return the
+// most appropriate game reserve to add as a trip leg.
+const SAFARI_DESTINATIONS = {
+  // Tanzania / Indian Ocean coast → Serengeti or Ngorongoro
+  tanzania:   'Serengeti',
+  zanzibar:   'Serengeti',
+  'dar es salaam': 'Serengeti',
+  arusha:     'Serengeti',
+  moshi:      'Serengeti',
+  // Kenya → Masai Mara (default), Amboseli near Nairobi/Mombasa
+  kenya:      'Masai Mara',
+  nairobi:    'Masai Mara',
+  mombasa:    'Amboseli',
+  diani:      'Amboseli',
+  malindi:    'Amboseli',
+  // Uganda
+  kampala:    'Bwindi',
+  entebbe:    'Bwindi',
+  // Rwanda
+  kigali:     'Akagera',
+  // South Africa
+  johannesburg: 'Kruger',
+  'cape town':  'Kruger',
+  durban:       'Kruger',
+  // Default fallback
+  _default:   'Masai Mara',
+};
+
+function resolveSafariDestination(primaryCity) {
+  if (!primaryCity) return SAFARI_DESTINATIONS._default;
+  const lower = (primaryCity || '').toLowerCase().trim();
+  return SAFARI_DESTINATIONS[lower] || SAFARI_DESTINATIONS._default;
+}
+
 function _extractActivities(text) {
-  if (!text) return [];
-  const found = [];
-  for (const { pattern, label } of ACTIVITY_PATTERNS) {
-    if (pattern.test(text) && !found.includes(label)) {
-      found.push(label);
+  if (!text) return { hasSafari: false, excursions: [] };
+  const hasSafari = SAFARI_PATTERN.test(text);
+  const excursions = [];
+  for (const { pattern, label } of EXCURSION_PATTERNS) {
+    if (pattern.test(text) && !excursions.includes(label)) {
+      excursions.push(label);
     }
   }
-  return found;
+  return { hasSafari, excursions };
 }
 
 // ─────────────────────────────────────────────
@@ -514,7 +561,14 @@ function _parseWithRules(prompt) {
   // ─────────────────────────────────────────────────────────────────────────
 
   // ── Activity extraction ───────────────────────────────────────────────────
-  const activityRequests = _extractActivities(prompt);
+  const { hasSafari, excursions } = _extractActivities(prompt);
+  const activityRequests = excursions;
+
+  // Safari: resolve the game reserve based on the traveler's base city.
+  // The engine will add it as a full trip leg (with lodge + transfers).
+  const safariDestination = hasSafari
+    ? resolveSafariDestination(destination || origin)
+    : null;
   // ─────────────────────────────────────────────────────────────────────────
 
   const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only|find me a hotel|looking for a hotel|need a hotel|hotel in|hotels? near|where to stay)\b/i.test(lower);
@@ -597,6 +651,7 @@ function _parseWithRules(prompt) {
       preferredHotel,
       propertyType,
       activityRequests,
+      safariDestination,
       _parsedBy: 'rules-multi',
     };
   }
@@ -610,6 +665,7 @@ function _parseWithRules(prompt) {
     preferredHotel,
     propertyType,
     activityRequests,
+    safariDestination,
     _parsedBy: 'rules',
   };
 }
@@ -859,16 +915,33 @@ async function _groqAttempt(prompt, systemPrompt) {
     }
 
     // ── Activity requests: merge Groq output with rule-based extraction ───
-    const ruleActivities = _extractActivities(prompt);
+    const { hasSafari, excursions: ruleExcursions } = _extractActivities(prompt);
     const groqActivities = Array.isArray(parsed.activityRequests) ? parsed.activityRequests : [];
-    const mergedActivities = [...new Set([...groqActivities, ...ruleActivities])];
-    parsed.activityRequests = mergedActivities;
+    parsed.activityRequests = [...new Set([...groqActivities, ...ruleExcursions])];
+
+    // Safari: resolve game reserve destination from primary city.
+    // Groq may set activityRequests: ['safari'] — we convert that to a
+    // safariDestination field and remove it from activityRequests so the
+    // engine treats it as a full trip leg, not an excursion note.
+    const groqSaidSafari = groqActivities.some(a => a === 'safari' || a === 'game_drive');
+    parsed.activityRequests = parsed.activityRequests.filter(a => a !== 'safari' && a !== 'game_drive');
+
+    if (hasSafari || groqSaidSafari) {
+      const baseCity = parsed.destination || parsed.origin;
+      parsed.safariDestination = parsed.safariDestination || resolveSafariDestination(baseCity);
+      logger.info('PromptParser: safari detected', {
+        baseCity, resolvedTo: parsed.safariDestination,
+      });
+    } else {
+      parsed.safariDestination = parsed.safariDestination ?? null;
+    }
     // ─────────────────────────────────────────────────────────────────────
 
     parsed.preferredTransportProvider = parsed.preferredTransportProvider ?? null;
     parsed.preferredHotel             = parsed.preferredHotel             ?? null;
     parsed.propertyType               = parsed.propertyType               ?? null;
     parsed.activityRequests           = parsed.activityRequests           ?? [];
+    parsed.safariDestination          = parsed.safariDestination          ?? null;
     parsed.legs                       = parsed.legs                       ?? [];
     parsed.isMultiDestination         = parsed.isMultiDestination         ?? false;
     parsed.children                   = parsed.children                   ?? 0;
@@ -917,4 +990,4 @@ async function parsePrompt(prompt) {
   return _parseWithRules(prompt);
 }
 
-module.exports = { parsePrompt, resolveCountryToCity, normalizeDestination };
+module.exports = { parsePrompt, resolveCountryToCity, normalizeDestination, resolveSafariDestination };
