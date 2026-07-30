@@ -1672,6 +1672,7 @@ class OrchestrationEngine {
           returnDate:    classifiedLegs[1].departureDate || tripParams.returnDate,
           nights:        classifiedLegs[0].nights        || tripParams.nights,
           trips:         undefined, // clear trips[] — not needed for single-dest path
+          isMultiDestination: false,
         };
         console.log('ROUND-TRIP DETECTED — routing to single-dest search:', {
           origin: tripParams.origin,
