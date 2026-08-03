@@ -18,6 +18,7 @@ const uploadRoutes = require('./src/routes/uploads');
 const widgetRoutes = require('./src/routes/widget');
 const apiV1Routes = require('./src/routes/api');
 const adminRoutes = require('./src/routes/admin');
+const itineraryRoutes = require('./src/routes/itineraryRoutes');
 const { startSweeper } = require('./src/services/paymentSweeper');
 const tracking = require('./src/services/trackingService');
 const insightsEngine = require('./src/services/insightsEngine');
@@ -40,13 +41,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'x-api-key', 'Authorization'],
 }));
 
-// JSON parsing with raw-body capture.
-// The `verify` callback runs on every JSON request BEFORE the body
-// is parsed, and stashes the exact raw bytes (as a UTF-8 string) on
-// req.rawBody. The Duffel webhook route needs this for HMAC
-// signature verification — a re-stringified req.body would not
-// reliably match the bytes Duffel actually signed. Everything else
-// in the app still sees req.body as parsed JSON, unchanged.
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf.toString('utf8');
@@ -56,19 +50,11 @@ app.use(express.json({
 app.set('trust proxy', 1);
 
 // ── Public Webhook Routes (no auth, no rate limit) ────
-// Mounted BEFORE the /api/ rate limiter on purpose: webhooks
-// authenticate themselves (HMAC signatures / provider tokens), and
-// rate-limiting them risks silently dropping signed provider
-// notifications during a burst — e.g. a mass flight-disruption
-// event pushing many Duffel airline-initiated-change events at
-// once. Express matches middleware in registration order, so these
-// routes are simply never seen by the limiter below.
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/webhooks', intasendWebhookRoutes);
 app.use('/api/webhooks', duffelWebhookRoutes);
 
-// Rate limiting (everything under /api/ EXCEPT the webhook routes
-// mounted above)
+// Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -105,8 +91,9 @@ app.use('/admin', adminRoutes);
 
 // ── Other Protected Routes ────────────────────────────
 const { authenticateAgency } = require('./src/middleware/auth');
-app.use('/api/trips',   authenticateAgency, tripRoutes);
-app.use('/api/uploads', authenticateAgency, uploadRoutes);
+app.use('/api/trips',            authenticateAgency, tripRoutes);
+app.use('/api/trips/itinerary',  itineraryRoutes);
+app.use('/api/uploads',          authenticateAgency, uploadRoutes);
 
 // Test page
 app.get('/test-widget.html', (req, res) => {
@@ -148,32 +135,18 @@ app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Bodrless API running on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV}`);
 
-  // Start the payment sweeper — auto-cancels stale unpaid HotelBeds
-  // bookings past their payment deadline (the Option C safety net).
   startSweeper();
 
-  // Check every 5 minutes for bookings stuck in awaiting_payment
-  // for more than 30 minutes and write a critical alert.
   setInterval(() => tracking.checkStuckPayments(), 5 * 60 * 1000);
   logger.info('Stuck payment checker started (every 5 min)');
 
-  // Refresh pattern-detection insights every hour (dead-end
-  // destinations, parser struggle, conversion gaps, channel
-  // friction, repeat-no-booking travelers, supplier drift). Read-
-  // only analysis over existing data — never changes live search/
-  // ranking behavior. Also run once on startup so the dashboard
-  // isn't empty for up to an hour after a fresh deploy.
   insightsEngine.refreshAll().catch(err => logger.error('Initial insights refresh failed', { error: err.message }));
   setInterval(() => insightsEngine.refreshAll(), 60 * 60 * 1000);
   logger.info('Insights engine scheduled (hourly, plus on startup)');
 
-   // HotelBeds Content sync — disabled unless explicitly enabled.
-  // Set ENABLE_HOTELBEDS_CONTENT_SYNC=true to turn it on.
   if (process.env.ENABLE_HOTELBEDS_CONTENT_SYNC === 'true') {
     hotelbedsContent.syncAll().catch(err =>
-      logger.error('Initial HotelBeds content sync failed', {
-        error: err.message
-      })
+      logger.error('Initial HotelBeds content sync failed', { error: err.message })
     );
 
     const HOTELBEDS_CONTENT_SYNC_INTERVAL_MS =
@@ -181,12 +154,9 @@ app.listen(PORT, '0.0.0.0', () => {
       24 * 60 * 60 * 1000;
 
     setInterval(
-      () =>
-        hotelbedsContent.syncAll().catch(err =>
-          logger.error('Scheduled HotelBeds content sync failed', {
-            error: err.message
-          })
-        ),
+      () => hotelbedsContent.syncAll().catch(err =>
+        logger.error('Scheduled HotelBeds content sync failed', { error: err.message })
+      ),
       HOTELBEDS_CONTENT_SYNC_INTERVAL_MS
     );
 
