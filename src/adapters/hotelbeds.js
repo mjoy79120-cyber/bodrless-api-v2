@@ -3,18 +3,23 @@
  * ─────────────────────────────────────────────────────────────
  * Search and book hotels via HotelBeds (APItude API).
  *
- * DESTINATION RESOLUTION (four-tier):
+ * DESTINATION RESOLUTION (five-tier):
  *
- * Tier 1: Static geo overrides — hand-verified EA/global coords,
+ * Tier 1: HotelBeds live /locations/destinations lookup — preferred
+ *         when a destination code exists; more accurate than geo for
+ *         cities HotelBeds knows about (e.g. Maputo, Cairo).
+ * Tier 2: Static geo overrides — hand-verified EA/global coords,
  *         never hits any network. Fixes Nominatim misidentifying
  *         East African towns as places in other countries.
- * Tier 2: Process-level in-memory cache — instant, zero network.
- * Tier 3: Supabase geocode_cache — persisted across restarts,
+ * Tier 3: Process-level in-memory cache — instant, zero network.
+ * Tier 4: Supabase geocode_cache — persisted across restarts,
  *         populated by past Nominatim calls.
- * Tier 4: Nominatim geocoding — free, no API key, any city on earth.
+ * Tier 5: Nominatim geocoding — free, no API key, any city on earth.
  *         Rate limited to 1 req/sec per OSM usage policy.
  *         Result is written to geocode_cache for future calls.
- * Tier 5: HotelBeds live /locations/destinations lookup — last resort.
+ *
+ * When both a destination code AND geolocation are available,
+ * both are returned and search() prefers the destination code.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -23,7 +28,7 @@ const { logger }  = require('../utils/logger');
 const supabase = require('../utils/supabase');
 
 // ─────────────────────────────────────────────
-// TIER 1: STATIC GEO OVERRIDES
+// TIER 2: STATIC GEO OVERRIDES
 // Hand-verified coordinates for destinations Nominatim commonly
 // misidentifies (e.g. "Diani" → Guinea instead of Kenya coast).
 // These are ground-truth and never go to any external service.
@@ -277,7 +282,7 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // TIER 3: SUPABASE geocode_cache LOOKUP
+  // TIER 4: SUPABASE geocode_cache LOOKUP
   // ─────────────────────────────────────────────
   async _lookupSupabaseCache(cityKey) {
     try {
@@ -321,14 +326,13 @@ class HotelBedsAdapter {
 
       logger.info('HotelBeds: wrote geo to Supabase cache', { cityKey });
     } catch (err) {
-      // Non-fatal — Nominatim result still usable even if cache write fails
       logger.warn('HotelBeds: Supabase geo cache write failed', { cityKey, error: err.message });
     }
   }
 
   // ─────────────────────────────────────────────
-  // TIER 4: NOMINATIM GEOCODING
-  // Only called when tiers 1-3 all miss.
+  // TIER 5: NOMINATIM GEOCODING
+  // Only called when tiers 1-4 all miss.
   // Result is always written to Supabase for next time.
   // ─────────────────────────────────────────────
   async _geocodeViaNominatim(cityName, cityKey) {
@@ -339,8 +343,6 @@ class HotelBedsAdapter {
             q:               cityName,
             format:          'json',
             limit:           1,
-            // Bias toward East Africa and known travel corridors.
-            // This stops "Diani" from resolving to Guinea.
             countrycodes:    'ke,tz,ug,rw,et,za,mz,zw,zm,na,bw,mw,mg,sc,mu,mv,km',
           },
           headers: { 'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)' },
@@ -349,8 +351,6 @@ class HotelBedsAdapter {
 
         let result = response.data?.[0];
 
-        // If EA-biased search returned nothing, retry without country filter
-        // so international destinations still resolve correctly
         if (!result) {
           logger.info('HotelBeds: Nominatim EA search empty — retrying globally', { cityName });
           const globalResp = await axios.get('https://nominatim.openstreetmap.org/search', {
@@ -375,16 +375,10 @@ class HotelBedsAdapter {
         };
 
         logger.info('HotelBeds: Nominatim geocoded city', {
-          cityName,
-          lat:         geo.latitude,
-          lng:         geo.longitude,
-          radius,
-          displayName: result.display_name,
+          cityName, lat: geo.latitude, lng: geo.longitude, radius, displayName: result.display_name,
         });
 
-        // Write to Supabase so we never call Nominatim for this city again
         await this._writeSupabaseCache(cityKey, cityName, geo, result.display_name);
-
         return geo;
 
       } catch (err) {
@@ -395,7 +389,8 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // TIER 5: LIVE HOTELBEDS DESTINATION LOOKUP
+  // TIER 1: LIVE HOTELBEDS DESTINATION LOOKUP
+  // Now runs first — before any geo fallback.
   // ─────────────────────────────────────────────
   async _lookupDestinationCodeLive(cityName) {
     const key = (cityName || '').toLowerCase().trim();
@@ -428,7 +423,9 @@ class HotelBedsAdapter {
       ) || destinations[0];
 
       const code = best?.code || null;
-      logger.info('HotelBeds: live destination lookup resolved', { cityName, code, name: best?.name?.content });
+      logger.info('HotelBeds: live destination lookup resolved', {
+        cityName, code, name: best?.name?.content,
+      });
       return code;
 
     } catch (err) {
@@ -443,53 +440,88 @@ class HotelBedsAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // MAIN DESTINATION RESOLUTION — FOUR-TIER
+  // MAIN DESTINATION RESOLUTION — FIVE-TIER
+  //
+  // New order:
+  //   1. HotelBeds destination code (preferred — most accurate)
+  //   2. Static geo override (hand-verified, instant)
+  //   3. In-memory process cache (instant)
+  //   4. Supabase geocode_cache (persisted)
+  //   5. Nominatim (live geocoding, writes to Supabase)
+  //
+  // When both a destination code AND geolocation are found,
+  // BOTH are returned so search() can prefer the code while
+  // still logging the geo for observability.
   // ─────────────────────────────────────────────
   async _resolveDestination(cityName) {
     if (!cityName) return { destinationCode: null, geolocation: null };
 
     const key = (cityName || '').toLowerCase().trim();
 
-    // ── Tier 1: Static geo overrides (hand-verified, instant) ────
+    // ── Tier 1: HotelBeds destination code ───────────────────────
+    // Try this first. If HotelBeds knows the city by name, its own
+    // destination code will return more complete inventory than a
+    // radius-based geo search (which can miss hotels on the edge).
+    const destinationCode = await this._lookupDestinationCodeLive(cityName);
+
+    // ── DIAGNOSTIC LOG — remove once Maputo/Cairo are confirmed ──
+    logger.info('HotelBeds: _resolveDestination code probe', {
+      cityName,
+      destinationCode: destinationCode ?? 'null — will use geo',
+    });
+    // ─────────────────────────────────────────────────────────────
+
+    // ── Tiers 2–5: resolve geolocation (always attempt) ──────────
+    // We resolve geo alongside the code so that:
+    //   a) search() can log which path it used
+    //   b) if the destination code returns 0 results (sandbox gap),
+    //      we can fall back to geo in the same request
+    let geolocation = null;
+
+    // Tier 2: static geo override
     const staticGeo = STATIC_GEO_OVERRIDES[key];
     if (staticGeo) {
-      const geo = {
+      geolocation = {
         latitude:  staticGeo.lat,
         longitude: staticGeo.lng,
         radius:    staticGeo.radius,
         unit:      'km',
       };
-      logger.info('HotelBeds: static geo override hit', { cityName, lat: geo.latitude, lng: geo.longitude });
-      _memCache[key] = geo; // also warm the memory cache
-      return { destinationCode: null, geolocation: geo };
+      logger.info('HotelBeds: static geo override hit', {
+        cityName, lat: geolocation.latitude, lng: geolocation.longitude,
+      });
+      _memCache[key] = geolocation; // warm memory cache
     }
 
-    // ── Tier 2: In-memory process cache (instant) ─────────────────
-    if (_memCache[key]) {
+    // Tier 3: in-memory cache (skip if we already have geo)
+    if (!geolocation && _memCache[key]) {
+      geolocation = _memCache[key];
       logger.info('HotelBeds: memory geo cache hit', { cityName });
-      return { destinationCode: null, geolocation: _memCache[key] };
     }
 
-    // ── Tier 3: Supabase geocode_cache ───────────────────────────
-    const supabaseGeo = await this._lookupSupabaseCache(key);
-    if (supabaseGeo) {
-      _memCache[key] = supabaseGeo; // warm memory cache
-      return { destinationCode: null, geolocation: supabaseGeo };
+    // Tier 4: Supabase geocode_cache
+    if (!geolocation) {
+      const supabaseGeo = await this._lookupSupabaseCache(key);
+      if (supabaseGeo) {
+        geolocation = supabaseGeo;
+        _memCache[key] = supabaseGeo;
+      }
     }
 
-    // ── Tier 4: Nominatim (writes result to Supabase on success) ──
-    const nominatimGeo = await this._geocodeViaNominatim(cityName, key);
-    if (nominatimGeo) {
-      _memCache[key] = nominatimGeo;
-      return { destinationCode: null, geolocation: nominatimGeo };
+    // Tier 5: Nominatim
+    if (!geolocation) {
+      const nominatimGeo = await this._geocodeViaNominatim(cityName, key);
+      if (nominatimGeo) {
+        geolocation = nominatimGeo;
+        _memCache[key] = nominatimGeo;
+      }
     }
 
-    // ── Tier 5: HotelBeds live destination API ────────────────────
-    const live = await this._lookupDestinationCodeLive(cityName);
-    if (live) return { destinationCode: live, geolocation: null };
+    if (!destinationCode && !geolocation) {
+      logger.warn('HotelBeds: could not resolve destination by any method', { cityName });
+    }
 
-    logger.warn('HotelBeds: could not resolve destination by any method', { cityName });
-    return { destinationCode: null, geolocation: null };
+    return { destinationCode, geolocation };
   }
 
   // ─────────────────────────────────────────────
@@ -525,6 +557,8 @@ class HotelBedsAdapter {
       filter:      { packaging: false },
     };
 
+    // Prefer destination code — more accurate inventory coverage.
+    // Fall back to geolocation if no code was resolved.
     if (destinationCode) {
       body.destination = { code: destinationCode };
     } else if (geolocation) {
@@ -536,16 +570,18 @@ class HotelBedsAdapter {
       body.filter.maxRooms = 1;
     }
 
+    // ── Search mode log — tells you exactly which path fired ─────
     logger.info('HotelBeds search request', {
       destination,
-      resolvedAs: destinationCode
-        ? `code:${destinationCode}`
-        : `geo:${geolocation?.latitude},${geolocation?.longitude} radius:${geolocation?.radius}km`,
       checkIn,
       checkOut,
       adults,
       children,
       rooms,
+      resolvedAs: destinationCode
+        ? `destinationCode:${destinationCode}`
+        : `geo:${geolocation?.latitude},${geolocation?.longitude} radius:${geolocation?.radius}km`,
+      using: destinationCode ? 'destinationCode' : 'geolocation',
     });
 
     try {
@@ -556,14 +592,24 @@ class HotelBedsAdapter {
       );
 
       const hotels = response.data?.hotels?.hotels || [];
-      logger.info('HotelBeds search results', { destination, count: hotels.length, radius: geolocation?.radius });
+      logger.info('HotelBeds search results', {
+        destination,
+        count:  hotels.length,
+        using:  destinationCode ? 'destinationCode' : 'geolocation',
+        radius: geolocation?.radius,
+      });
 
-      if (hotels.length === 0 && geolocation) {
-        logger.warn('HotelBeds: zero results — may be test sandbox inventory gap or radius too small', {
+      if (hotels.length === 0) {
+        logger.warn('HotelBeds: zero results', {
           destination,
-          radius: geolocation.radius,
-          lat:    geolocation.latitude,
-          lng:    geolocation.longitude,
+          using:           destinationCode ? 'destinationCode' : 'geolocation',
+          destinationCode: destinationCode ?? 'n/a',
+          radius:          geolocation?.radius ?? 'n/a',
+          lat:             geolocation?.latitude ?? 'n/a',
+          lng:             geolocation?.longitude ?? 'n/a',
+          note:            destinationCode
+            ? 'Destination code found but no inventory — may be sandbox gap'
+            : 'Geo search returned nothing — may be radius too small or sandbox gap',
         });
       }
 

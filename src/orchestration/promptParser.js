@@ -25,6 +25,11 @@
  * Fixed: Follow-up session inheritance — if a follow-up parse returns
  *        a null/dirty destination, the previous session destination
  *        is inherited rather than propagating the dirty value.
+ * Fixed: Stale returnDate guard — if a new departureDate is parsed
+ *        fresh but returnDate was inherited from a prior session and
+ *        predates the new departure, returnDate is recalculated from
+ *        departureDate + nights (or nulled out) so HotelBeds never
+ *        receives checkOut < checkIn.
  */
 
 const Groq = require('groq-sdk');
@@ -290,7 +295,7 @@ function _isPlausiblePlaceName(str) {
 }
 
 // ─────────────────────────────────────────────
-// DESTINATION SANITIZER  ← NEW
+// DESTINATION SANITIZER
 // Strips conversational filler that gets appended to a destination
 // in multi-turn WhatsApp conversations, e.g.:
 //   "Diani, use the details from the previous prompt"  → "Diani"
@@ -721,9 +726,6 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
 
     // ── Sanitize destination BEFORE plausibility check ────────────────────
-    // This is the key fix: Groq may faithfully echo the user's full message
-    // ("Diani, use the details from the previous prompt") into destination.
-    // We strip the filler here so the bad value never propagates downstream.
     if (parsed.destination) {
       const clean = _sanitizeDestination(parsed.destination);
       if (!clean) {
@@ -742,7 +744,6 @@ async function _groqAttempt(prompt, systemPrompt) {
         ...t,
         departureDate: sanitizeDate(t.departureDate),
         returnDate:    sanitizeDate(t.returnDate),
-        // Sanitize each leg destination too
         destination:   t.destination ? (_sanitizeDestination(t.destination) || resolveCountryToCity(t.destination)) : t.destination,
         origin:        t.origin      ? resolveCountryToCity(t.origin)      : t.origin,
       }));
@@ -876,14 +877,7 @@ async function parsePrompt(prompt, session = null) {
     }
   }
 
-  // ── Session inheritance  ← NEW ────────────────────────────────────────────
-  // If a previous session exists, inherit any field that this parse
-  // could not determine. This handles follow-up turns like:
-  //   Turn 1: "Diani, 3 nights, 2 adults, budget"   → full parse
-  //   Turn 2: "27th August"                          → only date resolved
-  //   Turn 3: "Use bus instead"                      → only transportMode resolved
-  // Without session inheritance, turns 2 and 3 would lose destination,
-  // passengers, budget, etc. and fire broken supplier searches.
+  // ── Session inheritance ───────────────────────────────────────────────────
   if (session) {
     const INHERITABLE = [
       'destination', 'origin', 'nights', 'passengers', 'children', 'childAges',
@@ -903,6 +897,34 @@ async function parsePrompt(prompt, session = null) {
         logger.info('PromptParser: inherited from session', { key, value: String(sessionVal).slice(0, 40) });
       }
     }
+
+    // ── Stale returnDate guard ────────────────────────────────────────────
+    // A fresh departureDate may have been parsed while returnDate was
+    // inherited from a prior session. If returnDate now predates or equals
+    // departureDate, it is stale and will cause HotelBeds to receive
+    // checkOut < checkIn (silent empty result) and the return flight search
+    // to fire on the wrong date. Fix: recalculate from nights, or null out.
+    if (raw.returnDate && raw.departureDate) {
+      if (new Date(raw.returnDate) <= new Date(raw.departureDate)) {
+        const staleReturn = raw.returnDate;
+        if (raw.nights) {
+          raw.returnDate = _addDays(raw.departureDate, raw.nights);
+          logger.warn('PromptParser: stale returnDate recalculated from departureDate + nights', {
+            staleReturn,
+            departureDate: raw.departureDate,
+            nights: raw.nights,
+            newReturn: raw.returnDate,
+          });
+        } else {
+          raw.returnDate = null;
+          logger.warn('PromptParser: stale returnDate cleared — predates new departureDate', {
+            staleReturn,
+            departureDate: raw.departureDate,
+          });
+        }
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     // Destination-specific: if the sanitizer cleared a dirty destination
     // but session has a good one, use it and log clearly.
