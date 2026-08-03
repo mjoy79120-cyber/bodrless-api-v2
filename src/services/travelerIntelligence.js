@@ -20,6 +20,12 @@
  *    to the travelers table so the next trip benefits automatically.
  *    This is the Waze layer — every interaction makes Bodrless smarter.
  *
+ * 4. TRIP HISTORY + CORRIDOR INTELLIGENCE
+ *    Every completed booking is read back to detect corridor patterns
+ *    (repeat routes, corporate travel, avg spend) so search params
+ *    are enriched with long-term behavioural signals — not just
+ *    explicit preferences.
+ *
  * Usage:
  *   // Real-time analysis only
  *   const profile = travelerIntelligence.analyze(parsedTrip, prompt);
@@ -27,7 +33,7 @@
  *   // Analysis + persist learning (preferred — use this in the engine)
  *   const profile = await travelerIntelligence.analyzeAndLearn(parsedTrip, prompt, phone);
  *
- *   // Apply stored preferences to search params before every search
+ *   // Apply stored preferences + trip history to search params before every search
  *   const enriched = await travelerIntelligence.applyToSearchParams(phone, searchParams);
  * ─────────────────────────────────────────────────────────────
  */
@@ -83,14 +89,14 @@ const ROOM_PREFERENCE_PATTERNS = [
 ];
 
 const LOYALTY_PATTERNS = [
-  { airline: 'KQ', program: 'Asante',        pattern: /KQ[\s-]?(\w{6,10})/i                                          },
-  { airline: 'ET', program: 'ShebaMiles',    pattern: /ET[\s-]?(\w{6,10})|shebamiles[\s#:]+(\w{6,10})/i             },
-  { airline: 'EK', program: 'Skywards',      pattern: /skywards[\s#:]+(\w{6,10})|EK[\s-]?(\d{9,10})/i              },
+  { airline: 'KQ', program: 'Asante',         pattern: /KQ[\s-]?(\w{6,10})/i                                          },
+  { airline: 'ET', program: 'ShebaMiles',     pattern: /ET[\s-]?(\w{6,10})|shebamiles[\s#:]+(\w{6,10})/i             },
+  { airline: 'EK', program: 'Skywards',       pattern: /skywards[\s#:]+(\w{6,10})|EK[\s-]?(\d{9,10})/i              },
   { airline: 'QR', program: 'Privilege Club', pattern: /privilege[\s-]?club[\s#:]+(\w{6,10})|QR[\s-]?(\w{6,10})/i  },
-  { airline: 'UA', program: 'MileagePlus',   pattern: /mileage[\s-]?plus[\s#:]+(\w{6,10})/i                         },
-  { airline: 'AF', program: 'Flying Blue',   pattern: /flying[\s-]?blue[\s#:]+(\w{6,10})/i                          },
-  { airline: 'BA', program: 'Avios',         pattern: /avios[\s#:]+(\w{6,10})|executive[\s-]?club[\s#:]+(\w{6,10})/i },
-  { airline: 'LH', program: 'Miles & More',  pattern: /miles\s*&?\s*more[\s#:]+(\w{6,10})/i                         },
+  { airline: 'UA', program: 'MileagePlus',    pattern: /mileage[\s-]?plus[\s#:]+(\w{6,10})/i                         },
+  { airline: 'AF', program: 'Flying Blue',    pattern: /flying[\s-]?blue[\s#:]+(\w{6,10})/i                          },
+  { airline: 'BA', program: 'Avios',          pattern: /avios[\s#:]+(\w{6,10})|executive[\s-]?club[\s#:]+(\w{6,10})/i },
+  { airline: 'LH', program: 'Miles & More',   pattern: /miles\s*&?\s*more[\s#:]+(\w{6,10})/i                         },
 ];
 
 const POINTS_BALANCE_PATTERNS = [
@@ -101,15 +107,29 @@ const POINTS_BALANCE_PATTERNS = [
 ];
 
 // ─────────────────────────────────────────────
+// BEACH DESTINATIONS for corridor detection
+// ─────────────────────────────────────────────
+const BEACH_DESTINATIONS = /zanzibar|diani|watamu|mombasa|malindi|kilifi|lamu|mozambique|seychelles|mauritius|pemba/i;
+const SAFARI_DESTINATIONS = /mara|masai|serengeti|amboseli|tsavo|samburu|ngorongoro|ruaha|selous|mikumi|tarangire/i;
+
+// ─────────────────────────────────────────────
 // CONFIDENCE THRESHOLDS FOR LEARNING
 // Only persist signals above these thresholds
 // to avoid learning from one-off requests.
 // ─────────────────────────────────────────────
 const LEARN_THRESHOLDS = {
-  refundSensitivity:   8,   // persist if >= 8
-  luxuryPreference:    8,   // persist if >= 8
-  conveniencePriority: 8,   // persist if >= 8
+  refundSensitivity:   8,
+  luxuryPreference:    8,
+  conveniencePriority: 8,
 };
+
+// ─────────────────────────────────────────────
+// PREFERENCE DECAY WEIGHTS
+// How much to trust stored vs observed signals.
+// Stored preference wins unless prompt explicitly overrides.
+// Corporate signal fades if last 3 trips were leisure.
+// ─────────────────────────────────────────────
+const CORPORATE_DECAY_THRESHOLD = 3; // leisure trips in a row before corp signal fades
 
 class TravelerIntelligenceService {
 
@@ -147,16 +167,16 @@ class TravelerIntelligenceService {
     profile.scoringWeights      = this.buildScoringWeights(profile);
 
     profile.orchestrationHints = {
-      prioritizeRefundable: profile.refundSensitivity >= 8,
-      avoidTransfers:       profile.transferTolerance === 0,
+      prioritizeRefundable:  profile.refundSensitivity >= 8,
+      avoidTransfers:        profile.transferTolerance === 0,
       prioritizeArrivalTime: profile.timeCritical,
-      prioritizeComfort:    profile.tripPurpose === 'honeymoon' || profile.familyFriendly,
+      prioritizeComfort:     profile.tripPurpose === 'honeymoon' || profile.familyFriendly,
       prioritizeLowestPrice: profile.budgetSensitivity === 'high',
     };
 
     logger.info('TravelerIntelligence: profile generated', {
-      travelerType: profile.travelerType,
-      tripPurpose:  profile.tripPurpose,
+      travelerType:      profile.travelerType,
+      tripPurpose:       profile.tripPurpose,
       budgetSensitivity: profile.budgetSensitivity,
     });
 
@@ -192,46 +212,31 @@ class TravelerIntelligenceService {
 
       const merged = { ...profile };
 
-      // Stored seat preference overrides prompt default (not explicit override)
-      if (stored.seat_preference && !profile._explicitSeat) {
+      if (stored.seat_preference && !profile._explicitSeat)
         merged.seatPreference = stored.seat_preference;
-      }
 
-      // Stored cabin preference
-      if (stored.cabin_preference && !profile._explicitCabin) {
+      if (stored.cabin_preference && !profile._explicitCabin)
         merged.cabinPreference = stored.cabin_preference;
-      }
 
-      // Work on flight — always apply if stored
       if (stored.work_on_flight) {
         merged.workOnFlight   = true;
         merged.seatPreference = 'exit_row';
-        if (!merged.cabinPreference || merged.cabinPreference === 'economy') {
+        if (!merged.cabinPreference || merged.cabinPreference === 'economy')
           merged.preferPremiumEconomy = true;
-        }
       }
 
-      // Hotel brands
-      if (stored.hotel_brands?.length > 0) {
+      if (stored.hotel_brands?.length > 0)
         merged.preferredHotelBrands = stored.hotel_brands;
-      }
 
-      // Room preferences
-      if (stored.room_preferences?.length > 0) {
+      if (stored.room_preferences?.length > 0)
         merged.roomPreferences = stored.room_preferences;
-      }
 
-      // Loyalty programs — pass to flight search
-      if (stored.loyalty_programs?.length > 0) {
+      if (stored.loyalty_programs?.length > 0)
         merged.loyaltyPrograms = stored.loyalty_programs;
-      }
 
-      // Baggage preference
-      if (stored.baggage_preference) {
+      if (stored.baggage_preference)
         merged.baggagePreference = stored.baggage_preference;
-      }
 
-      // Always refundable preference (learned from past trips)
       if (stored.extra_preferences?.alwaysRefundable) {
         merged.orchestrationHints.prioritizeRefundable = true;
         merged.scoringWeights.refundFlexibility = 10;
@@ -261,21 +266,17 @@ class TravelerIntelligenceService {
       const updates = {};
       const text    = (originalPrompt || '').toLowerCase();
 
-      // Business traveler → prefer refundable always
       if (profile.tripPurpose === 'business') {
         const extra = await this._getExtraPreferences(phone);
         updates.extra_preferences = {
           ...extra,
-          alwaysRefundable:   true,
-          preferredPurpose:   'business',
+          alwaysRefundable:  true,
+          preferredPurpose:  'business',
         };
-        // Business travelers implicitly prefer premium economy minimum
-        if (!updates.cabin_preference) {
+        if (!updates.cabin_preference)
           updates.cabin_preference = 'premium_economy';
-        }
       }
 
-      // Honeymoon → luxury flag
       if (profile.tripPurpose === 'honeymoon') {
         const extra = await this._getExtraPreferences(phone);
         updates.extra_preferences = {
@@ -284,7 +285,6 @@ class TravelerIntelligenceService {
         };
       }
 
-      // High refund sensitivity
       if (profile.refundSensitivity >= LEARN_THRESHOLDS.refundSensitivity) {
         const extra = await this._getExtraPreferences(phone);
         updates.extra_preferences = {
@@ -293,7 +293,6 @@ class TravelerIntelligenceService {
         };
       }
 
-      // Explicit seat from prompt
       for (const { pattern, value } of SEAT_PATTERNS) {
         if (pattern.test(originalPrompt)) {
           updates.seat_preference = value;
@@ -302,14 +301,12 @@ class TravelerIntelligenceService {
         }
       }
 
-      // Work on flight
       if (WORK_ON_FLIGHT_PATTERNS.some(p => p.test(originalPrompt))) {
         updates.work_on_flight  = true;
         updates.seat_preference = updates.seat_preference || 'exit_row';
         profile._explicitSeat   = true;
       }
 
-      // Explicit cabin from prompt
       for (const { pattern, value } of CABIN_PATTERNS) {
         if (pattern.test(originalPrompt)) {
           updates.cabin_preference = value;
@@ -318,17 +315,15 @@ class TravelerIntelligenceService {
         }
       }
 
-      // Hotel brands
       const mentionedBrands = HOTEL_BRAND_PATTERNS.filter(brand =>
         new RegExp(brand, 'i').test(originalPrompt)
       );
       if (mentionedBrands.length > 0) {
-        const stored = await this.loadPreferences(phone);
+        const stored   = await this.loadPreferences(phone);
         const existing = stored?.hotel_brands || [];
         updates.hotel_brands = [...new Set([...existing, ...mentionedBrands])];
       }
 
-      // Room preferences
       const mentionedRoomPrefs = ROOM_PREFERENCE_PATTERNS
         .filter(({ pattern }) => pattern.test(originalPrompt))
         .map(({ value }) => value);
@@ -338,7 +333,6 @@ class TravelerIntelligenceService {
         updates.room_preferences = [...new Set([...existing, ...mentionedRoomPrefs])];
       }
 
-      // Baggage preference
       for (const { pattern, value } of BAGGAGE_PATTERNS) {
         if (pattern.test(originalPrompt)) {
           updates.baggage_preference = value;
@@ -346,7 +340,6 @@ class TravelerIntelligenceService {
         }
       }
 
-      // Loyalty programs
       for (const { airline, program, pattern } of LOYALTY_PATTERNS) {
         const match = originalPrompt.match(pattern);
         if (match) {
@@ -355,7 +348,6 @@ class TravelerIntelligenceService {
         }
       }
 
-      // Points balances
       for (const { pattern, airline, program } of POINTS_BALANCE_PATTERNS) {
         const match = originalPrompt.match(pattern);
         if (match) {
@@ -364,7 +356,6 @@ class TravelerIntelligenceService {
         }
       }
 
-      // Only upsert if we have something to save
       if (Object.keys(updates).length > 0) {
         const { error } = await supabase
           .from('travelers')
@@ -484,42 +475,226 @@ class TravelerIntelligenceService {
   }
 
   // ═════════════════════════════════════════════════════════════
-  // PART 3: SEARCH PARAM ENRICHMENT
+  // PART 3: TRIP HISTORY + CORRIDOR INTELLIGENCE
+  // ═════════════════════════════════════════════════════════════
+
+  /**
+   * Read completed trip history for this traveler.
+   * Returns raw rows from traveler_trips — call getCorridorPatterns
+   * for derived insights.
+   */
+  async getTripHistory(phone, limit = 20) {
+    try {
+      const { data, error } = await supabase
+        .from('traveler_trips')
+        .select('*')
+        .eq('phone', phone)
+        .eq('status', 'completed')
+        .order('departure_date', { ascending: false })
+        .limit(limit);
+
+      if (error) {
+        logger.warn('TravelerIntelligence: getTripHistory failed', { phone, error: error.message });
+        return [];
+      }
+      return data || [];
+    } catch (err) {
+      logger.error('TravelerIntelligence: getTripHistory threw', { phone, error: err.message });
+      return [];
+    }
+  }
+
+  /**
+   * Derive corridor patterns from trip history.
+   * Returns structured insights used to enrich search params.
+   *
+   * Detects:
+   *  - Top route + frequency
+   *  - Corporate traveler (3+ trips on same route)
+   *  - Average spend (soft budget signal)
+   *  - Preferred destinations
+   *  - Preference decay (corporate flag fades if last 3 trips were leisure)
+   */
+  async getCorridorPatterns(phone) {
+    try {
+      const trips = await this.getTripHistory(phone, 20);
+      if (!trips || trips.length === 0) return null;
+
+      // Count route frequency
+      const routes = {};
+      for (const t of trips) {
+        if (!t.origin || !t.destination) continue;
+        const key  = `${t.origin}→${t.destination}`;
+        routes[key] = (routes[key] || 0) + 1;
+      }
+
+      const sortedRoutes = Object.entries(routes).sort((a, b) => b[1] - a[1]);
+      const topRoute     = sortedRoutes[0] || null;
+
+      // Average spend (exclude zero/null)
+      const spends   = trips.map(t => t.total_price_kes).filter(p => p > 0);
+      const avgSpend = spends.length > 0
+        ? Math.round(spends.reduce((s, p) => s + p, 0) / spends.length)
+        : null;
+
+      // Corporate detection: 3+ trips on same route OR business purpose
+      const businessTrips = trips.filter(t => t.trip_purpose === 'business');
+      const isCorporate   = (topRoute && topRoute[1] >= 3) || businessTrips.length >= 2;
+
+      // Preference decay: if last N trips were leisure, fade corporate signal
+      const lastThree      = trips.slice(0, CORPORATE_DECAY_THRESHOLD);
+      const lastThreeLeisure = lastThree.filter(t => t.trip_purpose !== 'business').length;
+      const corporateDecayed = isCorporate && lastThreeLeisure >= CORPORATE_DECAY_THRESHOLD;
+
+      // Destination affinity
+      const destinations   = [...new Set(trips.map(t => t.destination).filter(Boolean))];
+      const beachTrips     = trips.filter(t => BEACH_DESTINATIONS.test(t.destination || ''));
+      const safariTrips    = trips.filter(t => SAFARI_DESTINATIONS.test(t.destination || ''));
+
+      // Abandonment price signal — what did they walk away from?
+      const stored         = await this.loadPreferences(phone);
+      const abandonPrices  = stored?.extra_preferences?.abandonPrices || [];
+      const avgAbandon     = abandonPrices.length > 0
+        ? Math.round(abandonPrices.reduce((s, a) => s + (a.amount || 0), 0) / abandonPrices.length)
+        : null;
+
+      const patterns = {
+        totalTrips:        trips.length,
+        topRoute:          topRoute ? topRoute[0] : null,
+        topRouteCount:     topRoute ? topRoute[1] : 0,
+        allRoutes:         sortedRoutes.slice(0, 5),
+        isCorporate:       isCorporate && !corporateDecayed,
+        corporateDecayed,
+        avgSpend,
+        avgAbandonPrice:   avgAbandon,
+        destinations,
+        beachTripCount:    beachTrips.length,
+        safariTripCount:   safariTrips.length,
+        lastTripDate:      trips[0]?.departure_date || null,
+        preferredPurpose:  this._dominantPurpose(trips),
+      };
+
+      logger.info('TravelerIntelligence: corridor patterns derived', {
+        phone,
+        totalTrips:    patterns.totalTrips,
+        topRoute:      patterns.topRoute,
+        isCorporate:   patterns.isCorporate,
+        avgSpend:      patterns.avgSpend,
+      });
+
+      return patterns;
+
+    } catch (err) {
+      logger.error('TravelerIntelligence: getCorridorPatterns threw', { phone, error: err.message });
+      return null;
+    }
+  }
+
+  /**
+   * Record abandonment price signal.
+   * Called by conversationMemoryService when a leg_flow expires
+   * without being booked — captures what price point they walked away from.
+   */
+  async recordAbandonmentSignal(phone, totalKES) {
+    if (!phone || !totalKES || totalKES <= 0) return;
+    try {
+      const stored         = await this.loadPreferences(phone);
+      const existing       = stored?.extra_preferences || {};
+      const abandonPrices  = existing.abandonPrices || [];
+
+      abandonPrices.push({ amount: totalKES, at: new Date().toISOString() });
+
+      await supabase.from('travelers').upsert({
+        phone,
+        extra_preferences: {
+          ...existing,
+          abandonPrices: abandonPrices.slice(-5), // keep last 5
+        },
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'phone' });
+
+      logger.info('TravelerIntelligence: abandonment signal recorded', { phone, totalKES });
+    } catch (err) {
+      logger.error('TravelerIntelligence: recordAbandonmentSignal threw', { phone, error: err.message });
+    }
+  }
+
+  _dominantPurpose(trips) {
+    if (!trips || trips.length === 0) return null;
+    const counts = {};
+    for (const t of trips) {
+      if (t.trip_purpose) counts[t.trip_purpose] = (counts[t.trip_purpose] || 0) + 1;
+    }
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    return sorted[0]?.[0] || null;
+  }
+
+  // ═════════════════════════════════════════════════════════════
+  // PART 4: SEARCH PARAM ENRICHMENT
+  // Now enriched with corridor patterns + trip history signals
   // ═════════════════════════════════════════════════════════════
 
   async applyToSearchParams(phone, searchParams) {
     try {
-      const prefs = await this.loadPreferences(phone);
-      if (!prefs) return searchParams;
-
+      const prefs    = await this.loadPreferences(phone);
       const enriched = { ...searchParams };
 
-      if (prefs.seat_preference && !enriched.seatPreference)
-        enriched.seatPreference = prefs.seat_preference;
+      // ── Explicit stored preferences ──────────────────────────
+      if (prefs) {
+        if (prefs.seat_preference && !enriched.seatPreference)
+          enriched.seatPreference = prefs.seat_preference;
 
-      if (prefs.work_on_flight) {
-        enriched.seatPreference = 'exit_row';
-        if (!enriched.cabinClass || enriched.cabinClass === 'economy')
-          enriched.preferPremiumEconomy = true;
+        if (prefs.work_on_flight) {
+          enriched.seatPreference = 'exit_row';
+          if (!enriched.cabinClass || enriched.cabinClass === 'economy')
+            enriched.preferPremiumEconomy = true;
+        }
+
+        if (prefs.cabin_preference && !enriched.cabinClass)
+          enriched.cabinClass = prefs.cabin_preference;
+
+        if (prefs.baggage_preference && !enriched.baggagePreference)
+          enriched.baggagePreference = prefs.baggage_preference;
+
+        if (prefs.hotel_brands?.length > 0 && !enriched.preferredHotelBrands)
+          enriched.preferredHotelBrands = prefs.hotel_brands;
+
+        if (prefs.room_preferences?.length > 0 && !enriched.roomPreferences)
+          enriched.roomPreferences = prefs.room_preferences;
+
+        if (prefs.loyalty_programs?.length > 0 && !enriched.loyaltyPrograms)
+          enriched.loyaltyPrograms = prefs.loyalty_programs;
+
+        if (prefs.extra_preferences?.alwaysRefundable)
+          enriched.preferRefundable = true;
       }
 
-      if (prefs.cabin_preference && !enriched.cabinClass)
-        enriched.cabinClass = prefs.cabin_preference;
+      // ── Corridor pattern signals ─────────────────────────────
+      const corridors = await this.getCorridorPatterns(phone);
+      if (corridors) {
+        // Corporate traveler — bias toward refundable + premium economy
+        if (corridors.isCorporate && !enriched.preferRefundable) {
+          enriched.preferRefundable     = true;
+          enriched._corporateTraveler   = true;
+          if (!enriched.cabinClass)
+            enriched.cabinClass = 'premium_economy';
+        }
 
-      if (prefs.baggage_preference && !enriched.baggagePreference)
-        enriched.baggagePreference = prefs.baggage_preference;
+        // Average spend as soft budget ceiling hint
+        if (corridors.avgSpend && !enriched.budgetHint)
+          enriched.budgetHint = corridors.avgSpend;
 
-      if (prefs.hotel_brands?.length > 0 && !enriched.preferredHotelBrands)
-        enriched.preferredHotelBrands = prefs.hotel_brands;
+        // Abandonment price — soft ceiling (don't surface packages way above this)
+        if (corridors.avgAbandonPrice && !enriched.abandonPriceHint)
+          enriched.abandonPriceHint = corridors.avgAbandonPrice;
 
-      if (prefs.room_preferences?.length > 0 && !enriched.roomPreferences)
-        enriched.roomPreferences = prefs.room_preferences;
-
-      if (prefs.loyalty_programs?.length > 0 && !enriched.loyaltyPrograms)
-        enriched.loyaltyPrograms = prefs.loyalty_programs;
-
-      if (prefs.extra_preferences?.alwaysRefundable)
-        enriched.preferRefundable = true;
+        // Returning traveler context (used in orchestrator for personalisation messaging)
+        if (corridors.totalTrips > 0) {
+          enriched._returningTraveler  = true;
+          enriched._totalPastTrips     = corridors.totalTrips;
+          enriched._topRoute           = corridors.topRoute;
+        }
+      }
 
       logger.info('TravelerIntelligence: search params enriched', {
         phone,
@@ -527,6 +702,9 @@ class TravelerIntelligenceService {
         cabinClass:           enriched.cabinClass,
         preferredHotelBrands: enriched.preferredHotelBrands,
         preferRefundable:     enriched.preferRefundable,
+        corporateTraveler:    enriched._corporateTraveler || false,
+        budgetHint:           enriched.budgetHint,
+        returningTraveler:    enriched._returningTraveler || false,
       });
 
       return enriched;
@@ -537,7 +715,7 @@ class TravelerIntelligenceService {
   }
 
   // ═════════════════════════════════════════════════════════════
-  // PART 4: WHATSAPP OUTPUT HELPERS
+  // PART 5: WHATSAPP OUTPUT HELPERS
   // ═════════════════════════════════════════════════════════════
 
   async buildPointsSummary(phone, airlines = []) {
@@ -641,9 +819,9 @@ class TravelerIntelligenceService {
       new RegExp(brand, 'i').test(text)
     );
     if (mentionedBrands.length > 0) {
-      const traveler      = await this.loadPreferences(phone);
+      const traveler       = await this.loadPreferences(phone);
       const existingBrands = traveler?.hotel_brands || [];
-      const merged        = [...new Set([...existingBrands, ...mentionedBrands])];
+      const merged         = [...new Set([...existingBrands, ...mentionedBrands])];
       extracted.hotel_brands = merged;
       await this.savePreference(phone, 'hotel_brands', merged);
       changed.push(`hotel_brands: ${mentionedBrands.join(', ')}`);
@@ -695,7 +873,7 @@ class TravelerIntelligenceService {
   }
 
   // ═════════════════════════════════════════════════════════════
-  // REAL-TIME DETECTION METHODS (from original TravelerIntelligence)
+  // REAL-TIME DETECTION METHODS
   // ═════════════════════════════════════════════════════════════
 
   detectTravelerType(parsedTrip, text) {
@@ -743,9 +921,9 @@ class TravelerIntelligenceService {
     if (parsedTrip.outboundTransportMode) {
       return parsedTrip.outboundTransportMode === 'flight' ? 'air' : parsedTrip.outboundTransportMode;
     }
-    if (text.match(/flight|fly|ndege/))       return 'air';
-    if (text.match(/bus|coach|basi|matatu/))   return 'bus';
-    if (text.match(/train|sgr|treni/))         return 'train';
+    if (text.match(/flight|fly|ndege/))     return 'air';
+    if (text.match(/bus|coach|basi|matatu/)) return 'bus';
+    if (text.match(/train|sgr|treni/))       return 'train';
     return 'any';
   }
 
@@ -780,8 +958,8 @@ class TravelerIntelligenceService {
 
   detectTransferTolerance(profile, text) {
     if (text.match(/direct|non stop|no layovers|bila kusimama/)) return 0;
-    if (profile.budgetSensitivity === 'high')  return 3;
-    if (profile.tripPurpose === 'business')    return 1;
+    if (profile.budgetSensitivity === 'high') return 3;
+    if (profile.tripPurpose === 'business')   return 1;
     return 2;
   }
 
@@ -810,8 +988,8 @@ class TravelerIntelligenceService {
     if (profile.familyFriendly) {
       weights.transferComfort = 9; weights.convenience = 8;
     }
-    if (profile.refundSensitivity >= 8)  weights.refundFlexibility = 10;
-    if (profile.timeCritical)            weights.convenience = 10;
+    if (profile.refundSensitivity >= 8) weights.refundFlexibility = 10;
+    if (profile.timeCritical)           weights.convenience = 10;
 
     return weights;
   }

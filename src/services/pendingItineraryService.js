@@ -14,15 +14,23 @@
  *
  * When phone is collected at booking, steps 2+3 are linked
  * and WhatsApp can continue the exact same leg flow.
+ *
+ * Trip history:
+ *   On markCompleted(), a permanent record is written to
+ *   traveler_trips so corridor patterns and memory persist
+ *   beyond session expiry. This is the memory moat.
  */
 
 const { v4: uuidv4 } = require('uuid');
 const supabase        = require('../utils/supabase');
 const { logger }      = require('../utils/logger');
 
-// Lazy-load conversationMemory to avoid circular deps
+// Lazy-load to avoid circular deps
 function getConversationMemory() {
   return require('./conversationMemoryService');
+}
+function getTravelerIntelligence() {
+  return require('./travelerIntelligence');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -38,11 +46,10 @@ function _priceCheckInterval(departureDateStr) {
 
 // ─────────────────────────────────────────────────────────────
 // MESSAGE CLASSIFIER
-// Determines intent so we know whether to restore or start fresh
 // ─────────────────────────────────────────────────────────────
-const GREETING_PATTERN    = /^(hi|hey|hello|hujambo|habari|sasa|niaje|good\s*(morning|afternoon|evening)|howdy|sup|what'?s\s*up|yo|greetings|salaam|jambo)[\s!?.]*$/i;
-const RESUME_PATTERN      = /\b(my\s*(saved|previous|last)\s*trip|the\s*trip\s*(i|we)\s*(was|were)\s*planning|continue|pick\s*up\s*where|resume|saved\s*itinerary|my\s*itinerary)\b/i;
-const NEW_TRIP_PATTERN    = /\b(to|from|nairobi|mombasa|zanzibar|kigali|dubai|london|safari|fly|flight|hotel|nights?|travel|trip\s+to)\b/i;
+const GREETING_PATTERN = /^(hi|hey|hello|hujambo|habari|sasa|niaje|good\s*(morning|afternoon|evening)|howdy|sup|what'?s\s*up|yo|greetings|salaam|jambo)[\s!?.]*$/i;
+const RESUME_PATTERN   = /\b(my\s*(saved|previous|last)\s*trip|the\s*trip\s*(i|we)\s*(was|were)\s*planning|continue|pick\s*up\s*where|resume|saved\s*itinerary|my\s*itinerary)\b/i;
+const NEW_TRIP_PATTERN = /\b(to|from|nairobi|mombasa|zanzibar|kigali|dubai|london|safari|fly|flight|hotel|nights?|travel|trip\s+to)\b/i;
 
 function classifyMessage(text) {
   const t = (text || '').trim();
@@ -53,8 +60,13 @@ function classifyMessage(text) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// BEACH / SAFARI DESTINATION HELPERS
+// ─────────────────────────────────────────────────────────────
+const BEACH_DEST = /zanzibar|diani|watamu|mombasa|malindi|kilifi|lamu|mozambique|seychelles|mauritius|pemba/i;
+const SAFARI_DEST = /mara|masai|serengeti|amboseli|tsavo|samburu|ngorongoro|ruaha|selous|mikumi|tarangire/i;
+
+// ─────────────────────────────────────────────────────────────
 // SAVE / UPSERT pending_itineraries
-// leg_flow uses conversationMemory shape for cross-channel compat
 // ─────────────────────────────────────────────────────────────
 async function save({
   itineraryId    = null,
@@ -63,8 +75,8 @@ async function save({
   sessionId,
   channel        = 'widget',
   tripParams,
-  legResults,    // tripResults[] from engine (classified trip)
-  legFlow,       // conversationMemory leg_flow shape
+  legResults,
+  legFlow,
   status         = 'active',
   bookedLegs     = [],
   pendingLegs    = [],
@@ -74,33 +86,32 @@ async function save({
     const departureDateStr = tripParams?.departureDate || null;
     const intervalHours    = _priceCheckInterval(departureDateStr);
 
-    // Total from leg_flow selections
     let totalSelectedPrice = 0;
     if (legFlow?.runningTotalKES) totalSelectedPrice = legFlow.runningTotalKES;
 
     const payload = {
       phone,
-      agency_id:           agencyId,
-      session_id:          sessionId || null,
+      agency_id:                  agencyId,
+      session_id:                 sessionId || null,
       channel,
-      trip_params:         tripParams    || null,
-      leg_results:         legResults    || null,
-      leg_flow:            legFlow       || null,
-      selected_legs:       legFlow?.selections ? Object.values(legFlow.selections) : [],
-      current_leg_index:   legFlow?.currentLegIndex ?? 0,
-      booked_legs:         bookedLegs,
-      pending_legs:        pendingLegs,
-      price_snapshot:      priceSnapshot,
-      price_checked_at:    new Date().toISOString(),
+      trip_params:                tripParams   || null,
+      leg_results:                legResults   || null,
+      leg_flow:                   legFlow      || null,
+      selected_legs:              legFlow?.selections ? Object.values(legFlow.selections) : [],
+      current_leg_index:          legFlow?.currentLegIndex ?? 0,
+      booked_legs:                bookedLegs,
+      pending_legs:               pendingLegs,
+      price_snapshot:             priceSnapshot,
+      price_checked_at:           new Date().toISOString(),
       price_check_interval_hours: intervalHours,
-      destination:         tripParams?.destination || null,
-      departure_date:      departureDateStr,
-      total_selected_price: totalSelectedPrice,
-      currency:            tripParams?.currency || 'KES',
-      passengers:          tripParams?.passengers || 1,
+      destination:                tripParams?.destination || null,
+      departure_date:             departureDateStr,
+      total_selected_price:       totalSelectedPrice,
+      currency:                   tripParams?.currency || 'KES',
+      passengers:                 tripParams?.passengers || 1,
       status,
-      updated_at:          new Date().toISOString(),
-      expires_at:          new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+      updated_at:                 new Date().toISOString(),
+      expires_at:                 new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
     };
 
     if (itineraryId) {
@@ -128,7 +139,6 @@ async function save({
 
 // ─────────────────────────────────────────────────────────────
 // RESTORE
-// Phone-first (cross-channel), sessionId fallback (widget only)
 // ─────────────────────────────────────────────────────────────
 async function restore({ phone, sessionId, agencyId }) {
   try {
@@ -166,19 +176,15 @@ async function restore({ phone, sessionId, agencyId }) {
 
 // ─────────────────────────────────────────────────────────────
 // ATTACH PHONE
-// Called at booking time — links session to phone for WhatsApp
-// Also writes leg_flow to whatsapp_contacts for WA continuity
 // ─────────────────────────────────────────────────────────────
 async function attachPhone(itineraryId, phone, agencyId) {
   if (!itineraryId || !phone) return;
   try {
-    // Update pending_itineraries
     await supabase
       .from('pending_itineraries')
       .update({ phone, updated_at: new Date().toISOString() })
       .eq('id', itineraryId);
 
-    // Get the itinerary so we can sync leg_flow to whatsapp_contacts
     const { data: itin } = await supabase
       .from('pending_itineraries')
       .select('leg_flow, trip_params')
@@ -233,28 +239,131 @@ async function markPartiallyBooked(itineraryId, bookedLegs, pendingLegs) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// RECORD TRIP
+// Writes a permanent record to traveler_trips on booking
+// completion. This is what builds the memory moat over time —
+// corridor patterns, avg spend, and destination affinity all
+// derive from this table.
+//
+// Called automatically by markCompleted(). Do not call directly
+// unless you need to backfill records.
+// ─────────────────────────────────────────────────────────────
+async function recordTrip(itinerary) {
+  if (!itinerary?.phone) {
+    logger.warn('PendingItinerary.recordTrip: no phone — skipping', { id: itinerary?.id });
+    return;
+  }
+
+  try {
+    const tf   = itinerary.trip_params || {};
+    const lf   = itinerary.leg_flow   || {};
+    const sels = Object.values(lf.selections || {});
+
+    // Pull hotel from first leg that has one
+    const hotelSel = sels.find(s => s.package?.hotel);
+    const hotel    = hotelSel?.package?.hotel;
+
+    // Cabin class — from trip params or first flight selection
+    const flightSel  = sels.find(s => s.package?.transport);
+    const cabinClass = tf.cabinClass
+      || flightSel?.package?.transport?.cabinClass
+      || null;
+
+    // Destination affinity flags
+    const dest      = (tf.destination || '').toLowerCase();
+    const hadBeach  = BEACH_DEST.test(dest);
+    const hadSafari = SAFARI_DEST.test(dest) || sels.some(s => s.package?.safari);
+
+    const record = {
+      phone:             itinerary.phone,
+      agency_id:         itinerary.agency_id,
+      origin:            tf.origin            || null,
+      destination:       tf.destination       || null,
+      departure_date:    tf.departureDate      || null,
+      return_date:       tf.returnDate         || null,
+      nights:            tf.nights             || null,
+      passengers:        tf.passengers         || 1,
+      total_price_kes:   lf.runningTotalKES    || itinerary.total_selected_price || 0,
+      cabin_class:       cabinClass,
+      hotel_name:        hotel?.name           || null,
+      hotel_stars:       hotel?.stars ? parseInt(hotel.stars, 10) : null,
+      trip_purpose:      tf.tripPurpose        || null,
+      budget_sensitivity: tf.budgetSensitivity || null,
+      was_refundable:    !!tf.preferRefundable,
+      had_safari:        hadSafari,
+      had_beach:         hadBeach,
+      bodrless_trip_id:  itinerary.id,
+      status:            'completed',
+    };
+
+    const { error } = await supabase
+      .from('traveler_trips')
+      .insert(record);
+
+    if (error) {
+      logger.warn('PendingItinerary.recordTrip: insert failed', {
+        phone: itinerary.phone,
+        error: error.message,
+      });
+    } else {
+      logger.info('PendingItinerary.recordTrip: saved', {
+        phone:       itinerary.phone,
+        destination: tf.destination,
+        totalKES:    record.total_price_kes,
+      });
+    }
+  } catch (err) {
+    logger.error('PendingItinerary.recordTrip threw', { error: err.message });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// MARK COMPLETED
+// Writes trip to permanent traveler_trips history, then marks
+// the pending_itinerary as completed.
+// ─────────────────────────────────────────────────────────────
 async function markCompleted(itineraryId) {
   if (!itineraryId) return;
   try {
+    // Fetch full itinerary so recordTrip has all the data it needs
+    const { data: itin, error: fetchErr } = await supabase
+      .from('pending_itineraries')
+      .select('*')
+      .eq('id', itineraryId)
+      .single();
+
+    if (fetchErr || !itin) {
+      logger.warn('PendingItinerary.markCompleted: could not fetch itinerary', {
+        id: itineraryId,
+        error: fetchErr?.message,
+      });
+    } else {
+      // Write permanent trip history record (non-blocking — errors are logged not thrown)
+      await recordTrip(itin);
+    }
+
+    // Mark as completed regardless of recordTrip outcome
     await supabase
       .from('pending_itineraries')
       .update({ status: 'completed', updated_at: new Date().toISOString() })
       .eq('id', itineraryId);
+
+    logger.info('PendingItinerary: completed', { id: itineraryId });
   } catch (err) {
-    logger.error('PendingItinerary.markCompleted failed', { error: err.message });
+    logger.error('PendingItinerary.markCompleted threw', { error: err.message });
   }
 }
 
 // ─────────────────────────────────────────────────────────────
 // BUILD RESTORE PROMPT
-// Shown when a returning traveler sends a greeting
 // ─────────────────────────────────────────────────────────────
 function buildRestorePrompt(itinerary) {
   try {
-    const tp       = itinerary.trip_params || {};
-    const legFlow  = itinerary.leg_flow || {};
-    const dest     = tp.destination || 'your destination';
-    const deps     = tp.departureDate
+    const tp      = itinerary.trip_params || {};
+    const legFlow = itinerary.leg_flow   || {};
+    const dest    = tp.destination || 'your destination';
+    const deps    = tp.departureDate
       ? new Date(tp.departureDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
       : null;
     const pax      = tp.passengers || 1;
@@ -289,18 +398,16 @@ function buildRestorePrompt(itinerary) {
 
 // ─────────────────────────────────────────────────────────────
 // PRICE CHECK
-// Compares current selection prices against saved snapshot
-// Returns array of nudges
 // ─────────────────────────────────────────────────────────────
 async function checkPrices(itinerary) {
   try {
-    const snapshot  = itinerary.price_snapshot || {};
-    const legFlow   = itinerary.leg_flow || {};
+    const snapshot   = itinerary.price_snapshot || {};
+    const legFlow    = itinerary.leg_flow || {};
     const selections = legFlow.selections || {};
-    const nudges    = [];
+    const nudges     = [];
 
     for (const [idx, sel] of Object.entries(selections)) {
-      const pkg      = sel?.package;
+      const pkg = sel?.package;
       if (!pkg?.packageId) continue;
 
       const oldPrice = snapshot[pkg.packageId];
@@ -324,7 +431,6 @@ async function checkPrices(itinerary) {
         currency:   itinerary.currency || 'KES',
       });
 
-      // Log nudge
       await supabase.from('price_nudges').insert({
         id:            uuidv4(),
         itinerary_id:  itinerary.id,
@@ -341,7 +447,6 @@ async function checkPrices(itinerary) {
       }).catch(() => {});
     }
 
-    // Update checked timestamp
     await supabase
       .from('pending_itineraries')
       .update({ price_checked_at: new Date().toISOString() })
@@ -356,7 +461,7 @@ async function checkPrices(itinerary) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// FORMAT PRICE NUDGE — non-blocking, inline alert
+// FORMAT PRICE NUDGE
 // ─────────────────────────────────────────────────────────────
 function formatNudgeMessage(nudges, currency = 'KES') {
   if (!nudges || nudges.length === 0) return null;
@@ -379,7 +484,6 @@ function shouldCheckPrices(itinerary) {
 
 // ─────────────────────────────────────────────────────────────
 // CALCULATE DEPOSIT
-// Flights 100% + Hotels 30% + Transfers paid at arrival
 // ─────────────────────────────────────────────────────────────
 function calculateDeposit(legFlow) {
   let flightsTotal   = 0;
@@ -425,6 +529,7 @@ module.exports = {
   markAbandoned,
   markPartiallyBooked,
   markCompleted,
+  recordTrip,
   checkPrices,
   shouldCheckPrices,
   formatNudgeMessage,

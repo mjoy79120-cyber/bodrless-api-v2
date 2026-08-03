@@ -19,6 +19,12 @@
  * Fixed: propertyType vs preferredHotel distinction — "beachfront"
  *        is a property type, not a hotel name, and must never be
  *        passed as preferredHotel or it wipes out all hotel results.
+ * Fixed: Destination sanitizer — strips conversational filler from
+ *        destination field (e.g. "Diani, use the details from the
+ *        previous prompt" → "Diani").
+ * Fixed: Follow-up session inheritance — if a follow-up parse returns
+ *        a null/dirty destination, the previous session destination
+ *        is inherited rather than propagating the dirty value.
  */
 
 const Groq = require('groq-sdk');
@@ -26,9 +32,6 @@ const { logger } = require('../utils/logger');
 
 // ─────────────────────────────────────────────
 // PROPERTY TYPE DESCRIPTORS
-// Words that describe a hotel's location/style, NOT a hotel name.
-// When Groq or rules detect these, they go into propertyType,
-// never into preferredHotel.
 // ─────────────────────────────────────────────
 const PROPERTY_TYPE_KEYWORDS = new Set([
   'beachfront', 'beach front', 'beach-front', 'beachside', 'on the beach',
@@ -56,16 +59,9 @@ function _extractPropertyType(text) {
 
 // ─────────────────────────────────────────────
 // ACTIVITY KEYWORDS
-// Split into two categories:
-//   SAFARI  — full game-reserve trip leg; needs lodge + transport
-//   EXCURSION — in-destination activity; noted in response only
 // ─────────────────────────────────────────────
-
-// Safari = game reserve destination, treated as a full trip leg.
-// The actual park/reserve is resolved from the traveler's base city.
 const SAFARI_PATTERN = /\bsafari\b|\bgame\s+(?:drive|park|reserve)\b|\bgame\s+viewing\b/i;
 
-// Excursions = in-destination activities, NOT booked as trip legs.
 const EXCURSION_PATTERNS = [
   { pattern: /\bsnorkel(?:ling|ing)?\b/i,                         label: 'snorkelling' },
   { pattern: /\bscuba\s+diving\b|\bdiving\b/i,                    label: 'scuba_diving' },
@@ -88,33 +84,15 @@ const EXCURSION_PATTERNS = [
   { pattern: /\bprison\s+island\b/i,                              label: 'prison_island' },
 ];
 
-// Safari destination resolver:
-// Given the traveler's primary destination / origin city, return the
-// most appropriate game reserve to add as a trip leg.
 const SAFARI_DESTINATIONS = {
-  // Tanzania / Indian Ocean coast → Serengeti or Ngorongoro
-  tanzania:   'Serengeti',
-  zanzibar:   'Serengeti',
-  'dar es salaam': 'Serengeti',
-  arusha:     'Serengeti',
-  moshi:      'Serengeti',
-  // Kenya → Masai Mara (default), Amboseli near Nairobi/Mombasa
-  kenya:      'Masai Mara',
-  nairobi:    'Masai Mara',
-  mombasa:    'Amboseli',
-  diani:      'Amboseli',
-  malindi:    'Amboseli',
-  // Uganda
-  kampala:    'Bwindi',
-  entebbe:    'Bwindi',
-  // Rwanda
-  kigali:     'Akagera',
-  // South Africa
-  johannesburg: 'Kruger',
-  'cape town':  'Kruger',
-  durban:       'Kruger',
-  // Default fallback
-  _default:   'Masai Mara',
+  tanzania:   'Serengeti', zanzibar: 'Serengeti', 'dar es salaam': 'Serengeti',
+  arusha: 'Serengeti', moshi: 'Serengeti',
+  kenya: 'Masai Mara', nairobi: 'Masai Mara', mombasa: 'Amboseli',
+  diani: 'Amboseli', malindi: 'Amboseli',
+  kampala: 'Bwindi', entebbe: 'Bwindi',
+  kigali: 'Akagera',
+  johannesburg: 'Kruger', 'cape town': 'Kruger', durban: 'Kruger',
+  _default: 'Masai Mara',
 };
 
 function resolveSafariDestination(primaryCity) {
@@ -128,15 +106,13 @@ function _extractActivities(text) {
   const hasSafari = SAFARI_PATTERN.test(text);
   const excursions = [];
   for (const { pattern, label } of EXCURSION_PATTERNS) {
-    if (pattern.test(text) && !excursions.includes(label)) {
-      excursions.push(label);
-    }
+    if (pattern.test(text) && !excursions.includes(label)) excursions.push(label);
   }
   return { hasSafari, excursions };
 }
 
 // ─────────────────────────────────────────────
-// DATE NORMALIZATION HELPER
+// DATE HELPERS
 // ─────────────────────────────────────────────
 function _normalizeYear(yearInput) {
   const currentYear = new Date().getFullYear();
@@ -146,9 +122,6 @@ function _normalizeYear(yearInput) {
   return yr;
 }
 
-// ─────────────────────────────────────────────
-// DATE HELPERS
-// ─────────────────────────────────────────────
 function _addDays(dateStr, days) {
   const d = new Date(dateStr);
   d.setDate(d.getDate() + days);
@@ -163,33 +136,15 @@ function _diffDays(a, b) {
 // NON-FLYABLE DESTINATIONS
 // ─────────────────────────────────────────────
 const NON_FLYABLE_HUBS = {
-  'masai mara':   'Nairobi',
-  'maasai mara':  'Nairobi',
-  'serengeti':    'Arusha',
-  'ngorongoro':   'Arusha',
-  'amboseli':     'Nairobi',
-  'tsavo':        'Mombasa',
-  'samburu':      'Nairobi',
-  'lake nakuru':  'Nairobi',
-  'naivasha':     'Nairobi',
-  'ol pejeta':    'Nanyuki',
-  'bwindi':       'Entebbe',
-  'kruger':       'Johannesburg',
-  'kruger park':  'Johannesburg',
-  'machu picchu': 'Cusco',
-  'ha long bay':  'Hanoi',
-  'positano':     'Naples',
-  'amalfi coast': 'Naples',
-  'tuscany':      'Rome',
-  'garden route': 'George',
-  'franschhoek':  'Cape Town',
-  'hermanus':     'Cape Town',
-  'sun city':     'Johannesburg',
-  'petra':        'Amman',
-  'ubud':         'Bali',
-  'hoi an':       'Da Nang',
-  'diani':        'Mombasa',
-  'diani beach':  'Mombasa',
+  'masai mara': 'Nairobi', 'maasai mara': 'Nairobi', 'serengeti': 'Arusha',
+  'ngorongoro': 'Arusha', 'amboseli': 'Nairobi', 'tsavo': 'Mombasa',
+  'samburu': 'Nairobi', 'lake nakuru': 'Nairobi', 'naivasha': 'Nairobi',
+  'ol pejeta': 'Nanyuki', 'bwindi': 'Entebbe', 'kruger': 'Johannesburg',
+  'kruger park': 'Johannesburg', 'machu picchu': 'Cusco', 'ha long bay': 'Hanoi',
+  'positano': 'Naples', 'amalfi coast': 'Naples', 'tuscany': 'Rome',
+  'garden route': 'George', 'franschhoek': 'Cape Town', 'hermanus': 'Cape Town',
+  'sun city': 'Johannesburg', 'petra': 'Amman', 'ubud': 'Bali', 'hoi an': 'Da Nang',
+  'diani': 'Mombasa', 'diani beach': 'Mombasa',
 };
 
 function _isNonFlyable(dest) {
@@ -209,15 +164,13 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
 
   const homeNorm = (homeOrigin || '').toLowerCase().trim();
 
-  const lastLeg     = trips[trips.length - 1];
-  const lastDest    = (lastLeg.destination || '').toLowerCase().trim();
+  const lastLeg = trips[trips.length - 1];
+  const lastDest = (lastLeg.destination || '').toLowerCase().trim();
   const lastIsReturnHome = lastDest === homeNorm;
   const lastOriginFlyable = !_isNonFlyable(lastLeg.origin || '');
   const datesCorrect = lastLeg.departureDate === returnDate;
 
-  if (lastIsReturnHome && lastOriginFlyable && datesCorrect) {
-    return trips;
-  }
+  if (lastIsReturnHome && lastOriginFlyable && datesCorrect) return trips;
 
   let internal = trips.filter(t =>
     (t.destination || '').toLowerCase().trim() !== homeNorm
@@ -230,25 +183,19 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
     const hub = _hubFor(lastInternal.destination);
     if (hub && hub.toLowerCase() !== homeNorm) {
       internal.push({
-        destination:  hub,
-        origin:       lastInternal.destination,
-        nights:       0,
-        departureDate: null,
-        returnDate:   null,
-        _transitLeg:  true,
+        destination: hub, origin: lastInternal.destination,
+        nights: 0, departureDate: null, returnDate: null, _transitLeg: true,
       });
     }
   }
 
-  const totalNights    = _diffDays(departureDate, returnDate);
-  const specifiedNights = internal
-    .filter((_, i) => i > 0)
-    .reduce((s, t) => s + (t.nights || 0), 0);
+  const totalNights = _diffDays(departureDate, returnDate);
+  const specifiedNights = internal.filter((_, i) => i > 0).reduce((s, t) => s + (t.nights || 0), 0);
   const firstNights = Math.max(0, totalNights - specifiedNights);
 
   let cursor = departureDate;
   const rebuilt = internal.map((leg, i) => {
-    const nights  = i === 0 ? firstNights : (leg.nights || 0);
+    const nights = i === 0 ? firstNights : (leg.nights || 0);
     const depDate = cursor;
     const retDate = nights > 0 ? _addDays(cursor, nights) : null;
     if (nights > 0) cursor = _addDays(cursor, nights);
@@ -257,13 +204,9 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
 
   const lastRebuilt = rebuilt[rebuilt.length - 1];
   rebuilt.push({
-    destination:  homeOrigin,
-    origin:       lastRebuilt.destination,
-    nights:       0,
-    departureDate: returnDate,
-    returnDate:   null,
-    _returnLeg:   true,
-    needsOriginClarification: false,
+    destination: homeOrigin, origin: lastRebuilt.destination,
+    nights: 0, departureDate: returnDate, returnDate: null,
+    _returnLeg: true, needsOriginClarification: false,
   });
 
   logger.info('PromptParser: post-processed bookend trip', {
@@ -294,71 +237,24 @@ const COUNTRY_TO_CITY = {
   'madagascar': 'antananarivo', 'zimbabwe': 'harare',
   'zambia': 'lusaka', 'namibia': 'windhoek', 'mozambique': 'maputo',
   'angola': 'luanda', 'cameroon': 'douala', 'senegal': 'dakar',
-  'washington': 'Washington',
-  'washington dc': 'Washington',
+  'washington': 'Washington', 'washington dc': 'Washington',
   'washington d.c.': 'Washington',
 };
 
-const CITY_CODES = {
-  'nairobi': 'NBO', 'mombasa': 'MBA', 'kisumu': 'KIS', 'eldoret': 'EDL',
-  'lamu': 'LAU', 'malindi': 'MYD', 'diani': 'UKA', 'ukunda': 'UKA',
-  'zanzibar': 'ZNZ', 'dar es salaam': 'DAR', 'kilimanjaro': 'JRO',
-  'arusha': 'ARK', 'mwanza': 'MWZ', 'kampala': 'EBB', 'entebbe': 'EBB',
-  'kigali': 'KGL', 'addis ababa': 'ADD', 'johannesburg': 'JNB',
-  'cape town': 'CPT', 'durban': 'DUR', 'cairo': 'CAI',
-  'sharm el sheikh': 'SSH', 'hurghada': 'HRG', 'marrakech': 'RAK',
-  'casablanca': 'CMN', 'accra': 'ACC', 'lagos': 'LOS', 'abuja': 'ABV',
-  'mahe': 'SEZ', 'port louis': 'MRU', 'male': 'MLE',
-  'antananarivo': 'TNR', 'harare': 'HRE', 'lusaka': 'LUN',
-  'windhoek': 'WDH', 'maputo': 'MPM', 'luanda': 'LAD',
-  'bali': 'DPS', 'denpasar': 'DPS', 'phuket': 'HKT', 'bangkok': 'BKK',
-  'chiang mai': 'CNX', 'singapore': 'SIN', 'kuala lumpur': 'KUL',
-  'delhi': 'DEL', 'mumbai': 'BOM', 'goa': 'GOI',
-  'tokyo': 'TYO', 'osaka': 'KIX', 'paris': 'CDG', 'amsterdam': 'AMS',
-  'istanbul': 'IST', 'doha': 'DOH', 'abu dhabi': 'AUH', 'muscat': 'MCT',
-  'dubai': 'DXB', 'london': 'LHR', 'new york': 'JFK', 'washington': 'IAD',
-  'los angeles': 'LAX', 'miami': 'MIA', 'cancun': 'CUN',
-  'sydney': 'SYD', 'auckland': 'AKL',
-  'santorini': 'JTR', 'mykonos': 'JMK', 'athens': 'ATH',
-  'barcelona': 'BCN', 'madrid': 'MAD', 'rome': 'FCO',
-  'masai mara': 'MRE', 'maasai mara': 'MRE', 'amboseli': 'ASV',
-  'samburu': 'UAS', 'tsavo': 'MBA', 'serengeti': 'JRO',
-  'ngorongoro': 'JRO', 'pemba': 'PMA', 'mafia': 'MFA',
-  'praslin': 'SEZ', 'grand baie': 'MRU', 'four seasons': null,
-};
-
-// ─────────────────────────────────────────────
-// DESTINATION NORMALIZER
-// ─────────────────────────────────────────────
 const DESTINATION_FIXES = {
   'capetown': 'Cape Town', 'cape-town': 'Cape Town', 'cpt': 'Cape Town',
   'joburg': 'Johannesburg', 'jozi': 'Johannesburg', 'jhb': 'Johannesburg',
-  'johanesburg': 'Johannesburg', 'johannesberg': 'Johannesburg',
   'daressalaam': 'Dar es Salaam', 'dares salaam': 'Dar es Salaam', 'dar': 'Dar es Salaam',
   'addisababa': 'Addis Ababa', 'addis': 'Addis Ababa',
   'nbi': 'Nairobi', 'msa': 'Mombasa',
   'masaimara': 'Masai Mara', 'maasaimara': 'Masai Mara',
-  'sharmelsheikh': 'Sharm el Sheikh', 'sharmelshekh': 'Sharm el Sheikh', 'sharm': 'Sharm el Sheikh',
-  'abudhabi': 'Abu Dhabi', 'abu-dhabi': 'Abu Dhabi',
-  'kualalumpur': 'Kuala Lumpur', 'kuala-lumpur': 'Kuala Lumpur', 'kl': 'Kuala Lumpur',
-  'hongkong': 'Hong Kong', 'hong-kong': 'Hong Kong', 'hk': 'Hong Kong',
-  'siemreap': 'Siem Reap', 'siem-reap': 'Siem Reap',
-  'hochiminhcity': 'Ho Chi Minh City', 'hochiminh': 'Ho Chi Minh City', 'hcmc': 'Ho Chi Minh City',
-  'phnompenh': 'Phnom Penh', 'phnom-penh': 'Phnom Penh',
-  'koalumpur': 'Kuala Lumpur',
-  'newyork': 'New York', 'new-york': 'New York', 'nyc': 'New York',
-  'losangeles': 'Los Angeles', 'los-angeles': 'Los Angeles', 'la': 'Los Angeles',
-  'sanfrancisco': 'San Francisco', 'san-francisco': 'San Francisco', 'sf': 'San Francisco',
-  'saopaulo': 'Sao Paulo', 'são paulo': 'Sao Paulo',
-  'riodejaneiro': 'Rio de Janeiro', 'rio': 'Rio de Janeiro',
-  'buenosaires': 'Buenos Aires', 'buenos-aires': 'Buenos Aires',
-  'mexicocity': 'Mexico City', 'mexico-city': 'Mexico City', 'cdmx': 'Mexico City',
-  'costarica': 'San Jose',
-  'newyorkcity': 'New York',
-  'washington dc': 'Washington',
-  'washington d.c.': 'Washington',
-  'washingtondc': 'Washington',
-  'dc': 'Washington',
+  'abudhabi': 'Abu Dhabi', 'kualalumpur': 'Kuala Lumpur', 'kl': 'Kuala Lumpur',
+  'hongkong': 'Hong Kong', 'hk': 'Hong Kong',
+  'newyork': 'New York', 'nyc': 'New York',
+  'losangeles': 'Los Angeles', 'la': 'Los Angeles',
+  'sanfrancisco': 'San Francisco', 'sf': 'San Francisco',
+  'washington dc': 'Washington', 'washington d.c.': 'Washington',
+  'washingtondc': 'Washington', 'dc': 'Washington',
 };
 
 function normalizeDestination(name) {
@@ -389,8 +285,28 @@ function _isPlausiblePlaceName(str) {
   if (wordCount > 4) return false;
   if (wordCount > 2 && FILLER_WORDS.test(trimmed)) return false;
   const firstWord = trimmed.split(/\s+/)[0].toLowerCase();
-  if (/^(help|plan|book|find|get|arrange|organize|visit|travel|go|take|show|give|tell)$/.test(firstWord)) return false;
+  if (/^(help|plan|book|find|get|arrange|organize|visit|travel|go|take|show|give|tell|use|same|previous|any)$/.test(firstWord)) return false;
   return true;
+}
+
+// ─────────────────────────────────────────────
+// DESTINATION SANITIZER  ← NEW
+// Strips conversational filler that gets appended to a destination
+// in multi-turn WhatsApp conversations, e.g.:
+//   "Diani, use the details from the previous prompt"  → "Diani"
+//   "Zanzibar (same dates)"                            → "Zanzibar"
+//   "Mombasa please"                                   → "Mombasa"
+// Returns null if what remains is still not a plausible place name,
+// so the caller knows to fall back to the previous session value.
+// ─────────────────────────────────────────────
+const FILLER_SPLIT_PATTERN = /,|\s*\(.*\)\s*|\s+(?:use|same|as|please|ok|okay|yes|from|with|but|and|for|the|previous|last|prior|above|that|those|details|info|trip|search|prompt|context|session)\b/i;
+
+function _sanitizeDestination(dest) {
+  if (!dest || typeof dest !== 'string') return null;
+  // Take only the part before the first filler phrase / comma / parenthetical
+  const cleaned = dest.split(FILLER_SPLIT_PATTERN)[0].trim();
+  if (!cleaned) return null;
+  return _isPlausiblePlaceName(cleaned) ? resolveCountryToCity(cleaned) : null;
 }
 
 // ─────────────────────────────────────────────
@@ -422,7 +338,10 @@ function _parseWithRules(prompt) {
     }
   }
 
-  if (destination) destination = resolveCountryToCity(destination.trim());
+  // Apply sanitizer even in rule-based path
+  if (destination) {
+    destination = _sanitizeDestination(destination) || _sanitizeDestination(resolveCountryToCity(destination.trim()));
+  }
 
   let origin = null;
   if (simpleRoute) origin = simpleRoute[1].trim();
@@ -503,9 +422,7 @@ function _parseWithRules(prompt) {
     const mKey  = returnDateMatch[2].toLowerCase().slice(0, 3);
     const month = months[mKey];
     const yr    = new Date().getFullYear();
-    if (day && month) {
-      returnDate = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    }
+    if (day && month) returnDate = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
 
   if (!returnDate && departureDate && nights) {
@@ -521,7 +438,6 @@ function _parseWithRules(prompt) {
   else if (/\b(high|upscale|4.?star|four.?star|nice|good|quality)\b/i.test(lower)) budget = 'high';
 
   let outboundTransportMode = null;
-  let returnTransportMode = null;
   if (/\bflight|fly|flying\b/i.test(lower)) outboundTransportMode = 'flight';
   else if (/\bbus|coach\b/i.test(lower)) outboundTransportMode = 'bus';
   else if (/\btrain|sgr|madaraka\b/i.test(lower)) outboundTransportMode = 'train';
@@ -544,32 +460,17 @@ function _parseWithRules(prompt) {
   else if (/\b(evening|night)\s+flight\b/i.test(lower)) timePreference = 'evening';
   else if (/\bafternoon\s+flight\b/i.test(lower)) timePreference = 'afternoon';
 
-  // ── Property type vs hotel name ───────────────────────────────────────────
-  // Check for property type descriptors FIRST. If matched, don't set preferredHotel.
   const propertyType = _extractPropertyType(prompt);
   let preferredHotel = null;
-
-  // Only set preferredHotel if it looks like an actual hotel brand/name
   const hotelNameMatch = lower.match(/\b(?:at|in|stay(?:ing)?\s+at|book(?:ing)?\s+at|hotel)\s+([a-z][a-z\s]{2,30}?)(?:\s+hotel)?\b/i);
   if (hotelNameMatch) {
     const candidate = hotelNameMatch[1].trim();
-    // Make sure it's not a property type descriptor
-    if (!_extractPropertyType(candidate)) {
-      preferredHotel = candidate;
-    }
+    if (!_extractPropertyType(candidate)) preferredHotel = candidate;
   }
-  // ─────────────────────────────────────────────────────────────────────────
 
-  // ── Activity extraction ───────────────────────────────────────────────────
   const { hasSafari, excursions } = _extractActivities(prompt);
   const activityRequests = excursions;
-
-  // Safari: resolve the game reserve based on the traveler's base city.
-  // The engine will add it as a full trip leg (with lodge + transfers).
-  const safariDestination = hasSafari
-    ? resolveSafariDestination(destination || origin)
-    : null;
-  // ─────────────────────────────────────────────────────────────────────────
+  const safariDestination = hasSafari ? resolveSafariDestination(destination || origin) : null;
 
   const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only|find me a hotel|looking for a hotel|need a hotel|hotel in|hotels? near|where to stay)\b/i.test(lower);
   const needsOriginClarification = !origin && !isHotelOnly;
@@ -588,10 +489,10 @@ function _parseWithRules(prompt) {
   }
 
   if (stops.length > 0 && destination && origin && departureDate && returnDate) {
-    const totalNights    = _diffDays(departureDate, returnDate);
-    const knownNights    = stops.reduce((s, st) => s + st.nights, 0);
-    const firstNights    = Math.max(0, totalNights - knownNights);
-    const allStops       = [{ destination, nights: firstNights }, ...stops];
+    const totalNights = _diffDays(departureDate, returnDate);
+    const knownNights = stops.reduce((s, st) => s + st.nights, 0);
+    const firstNights = Math.max(0, totalNights - knownNights);
+    const allStops    = [{ destination, nights: firstNights }, ...stops];
 
     let cursor = departureDate;
     const trips = allStops.map((st, i) => {
@@ -599,14 +500,7 @@ function _parseWithRules(prompt) {
       const depDate   = cursor;
       const retDate   = st.nights > 0 ? _addDays(cursor, st.nights) : null;
       if (st.nights > 0) cursor = _addDays(cursor, st.nights);
-      return {
-        origin:       legOrigin,
-        destination:  st.destination,
-        nights:       st.nights,
-        departureDate: depDate,
-        returnDate:   retDate,
-        needsOriginClarification: false,
-      };
+      return { origin: legOrigin, destination: st.destination, nights: st.nights, departureDate: depDate, returnDate: retDate, needsOriginClarification: false };
     });
 
     const lastStop = allStops[allStops.length - 1];
@@ -615,58 +509,27 @@ function _parseWithRules(prompt) {
       : lastStop.destination;
 
     if (_isNonFlyable(lastStop.destination) && lastHub.toLowerCase() !== lastStop.destination.toLowerCase()) {
-      trips.push({
-        origin:       lastStop.destination,
-        destination:  lastHub,
-        nights:       0,
-        departureDate: returnDate,
-        returnDate:   null,
-        needsOriginClarification: false,
-        _transitLeg:  true,
-      });
+      trips.push({ origin: lastStop.destination, destination: lastHub, nights: 0, departureDate: returnDate, returnDate: null, needsOriginClarification: false, _transitLeg: true });
     }
 
-    trips.push({
-      origin:       lastHub,
-      destination:  origin,
-      nights:       0,
-      departureDate: returnDate,
-      returnDate:   null,
-      needsOriginClarification: false,
-      _returnLeg:   true,
-    });
-
-    logger.info('Rule parser: detected multi-stop trip', {
-      stops: trips.map(l => `${l.origin}→${l.destination} (${l.departureDate}, ${l.nights}n)`),
-    });
+    trips.push({ origin: lastHub, destination: origin, nights: 0, departureDate: returnDate, returnDate: null, needsOriginClarification: false, _returnLeg: true });
 
     return {
       destination, origin, nights: totalNights, passengers, children, childAges, budget,
-      departureDate, returnDate, outboundTransportMode, returnTransportMode, mealPlan,
+      departureDate, returnDate, outboundTransportMode, returnTransportMode: null, mealPlan,
       seatPreference, timePreference, needsOriginClarification: false,
-      isMultiDestination: true,
-      trips,
-      legs: [],
-      preferredTransportProvider: null,
-      preferredHotel,
-      propertyType,
-      activityRequests,
-      safariDestination,
-      _parsedBy: 'rules-multi',
+      isMultiDestination: true, trips, legs: [],
+      preferredTransportProvider: null, preferredHotel, propertyType,
+      activityRequests, safariDestination, _parsedBy: 'rules-multi',
     };
   }
-  // ── end multi-stop detection ──────────────────────────────────────────────
 
   return {
     destination, origin, nights: nights || null, passengers, children, childAges, budget,
-    departureDate, returnDate, outboundTransportMode, returnTransportMode, mealPlan,
+    departureDate, returnDate, outboundTransportMode, returnTransportMode: null, mealPlan,
     seatPreference, timePreference, needsOriginClarification, isMultiDestination: false, legs: [],
-    preferredTransportProvider: null,
-    preferredHotel,
-    propertyType,
-    activityRequests,
-    safariDestination,
-    _parsedBy: 'rules',
+    preferredTransportProvider: null, preferredHotel, propertyType,
+    activityRequests, safariDestination, _parsedBy: 'rules',
   };
 }
 
@@ -686,6 +549,13 @@ If the user describes a journey visiting multiple cities and then returning home
 EVERY leg must appear as a separate entry in trips[]. This includes the final
 return leg home ("fly back to Nairobi", "then back home", "return to Nairobi").
 
+DESTINATION FIELD — STRICT RULES:
+- destination must be a real place name only: 1–4 words, no sentences.
+- If the user says "Diani, use the details from before" → destination: "Diani"
+- If the user says "same destination" or "previous trip" with no new place → destination: null
+- NEVER put conversational text into destination. Strip everything after a comma or
+  filler phrase like "use the", "same as", "as before", "from the previous", "please".
+
 Example: "Nairobi to Zanzibar on Aug 10, 4 nights, then Mombasa for 5 nights, fly back to Nairobi"
 CORRECT trips[]:
   1. origin: Nairobi,  destination: Zanzibar,  departureDate: 2026-08-10, nights: 4, returnDate: 2026-08-14
@@ -702,24 +572,22 @@ CORRECT trips[]:
   5. origin: Nairobi,    destination: Washington, departureDate: 2026-08-20, nights: 0
 
 WRONG — never end on Masai Mara, Serengeti, Amboseli or any safari/park destination.
-WRONG — never drop the return leg. Never emit only 2 trips when 3+ are described.
+WRONG — never drop the return leg.
 
 PROPERTY TYPE vs HOTEL NAME:
 - "beachfront hotel", "ocean view", "with a pool", "lodge", "tented camp" → propertyType field, preferredHotel: null
-- "Sarova", "Serena", "Marriott", "Hilton", "Hemingways" → preferredHotel field, propertyType: null
+- "Sarova", "Serena", "Marriott", "Hilton" → preferredHotel field, propertyType: null
 - NEVER put descriptive words like "beachfront" or "ocean view" into preferredHotel
 
 ACTIVITIES:
-- "safari", "day trip", "snorkelling", "game drive", "diving", "spice tour", "sunset cruise" → activityRequests[]
-- These are excursions, not destinations. List all mentioned.
+- "safari", "snorkelling", "game drive", "diving", "spice tour" → activityRequests[]
 
 Rules:
 - destination must be a real place name (1-4 words max). Never a sentence.
-- When trips[] is present, it must contain ALL trips — never drop one.
+- When trips[] is present, it must contain ALL trips.
 - Always include the return-to-origin leg as the final trips[] entry.
 - nights: 0 and returnDate: null for transit/return-home legs.
-- The final leg destination must ALWAYS be an airport city — never a safari park.
-- Shared fields (passengers, budget, etc.) go at the top level.
+- The final leg destination must ALWAYS be an airport city.
 
 Return this shape for a SINGLE trip:
 {
@@ -779,16 +647,18 @@ Return this shape for MULTIPLE TRIPS:
 
 const GROQ_SYSTEM_PROMPT_SIMPLE = `Extract travel info. Return ONLY valid JSON. Current year is 2026.
 
+destination must be a real place name only (1-4 words). Strip everything after a comma or
+conversational filler like "use the", "same as", "as before", "from the previous".
+If no clean destination is extractable, set destination: null.
+
 For multi-city trips use trips[]. Include ALL legs including the return home.
-Never end trips[] on a safari park — always end on an airport city.
+Never end trips[] on a safari park.
 "beachfront", "oceanfront", "with pool" → propertyType (not preferredHotel).
-"safari", "day trip", "snorkelling" → activityRequests[].
+"safari", "snorkelling" → activityRequests[].
 
 {
-  "trips": [
-    { "origin": "city", "destination": "city", "nights": number, "departureDate": "YYYY-MM-DD", "returnDate": "YYYY-MM-DD", "needsOriginClarification": false }
-  ],
-  "destination": "first destination city",
+  "trips": null,
+  "destination": "first destination city or null",
   "origin": "departure city",
   "nights": total_nights_number,
   "passengers": 1,
@@ -850,12 +720,30 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
     if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
 
+    // ── Sanitize destination BEFORE plausibility check ────────────────────
+    // This is the key fix: Groq may faithfully echo the user's full message
+    // ("Diani, use the details from the previous prompt") into destination.
+    // We strip the filler here so the bad value never propagates downstream.
+    if (parsed.destination) {
+      const clean = _sanitizeDestination(parsed.destination);
+      if (!clean) {
+        logger.warn('PromptParser: Groq destination failed sanitization — clearing', {
+          original: parsed.destination?.slice(0, 80),
+        });
+        parsed.destination = null;
+      } else {
+        parsed.destination = clean;
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     if (Array.isArray(parsed.trips)) {
       parsed.trips = parsed.trips.map(t => ({
         ...t,
         departureDate: sanitizeDate(t.departureDate),
         returnDate:    sanitizeDate(t.returnDate),
-        destination:   t.destination ? resolveCountryToCity(t.destination) : t.destination,
+        // Sanitize each leg destination too
+        destination:   t.destination ? (_sanitizeDestination(t.destination) || resolveCountryToCity(t.destination)) : t.destination,
         origin:        t.origin      ? resolveCountryToCity(t.origin)      : t.origin,
       }));
 
@@ -863,12 +751,7 @@ async function _groqAttempt(prompt, systemPrompt) {
 
       if (parsed.trips.length >= 2 && parsed.returnDate) {
         const homeOrigin = parsed.trips[0]?.origin || parsed.origin;
-        parsed.trips = _postProcessBookendTrip(
-          parsed.trips,
-          homeOrigin,
-          parsed.departureDate,
-          parsed.returnDate
-        );
+        parsed.trips = _postProcessBookendTrip(parsed.trips, homeOrigin, parsed.departureDate, parsed.returnDate);
       }
 
       if (parsed.trips.length === 1) {
@@ -884,9 +767,10 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
     }
 
+    // Final plausibility check on destination
     if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) {
       logger.warn('Groq returned implausible destination', { returned: parsed.destination?.slice(0, 80) });
-      return null;
+      parsed.destination = null;
     }
 
     if (parsed.destination) parsed.destination = resolveCountryToCity(parsed.destination);
@@ -901,41 +785,31 @@ async function _groqAttempt(prompt, systemPrompt) {
       if (rule.destination) { parsed.destination = rule.destination; logger.info('Groq missed destination — filled from rules', { destination: parsed.destination }); }
     }
 
-    // ── Property type safety net ──────────────────────────────────────────
-    // If Groq put a property descriptor into preferredHotel, rescue it.
+    // Property type safety net
     if (parsed.preferredHotel) {
       const pt = _extractPropertyType(parsed.preferredHotel);
       if (pt) {
-        logger.info('PromptParser: rescued property type from preferredHotel', {
-          was: parsed.preferredHotel, now: pt,
-        });
+        logger.info('PromptParser: rescued property type from preferredHotel', { was: parsed.preferredHotel, now: pt });
         parsed.propertyType   = parsed.propertyType || pt;
         parsed.preferredHotel = null;
       }
     }
 
-    // ── Activity requests: merge Groq output with rule-based extraction ───
+    // Activity requests: merge Groq output with rule-based extraction
     const { hasSafari, excursions: ruleExcursions } = _extractActivities(prompt);
     const groqActivities = Array.isArray(parsed.activityRequests) ? parsed.activityRequests : [];
     parsed.activityRequests = [...new Set([...groqActivities, ...ruleExcursions])];
 
-    // Safari: resolve game reserve destination from primary city.
-    // Groq may set activityRequests: ['safari'] — we convert that to a
-    // safariDestination field and remove it from activityRequests so the
-    // engine treats it as a full trip leg, not an excursion note.
     const groqSaidSafari = groqActivities.some(a => a === 'safari' || a === 'game_drive');
     parsed.activityRequests = parsed.activityRequests.filter(a => a !== 'safari' && a !== 'game_drive');
 
     if (hasSafari || groqSaidSafari) {
       const baseCity = parsed.destination || parsed.origin;
       parsed.safariDestination = parsed.safariDestination || resolveSafariDestination(baseCity);
-      logger.info('PromptParser: safari detected', {
-        baseCity, resolvedTo: parsed.safariDestination,
-      });
+      logger.info('PromptParser: safari detected', { baseCity, resolvedTo: parsed.safariDestination });
     } else {
       parsed.safariDestination = parsed.safariDestination ?? null;
     }
-    // ─────────────────────────────────────────────────────────────────────
 
     parsed.preferredTransportProvider = parsed.preferredTransportProvider ?? null;
     parsed.preferredHotel             = parsed.preferredHotel             ?? null;
@@ -961,10 +835,8 @@ async function _groqAttempt(prompt, systemPrompt) {
 // ─────────────────────────────────────────────
 async function _parseWithGroq(prompt) {
   if (!groqClient) return null;
-
   const result = await _groqAttempt(prompt, GROQ_SYSTEM_PROMPT);
   if (result) return result;
-
   logger.info('Groq: retrying with simplified prompt', { prompt: prompt.slice(0, 80) });
   return await _groqAttempt(prompt, GROQ_SYSTEM_PROMPT_SIMPLE);
 }
@@ -972,10 +844,28 @@ async function _parseWithGroq(prompt) {
 // ─────────────────────────────────────────────
 // MAIN EXPORT
 // ─────────────────────────────────────────────
-async function parsePrompt(prompt) {
+
+/**
+ * parsePrompt — parse a single user message.
+ *
+ * @param {string} prompt       — the raw user message
+ * @param {object} [session]    — optional previous session params.
+ *                                When provided, any field that the
+ *                                current parse leaves null/undefined
+ *                                will inherit the session value.
+ *                                This is the fix for follow-up messages
+ *                                like "27th August" or "Use bus options"
+ *                                that don't re-state the destination.
+ */
+async function parsePrompt(prompt, session = null) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return _parseWithRules('');
+
   const groqResult = await _parseWithGroq(prompt);
-  if (groqResult) {
+  const raw = groqResult || _parseWithRules(prompt);
+
+  if (!groqResult) {
+    logger.info('Falling back to rule-based parser', { prompt: prompt.slice(0, 80) });
+  } else {
     if (Array.isArray(groqResult.trips) && groqResult.trips.length > 1) {
       logger.info('Prompt parsed via Groq — multi-trip', {
         tripCount:    groqResult.trips.length,
@@ -984,10 +874,48 @@ async function parsePrompt(prompt) {
     } else {
       logger.info('Prompt parsed via Groq', { destination: groqResult.destination, origin: groqResult.origin });
     }
-    return groqResult;
   }
-  logger.info('Falling back to rule-based parser', { prompt: prompt.slice(0, 80) });
-  return _parseWithRules(prompt);
+
+  // ── Session inheritance  ← NEW ────────────────────────────────────────────
+  // If a previous session exists, inherit any field that this parse
+  // could not determine. This handles follow-up turns like:
+  //   Turn 1: "Diani, 3 nights, 2 adults, budget"   → full parse
+  //   Turn 2: "27th August"                          → only date resolved
+  //   Turn 3: "Use bus instead"                      → only transportMode resolved
+  // Without session inheritance, turns 2 and 3 would lose destination,
+  // passengers, budget, etc. and fire broken supplier searches.
+  if (session) {
+    const INHERITABLE = [
+      'destination', 'origin', 'nights', 'passengers', 'children', 'childAges',
+      'budget', 'departureDate', 'returnDate', 'mealPlan', 'propertyType',
+      'safariDestination', 'preferredHotel', 'preferredTransportProvider',
+    ];
+
+    for (const key of INHERITABLE) {
+      const currentVal = raw[key];
+      const sessionVal = session[key];
+      const isEmpty = currentVal === null || currentVal === undefined ||
+                      (Array.isArray(currentVal) && currentVal.length === 0);
+      const hasSession = sessionVal !== null && sessionVal !== undefined &&
+                         !(Array.isArray(sessionVal) && sessionVal.length === 0);
+      if (isEmpty && hasSession) {
+        raw[key] = sessionVal;
+        logger.info('PromptParser: inherited from session', { key, value: String(sessionVal).slice(0, 40) });
+      }
+    }
+
+    // Destination-specific: if the sanitizer cleared a dirty destination
+    // but session has a good one, use it and log clearly.
+    if (!raw.destination && session.destination) {
+      raw.destination = session.destination;
+      logger.info('PromptParser: restored destination from session after sanitization', {
+        sessionDestination: session.destination,
+      });
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  return raw;
 }
 
 module.exports = { parsePrompt, resolveCountryToCity, normalizeDestination, resolveSafariDestination };

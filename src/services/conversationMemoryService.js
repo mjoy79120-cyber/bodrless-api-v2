@@ -21,6 +21,9 @@
  *   7. Traveler intelligence — links every contact to a global
  *      travelers row so preferences and loyalty follow the traveler
  *      across agencies and channels (WhatsApp + web)
+ *   8. Abandonment signals — when a leg flow expires without
+ *      booking, records the price point the traveler walked away
+ *      from so corridor patterns can use it as a soft budget ceiling
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -128,7 +131,8 @@ class ConversationMemoryService {
 
   // ─────────────────────────────────────────────
   // APPLY PREFERENCES TO SEARCH
-  // Enriches search params with stored traveler preferences.
+  // Enriches search params with stored traveler preferences
+  // AND corridor pattern signals from trip history.
   // Always call before running a hotel or flight search.
   //
   // Usage:
@@ -274,7 +278,13 @@ class ConversationMemoryService {
 
       const age = Date.now() - new Date(flow.startedAt).getTime();
       if (age > LEG_FLOW_TTL_MS) {
-        logger.info('LegFlow: expired — clearing', { phone, ageMs: age });
+        logger.info('LegFlow: expired — capturing abandonment signal then clearing', { phone, ageMs: age });
+
+        // ── NEW: record abandonment price signal before clearing ──
+        if (flow.runningTotalKES > 0) {
+          await travelerIntelligence.recordAbandonmentSignal(phone, flow.runningTotalKES);
+        }
+
         await this.upsertContact(phone, agencyId, { leg_flow: null });
         return null;
       }
@@ -334,7 +344,7 @@ class ConversationMemoryService {
   }
 
   getLegFlowSummary(flow) {
-    const lines         = [];
+    const lines          = [];
     const selectionCount = Object.keys(flow.selections).length;
     if (selectionCount === 0) return null;
 
@@ -414,7 +424,7 @@ class ConversationMemoryService {
   async checkDropOff(phone, agencyId) {
     try {
       const contact = await this.loadContact(phone, agencyId);
-      if (!contact)            return { isDropOff: false };
+      if (!contact)             return { isDropOff: false };
       if (!contact.drop_off_at) return { isDropOff: false };
 
       const gapMs = Date.now() - new Date(contact.drop_off_at).getTime();
@@ -473,10 +483,10 @@ class ConversationMemoryService {
     const daysAway  = Math.round(hoursAway / 24);
 
     let timePhrase;
-    if (minutesAway < 60)     timePhrase = `${minutesAway} minutes`;
-    else if (hoursAway < 24)  timePhrase = `${hoursAway} hour${hoursAway > 1 ? 's' : ''}`;
-    else if (daysAway === 1)  timePhrase = 'yesterday';
-    else                      timePhrase = `${daysAway} days`;
+    if (minutesAway < 60)    timePhrase = `${minutesAway} minutes`;
+    else if (hoursAway < 24) timePhrase = `${hoursAway} hour${hoursAway > 1 ? 's' : ''}`;
+    else if (daysAway === 1) timePhrase = 'yesterday';
+    else                     timePhrase = `${daysAway} days`;
 
     const destPhrase = previousDestination
       ? ` for ${this._titleCase(previousDestination)}`
@@ -493,8 +503,8 @@ class ConversationMemoryService {
   // HANDLE MODIFY MID-CONVERSATION
   // ─────────────────────────────────────────────
   async handleModify(phone, agencyId, intent, previousParams) {
-    const heldPackage  = await this.loadSelectedPackage(phone, agencyId);
-    const adjustments  = intent.adjustments || {};
+    const heldPackage = await this.loadSelectedPackage(phone, agencyId);
+    const adjustments = intent.adjustments || {};
 
     const needsResearch = !!(
       adjustments.destination   ||
@@ -545,8 +555,8 @@ class ConversationMemoryService {
     }
 
     if (updated.hotel) {
-      const pricePerNight  = updated.hotel.pricePerNight || 0;
-      const hotelTotal     = pricePerNight * newNights;
+      const pricePerNight = updated.hotel.pricePerNight || 0;
+      const hotelTotal    = pricePerNight * newNights;
 
       updated.hotel.nights    = newNights;
       updated.hotel.checkOut  = newReturnDate || updated.hotel.checkOut;

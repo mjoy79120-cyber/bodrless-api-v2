@@ -216,7 +216,7 @@ class OrchestrationEngine {
         if (tripParams.origin)      tripParams.origin      = resolveCountryToCity(tripParams.origin);
         console.log("FOLLOW-UP DETECTED — adjusted params:", tripParams);
       } else {
-        tripParams = await parsePrompt(prompt);
+        tripParams = await parsePrompt(prompt, previousParams);
         tripParams.agencyId = agencyId;
         console.log("FRESH SEARCH — parsed params:", tripParams);
       }
