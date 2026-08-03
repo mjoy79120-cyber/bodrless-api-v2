@@ -339,27 +339,19 @@ class HotelBedsAdapter {
     return _enqueueNominatim(async () => {
       try {
         const response = await axios.get('https://nominatim.openstreetmap.org/search', {
-          params: {
-            q:               cityName,
-            format:          'json',
-            limit:           1,
-            countrycodes:    'ke,tz,ug,rw,et,za,mz,zw,zm,na,bw,mw,mg,sc,mu,mv,km',
-          },
-          headers: { 'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)' },
-          timeout: 6000,
-        });
+  params: {
+    q:      cityName,
+    format: 'json',
+    limit:  1,
+    // No country bias — EA cities that Nominatim misidentifies
+    // (Diani, Watamu, etc.) are all covered by STATIC_GEO_OVERRIDES
+    // and never reach this code path.
+  },
+  headers: { 'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)' },
+  timeout: 6000,
+});
 
-        let result = response.data?.[0];
-
-        if (!result) {
-          logger.info('HotelBeds: Nominatim EA search empty — retrying globally', { cityName });
-          const globalResp = await axios.get('https://nominatim.openstreetmap.org/search', {
-            params:  { q: cityName, format: 'json', limit: 1 },
-            headers: { 'User-Agent': 'Bodrless/1.0 (travel booking platform; petermwasi32@gmail.com)' },
-            timeout: 6000,
-          });
-          result = globalResp.data?.[0];
-        }
+const result = response.data?.[0];
 
         if (!result) {
           logger.warn('HotelBeds: Nominatim returned no results', { cityName });
