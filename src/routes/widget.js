@@ -11,666 +11,1464 @@ router.get('/', (req, res) => {
 
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
 
-  const widgetCode = '(function () {\n' +
-  'function initWidget() {\n' +
-  'if (!document.body) { setTimeout(initWidget, 50); return; }\n' +
-  'if (document.getElementById("bodrless-widget-root")) return;\n' +
+  // ── STYLES ──────────────────────────────────────────────────────────────
+  const styles = `
+:root{--et-navy:#1E2A5E;--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F9F7F4;--et-border:#E8E3DA;--et-muted:#9A9088;--et-green:#27ae60;--et-gold:#B8964A;}
+#bodrless-chat{background:var(--et-white);z-index:999999;display:none;flex-direction:column;border-radius:18px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,0.14);font-family:'Inter',Arial,sans-serif;}
+#bodrless-chat.open{display:flex;}
+#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:390px;height:640px;}
+#bodrless-chat.embedded{position:relative;width:100%;height:760px;display:flex;border-radius:0;}
+@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:0.5;}30%{transform:translateY(-5px);opacity:1;}}
+#et-header{background:var(--et-navy);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+#et-header-left{display:flex;align-items:center;gap:12px;}
+#et-header-text h3{font-size:14px;color:white;margin:0 0 1px 0;font-weight:600;}
+#et-header-text p{font-size:10px;color:rgba(255,255,255,0.5);margin:0;letter-spacing:1px;text-transform:uppercase;}
+#et-close{background:rgba(255,255,255,0.08);border:none;color:rgba(255,255,255,0.7);width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;}
+#et-close:hover{background:rgba(255,255,255,0.18);}
+#bodrless-messages{flex:1;padding:20px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;background:var(--et-cream);}
+.msg{padding:11px 15px;border-radius:16px;max-width:82%;font-size:13.5px;line-height:1.55;}
+.user{background:var(--et-navy);color:white;margin-left:auto;border-bottom-right-radius:4px;}
+.bot{background:var(--et-white);color:#2A2A2A;border:1px solid var(--et-border);border-bottom-left-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,0.05);}
+.typing{background:var(--et-white);border:1px solid var(--et-border);padding:12px 16px;border-radius:16px;display:flex;gap:5px;align-items:center;width:fit-content;}
+.typing span{width:6px;height:6px;background:var(--et-navy);border-radius:50%;animation:bounce 1.2s infinite;}
+.typing span:nth-child(2){animation-delay:0.2s;background:var(--et-gold);}
+.typing span:nth-child(3){animation-delay:0.4s;}
+.et-welcome{background:var(--et-white);border-radius:14px;padding:20px;border:1px solid var(--et-border);}
+.et-welcome-eyebrow{font-size:10px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:var(--et-gold);margin-bottom:10px;}
+.et-welcome-title{font-size:18px;font-weight:600;color:var(--et-navy);margin-bottom:8px;line-height:1.3;}
+.et-welcome-body{font-size:13px;color:#5A5A5A;line-height:1.65;margin-bottom:18px;}
+.et-divider{height:1px;background:var(--et-border);margin:4px 0 16px 0;}
+.et-prompts-label{font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--et-muted);margin-bottom:12px;}
+.et-starter{width:100%;background:var(--et-cream);border:1px solid var(--et-border);border-radius:12px;padding:14px 16px;text-align:left;cursor:pointer;transition:all 0.2s;margin-bottom:8px;display:block;}
+.et-starter:hover{background:var(--et-navy);border-color:var(--et-navy);}
+.et-starter:hover .st-title,.et-starter:hover .st-body{color:white;}
+.et-starter:hover .st-body{color:rgba(255,255,255,0.7);}
+.st-title{font-size:13px;font-weight:600;color:var(--et-navy);margin-bottom:3px;}
+.st-body{font-size:12px;color:var(--et-muted);line-height:1.45;}
+.et-agency-welcome{background:linear-gradient(135deg,#1E2A5E 0%,#2d3f82 100%);border-radius:16px;padding:16px;color:white;border-left:4px solid #C0392B;}
+.et-agency-welcome h4{font-size:14px;margin:0 0 6px 0;}
+.et-agency-welcome p{font-size:12px;margin:0 0 12px 0;color:rgba(255,255,255,0.7);}
+.et-suggestions{display:flex;flex-wrap:wrap;gap:6px;}
+.et-suggestion{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.9);padding:5px 10px;border-radius:20px;font-size:11px;cursor:pointer;}
+/* ── LEG SECTION ─────────────────────────────────────────────────── */
+.leg-section{border:1px solid var(--et-border);border-radius:14px;overflow:hidden;margin-bottom:12px;background:var(--et-white);box-shadow:0 2px 8px rgba(0,0,0,0.05);}
+.leg-header{padding:10px 14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;}
+.leg-header.arrival{background:#1E2A5E;}
+.leg-header.departure{background:#2d3f82;}
+.leg-header.internal{background:#34495e;}
+.leg-header.return_stay{background:#2c3e50;}
+.leg-header.stopover{background:#7f8c8d;}
+.leg-header-left{display:flex;align-items:center;gap:10px;}
+.leg-icon{font-size:16px;}
+.leg-title{font-size:13px;font-weight:700;color:white;}
+.leg-subtitle{font-size:10px;color:rgba(255,255,255,0.65);margin-top:1px;}
+.leg-status{font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;}
+.leg-status.locked{background:var(--et-green);color:white;}
+.leg-status.active{background:var(--et-gold);color:white;}
+.leg-status.pending{background:rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);}
+.leg-selected-summary{padding:10px 14px;background:#f0f4ff;border-bottom:1px solid var(--et-border);display:flex;align-items:center;justify-content:space-between;}
+.leg-selected-detail{font-size:12px;color:var(--et-navy);font-weight:500;flex:1;}
+.leg-change-btn{font-size:11px;color:var(--et-gold);font-weight:600;cursor:pointer;border:none;background:none;padding:4px 8px;border-radius:8px;flex-shrink:0;}
+.leg-change-btn:hover{background:rgba(184,150,74,0.1);}
+.leg-body{padding:0;}
+.leg-body.collapsed{display:none;}
+/* ── PACKAGE CARD ────────────────────────────────────────────────── */
+.package{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;overflow:visible;box-shadow:0 2px 12px rgba(0,0,0,0.06);margin-bottom:8px;}
+.pkg-header{background:var(--et-navy);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-radius:14px 14px 0 0;}
+.pkg-title{color:white;font-size:13px;font-weight:600;}
+.pkg-route{background:rgba(255,255,255,0.15);color:white;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pkg-body{padding:12px 14px;}
+.pkg-row{display:flex;flex-direction:column;padding:8px 0;border-bottom:1px solid var(--et-border);}
+.pkg-row:last-child{border-bottom:none;}
+.pkg-label{font-size:10px;font-weight:700;color:var(--et-gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;}
+.pkg-name{font-size:13px;font-weight:600;color:var(--et-navy);margin-bottom:2px;}
+.pkg-sub{font-size:11px;color:var(--et-muted);line-height:1.4;}
+.pkg-footer{padding:10px 14px;background:#FAFAF8;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--et-border);border-radius:0 0 14px 14px;}
+.pkg-price{font-size:20px;font-weight:700;color:var(--et-navy);line-height:1;}
+.pkg-price small{font-size:10px;color:var(--et-muted);display:block;font-weight:400;margin-top:2px;}
+.select-btn{background:var(--et-gold);color:white;border:none;padding:10px 20px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;transition:opacity 0.2s;}
+.select-btn:hover{opacity:0.88;}
+.select-btn.selected{background:var(--et-green);}
+.select-btn:disabled{opacity:0.6;cursor:not-allowed;}
+.book{background:var(--et-gold);color:white;border:none;padding:10px 20px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;letter-spacing:0.3px;transition:opacity 0.2s;}
+.book:hover{opacity:0.88;}
+.book:disabled{opacity:0.6;cursor:not-allowed;}
+/* ── TRIP SUMMARY ────────────────────────────────────────────────── */
+.trip-summary{background:var(--et-white);border:2px solid var(--et-navy);border-radius:16px;overflow:hidden;margin-top:8px;}
+.trip-summary-header{background:var(--et-navy);padding:14px 16px;}
+.trip-summary-title{color:white;font-size:15px;font-weight:700;margin-bottom:2px;}
+.trip-summary-sub{color:rgba(255,255,255,0.65);font-size:11px;}
+.trip-summary-legs{padding:12px 16px;}
+.ts-leg{padding:10px 0;border-bottom:1px solid var(--et-border);}
+.ts-leg:last-child{border-bottom:none;}
+.ts-leg-label{font-size:11px;font-weight:700;color:var(--et-gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;}
+.ts-leg-detail{font-size:13px;color:var(--et-navy);font-weight:600;margin-bottom:2px;}
+.ts-leg-sub{font-size:11px;color:var(--et-muted);}
+.ts-leg-price{font-size:13px;font-weight:700;color:var(--et-navy);margin-top:4px;}
+.trip-summary-total{padding:12px 16px;background:#f0f4ff;border-top:2px solid var(--et-navy);}
+.ts-total-price{font-size:22px;font-weight:700;color:var(--et-navy);}
+.ts-total-sub{font-size:11px;color:var(--et-muted);margin-top:2px;}
+.deposit-breakdown{background:var(--et-cream);border-radius:10px;padding:12px;margin:10px 0;}
+.deposit-row{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;color:#3A3A3A;}
+.deposit-row.total{font-weight:700;color:var(--et-navy);font-size:13px;border-top:1px solid var(--et-border);margin-top:6px;padding-top:8px;}
+.deposit-row.balance{color:var(--et-muted);}
+.summary-actions{padding:12px 16px;display:flex;flex-direction:column;gap:8px;}
+.summary-action-btn{width:100%;padding:12px 16px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;border:none;transition:all 0.2s;}
+.summary-action-btn.primary{background:var(--et-navy);color:white;}
+.summary-action-btn.primary:hover{background:var(--et-gold);}
+.summary-action-btn.secondary{background:var(--et-cream);color:var(--et-navy);border:1.5px solid var(--et-border);}
+.summary-action-btn.secondary:hover{background:var(--et-navy);color:white;border-color:var(--et-navy);}
+/* ── RESTORE BANNER ──────────────────────────────────────────────── */
+.restore-banner{background:linear-gradient(135deg,#1E2A5E,#2d3f82);border-radius:14px;padding:14px 16px;color:white;}
+.restore-banner h4{font-size:14px;font-weight:700;margin:0 0 6px 0;}
+.restore-banner p{font-size:12px;color:rgba(255,255,255,0.75);margin:0 0 12px 0;line-height:1.5;}
+.restore-banner-actions{display:flex;gap:8px;}
+.restore-btn{flex:1;padding:9px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:none;}
+.restore-btn.yes{background:var(--et-gold);color:white;}
+.restore-btn.no{background:rgba(255,255,255,0.12);color:white;border:1px solid rgba(255,255,255,0.25);}
+/* ── PRICE NUDGE ─────────────────────────────────────────────────── */
+.price-nudge{border-radius:10px;padding:10px 12px;margin:4px 0;font-size:12px;line-height:1.5;}
+.price-nudge.down{background:#E8F8EE;color:#1B7A3D;border:1px solid #A8D8B8;}
+.price-nudge.up{background:#FFF8EC;color:#B05A00;border:1px solid #E8C96D;}
+/* ── MISC ────────────────────────────────────────────────────────── */
+.cancel-policy{display:flex;align-items:center;gap:6px;font-size:11px;padding:8px 10px;border-radius:8px;margin-top:4px;}
+.cancel-policy.refundable{background:#E8F8EE;color:#1B7A3D;}
+.cancel-policy.non-refundable{background:#FFF0F0;color:#A02020;}
+.cancel-policy.neutral{background:#F0EDE8;color:#5A4A3A;}
+.hl{padding:7px 10px;border-radius:8px;font-size:11px;font-weight:600;margin-top:6px;}
+.hl-good{background:#E8F8EE;color:#1B7A3D;}
+.hl-warn{background:#FFF3E0;color:#B05A00;}
+.hl-neutral{background:#F0EDE8;color:#5A4A3A;}
+#bodrless-input-area{display:flex;border-top:1px solid var(--et-border);background:var(--et-white);padding:12px;gap:8px;flex-shrink:0;}
+#bodrless-input{flex:1;padding:10px 14px;border:1.5px solid var(--et-border);border-radius:20px;outline:none;font-size:13px;background:var(--et-cream);color:#2A2A2A;font-family:'Inter',Arial,sans-serif;}
+#bodrless-input:focus{border-color:var(--et-navy);}
+#bodrless-input::placeholder{color:var(--et-muted);font-size:12px;}
+#bodrless-send{background:var(--et-navy);color:white;border:none;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.2s;}
+#bodrless-send:hover{background:var(--et-gold);}
+.name-form{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:16px;margin-top:8px;}
+.name-form p{font-size:12px;color:var(--et-navy);margin:0 0 12px 0;font-weight:500;}
+.name-input{width:100%;padding:9px 12px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:#2A2A2A;box-sizing:border-box;margin-bottom:10px;font-family:'Inter',Arial,sans-serif;background:var(--et-cream);}
+.name-input:focus{border-color:var(--et-navy);}
+.dob-row{display:flex;gap:6px;margin-bottom:10px;}
+.dob-row select{flex:1;padding:9px 4px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:#2A2A2A;background:white;}
+.field-label{font-size:10px;color:var(--et-muted);margin-bottom:4px;font-weight:600;letter-spacing:0.3px;}
+.confirm-btn{background:var(--et-navy);color:white;border:none;padding:11px 18px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;width:100%;transition:background 0.2s;}
+.confirm-btn:hover{background:var(--et-gold);}
+.trust-badge{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;font-size:10px;color:var(--et-muted);}
+.price-alert{background:#FFF8EC;border:1px solid #E8C96D;border-radius:12px;padding:12px;margin-top:8px;}
+.price-alert p{font-size:12px;color:#5A4A1A;margin:0 0 10px 0;line-height:1.5;}
+.price-alert-actions{display:flex;gap:8px;}
+.price-approve{flex:1;background:var(--et-navy);color:white;border:none;padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}
+.price-cancel{flex:1;background:white;color:var(--et-navy);border:1.5px solid var(--et-border);padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;}
+.manage-card{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:16px;margin-top:8px;}
+.manage-card p{font-size:12px;color:var(--et-navy);margin:0 0 12px 0;font-weight:500;}
+.manage-actions{display:flex;gap:8px;}
+.manage-btn{flex:1;padding:10px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;border:1.5px solid var(--et-border);background:var(--et-cream);color:var(--et-navy);transition:all 0.2s;}
+.manage-btn:hover{background:var(--et-navy);color:white;border-color:var(--et-navy);}
+.manage-btn.danger:hover{background:var(--et-red);border-color:var(--et-red);color:white;}
+.itin-stop{padding:10px 0;border-bottom:1px dashed var(--et-border);}
+.itin-stop:last-child{border-bottom:none;}
+.itin-stop-title{font-size:12px;font-weight:700;color:var(--et-navy);margin-bottom:4px;}
+.itin-line{font-size:11px;color:var(--et-muted);line-height:1.5;margin-bottom:2px;}
+.bodrless-powered{text-align:center;padding:8px 0 4px;font-size:10px;color:var(--et-muted);letter-spacing:0.5px;}
+.bodrless-powered a{color:var(--et-muted);text-decoration:none;font-weight:600;}
+.bodrless-powered a:hover{color:var(--et-navy);}
+`;
 
-  'var conversationHistory = [];\n' +
-  'var previousParams = null;\n' +
-  'var sessionId = null;\n' +
-  'var isHotelMode = ' + String(isHotelMode) + ';\n' +
-  'var embedTarget = ' + JSON.stringify(embedTarget) + ';\n' +
+  const widgetCode = `(function () {
+function initWidget() {
+  if (!document.body) { setTimeout(initWidget, 50); return; }
+  if (document.getElementById('bodrless-widget-root')) return;
 
-  'var STORAGE_KEY = "bodrless_widget_' + agencyKey + '";\n' +
-  'var transcript = [];\n' +
-  'var hasRestoredHistory = false;\n' +
+  // ── STATE ──────────────────────────────────────────────────────────────
+  var conversationHistory = [];
+  var previousParams      = null;
+  var sessionId           = null;
+  var isHotelMode         = ${String(isHotelMode)};
+  var embedTarget         = ${JSON.stringify(embedTarget)};
+  var agencyKey           = '${agencyKey}';
+  var apiBase             = '${apiBase}';
 
-  'function persistState() {\n' +
-  '  try {\n' +
-  '    localStorage.setItem(STORAGE_KEY, JSON.stringify({ v:1, savedAt:Date.now(), transcript:transcript.slice(-20), conversationHistory:conversationHistory, previousParams:previousParams, sessionId:sessionId }));\n' +
-  '  } catch(e) {}\n' +
-  '}\n' +
+  // ── LEG FLOW STATE ─────────────────────────────────────────────────────
+  // Mirrors conversationMemory.leg_flow shape for cross-channel compat
+  var legFlow = null;
+  // {
+  //   active, startedAt, tripParams,
+  //   legs: [{role, label, roleLabel, packages[], text}],
+  //   currentLegIndex,
+  //   selections: { [legIndex]: {packageId, package, label, role} },
+  //   runningTotalKES,
+  //   cachedOptions: { [legIndex]: packages[] }  ← original options cache
+  // }
 
-  'function loadPersistedState() {\n' +
-  '  try {\n' +
-  '    var raw = localStorage.getItem(STORAGE_KEY);\n' +
-  '    if (!raw) return null;\n' +
-  '    var p = JSON.parse(raw);\n' +
-  '    if (!p || p.v !== 1) return null;\n' +
-  '    if (Date.now() - (p.savedAt||0) > 24*60*60*1000) return null;\n' +
-  '    return p;\n' +
-  '  } catch(e) { return null; }\n' +
-  '}\n' +
+  var itineraryId      = null;   // pending_itineraries row id
+  var pendingRestoreId = null;   // set when restore banner is shown
+  var transcript       = [];
+  var hasRestoredHistory = false;
 
-  'var __r = loadPersistedState();\n' +
-  'if (__r) {\n' +
-  '  conversationHistory = __r.conversationHistory || [];\n' +
-  '  previousParams = __r.previousParams || null;\n' +
-  '  sessionId = __r.sessionId || null;\n' +
-  '  transcript = __r.transcript || [];\n' +
-  '  hasRestoredHistory = transcript.length > 0;\n' +
-  '}\n' +
+  var STORAGE_KEY = 'bodrless_widget_${agencyKey}';
 
-  'var style = document.createElement("style");\n' +
-  'style.innerHTML = [\n' +
-  '":root{--et-navy:#1E2A5E;--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F9F7F4;--et-border:#E8E3DA;--et-muted:#9A9088;--et-green:#27ae60;--et-gold:#B8964A;}",\n' +
-  '"#bodrless-chat{background:var(--et-white);z-index:999999;display:none;flex-direction:column;border-radius:18px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,0.14);font-family:\'Inter\',Arial,sans-serif;}",\n' +
-  '"#bodrless-chat.open{display:flex;}",\n' +
-  '"#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:390px;height:640px;}",\n' +
-  '"#bodrless-chat.embedded{position:relative;width:100%;height:760px;display:flex;border-radius:0;}",\n' +
-  '"@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:0.5;}30%{transform:translateY(-5px);opacity:1;}}",\n' +
-  '"#et-header{background:var(--et-navy);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}",\n' +
-  '"#et-header-left{display:flex;align-items:center;gap:12px;}",\n' +
-  '"#et-logo-wrap{width:38px;height:38px;background:rgba(255,255,255,0.1);border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;}",\n' +
-  '"#et-logo-wrap img{width:34px;height:34px;object-fit:contain;}",\n' +
-  '"#et-header-text h3{font-size:14px;color:white;margin:0 0 1px 0;font-weight:600;letter-spacing:0.2px;}",\n' +
-  '"#et-header-text p{font-size:10px;color:rgba(255,255,255,0.5);margin:0;letter-spacing:1px;text-transform:uppercase;}",\n' +
-  '"#et-close{background:rgba(255,255,255,0.08);border:none;color:rgba(255,255,255,0.7);width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:background 0.2s;}",\n' +
-  '"#et-close:hover{background:rgba(255,255,255,0.18);}",\n' +
-  '"#bodrless-messages{flex:1;padding:20px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;background:var(--et-cream);}",\n' +
-  '".msg{padding:11px 15px;border-radius:16px;max-width:82%;font-size:13.5px;line-height:1.55;}",\n' +
-  '".user{background:var(--et-navy);color:white;margin-left:auto;border-bottom-right-radius:4px;}",\n' +
-  '".bot{background:var(--et-white);color:#2A2A2A;border:1px solid var(--et-border);border-bottom-left-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,0.05);}",\n' +
-  '".typing{background:var(--et-white);border:1px solid var(--et-border);padding:12px 16px;border-radius:16px;display:flex;gap:5px;align-items:center;width:fit-content;}",\n' +
-  '".typing span{width:6px;height:6px;background:var(--et-navy);border-radius:50%;animation:bounce 1.2s infinite;}",\n' +
-  '".typing span:nth-child(2){animation-delay:0.2s;background:var(--et-gold);}",\n' +
-  '".typing span:nth-child(3){animation-delay:0.4s;}",\n' +
-  '".et-welcome{background:var(--et-white);border-radius:14px;padding:20px;border:1px solid var(--et-border);}",\n' +
-  '".et-welcome-eyebrow{font-size:10px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:var(--et-gold);margin-bottom:10px;}",\n' +
-  '".et-welcome-title{font-size:18px;font-weight:600;color:var(--et-navy);margin-bottom:8px;line-height:1.3;}",\n' +
-  '".et-welcome-body{font-size:13px;color:#5A5A5A;line-height:1.65;margin-bottom:18px;}",\n' +
-  '".et-divider{height:1px;background:var(--et-border);margin:4px 0 16px 0;}",\n' +
-  '".et-prompts-label{font-size:10px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--et-muted);margin-bottom:12px;}",\n' +
-  '".et-starter{width:100%;background:var(--et-cream);border:1px solid var(--et-border);border-radius:12px;padding:14px 16px;text-align:left;cursor:pointer;transition:all 0.2s;margin-bottom:8px;display:block;}",\n' +
-  '".et-starter:last-child{margin-bottom:0;}",\n' +
-  '".et-starter:hover{background:var(--et-navy);border-color:var(--et-navy);}",\n' +
-  '".et-starter:hover .st-title{color:white;}",\n' +
-  '".et-starter:hover .st-body{color:rgba(255,255,255,0.7);}",\n' +
-  '".st-title{font-size:13px;font-weight:600;color:var(--et-navy);margin-bottom:3px;}",\n' +
-  '".st-body{font-size:12px;color:var(--et-muted);line-height:1.45;}",\n' +
-  '".et-agency-welcome{background:linear-gradient(135deg,#1E2A5E 0%,#2d3f82 100%);border-radius:16px;padding:16px;color:white;border-left:4px solid #C0392B;}",\n' +
-  '".et-agency-welcome h4{font-size:14px;margin:0 0 6px 0;}",\n' +
-  '".et-agency-welcome p{font-size:12px;margin:0 0 12px 0;color:rgba(255,255,255,0.7);}",\n' +
-  '".et-suggestions{display:flex;flex-wrap:wrap;gap:6px;}",\n' +
-  '".et-suggestion{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.9);padding:5px 10px;border-radius:20px;font-size:11px;cursor:pointer;}",\n' +
-  '".package{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;overflow:visible;box-shadow:0 2px 12px rgba(0,0,0,0.06);margin-bottom:8px;}",\n' +
-  '".pkg-header{background:var(--et-navy);padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-radius:14px 14px 0 0;}",\n' +
-  '".pkg-title{color:white;font-size:13px;font-weight:600;}",\n' +
-  '".pkg-route{background:rgba(255,255,255,0.15);color:white;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",\n' +
-  '".pkg-body{padding:12px 14px;}",\n' +
-  '".pkg-row{display:flex;flex-direction:column;padding:8px 0;border-bottom:1px solid var(--et-border);}",\n' +
-  '".pkg-row:last-child{border-bottom:none;}",\n' +
-  '".pkg-label{font-size:10px;font-weight:700;color:var(--et-gold);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;}",\n' +
-  '".pkg-name{font-size:13px;font-weight:600;color:var(--et-navy);margin-bottom:2px;}",\n' +
-  '".pkg-sub{font-size:11px;color:var(--et-muted);line-height:1.4;}",\n' +
-  '".pkg-footer{padding:10px 14px;background:#FAFAF8;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--et-border);border-radius:0 0 14px 14px;}",\n' +
-  '".pkg-price{font-size:20px;font-weight:700;color:var(--et-navy);line-height:1;}",\n' +
-  '".pkg-price small{font-size:10px;color:var(--et-muted);display:block;font-weight:400;margin-top:2px;}",\n' +
-  '".book{background:var(--et-gold);color:white;border:none;padding:10px 20px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;letter-spacing:0.3px;transition:opacity 0.2s;}",\n' +
-  '".book:hover{opacity:0.88;}",\n' +
-  '".book:disabled{opacity:0.6;cursor:not-allowed;}",\n' +
-  '".cancel-policy{display:flex;align-items:center;gap:6px;font-size:11px;padding:8px 10px;border-radius:8px;margin-top:4px;}",\n' +
-  '".cancel-policy.refundable{background:#E8F8EE;color:#1B7A3D;}",\n' +
-  '".cancel-policy.non-refundable{background:#FFF0F0;color:#A02020;}",\n' +
-  '".cancel-policy.neutral{background:#F0EDE8;color:#5A4A3A;}",\n' +
-  '".price-match-badge{background:#E8F8EE;border:1px solid #A8D8B8;border-radius:10px;padding:10px 12px;margin:6px 0;display:flex;align-items:center;gap:10px;}",\n' +
-  '".pm-icon{font-size:18px;flex-shrink:0;}",\n' +
-  '".pm-label{font-size:10px;font-weight:700;color:#1B7A3D;letter-spacing:1px;text-transform:uppercase;}",\n' +
-  '".pm-detail{font-size:11px;color:#2A5A3A;margin-top:2px;}",\n' +
-  '"#bodrless-input-area{display:flex;border-top:1px solid var(--et-border);background:var(--et-white);padding:12px;gap:8px;flex-shrink:0;}",\n' +
-  '"#bodrless-input{flex:1;padding:10px 14px;border:1.5px solid var(--et-border);border-radius:20px;outline:none;font-size:13px;background:var(--et-cream);color:#2A2A2A;font-family:\'Inter\',Arial,sans-serif;}",\n' +
-  '"#bodrless-input:focus{border-color:var(--et-navy);}",\n' +
-  '"#bodrless-input::placeholder{color:var(--et-muted);font-size:12px;}",\n' +
-  '"#bodrless-send{background:var(--et-navy);color:white;border:none;width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.2s;}",\n' +
-  '"#bodrless-send:hover{background:var(--et-gold);}",\n' +
-  '".name-form{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:16px;margin-top:8px;}",\n' +
-  '".name-form p{font-size:12px;color:var(--et-navy);margin:0 0 12px 0;font-weight:500;}",\n' +
-  '".name-input{width:100%;padding:9px 12px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:#2A2A2A;box-sizing:border-box;margin-bottom:10px;font-family:\'Inter\',Arial,sans-serif;background:var(--et-cream);}",\n' +
-  '".name-input:focus{border-color:var(--et-navy);}",\n' +
-  '".dob-row{display:flex;gap:6px;margin-bottom:10px;}",\n' +
-  '".dob-row select{flex:1;padding:9px 4px;border:1.5px solid var(--et-border);border-radius:10px;outline:none;font-size:12px;color:#2A2A2A;background:white;}",\n' +
-  '".field-label{font-size:10px;color:var(--et-muted);margin-bottom:4px;font-weight:600;letter-spacing:0.3px;}",\n' +
-  '".confirm-btn{background:var(--et-navy);color:white;border:none;padding:11px 18px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;width:100%;transition:background 0.2s;}",\n' +
-  '".confirm-btn:hover{background:var(--et-gold);}",\n' +
-  '".trust-badge{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;font-size:10px;color:var(--et-muted);}",\n' +
-  '".trust-badge svg{width:12px;height:12px;}",\n' +
-  '".hl{padding:7px 10px;border-radius:8px;font-size:11px;font-weight:600;margin-top:6px;}",\n' +
-  '".hl-good{background:#E8F8EE;color:#1B7A3D;}",\n' +
-  '".hl-warn{background:#FFF3E0;color:#B05A00;}",\n' +
-  '".hl-neutral{background:#F0EDE8;color:#5A4A3A;}",\n' +
-  '".manage-card{background:var(--et-white);border:1px solid var(--et-border);border-radius:14px;padding:16px;margin-top:8px;}",\n' +
-  '".manage-card p{font-size:12px;color:var(--et-navy);margin:0 0 12px 0;font-weight:500;}",\n' +
-  '".manage-actions{display:flex;gap:8px;}",\n' +
-  '".manage-btn{flex:1;padding:10px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;border:1.5px solid var(--et-border);background:var(--et-cream);color:var(--et-navy);transition:all 0.2s;}",\n' +
-  '".manage-btn:hover{background:var(--et-navy);color:white;border-color:var(--et-navy);}",\n' +
-  '".manage-btn.danger:hover{background:var(--et-red);border-color:var(--et-red);color:white;}",\n' +
-  '".itin-stop{padding:10px 0;border-bottom:1px dashed var(--et-border);}",\n' +
-  '".itin-stop:last-child{border-bottom:none;}",\n' +
-  '".itin-stop-title{font-size:12px;font-weight:700;color:var(--et-navy);margin-bottom:4px;}",\n' +
-  '".itin-line{font-size:11px;color:var(--et-muted);line-height:1.5;margin-bottom:2px;}",\n' +
-  '".price-alert{background:#FFF8EC;border:1px solid #E8C96D;border-radius:12px;padding:12px;margin-top:8px;}",\n' +
-  '".price-alert p{font-size:12px;color:#5A4A1A;margin:0 0 10px 0;line-height:1.5;}",\n' +
-  '".price-alert-actions{display:flex;gap:8px;}",\n' +
-  '".price-approve{flex:1;background:var(--et-navy);color:white;border:none;padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;}",\n' +
-  '".price-cancel{flex:1;background:white;color:var(--et-navy);border:1.5px solid var(--et-border);padding:9px 14px;border-radius:20px;cursor:pointer;font-size:12px;}",\n' +
-  '".bodrless-powered{text-align:center;padding:8px 0 4px;font-size:10px;color:var(--et-muted);letter-spacing:0.5px;}",\n' +
-  '".bodrless-powered a{color:var(--et-muted);text-decoration:none;font-weight:600;}",\n' +
-  '".bodrless-powered a:hover{color:var(--et-navy);}"\n' +
-  '].join("");\n' +
-  'document.head.appendChild(style);\n' +
+  // ── PERSISTENCE ─────────────────────────────────────────────────────────
+  function persistState() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        v: 2, savedAt: Date.now(),
+        transcript: transcript.slice(-20),
+        conversationHistory, previousParams, sessionId,
+        legFlow, itineraryId,
+      }));
+    } catch(e) {}
+  }
 
-  'var root = document.createElement("div");\n' +
-  'root.id = "bodrless-widget-root";\n' +
-  'var chatDiv = document.createElement("div");\n' +
-  'chatDiv.id = "bodrless-chat";\n' +
-  'if (embedTarget) { chatDiv.classList.add("embedded"); } else { chatDiv.classList.add("floating"); }\n' +
+  function loadPersistedState() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      var p = JSON.parse(raw);
+      if (!p || p.v !== 2) return null;
+      if (Date.now() - (p.savedAt || 0) > 24 * 60 * 60 * 1000) return null;
+      return p;
+    } catch(e) { return null; }
+  }
 
-  'var header = document.createElement("div");\n' +
-  'header.id = "et-header";\n' +
-  'var headerLeft = document.createElement("div");\n' +
-  'headerLeft.id = "et-header-left";\n' +
-  'var logoWrap = document.createElement("div");\n' +
-  'logoWrap.id = "et-logo-wrap";\n' +
-  'logoWrap.innerText = "' + agencyName.charAt(0) + '";\n' +
-  'logoWrap.style.cssText += ";display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#0F4C3A;color:#fff;font-family:Playfair Display,serif;font-size:22px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.18);flex-shrink:0;";\n' +
-  'var headerText = document.createElement("div");\n' +
-  'headerText.id = "et-header-text";\n' +
-  'headerText.innerHTML = "<h3>' + agencyName + '</h3><p>" + (isHotelMode ? "Concierge" : "Travel Specialist") + "</p>";\n' +
-  'headerLeft.appendChild(logoWrap);\n' +
-  'headerLeft.appendChild(headerText);\n' +
-  'var closeBtn = document.createElement("button");\n' +
-  'closeBtn.id = "et-close";\n' +
-  'closeBtn.innerHTML = "&#215;";\n' +
-  'if (embedTarget) closeBtn.style.display = "none";\n' +
-  'header.appendChild(headerLeft);\n' +
-  'header.appendChild(closeBtn);\n' +
+  var __r = loadPersistedState();
+  if (__r) {
+    conversationHistory = __r.conversationHistory || [];
+    previousParams      = __r.previousParams      || null;
+    sessionId           = __r.sessionId           || null;
+    transcript          = __r.transcript          || [];
+    legFlow             = __r.legFlow             || null;
+    itineraryId         = __r.itineraryId         || null;
+    hasRestoredHistory  = transcript.length > 0;
+  }
 
-  'var messages = document.createElement("div");\n' +
-  'messages.id = "bodrless-messages";\n' +
+  // ── STYLES ──────────────────────────────────────────────────────────────
+  var style = document.createElement('style');
+  style.innerHTML = ${JSON.stringify(styles)};
+  document.head.appendChild(style);
 
-  'var poweredBy = document.createElement("div");\n' +
-  'poweredBy.className = "bodrless-powered";\n' +
-  'poweredBy.innerHTML = "Powered by <a href=\'https://bodrless.com\' target=\'_blank\'>Bodrless</a>";\n' +
+  // ── DOM ──────────────────────────────────────────────────────────────────
+  var root    = document.createElement('div'); root.id = 'bodrless-widget-root';
+  var chatDiv = document.createElement('div'); chatDiv.id = 'bodrless-chat';
+  chatDiv.classList.add(embedTarget ? 'embedded' : 'floating');
 
-  'var inputArea = document.createElement("div");\n' +
-  'inputArea.id = "bodrless-input-area";\n' +
-  'var input = document.createElement("input");\n' +
-  'input.id = "bodrless-input";\n' +
-  'input.placeholder = isHotelMode ? "How can I help you plan your stay?" : "Where would you like to go?";\n' +
-  'var sendBtn = document.createElement("button");\n' +
-  'sendBtn.id = "bodrless-send";\n' +
-  'sendBtn.innerHTML = "&#10148;";\n' +
-  'inputArea.appendChild(input);\n' +
-  'inputArea.appendChild(sendBtn);\n' +
-  'chatDiv.appendChild(header);\n' +
-  'chatDiv.appendChild(messages);\n' +
-  'chatDiv.appendChild(poweredBy);\n' +
-  'chatDiv.appendChild(inputArea);\n' +
-  'root.appendChild(chatDiv);\n' +
+  var header     = document.createElement('div'); header.id = 'et-header';
+  var headerLeft = document.createElement('div'); headerLeft.id = 'et-header-left';
+  var logoWrap   = document.createElement('div');
+  logoWrap.style.cssText = 'display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#0F4C3A;color:#fff;font-family:Playfair Display,serif;font-size:22px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.18);flex-shrink:0;';
+  logoWrap.innerText = '${agencyName.charAt(0)}';
+  var headerText = document.createElement('div'); headerText.id = 'et-header-text';
+  headerText.innerHTML = '<h3>${agencyName}</h3><p>' + (isHotelMode ? 'Concierge' : 'Travel Specialist') + '</p>';
+  headerLeft.appendChild(logoWrap); headerLeft.appendChild(headerText);
+  var closeBtn = document.createElement('button'); closeBtn.id = 'et-close'; closeBtn.innerHTML = '&#215;';
+  if (embedTarget) closeBtn.style.display = 'none';
+  header.appendChild(headerLeft); header.appendChild(closeBtn);
 
-  'if (embedTarget) {\n' +
-  '  var mount = document.getElementById(embedTarget);\n' +
-  '  if (mount) { mount.appendChild(root); } else { document.body.appendChild(root); }\n' +
-  '} else {\n' +
-  '  document.body.appendChild(root);\n' +
-  '}\n' +
+  var messages  = document.createElement('div'); messages.id = 'bodrless-messages';
+  var poweredBy = document.createElement('div'); poweredBy.className = 'bodrless-powered';
+  poweredBy.innerHTML = "Powered by <a href='https://bodrless.com' target='_blank'>Bodrless</a>";
+  var inputArea = document.createElement('div'); inputArea.id = 'bodrless-input-area';
+  var input     = document.createElement('input'); input.id = 'bodrless-input';
+  input.placeholder = isHotelMode ? 'How can I help you plan your stay?' : 'Where would you like to go?';
+  var sendBtn = document.createElement('button'); sendBtn.id = 'bodrless-send'; sendBtn.innerHTML = '&#10148;';
+  inputArea.appendChild(input); inputArea.appendChild(sendBtn);
+  chatDiv.appendChild(header); chatDiv.appendChild(messages); chatDiv.appendChild(poweredBy); chatDiv.appendChild(inputArea);
+  root.appendChild(chatDiv);
 
-  'var welcomeShown = false;\n' +
-  'if (!embedTarget) {\n' +
-  '  var triggerBtn = document.createElement("button");\n' +
-  '  triggerBtn.id = "bodrless-trigger";\n' +
-  '  triggerBtn.innerText = isHotelMode ? "Book a Room" : "Plan Your Trip";\n' +
-  '  document.body.appendChild(triggerBtn);\n' +
-  '  triggerBtn.onclick = function() {\n' +
-  '    chatDiv.classList.add("open"); input.focus();\n' +
-  '    if (!welcomeShown) { welcomeShown = true; if (hasRestoredHistory) { replayTranscript(); } else { showWelcome(); } }\n' +
-  '  };\n' +
-  '  closeBtn.onclick = function() { chatDiv.classList.remove("open"); };\n' +
-  '} else {\n' +
-  '  chatDiv.classList.add("open");\n' +
-  '  if (!welcomeShown) { welcomeShown = true; if (hasRestoredHistory) { replayTranscript(); } else { showWelcome(); } }\n' +
-  '}\n' +
+  if (embedTarget) {
+    var mount = document.getElementById(embedTarget);
+    (mount || document.body).appendChild(root);
+  } else {
+    document.body.appendChild(root);
+  }
 
-  'function showWelcome() {\n' +
-  '  if (isHotelMode) { showHotelEntry(); } else { showAgencyWelcome(); }\n' +
-  '}\n' +
+  // ── TRIGGER BUTTON ───────────────────────────────────────────────────────
+  var welcomeShown = false;
+  if (!embedTarget) {
+    var triggerBtn = document.createElement('button'); triggerBtn.id = 'bodrless-trigger';
+    triggerBtn.innerText = isHotelMode ? 'Book a Room' : 'Plan Your Trip';
+    document.body.appendChild(triggerBtn);
+    triggerBtn.onclick = function() {
+      chatDiv.classList.add('open'); input.focus();
+      if (!welcomeShown) { welcomeShown = true; _initView(); }
+    };
+    closeBtn.onclick = function() { chatDiv.classList.remove('open'); };
+  } else {
+    chatDiv.classList.add('open');
+    if (!welcomeShown) { welcomeShown = true; _initView(); }
+  }
 
-  'function showHotelEntry() {\n' +
-  '  var card = document.createElement("div"); card.className = "et-welcome"; card.id = "et-hotel-entry";\n' +
-  '  var eyebrow = document.createElement("div"); eyebrow.className = "et-welcome-eyebrow"; eyebrow.innerText = "Your Personal Concierge";\n' +
-  '  var title = document.createElement("div"); title.className = "et-welcome-title"; title.innerText = "Welcome to ' + agencyName + '";\n' +
-  '  var body = document.createElement("div"); body.className = "et-welcome-body"; body.innerText = "It\'s a pleasure to have you with us. Tell me the occasion, your preferred dates, and how many guests — I\'ll take care of finding the perfect room and making it special.";\n' +
-  '  var ctaBtn = document.createElement("button");\n' +
-  '  ctaBtn.style.cssText = "display:block;width:100%;background:var(--et-navy);color:white;border:none;padding:12px 20px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.3px;margin-top:4px;transition:background 0.2s;";\n' +
-  '  ctaBtn.innerText = "Start Planning";\n' +
-  '  ctaBtn.onmouseover = function(){this.style.background="var(--et-gold)";};\n' +
-  '  ctaBtn.onmouseout  = function(){this.style.background="var(--et-navy)";};\n' +
-  '  ctaBtn.onclick = function() {\n' +
-  '    card.remove();\n' +
-  '    var mountEl = embedTarget ? document.getElementById(embedTarget) : null;\n' +
-  '    if (mountEl) { mountEl.scrollIntoView({ behavior: "smooth", block: "start" }); }\n' +
-  '    setTimeout(function(){ showHotelWelcome(); input.focus(); }, 300);\n' +
-  '  };\n' +
-  '  card.appendChild(eyebrow); card.appendChild(title); card.appendChild(body); card.appendChild(ctaBtn);\n' +
-  '  messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+  function _initView() {
+    if (isHotelMode) { showHotelEntry(); return; }
+    // Agency mode: check for saved itinerary first
+    if (legFlow && legFlow.legs && legFlow.legs.length > 0) {
+      _showRestoreBanner();
+    } else if (hasRestoredHistory) {
+      replayTranscript();
+    } else {
+      showAgencyWelcome();
+    }
+  }
 
-  'function showHotelWelcome() {\n' +
-  '  var card = document.createElement("div"); card.className = "et-welcome";\n' +
-  '  var eyebrow = document.createElement("div"); eyebrow.className = "et-welcome-eyebrow"; eyebrow.innerText = "Your Personal Concierge";\n' +
-  '  var title = document.createElement("div"); title.className = "et-welcome-title"; title.innerText = "Welcome to ' + agencyName + '";\n' +
-  '  var body = document.createElement("div"); body.className = "et-welcome-body"; body.innerText = "It\'s a pleasure to have you with us. Tell me the occasion, your preferred dates, and how many guests — I\'ll take care of finding the perfect room and making it special.";\n' +
-  '  var divider = document.createElement("div"); divider.className = "et-divider";\n' +
-  '  var promptLabel = document.createElement("div"); promptLabel.className = "et-prompts-label"; promptLabel.innerText = "Popular requests";\n' +
-  '  var starters = (window.bodrlessStarters && window.bodrlessStarters.length) ? window.bodrlessStarters.slice(0,3) : [\n' +
-  '    { icon: "\u2764\uFE0F", title: "Romantic Getaway", text: "We\'re celebrating our anniversary — recommend your most romantic room for 2 nights." },\n' +
-  '    { icon: "\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67", title: "Family Stay", text: "Family room for 2 adults and 2 children, full board, arriving this weekend." },\n' +
-  '    { icon: "\uD83D\uDCBC", title: "Business Trip", text: "Single business room for tomorrow night, need early check-in if possible." }\n' +
-  '  ];\n' +
-  '  card.appendChild(eyebrow); card.appendChild(title); card.appendChild(body); card.appendChild(divider); card.appendChild(promptLabel);\n' +
-  '  starters.forEach(function(s) {\n' +
-  '    var btn = document.createElement("button"); btn.className = "et-starter";\n' +
-  '    var t = document.createElement("div"); t.className = "st-title"; t.innerText = s.icon + "  " + s.title;\n' +
-  '    var b = document.createElement("div"); b.className = "st-body";  b.innerText = s.text;\n' +
-  '    btn.appendChild(t); btn.appendChild(b);\n' +
-  '    btn.onclick = function() { input.value = s.text; send(); };\n' +
-  '    card.appendChild(btn);\n' +
-  '  });\n' +
-  '  var manageBtn = document.createElement("button"); manageBtn.className = "et-starter"; manageBtn.style.cssText += "margin-top:12px;border-color:#C0C0C0;";\n' +
-  '  var mt = document.createElement("div"); mt.className = "st-title"; mt.innerText = "\uD83D\uDD11  Manage a Booking";\n' +
-  '  var mb = document.createElement("div"); mb.className = "st-body";  mb.innerText = "View, modify, or cancel an existing reservation.";\n' +
-  '  manageBtn.appendChild(mt); manageBtn.appendChild(mb);\n' +
-  '  manageBtn.onclick = function() { showManageBookingForm(); };\n' +
-  '  card.appendChild(manageBtn);\n' +
-  '  messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+  // ── HELPERS ───────────────────────────────────────────────────────────────
+  function addMsg(text, type) {
+    var div = document.createElement('div'); div.className = 'msg ' + type;
+    div.innerText = text; messages.appendChild(div); messages.scrollTop = messages.scrollHeight;
+    return div;
+  }
+  function showTyping() {
+    var d = document.createElement('div'); d.className = 'typing'; d.id = 'et-typing';
+    d.innerHTML = '<span></span><span></span><span></span>';
+    messages.appendChild(d); messages.scrollTop = messages.scrollHeight;
+  }
+  function hideTyping() { var t = document.getElementById('et-typing'); if (t) t.remove(); }
+  function scrollToEl(el) {
+    if (!el) return;
+    setTimeout(function() { messages.scrollTo({ top: el.offsetTop - 12, behavior: 'smooth' }); }, 80);
+  }
+  function fmtTime(iso) {
+    if (!iso) return 'TBC';
+    try { var d = new Date(iso); if (isNaN(d)) return iso; return d.toLocaleTimeString('en-KE', {hour:'2-digit',minute:'2-digit'}); } catch(e) { return iso; }
+  }
+  function fmtPrice(n, cur) { return (cur||'KES')+' '+(Math.round(Number(n)||0)).toLocaleString(); }
+  function titleCase(s) { if(!s)return''; return String(s).replace(/\\b\\w/g, function(c){return c.toUpperCase();}); }
+  function makeRow(label, name, sub) {
+    var row = document.createElement('div'); row.className = 'pkg-row';
+    var l = document.createElement('div'); l.className = 'pkg-label'; l.innerText = label;
+    var n = document.createElement('div'); n.className = 'pkg-name';  n.innerText = name;
+    var s = document.createElement('div'); s.className = 'pkg-sub';   s.innerText = sub;
+    row.appendChild(l); row.appendChild(n); row.appendChild(s); return row;
+  }
+  function makeHL(text, tone) {
+    var d = document.createElement('div');
+    d.className = 'hl ' + (tone==='good'?'hl-good':tone==='warn'?'hl-warn':'hl-neutral');
+    d.innerText = text; return d;
+  }
+  function makeCancelBadge(policySummary, isRefundable) {
+    var d = document.createElement('div'); var icon;
+    var cls = 'cancel-policy ';
+    if (isRefundable === true)       { cls += 'refundable';     icon = '✅'; }
+    else if (isRefundable === false) { cls += 'non-refundable'; icon = '❌'; }
+    else                             { cls += 'neutral';        icon = 'ℹ️'; }
+    d.className = cls; d.innerText = icon + '  ' + (policySummary || 'Cancellation policy confirmed at booking.');
+    return d;
+  }
 
-  'function showAgencyWelcome() {\n' +
-  '  var div = document.createElement("div"); div.className = "et-agency-welcome";\n' +
-  '  var h4 = document.createElement("h4"); h4.innerText = "Welcome to ' + agencyName + '";\n' +
-  '  var p = document.createElement("p"); p.innerText = "Tell me your dream destination and I will find the perfect package.";\n' +
-  '  var sugDiv = document.createElement("div"); sugDiv.className = "et-suggestions";\n' +
-  '  ["Nairobi to Zanzibar","Cape Town 5 nights","Masai Mara Safari","Kigali Rwanda","Cairo Egypt"].forEach(function(s) {\n' +
-  '    var btn = document.createElement("span"); btn.className = "et-suggestion"; btn.innerText = s;\n' +
-  '    btn.onclick = function() { input.value = s; send(); };\n' +
-  '    sugDiv.appendChild(btn);\n' +
-  '  });\n' +
-  '  div.appendChild(h4); div.appendChild(p); div.appendChild(sugDiv);\n' +
-  '  messages.appendChild(div);\n' +
-  '}\n' +
+  // ── RESTORE BANNER ────────────────────────────────────────────────────────
+  function _showRestoreBanner() {
+    var legs        = legFlow.legs || [];
+    var selCount    = Object.keys(legFlow.selections || {}).length;
+    var total       = legFlow.runningTotalKES || 0;
+    var dest        = legFlow.tripParams && legFlow.tripParams.destination
+      ? titleCase(legFlow.tripParams.destination) : 'your trip';
 
-  'function replayTranscript() {\n' +
-  '  var note = document.createElement("div"); note.className = "msg bot";\n' +
-  '  note.style.cssText = "font-style:italic;opacity:0.6;";\n' +
-  '  note.innerText = "\u2014 Continuing where you left off \u2014";\n' +
-  '  messages.appendChild(note);\n' +
-  '  for (var ri = 0; ri < transcript.length; ri++) {\n' +
-  '    var e = transcript[ri]; if (!e || !e.type) continue;\n' +
-  '    if (e.type === "user" || e.type === "bot") { addMsg(e.text || "", e.type); }\n' +
-  '    else if (e.type === "hotel_packages" && Array.isArray(e.packages)) { e.packages.forEach(function(p,i){addHotelPackage(p,i);}); }\n' +
-  '    else if (e.type === "hotel_itinerary" && e.pkg) { addHotelItinerary(e.pkg); }\n' +
-  '    else if (e.type === "packages" && Array.isArray(e.packages)) { e.packages.slice(0,4).forEach(function(p,i){addPackage(p,i);}); }\n' +
-  '    else if (e.type === "itinerary" && e.pkg) { addItinerary(e.pkg); }\n' +
-  '  }\n' +
-  '  messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+    var banner = document.createElement('div'); banner.className = 'restore-banner'; banner.id = 'et-restore-banner';
+    var h4 = document.createElement('h4');
+    h4.innerText = '👋 Welcome back!';
+    var p = document.createElement('p');
+    p.innerText = 'You have a saved trip to ' + dest + ' — '
+      + selCount + ' of ' + legs.length + ' legs selected'
+      + (total > 0 ? ' · KES ' + Math.round(total).toLocaleString() + ' so far' : '') + '.';
+    var acts = document.createElement('div'); acts.className = 'restore-banner-actions';
+    var yesBtn = document.createElement('button'); yesBtn.className = 'restore-btn yes'; yesBtn.innerText = 'Continue trip';
+    var noBtn  = document.createElement('button'); noBtn.className  = 'restore-btn no';  noBtn.innerText  = 'Start fresh';
+    yesBtn.onclick = function() {
+      banner.remove();
+      _renderLegFlow();
+    };
+    noBtn.onclick = function() {
+      banner.remove();
+      _abandonLegFlow();
+      showAgencyWelcome();
+    };
+    acts.appendChild(yesBtn); acts.appendChild(noBtn);
+    banner.appendChild(h4); banner.appendChild(p); banner.appendChild(acts);
+    messages.appendChild(banner); messages.scrollTop = messages.scrollHeight;
+  }
 
-  'function addMsg(text, type) {\n' +
-  '  var div = document.createElement("div"); div.className = "msg " + type;\n' +
-  '  div.innerText = text; messages.appendChild(div); messages.scrollTop = messages.scrollHeight;\n' +
-  '  return div;\n' +
-  '}\n' +
-  'function showTyping() {\n' +
-  '  var div = document.createElement("div"); div.className = "typing"; div.id = "et-typing";\n' +
-  '  div.innerHTML = "<span></span><span></span><span></span>";\n' +
-  '  messages.appendChild(div); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
-  'function hideTyping() { var t = document.getElementById("et-typing"); if (t) t.remove(); }\n' +
-  'function scrollToEl(el) {\n' +
-  '  if (!el) return;\n' +
-  '  setTimeout(function() {\n' +
-  '    var top = el.offsetTop - 12;\n' +
-  '    messages.scrollTo({ top: top, behavior: "smooth" });\n' +
-  '  }, 80);\n' +
-  '}\n' +
-  'function fmtTime(iso) {\n' +
-  '  if (!iso) return "TBC";\n' +
-  '  try { var d = new Date(iso); if (isNaN(d)) return iso; return d.toLocaleTimeString("en-KE",{hour:"2-digit",minute:"2-digit"}); } catch(e){return iso;}\n' +
-  '}\n' +
-  'function fmtPrice(n, cur) { return (cur||"KES")+" "+(Math.round(Number(n)||0)).toLocaleString(); }\n' +
-  'function titleCase(s) { if(!s)return""; return String(s).replace(/\\b\\w/g,function(c){return c.toUpperCase();}); }\n' +
-  'function makeRow(label, name, sub) {\n' +
-  '  var row = document.createElement("div"); row.className = "pkg-row";\n' +
-  '  var l = document.createElement("div"); l.className = "pkg-label"; l.innerText = label;\n' +
-  '  var n = document.createElement("div"); n.className = "pkg-name";  n.innerText = name;\n' +
-  '  var s = document.createElement("div"); s.className = "pkg-sub";   s.innerText = sub;\n' +
-  '  row.appendChild(l); row.appendChild(n); row.appendChild(s); return row;\n' +
-  '}\n' +
-  'function makeHL(text, tone) {\n' +
-  '  var d = document.createElement("div");\n' +
-  '  d.className = "hl " + (tone==="good"?"hl-good":tone==="warn"?"hl-warn":"hl-neutral");\n' +
-  '  d.innerText = text; return d;\n' +
-  '}\n' +
-  'function makeCancelBadge(policySummary, isRefundable) {\n' +
-  '  var d = document.createElement("div"); var cls = "cancel-policy "; var icon;\n' +
-  '  if (isRefundable === true)        { cls += "refundable";     icon = "\u2705"; }\n' +
-  '  else if (isRefundable === false)  { cls += "non-refundable"; icon = "\u274C"; }\n' +
-  '  else                              { cls += "neutral";        icon = "\u2139\uFE0F"; }\n' +
-  '  d.className = cls;\n' +
-  '  d.innerText = icon + "  " + (policySummary || "Cancellation policy confirmed at booking.");\n' +
-  '  return d;\n' +
-  '}\n' +
-  'function makePriceMatchBadge(otaName, savingPerNight, currency) {\n' +
-  '  var d = document.createElement("div"); d.className = "price-match-badge";\n' +
-  '  var icon = document.createElement("div"); icon.className = "pm-icon"; icon.innerText = "\uD83C\uDFF7\uFE0F";\n' +
-  '  var info = document.createElement("div");\n' +
-  '  var label = document.createElement("div"); label.className = "pm-label"; label.innerText = "Best Rate Guaranteed";\n' +
-  '  var detail = document.createElement("div"); detail.className = "pm-detail";\n' +
-  '  detail.innerText = "Cheaper than " + (otaName || "OTA") + " \u00b7 Save " + (currency||"KES") + " " + Math.round(savingPerNight).toLocaleString() + "/night";\n' +
-  '  info.appendChild(label); info.appendChild(detail);\n' +
-  '  d.appendChild(icon); d.appendChild(info);\n' +
-  '  return d;\n' +
-  '}\n' +
-  'function sortAncillariesByContext(ancillaries, prefs) {\n' +
-  '  if (!prefs || !prefs.length) return ancillaries;\n' +
-  '  var isRomantic = prefs.indexOf("honeymoon") !== -1;\n' +
-  '  var isFamily   = prefs.indexOf("family") !== -1;\n' +
-  '  var isSpa      = prefs.indexOf("spa") !== -1;\n' +
-  '  var priority = [];\n' +
-  '  if (isRomantic)    priority = ["spa","dining","upgrade","wellness","activity"];\n' +
-  '  else if (isFamily) priority = ["activity","dining","transfer","upgrade"];\n' +
-  '  else if (isSpa)    priority = ["spa","wellness","dining","upgrade"];\n' +
-  '  else               priority = ["transfer","dining","spa","activity","upgrade","wellness"];\n' +
-  '  return ancillaries.slice().sort(function(a,b){\n' +
-  '    var ai=priority.indexOf(a.category); var bi=priority.indexOf(b.category);\n' +
-  '    if(ai===-1)ai=99; if(bi===-1)bi=99; return ai-bi;\n' +
-  '  });\n' +
-  '}\n' +
+  function _abandonLegFlow() {
+    if (itineraryId) {
+      fetch(apiBase + '/api/trips/itinerary/' + itineraryId + '/abandon', {
+        method: 'POST', headers: {'Content-Type':'application/json','x-api-key': agencyKey}
+      }).catch(function(){});
+    }
+    legFlow     = null;
+    itineraryId = null;
+    persistState();
+  }
 
-  'function showManageBookingForm() {\n' +
-  '  var ex = document.getElementById("et-manage-form"); if (ex) ex.remove();\n' +
-  '  var card = document.createElement("div"); card.className = "manage-card"; card.id = "et-manage-form";\n' +
-  '  var p = document.createElement("p"); p.innerText = "Enter your reservation reference and we\'ll pull up your booking."; card.appendChild(p);\n' +
-  '  var ri = document.createElement("input"); ri.className = "name-input"; ri.placeholder = "Reservation reference (e.g. BDR-12345)"; ri.type = "text"; card.appendChild(ri);\n' +
-  '  var pi = document.createElement("input"); pi.className = "name-input"; pi.placeholder = "Phone number used at booking"; pi.type = "tel"; card.appendChild(pi);\n' +
-  '  var err = document.createElement("div"); err.style.cssText = "color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;"; card.appendChild(err);\n' +
-  '  var findBtn = document.createElement("button"); findBtn.className = "confirm-btn"; findBtn.innerText = "Find My Booking";\n' +
-  '  findBtn.onclick = function() {\n' +
-  '    err.style.display = "none";\n' +
-  '    var ref = ri.value.trim(); var phone = pi.value.trim();\n' +
-  '    if (!ref)   { err.innerText = "Please enter your reservation reference."; err.style.display = "block"; return; }\n' +
-  '    if (!phone) { err.innerText = "Please enter the phone number used at booking."; err.style.display = "block"; return; }\n' +
-  '    findBtn.innerText = "Looking up..."; findBtn.disabled = true;\n' +
-  '    fetch("' + apiBase + '/api/hotel/reservation?ref=" + encodeURIComponent(ref) + "&phone=" + encodeURIComponent(phone), { headers: { "x-hotel-key": "' + agencyKey + '" } })\n' +
-  '    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })\n' +
-  '    .then(function(res) {\n' +
-  '      if (!res.ok || !res.data.success) { err.innerText = (res.data && res.data.error) || "Booking not found."; err.style.display = "block"; findBtn.innerText = "Find My Booking"; findBtn.disabled = false; return; }\n' +
-  '      card.remove(); showBookingDetails(res.data.reservation);\n' +
-  '    })\n' +
-  '    .catch(function() { err.innerText = "Network error. Please try again."; err.style.display = "block"; findBtn.innerText = "Find My Booking"; findBtn.disabled = false; });\n' +
-  '  };\n' +
-  '  card.appendChild(findBtn); messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+  // ── WELCOME SCREENS ───────────────────────────────────────────────────────
+  function showAgencyWelcome() {
+    var div = document.createElement('div'); div.className = 'et-agency-welcome';
+    var h4  = document.createElement('h4'); h4.innerText = 'Welcome to ${agencyName}';
+    var p   = document.createElement('p');  p.innerText  = 'Tell me your dream destination and I will find the perfect package.';
+    var sug = document.createElement('div'); sug.className = 'et-suggestions';
+    ['Nairobi to Zanzibar','Cape Town 5 nights','Masai Mara Safari','Kigali Rwanda','Cairo Egypt'].forEach(function(s) {
+      var btn = document.createElement('span'); btn.className = 'et-suggestion'; btn.innerText = s;
+      btn.onclick = function() { input.value = s; send(); };
+      sug.appendChild(btn);
+    });
+    div.appendChild(h4); div.appendChild(p); div.appendChild(sug);
+    messages.appendChild(div);
+  }
 
-  'function showBookingDetails(res) {\n' +
-  '  var card = document.createElement("div"); card.className = "manage-card";\n' +
-  '  var summary = ["\uD83C\uDFE8 "+(res.property_name||res.hotel_name||""),(res.room_type||"")+(res.meal_plan?" \u00b7 "+res.meal_plan.replace(/_/g," "):""),\n' +
-  '    (res.check_in||"")+" \u2192 "+(res.check_out||""),"Ref: "+res.reservation_ref+" \u00b7 "+(res.status||"").toUpperCase()].filter(Boolean).join("\\n");\n' +
-  '  var p = document.createElement("p"); p.style.whiteSpace = "pre-line"; p.innerText = summary; card.appendChild(p);\n' +
-  '  var canModify = res.status === "confirmed" || res.status === "pending";\n' +
-  '  var canCancel = res.status === "confirmed" || res.status === "pending";\n' +
-  '  if (res.cancellation_policy) { card.appendChild(makeCancelBadge(res.cancellation_policy, res.is_refundable)); }\n' +
-  '  var acts = document.createElement("div"); acts.className = "manage-actions"; acts.style.marginTop = "14px";\n' +
-  '  if (canModify) { var modBtn = document.createElement("button"); modBtn.className = "manage-btn"; modBtn.innerText = "\u270F\uFE0F Modify"; modBtn.onclick = function() { showModifyForm(res); }; acts.appendChild(modBtn); }\n' +
-  '  if (canCancel) { var canBtn = document.createElement("button"); canBtn.className = "manage-btn danger"; canBtn.innerText = "\u274C Cancel"; canBtn.onclick = function() { confirmCancellation(res, canBtn); }; acts.appendChild(canBtn); }\n' +
-  '  if (!canModify && !canCancel) { var na = document.createElement("p"); na.style.cssText = "font-size:11px;color:var(--et-muted);margin:8px 0 0 0;"; na.innerText = "This reservation cannot be modified. Please contact us directly."; card.appendChild(na); }\n' +
-  '  card.appendChild(acts); messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+  function replayTranscript() {
+    var note = document.createElement('div'); note.className = 'msg bot';
+    note.style.cssText = 'font-style:italic;opacity:0.6;';
+    note.innerText = '— Continuing where you left off —';
+    messages.appendChild(note);
+    for (var i = 0; i < transcript.length; i++) {
+      var e = transcript[i]; if (!e || !e.type) continue;
+      if (e.type === 'user' || e.type === 'bot') { addMsg(e.text || '', e.type); }
+      else if (e.type === 'packages' && Array.isArray(e.packages)) {
+        e.packages.slice(0,4).forEach(function(p,idx){ addPackage(p, idx, null, null); });
+      }
+    }
+    messages.scrollTop = messages.scrollHeight;
+  }
 
-  'function showModifyForm(res) {\n' +
-  '  var ex = document.getElementById("et-modify-form"); if (ex) ex.remove();\n' +
-  '  var card = document.createElement("div"); card.className = "manage-card"; card.id = "et-modify-form";\n' +
-  '  var p = document.createElement("p"); p.innerText = "Update your reservation dates:"; card.appendChild(p);\n' +
-  '  var ciLabel = document.createElement("div"); ciLabel.className = "field-label"; ciLabel.innerText = "New check-in"; card.appendChild(ciLabel);\n' +
-  '  var ci = document.createElement("input"); ci.className = "name-input"; ci.type = "date"; ci.value = res.check_in || ""; card.appendChild(ci);\n' +
-  '  var coLabel = document.createElement("div"); coLabel.className = "field-label"; coLabel.innerText = "New check-out"; card.appendChild(coLabel);\n' +
-  '  var co = document.createElement("input"); co.className = "name-input"; co.type = "date"; co.value = res.check_out || ""; card.appendChild(co);\n' +
-  '  var ri = document.createElement("textarea"); ri.className = "name-input"; ri.placeholder = "Any special requests?"; ri.style.cssText = "height:56px;resize:none;"; card.appendChild(ri);\n' +
-  '  var err = document.createElement("div"); err.style.cssText = "color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;"; card.appendChild(err);\n' +
-  '  var sb = document.createElement("button"); sb.className = "confirm-btn"; sb.innerText = "Request Modification";\n' +
-  '  sb.onclick = function() {\n' +
-  '    err.style.display = "none";\n' +
-  '    if (!ci.value || !co.value) { err.innerText = "Please select both dates."; err.style.display = "block"; return; }\n' +
-  '    if (new Date(co.value) <= new Date(ci.value)) { err.innerText = "Check-out must be after check-in."; err.style.display = "block"; return; }\n' +
-  '    sb.innerText = "Submitting..."; sb.disabled = true;\n' +
-  '    fetch("' + apiBase + '/api/hotel/reservation/modify", { method: "POST", headers: { "Content-Type": "application/json", "x-hotel-key": "' + agencyKey + '" }, body: JSON.stringify({ reservationRef: res.reservation_ref, newCheckIn: ci.value, newCheckOut: co.value, specialRequests: ri.value.trim() || null }) })\n' +
-  '    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })\n' +
-  '    .then(function(result) { card.remove(); addMsg(result.ok && result.data.success ? "\u2705 Modification request submitted for "+res.reservation_ref+". We\'ll confirm the updated dates shortly." : (result.data && result.data.error) || "Unable to modify. Please contact us directly.", "bot"); })\n' +
-  '    .catch(function() { card.remove(); addMsg("Network error — please contact us directly.", "bot"); });\n' +
-  '  };\n' +
-  '  card.appendChild(sb); messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+  // ── PRICE NUDGE ───────────────────────────────────────────────────────────
+  function showPriceNudge(text, direction) {
+    var d = document.createElement('div');
+    d.className = 'price-nudge ' + (direction === 'down' ? 'down' : 'up');
+    d.innerText = text;
+    messages.appendChild(d); messages.scrollTop = messages.scrollHeight;
+  }
 
-  'function confirmCancellation(res, btn) {\n' +
-  '  var ex = document.getElementById("et-cancel-confirm"); if (ex) ex.remove();\n' +
-  '  var card = document.createElement("div"); card.className = "manage-card"; card.id = "et-cancel-confirm"; card.style.borderColor = "var(--et-red)";\n' +
-  '  var p = document.createElement("p"); p.innerHTML = "Are you sure you want to cancel <strong>" + res.reservation_ref + "</strong>?";\n' +
-  '  if (res.cancellation_policy) { p.innerHTML += "<br><br>" + res.cancellation_policy; }\n' +
-  '  card.appendChild(p);\n' +
-  '  var acts = document.createElement("div"); acts.className = "manage-actions";\n' +
-  '  var confirmBtn = document.createElement("button"); confirmBtn.className = "manage-btn danger"; confirmBtn.innerText = "Yes, Cancel Booking";\n' +
-  '  var keepBtn    = document.createElement("button"); keepBtn.className    = "manage-btn";        keepBtn.innerText    = "Keep My Booking";\n' +
-  '  keepBtn.onclick = function() { card.remove(); addMsg("No problem — your reservation "+res.reservation_ref+" is still active.", "bot"); };\n' +
-  '  confirmBtn.onclick = function() {\n' +
-  '    confirmBtn.innerText = "Cancelling..."; confirmBtn.disabled = true; keepBtn.disabled = true;\n' +
-  '    fetch("' + apiBase + '/api/hotel/reservation/cancel", { method: "POST", headers: { "Content-Type": "application/json", "x-hotel-key": "' + agencyKey + '" }, body: JSON.stringify({ reservationRef: res.reservation_ref, groupSlug: "' + agencyKey + '" }) })\n' +
-  '    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })\n' +
-  '    .then(function(result) { card.remove(); addMsg(result.ok && result.data.success ? "\u2705 Reservation "+res.reservation_ref+" has been cancelled. "+(result.data.refundNote||"Any applicable refund will be processed within 5-7 business days.") : (result.data && result.data.error) || "We couldn\'t cancel online — please call us and quote "+res.reservation_ref+".", "bot"); })\n' +
-  '    .catch(function() { card.remove(); addMsg("Network error — please contact us to cancel "+res.reservation_ref+".", "bot"); });\n' +
-  '  };\n' +
-  '  acts.appendChild(confirmBtn); acts.appendChild(keepBtn); card.appendChild(acts);\n' +
-  '  messages.appendChild(card); messages.scrollTop = messages.scrollHeight;\n' +
-  '}\n' +
+  // ═══════════════════════════════════════════════════════════════════════════
+  // LEG FLOW RENDERER
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  'function addHotelPackage(p, idx) {\n' +
-  '  var div = document.createElement("div"); div.className = "package";\n' +
-  '  var hotel = p.hotel || {}; var summary = p.summary || {};\n' +
-  '  var prefs = (previousParams && previousParams.preferences) || [];\n' +
-  '  var ancillaries = sortAncillariesByContext(p.ancillaryServices || [], prefs);\n' +
-  '  var currency = hotel.currency || summary.currency || "KES";\n' +
-  '  var nights = hotel.nights || summary.nights || 1;\n' +
-  '  var passengers = summary.passengers || 1;\n' +
-  '  var baseTotal = hotel.totalRate || (hotel.pricePerNight * nights) || summary.totalPrice || 0;\n' +
-  '  var currentTotal = baseTotal;\n' +
-  '  var selectedAnc = [];\n' +
-  '  var currentMealPlan = hotel.mealPlan || "bed_and_breakfast";\n' +
-  '  var mealLabels = {room_only:"Room Only",bed_and_breakfast:"Bed & Breakfast",half_board:"Half Board",full_board:"Full Board",all_inclusive:"All Inclusive"};\n' +
-  '  var pkgH = document.createElement("div"); pkgH.className = "pkg-header";\n' +
-  '  var pt = document.createElement("span"); pt.className = "pkg-title"; pt.innerText = "Option "+(idx+1);\n' +
-  '  var pr = document.createElement("span"); pr.className = "pkg-route"; pr.innerText = hotel.location||summary.route||"Room";\n' +
-  '  pkgH.appendChild(pt); pkgH.appendChild(pr);\n' +
-  '  var pkgB = document.createElement("div"); pkgB.className = "pkg-body";\n' +
-  '  var images = hotel.images||[];\n' +
-  '  if (images.length>0) { var img = document.createElement("img"); img.src=images[0]; img.alt=hotel.roomType||"Room"; img.style.cssText="width:100%;height:160px;object-fit:cover;border-radius:10px;margin-bottom:10px;display:block;"; img.onerror=function(){this.style.display="none";}; pkgB.appendChild(img); }\n' +
-  '  if (hotel.priceMatchApplied) { pkgB.appendChild(makePriceMatchBadge(hotel.priceMatchOta, hotel.priceMatchSaving, currency)); }\n' +
-  '  var stars = hotel.stars?Array(Math.min(Math.round(hotel.stars),5)+1).join("\\u2605"):"";\n' +
-  '  pkgB.appendChild(makeRow("Property",(hotel.propertyName||hotel.name||"TBC")+(stars?" "+stars:""),hotel.location||hotel.address||""));\n' +
-  '  var roomSub=[]; if(hotel.bedType)roomSub.push(hotel.bedType); if(hotel.view)roomSub.push(hotel.view);\n' +
-  '  pkgB.appendChild(makeRow("Room",hotel.roomType||"Standard Room",roomSub.join(" \u00b7 ")));\n' +
-  '  pkgB.appendChild(makeRow("Dates",(hotel.checkIn||"")+" \u2192 "+(hotel.checkOut||""),nights+" night"+(nights!==1?"s":"")+" \u00b7 "+passengers+" guest(s)"));\n' +
-  '  pkgB.appendChild(makeCancelBadge(hotel.policySummary, hotel.isRefundable));\n' +
-  '  var avRates = hotel.availableRates||[];\n' +
-  '  var mealRow = document.createElement("div"); mealRow.className = "pkg-row";\n' +
-  '  var ml = document.createElement("div"); ml.className = "pkg-label"; ml.innerText = "Meal Plan"; mealRow.appendChild(ml);\n' +
-  '  if (avRates.length>1) {\n' +
-  '    var ms = document.createElement("select"); ms.style.cssText = "margin-top:4px;padding:7px 10px;border:1.5px solid var(--et-border);border-radius:8px;font-size:12px;color:#2A2A2A;background:var(--et-cream);width:100%;";\n' +
-  '    avRates.forEach(function(r){ var o=document.createElement("option"); o.value=r.ratePlanId; o.setAttribute("data-price",r.pricePerNight); o.setAttribute("data-meal",r.mealPlan); o.selected=r.mealPlan===currentMealPlan; o.innerText=(mealLabels[r.mealPlan]||r.mealPlan)+" \u2014 "+currency+" "+Math.round(r.pricePerNight).toLocaleString()+"/night"; ms.appendChild(o); });\n' +
-  '    ms.onchange=function(){ var o=ms.options[ms.selectedIndex]; currentMealPlan=o.getAttribute("data-meal"); hotel.ratePlanId=o.value; baseTotal=parseFloat(o.getAttribute("data-price"))*nights; currentTotal=baseTotal+selectedAnc.reduce(function(s,a){return s+(a.priceBasis==="per_person"?a.price*passengers:a.priceBasis==="per_night"?a.price*nights:a.price);},0); var el=document.getElementById("htl-total-"+idx); if(el)el.innerText=currency+" "+Math.round(currentTotal).toLocaleString(); };\n' +
-  '    mealRow.appendChild(ms);\n' +
-  '  } else { var md=document.createElement("div"); md.className="pkg-name"; md.innerText="\uD83C\uDF7D\uFE0F "+(mealLabels[currentMealPlan]||currentMealPlan); mealRow.appendChild(md); }\n' +
-  '  pkgB.appendChild(mealRow);\n' +
-  '  pkgB.appendChild(makeRow("Rate",currency+" "+Math.round(hotel.pricePerNight||0).toLocaleString()+"/night","\u00d7 "+nights+" night"+(nights!==1?"s":"")+" = "+currency+" "+Math.round(baseTotal).toLocaleString()));\n' +
-  '  if(ancillaries.length>0){\n' +
-  '    var aRow=document.createElement("div"); aRow.className="pkg-row"; var aLbl=document.createElement("div"); aLbl.className="pkg-label"; aLbl.innerText="Add-ons"; aRow.appendChild(aLbl);\n' +
-  '    if(prefs.indexOf("honeymoon")!==-1||prefs.indexOf("romantic")!==-1){var nudge=document.createElement("div");nudge.style.cssText="font-size:11px;color:var(--et-gold);margin-bottom:6px;font-style:italic;";nudge.innerText="\u2728 Curated for a romantic stay";aRow.appendChild(nudge);}\n' +
-  '    var catIcons={spa:"\uD83D\uDEC6",transfer:"\uD83D\uDE97",dining:"\uD83C\uDF7D\uFE0F",activity:"\uD83C\uDFC4",upgrade:"\u2B06\uFE0F",wellness:"\uD83E\uDDD8",other:"\u2728"};\n' +
-  '    ancillaries.forEach(function(a){\n' +
-  '      var ai=document.createElement("div"); ai.style.cssText="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--et-border);";\n' +
-  '      var cb=document.createElement("input"); cb.type="checkbox"; cb.style.cssText="margin-top:3px;flex-shrink:0;accent-color:var(--et-navy);";\n' +
-  '      var inf=document.createElement("div"); inf.style.flex="1";\n' +
-  '      var an=document.createElement("div"); an.style.cssText="font-size:12px;font-weight:600;color:var(--et-navy);"; an.innerText=(catIcons[a.category]||"\u2728")+" "+a.name;\n' +
-  '      var basis=a.priceBasis==="per_person"?"/person":a.priceBasis==="per_night"?"/night":"";\n' +
-  '      var ap=document.createElement("div"); ap.style.cssText="font-size:11px;color:var(--et-muted);"; ap.innerText=currency+" "+Math.round(a.price).toLocaleString()+basis;\n' +
-  '      if(a.description){var ad=document.createElement("div");ad.style.cssText="font-size:11px;color:var(--et-muted);margin-top:2px;";ad.innerText=a.description;inf.appendChild(ad);}\n' +
-  '      inf.appendChild(an); inf.appendChild(ap); ai.appendChild(cb); ai.appendChild(inf); aRow.appendChild(ai);\n' +
-  '      cb.onchange=function(){ if(cb.checked){selectedAnc.push(a);}else{selectedAnc=selectedAnc.filter(function(x){return x.id!==a.id;});} currentTotal=baseTotal+selectedAnc.reduce(function(s,x){return s+(x.priceBasis==="per_person"?x.price*passengers:x.priceBasis==="per_night"?x.price*nights:x.price);},0); var el=document.getElementById("htl-total-"+idx); if(el)el.innerText=currency+" "+Math.round(currentTotal).toLocaleString(); };\n' +
-  '    }); pkgB.appendChild(aRow);\n' +
-  '  }\n' +
-  '  var pkgF=document.createElement("div"); pkgF.className="pkg-footer";\n' +
-  '  var pd=document.createElement("div"); pd.className="pkg-price";\n' +
-  '  var pm=document.createElement("span"); pm.id="htl-total-"+idx; pm.innerText=currency+" "+Math.round(baseTotal).toLocaleString();\n' +
-  '  var ps=document.createElement("small"); ps.innerText=currency+" "+Math.round(hotel.pricePerNight||0).toLocaleString()+"/night";\n' +
-  '  pd.appendChild(pm); pd.appendChild(ps);\n' +
-  '  var bk=document.createElement("button"); bk.className="book"; bk.innerText="Reserve";\n' +
-  '  bk.onclick=function(){var ep=JSON.parse(JSON.stringify(p));ep.hotel.mealPlan=currentMealPlan;ep.selectedAncillaries=selectedAnc;ep.summary.totalPrice=currentTotal;showHotelGuestForm(ep,bk);};\n' +
-  '  pkgF.appendChild(pd); pkgF.appendChild(bk);\n' +
-  '  div.appendChild(pkgH); div.appendChild(pkgB); div.appendChild(pkgF);\n' +
-  '  messages.appendChild(div);\n' +
-  '  return div;\n' +
-  '}\n' +
+  // Role → display config
+  var LEG_CONFIG = {
+    arrival:     { icon: '✈️',  label: 'Outbound + Hotel + Transfers', cls: 'arrival' },
+    departure:   { icon: '🛫',  label: 'Return Flight',                cls: 'departure' },
+    internal:    { icon: '🔀',  label: 'Next Leg',                     cls: 'internal' },
+    return_stay: { icon: '🏨',  label: 'Return Stay',                  cls: 'return_stay' },
+    stopover:    { icon: '⏱️',  label: 'Stopover',                     cls: 'stopover' },
+  };
 
-  'function addHotelItinerary(p) {\n' +
-  '  var div=document.createElement("div"); div.className="package";\n' +
-  '  var summary=p.summary||{}; var legs=p.legs||{}; var currency=summary.currency||"KES";\n' +
-  '  var pkgH=document.createElement("div"); pkgH.className="pkg-header";\n' +
-  '  var pt=document.createElement("span"); pt.className="pkg-title"; pt.innerText="Your Itinerary";\n' +
-  '  var pr=document.createElement("span"); pr.className="pkg-route"; pr.innerText=summary.route||"";\n' +
-  '  pkgH.appendChild(pt); pkgH.appendChild(pr);\n' +
-  '  var pkgB=document.createElement("div"); pkgB.className="pkg-body";\n' +
-  '  legs.forEach(function(leg,i){\n' +
-  '    var sd=document.createElement("div"); sd.className="itin-stop";\n' +
-  '    var st=document.createElement("div"); st.className="itin-stop-title"; st.innerText="Stop "+(i+1)+": "+titleCase(leg.destination)+" ("+(leg.nights||1)+" night"+((leg.nights||1)===1?"":"s")+")"; sd.appendChild(st);\n' +
-  '    if(leg.hotel){var h=leg.hotel;var stars=h.stars?Array(Math.min(Math.round(h.stars),5)+1).join("\\u2605"):"";var hl=document.createElement("div");hl.className="itin-line";hl.innerText="\uD83C\uDFE8 "+(h.propertyName||h.name||"TBC")+(stars?" "+stars:"")+(h.view?" \u00b7 "+h.view:"")+" \u00b7 "+fmtPrice(h.pricePerNight,h.currency)+"/night \u00d7 "+(leg.nights||1);sd.appendChild(hl);if(h.policySummary)sd.appendChild(makeCancelBadge(h.policySummary,h.isRefundable));}\n' +
-  '    pkgB.appendChild(sd);\n' +
-  '  });\n' +
-  '  var pkgF=document.createElement("div"); pkgF.className="pkg-footer";\n' +
-  '  var pd=document.createElement("div"); pd.className="pkg-price"; pd.innerText=fmtPrice(Math.round(summary.totalPrice||0),currency);\n' +
-  '  var ps=document.createElement("small"); ps.innerText=fmtPrice(Math.round(summary.pricePerPerson||0),currency)+"/person"; pd.appendChild(ps);\n' +
-  '  var bk=document.createElement("button"); bk.className="book"; bk.innerText="Reserve Itinerary";\n' +
-  '  bk.onclick=function(){showHotelGuestForm(p,bk);};\n' +
-  '  pkgF.appendChild(pd); pkgF.appendChild(bk);\n' +
-  '  div.appendChild(pkgH); div.appendChild(pkgB); div.appendChild(pkgF);\n' +
-  '  messages.appendChild(div); return div;\n' +
-  '}\n' +
+  // Container for all leg sections — rendered once, updated in place
+  var legFlowContainer = null;
 
-  'function showHotelGuestForm(p, bookBtn) {\n' +
-  '  var ex=document.getElementById("et-hotel-form"); if(ex)ex.remove();\n' +
-  '  var hotel=p.hotel||{}; var summary=p.summary||{};\n' +
-  '  var currency=hotel.currency||summary.currency||"KES"; var total=summary.totalPrice||hotel.totalRate||0;\n' +
-  '  var form=document.createElement("div"); form.className="name-form"; form.id="et-hotel-form";\n' +
-  '  var fp=document.createElement("p"); fp.innerText="Complete your reservation:"; form.appendChild(fp);\n' +
-  '  var strip=document.createElement("div"); strip.style.cssText="background:var(--et-cream);border-radius:8px;padding:10px 12px;font-size:12px;color:#2A2A2A;margin-bottom:12px;line-height:1.6;";\n' +
-  '  var ancNames=(p.selectedAncillaries||[]).map(function(a){return a.name;});\n' +
-  '  strip.innerHTML="<strong>"+(hotel.propertyName||hotel.name||"")+"</strong><br>"+(hotel.roomType||"")+(hotel.mealPlan?" \u00b7 "+hotel.mealPlan.replace(/_/g," "):"")+"<br>"+(hotel.checkIn||"")+" \u2192 "+(hotel.checkOut||"")+"<br>"+(ancNames.length?"Add-ons: "+ancNames.join(", ")+"<br>":"")+"<strong>Total: "+currency+" "+Math.round(total).toLocaleString()+"</strong>";\n' +
-  '  form.appendChild(strip);\n' +
-  '  var ni=document.createElement("input"); ni.className="name-input"; ni.placeholder="Full name"; ni.type="text"; form.appendChild(ni);\n' +
-  '  var pi=document.createElement("input"); pi.className="name-input"; pi.placeholder="Phone number"; pi.type="tel"; form.appendChild(pi);\n' +
-  '  var ei=document.createElement("input"); ei.className="name-input"; ei.placeholder="Email (for voucher)"; ei.type="email"; form.appendChild(ei);\n' +
-  '  var ri=document.createElement("textarea"); ri.className="name-input"; ri.placeholder="Special requests (optional)"; ri.style.cssText="height:56px;resize:none;"; form.appendChild(ri);\n' +
-  '  var err=document.createElement("div"); err.style.cssText="color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;"; form.appendChild(err);\n' +
-  '  var cb=document.createElement("button"); cb.className="confirm-btn"; cb.innerText="Confirm Reservation";\n' +
-  '  cb.onclick=function(){\n' +
-  '    err.style.display="none"; var name=ni.value.trim(); var phone=pi.value.trim();\n' +
-  '    if(!name){err.innerText="Please enter your name.";err.style.display="block";return;}\n' +
-  '    if(!phone){err.innerText="Please enter your phone number.";err.style.display="block";return;}\n' +
-  '    cb.innerText="Processing..."; cb.disabled=true;\n' +
-  '    fetch("' + apiBase + '/api/hotel/reserve",{method:"POST",headers:{"Content-Type":"application/json","x-hotel-key":"' + agencyKey + '"},body:JSON.stringify({groupSlug:"' + agencyKey + '",pkg:p,selectedAncillaries:p.selectedAncillaries||[],guestName:name,guestPhone:phone,guestEmail:ei.value.trim()||null,specialRequests:ri.value.trim()||null,channel:"widget"})})\n' +
-  '    .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})\n' +
-  '    .then(function(res){\n' +
-  '      if(!res.ok||!res.data.success){err.innerText=(res.data&&res.data.error)||"Reservation failed.";err.style.display="block";cb.innerText="Confirm Reservation";cb.disabled=false;return;}\n' +
-  '      form.remove(); var ref=res.data.reservationRef;\n' +
-  '      addMsg("\uD83C\uDFE8 Reservation "+ref+" confirmed. "+currency+" "+Math.round(total).toLocaleString()+" due.","bot");\n' +
-  '      if(res.data.paymentType==="mpesa"||res.data.paymentType==="both"){\n' +
-  '        fetch("' + apiBase + '/api/hotel/pay",{method:"POST",headers:{"Content-Type":"application/json","x-hotel-key":"' + agencyKey + '"},body:JSON.stringify({reservationRef:ref,guestPhone:phone})})\n' +
-  '        .then(function(r){return r.json();})\n' +
-  '        .then(function(pd){addMsg(pd.success?pd.message||"Check your phone to complete payment.":"Reservation confirmed as "+ref+". The hotel will contact you to arrange payment.","bot");messages.scrollTop=messages.scrollHeight;});\n' +
-  '      } else { addMsg("Reservation "+ref+" confirmed. The hotel will contact you to arrange payment.","bot"); }\n' +
-  '      if(bookBtn){bookBtn.innerText="Reserved \u2713";bookBtn.style.background="var(--et-green)";bookBtn.disabled=true;}\n' +
-  '    })\n' +
-  '    .catch(function(){err.innerText="Network error.";err.style.display="block";cb.innerText="Confirm Reservation";cb.disabled=false;});\n' +
-  '  };\n' +
-  '  form.appendChild(cb);\n' +
-  '  var tb=document.createElement("div"); tb.className="trust-badge";\n' +
-  '  tb.innerHTML="<svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\\"/><path d=\\"M9 12l2 2 4-4\\"/></svg> Secure booking";\n' +
-  '  form.appendChild(tb); messages.appendChild(form); messages.scrollTop=messages.scrollHeight;\n' +
-  '}\n' +
+  function _renderLegFlow() {
+    if (!legFlow || !legFlow.legs) return;
 
-  'function pollBookingStatus(ref,btn){ var a=0,max=40,iv=setInterval(function(){ a++; fetch("' + apiBase + '/api/trips/booking/"+ref).then(function(r){return r.json();}).then(function(d){ if(d.bookingStage==="paid"){clearInterval(iv);btn.innerText="Paid & Confirmed!";btn.style.background="#27ae60";addMsg("Payment received! Booking "+ref+" confirmed. Your e-ticket will follow shortly.","bot");messages.scrollTop=messages.scrollHeight;} else if(d.bookingStage==="failed"||d.status==="cancelled"){clearInterval(iv);btn.innerText="Payment not received";btn.style.background="var(--et-red)";addMsg("We did not receive payment for booking "+ref+".","bot");messages.scrollTop=messages.scrollHeight;} else if(a>=max){clearInterval(iv);addMsg("Still waiting on payment for "+ref+".","bot");messages.scrollTop=messages.scrollHeight;} }).catch(function(){}); },5000); }\n' +
+    // Remove existing container if re-rendering
+    if (legFlowContainer) legFlowContainer.remove();
+    legFlowContainer = document.createElement('div');
+    legFlowContainer.id = 'leg-flow-container';
+    messages.appendChild(legFlowContainer);
 
-  'function continueToPayment(data,ctx,btn){ var ref=data.bookingRef,total=data.totalPrice,cur=data.currency; addMsg("Flight held! Ref: "+ref+". Total: "+cur+" "+total.toLocaleString()+". Sending M-Pesa prompt to "+ctx.phone+"...","bot"); messages.scrollTop=messages.scrollHeight; fetch("' + apiBase + '/api/trips/book-pay",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({bookingRef:ref,phone:ctx.phone,amount:total,currency:cur,email:ctx.email,firstName:ctx.passengers[0].firstName,lastName:ctx.passengers[0].lastName})}).then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});}).then(function(pr){ if(!pr.ok||!pr.data.success){if(btn){btn.innerText="Payment failed";btn.style.background="var(--et-red)";}addMsg("Flight held but M-Pesa prompt failed. Contact support with ref "+ref+".","bot");return;} if(btn){btn.innerText="Awaiting payment...";btn.style.background="#f0ad4e";btn.disabled=true;} addMsg("Check your phone and enter your PIN. Ref: "+ref+".","bot"); messages.scrollTop=messages.scrollHeight; pollBookingStatus(ref,btn||{innerText:"",style:{}}); }); }\n' +
+    legFlow.legs.forEach(function(leg, idx) {
+      _renderLegSection(leg, idx);
+    });
 
-  'function showNameForm(p,bookBtn){ var ex=document.getElementById("et-name-form"); if(ex)ex.remove(); var pc=(p.summary&&p.summary.passengers)?p.summary.passengers:1; var needsFlight=!!(p.transport&&(p.transport.transportType||"flight")==="flight"); var offersSeat=!p.isMultiDestination&&!!(p.transport&&p.transport.supplier==="duffel"); var form=document.createElement("div"); form.className="name-form"; form.id="et-name-form"; var fp=document.createElement("p"); fp.innerText=needsFlight?"Enter passenger details to confirm:":"Enter your details to confirm:"; form.appendChild(fp); var pInputs=[]; var yr=new Date().getFullYear(); function buildDob(){ var row=document.createElement("div"); row.className="dob-row"; var d=document.createElement("select"); d.innerHTML="<option value=\\"\\">Day</option>"+Array.from({length:31},function(_,i){return"<option value=\\""+(i+1)+"\\">"+(i+1)+"</option>";}).join(""); var m=document.createElement("select"); m.innerHTML="<option value=\\"\\">Month</option>"+["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map(function(mn,i){return"<option value=\\""+(i+1)+"\\">"+mn+"</option>";}).join(""); var y=document.createElement("select"); y.innerHTML="<option value=\\"\\">Year</option>"+Array.from({length:100},function(_,i){return yr-i;}).map(function(yy){return"<option value=\\""+yy+"\\">"+yy+"</option>";}).join(""); row.appendChild(d);row.appendChild(m);row.appendChild(y);return{row:row,d:d,m:m,y:y}; } for(var pi=0;pi<pc;pi++){ var pb=document.createElement("div"); pb.style.cssText="margin-bottom:12px;padding-bottom:10px;border-bottom:"+(pi<pc-1?"1px solid var(--et-border)":"none")+";"; if(pc>1){var pl=document.createElement("div");pl.style.cssText="font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:6px;";pl.innerText="Traveler "+(pi+1);pb.appendChild(pl);} var fn=document.createElement("input");fn.className="name-input";fn.placeholder="First name";fn.type="text";pb.appendChild(fn); var ln=document.createElement("input");ln.className="name-input";ln.placeholder="Last name";ln.type="text";pb.appendChild(ln); var dl=document.createElement("div");dl.className="field-label";dl.innerText="Date of birth";pb.appendChild(dl); var dob=buildDob();pb.appendChild(dob.row); var gs=document.createElement("select");gs.className="name-input";gs.innerHTML="<option value=\\"male\\">Male</option><option value=\\"female\\">Female</option>";pb.appendChild(gs); var cl=document.createElement("label");cl.style.cssText="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--et-navy);margin-bottom:8px;"; var cc=document.createElement("input");cc.type="checkbox";cl.appendChild(cc);cl.appendChild(document.createTextNode("This traveler is a child"));pb.appendChild(cl); var idl=document.createElement("div");idl.className="field-label";idl.innerText="Passport or National ID";pb.appendChild(idl); var ii=document.createElement("input");ii.className="name-input";ii.placeholder="Passport / ID number";ii.type="text";pb.appendChild(ii); var ss=null; if(offersSeat){var sl=document.createElement("div");sl.className="field-label";sl.innerText="Seat preference (optional)";pb.appendChild(sl);ss=document.createElement("select");ss.className="name-input";ss.innerHTML="<option value=\\"\\">No preference</option><option value=\\"window\\">Window</option><option value=\\"aisle\\">Aisle</option><option value=\\"exit_row\\">Exit row</option>";pb.appendChild(ss);} pInputs.push({fn:fn,ln:ln,d:dob.d,m:dob.m,y:dob.y,gs:gs,cc:cc,ii:ii,ss:ss}); form.appendChild(pb); } var cl2=document.createElement("div");cl2.style.cssText="font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:6px;";cl2.innerText="Contact details";form.appendChild(cl2); var phi=document.createElement("input");phi.className="name-input";phi.placeholder="Phone (e.g. 0712345678)";phi.type="tel";form.appendChild(phi); var emi=document.createElement("input");emi.className="name-input";emi.placeholder="Email";emi.type="email";form.appendChild(emi); var em=document.createElement("div");em.style.cssText="color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;";form.appendChild(em); var cfb=document.createElement("button");cfb.className="confirm-btn";cfb.innerText="Confirm Booking"; cfb.onclick=function(){ em.style.display="none"; var pax=[]; for(var k=0;k<pInputs.length;k++){ var pin=pInputs[k]; var f=pin.fn.value.trim(),l=pin.ln.value.trim(); if(!f||!l){em.innerText="Please fill in all traveler names.";em.style.display="block";return;} var dd=pin.d.value,mm=pin.m.value,yy=pin.y.value; if(!dd||!mm||!yy){em.innerText="Please select a date of birth for traveler "+(k+1)+".";em.style.display="block";return;} var dstr=yy+"-"+String(mm).padStart(2,"0")+"-"+String(dd).padStart(2,"0"); var isC=pin.cc.checked,idn=pin.ii.value.trim(); if(!isC&&!idn){em.innerText="Passport/ID required for traveler "+(k+1)+".";em.style.display="block";return;} pax.push({firstName:f,lastName:l,dateOfBirth:dstr,gender:pin.gs.value,type:isC?"child":"adult",idNumber:idn||null,seatPreference:(pin.ss&&pin.ss.value)?pin.ss.value:null}); } var phone=phi.value.trim(),email=emi.value.trim(); if(!phone){em.innerText="Phone number is required.";em.style.display="block";return;} if(needsFlight&&!email){em.innerText="Email is required for flight bookings.";em.style.display="block";return;} var gn=pax[0].firstName+" "+pax[0].lastName; var ctx={guestName:gn,phone:phone,email:email,passengers:pax,pkg:p}; cfb.innerText="Processing...";cfb.disabled=true; fetch("' + apiBase + '/api/trips/book-init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agencyId:"' + agencyKey + '",guestName:gn,guestPhone:phone,guestEmail:email,passengers:pax,package:p})}).then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});}).then(function(res){ if(!res.ok&&res.data&&res.data.code==="PRICE_CHANGED"){form.remove();showPriceAlert(res.data,ctx,bookBtn);return;} if(!res.ok||!res.data.success){em.innerText=(res.data&&res.data.error)||"Booking failed.";em.style.display="block";cfb.innerText="Confirm Booking";cfb.disabled=false;return;} form.remove();continueToPayment(res.data,ctx,bookBtn); }).catch(function(){em.innerText="Network error.";em.style.display="block";cfb.innerText="Confirm Booking";cfb.disabled=false;}); }; form.appendChild(cfb); var tb=document.createElement("div");tb.className="trust-badge"; tb.innerHTML="<svg viewBox=\\"0 0 24 24\\" fill=\\"none\\" stroke=\\"currentColor\\" stroke-width=\\"2\\"><path d=\\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\\"/><path d=\\"M9 12l2 2 4-4\\"/></svg> Secure payment via M-Pesa"; form.appendChild(tb); messages.appendChild(form);messages.scrollTop=messages.scrollHeight; }\n' +
+    messages.scrollTop = messages.scrollHeight;
+  }
 
-  'function showPriceAlert(info,ctx,btn){ var ex=document.getElementById("et-price-alert");if(ex)ex.remove(); var d=document.createElement("div");d.className="price-alert";d.id="et-price-alert"; var p=document.createElement("p");p.innerHTML="The hotel price changed: <span style=\\"text-decoration:line-through;color:var(--et-muted);\\">"+fmtPrice(info.oldPrice,info.currency)+"</span> \u2192 <strong style=\\"color:var(--et-red);\\">"+(fmtPrice(info.newPrice,info.currency))+"</strong>"+(info.flightHeld?" Your flight is held and not yet charged.":""); d.appendChild(p); var acts=document.createElement("div");acts.className="price-alert-actions"; var ap=document.createElement("button");ap.className="price-approve";ap.innerText="Approve new price"; var ca=document.createElement("button");ca.className="price-cancel";ca.innerText="Cancel"; acts.appendChild(ap);acts.appendChild(ca);d.appendChild(acts);messages.appendChild(d);messages.scrollTop=messages.scrollHeight; ca.onclick=function(){d.remove();addMsg("Booking cancelled \u2014 no charge was made.","bot");}; ap.onclick=function(){ ap.disabled=true;ca.disabled=true;ap.innerText="Processing..."; fetch("' + apiBase + '/api/trips/book-init",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agencyId:"' + agencyKey + '",guestName:ctx.guestName,guestPhone:ctx.phone,guestEmail:ctx.email,passengers:ctx.passengers,package:ctx.pkg,priceApproved:true})}).then(function(r){return r.json().then(function(data){return{ok:r.ok,data:data};});}).then(function(res){d.remove();if(!res.ok||!res.data.success){addMsg((res.data&&res.data.error)||"Booking failed at the new price.","bot");return;}continueToPayment(res.data,ctx,btn);}).catch(function(){d.remove();addMsg("Network error.","bot");}); }; }\n' +
+  function _renderLegSection(leg, idx) {
+    var cfg      = LEG_CONFIG[leg.role] || { icon: '📍', label: leg.role, cls: 'internal' };
+    var sel      = legFlow.selections && legFlow.selections[idx];
+    var isCurrent = idx === legFlow.currentLegIndex;
+    var isLocked  = !!sel;
+    var isPending = !isLocked && !isCurrent;
 
-  'function addPackage(p,i){ var div=document.createElement("div");div.className="package"; var t=p.transport||null,rt=p.returnTransport||null,h=p.hotel||null,tr=p.transfers||null,s=p.summary||{}; var cur=s.currency||"KES",total=Math.round(s.totalPrice||0),ppp=Math.round(s.pricePerPerson||0),nights=s.nights||0,pax=s.passengers||1; var route=s.route||((t&&t.origin?t.origin:"TBC")+" to "+(t&&t.destination?t.destination:"TBC")); var ph=document.createElement("div");ph.className="pkg-header"; var pt=document.createElement("span");pt.className="pkg-title";pt.innerText="Option "+(i+1); var pr=document.createElement("span");pr.className="pkg-route";pr.innerText=route; ph.appendChild(pt);ph.appendChild(pr); var pb=document.createElement("div");pb.className="pkg-body"; if(t){ var isb=(t.transportType||"").toLowerCase()==="bus"; var sub=(t.origin||"TBC")+" \u2192 "+(t.destination||"TBC")+" \u00b7 "+fmtTime(t.departureTime)+" - "+fmtTime(t.arrivalTime); if(t.stops)sub+=" \u00b7 "+t.stops;if(t.cabinClass)sub+=" \u00b7 "+t.cabinClass; if(!isb&&t.baggageSummary)sub+=" \u00b7 "+t.baggageSummary;sub+=" \u00b7 "+fmtPrice(t.price,t.currency); pb.appendChild(makeRow(isb?"Outbound Bus":"Outbound Flight",t.airline||t.provider||"TBC",sub)); if(t.policySummary)pb.appendChild(makeHL(t.policySummary,t.isRefundable===true?"good":t.isRefundable===false?"warn":"neutral")); } if(rt){ var isrb=(rt.transportType||"").toLowerCase()==="bus"; var rsub=(rt.origin||"TBC")+" \u2192 "+(rt.destination||"TBC")+" \u00b7 "+fmtTime(rt.departureTime)+" - "+fmtTime(rt.arrivalTime); if(!isrb&&rt.baggageSummary)rsub+=" \u00b7 "+rt.baggageSummary;rsub+=" \u00b7 "+fmtPrice(rt.price,rt.currency); pb.appendChild(makeRow(isrb?"Return Bus":"Return Flight",rt.airline||rt.provider||"TBC",rsub)); if(rt.policySummary)pb.appendChild(makeHL(rt.policySummary,rt.isRefundable===true?"good":rt.isRefundable===false?"warn":"neutral")); } if(h){ var stars=h.stars?Array(Math.min(Math.round(h.stars),5)+1).join("\\u2605"):""; var hsub=(h.location||"TBC");if(nights>0)hsub+=" \u00b7 "+nights+" nights \u00b7 "+fmtPrice(h.pricePerNight,h.currency)+"/night"; if(h.images&&h.images.length>0){var hi=document.createElement("img");hi.src=h.images[0];hi.alt=h.name||"Hotel";hi.style.cssText="width:100%;height:140px;object-fit:cover;border-radius:10px;margin-bottom:8px;display:block;";hi.onerror=function(){this.style.display="none";};pb.appendChild(hi);} pb.appendChild(makeRow("Hotel",(h.name||"TBC")+(stars?" "+stars:""),hsub)); if(h.mealPlan)pb.appendChild(makeHL("\uD83C\uDF7D\uFE0F Board: "+h.mealPlan,"neutral")); pb.appendChild(makeHL(h.policySummary||(h.isRefundable===false?"\u26a0\uFE0F Non-refundable":"Refund terms confirmed at booking"),h.isRefundable===false?"warn":h.isRefundable===true||h.policySummary?"good":"neutral")); } var trl=Array.isArray(tr)?tr:(tr?[tr]:[]); if(trl.length>0){var tsub=trl.map(function(x){return(x.legType==="departure"?"Departure":x.legType==="arrival"?"Arrival":(x.provider||"Transfer"))+": "+(x.description||x.location||"TBC")+" ("+fmtPrice(x.price,x.currency)+")";}).join(" \u00b7 ");pb.appendChild(makeRow("Transfer",trl[0].provider||"Bodrless Transfer",tsub));} if(p.connectionAdvisory){var ar=document.createElement("div");ar.className="pkg-row";var al=document.createElement("div");al.className="pkg-label";al.innerText="\u26a0\uFE0F Before you book";var at=document.createElement("div");at.className="pkg-sub";at.innerText=p.connectionAdvisory;ar.appendChild(al);ar.appendChild(at);pb.appendChild(ar);} var pf=document.createElement("div");pf.className="pkg-footer"; var ppd=document.createElement("div");ppd.className="pkg-price";ppd.innerText=fmtPrice(total,cur); var pps=document.createElement("small");pps.innerText=fmtPrice(ppp,cur)+"/person \u00b7 "+pax+" traveller(s)";ppd.appendChild(pps); var bk=document.createElement("button");bk.className="book";bk.innerText="Book Now"; bk.onclick=function(){showNameForm(p,bk);}; pf.appendChild(ppd);pf.appendChild(bk); div.appendChild(ph);div.appendChild(pb);div.appendChild(pf); messages.appendChild(div); return div; }\n' +
+    // ── Section wrapper ──
+    var section = document.createElement('div');
+    section.className = 'leg-section';
+    section.id = 'leg-section-' + idx;
 
-  'function addItinerary(p){ var div=document.createElement("div");div.className="package"; var s=p.summary||{},legs=p.legs||[],cur=s.currency||"KES"; var ph=document.createElement("div");ph.className="pkg-header"; var pt=document.createElement("span");pt.className="pkg-title";pt.innerText="Your Itinerary"; var pr=document.createElement("span");pr.className="pkg-route";pr.innerText=s.route||""; ph.appendChild(pt);ph.appendChild(pr); var pb=document.createElement("div");pb.className="pkg-body"; legs.forEach(function(leg,idx){ var sd=document.createElement("div");sd.className="itin-stop"+(leg.isBufferLeg?" buffer":""); var st=document.createElement("div");st.className="itin-stop-title"; st.innerText=leg.isBufferLeg?"Connection: overnight in "+titleCase(leg.destination):"Stop "+(idx+1)+": "+titleCase(leg.destination)+" ("+leg.nights+" night"+(leg.nights===1?"":"s")+")"; sd.appendChild(st); var tr=leg.transportIn; if(tr){var isb=(tr.transportType||"").toLowerCase()==="bus";var tl=document.createElement("div");tl.className="itin-line";tl.innerText=(isb?"Bus: ":"Flight: ")+(tr.airline||tr.provider||"TBC")+" \u00b7 "+(tr.origin||"TBC")+" \u2192 "+(tr.destination||"TBC")+" \u00b7 "+fmtTime(tr.departureTime)+"-"+fmtTime(tr.arrivalTime)+" \u00b7 "+fmtPrice(tr.price,tr.currency);sd.appendChild(tl);} if(leg.hotel){var h=leg.hotel;var stars=h.stars?Array(Math.min(Math.round(h.stars),5)+1).join("\\u2605"):"";var hl=document.createElement("div");hl.className="itin-line";hl.innerText="Hotel: "+(h.name||"TBC")+(stars?" "+stars:"")+(h.location?" \u00b7 "+h.location:"")+" \u00b7 "+fmtPrice(h.pricePerNight,h.currency)+"/night \u00d7 "+leg.nights;sd.appendChild(hl);} pb.appendChild(sd); }); if(p.returnTransport){var rt=p.returnTransport;var isrb=(rt.transportType||"").toLowerCase()==="bus";var rd=document.createElement("div");rd.className="itin-stop";var rtl=document.createElement("div");rtl.className="itin-stop-title";rtl.innerText="Return";rd.appendChild(rtl);var rl=document.createElement("div");rl.className="itin-line";rl.innerText=(isrb?"Bus: ":"Flight: ")+(rt.origin||"TBC")+" \u2192 "+(rt.destination||"TBC")+" \u00b7 "+fmtTime(rt.departureTime)+"-"+fmtTime(rt.arrivalTime)+" \u00b7 "+fmtPrice(rt.price,rt.currency);rd.appendChild(rl);pb.appendChild(rd);} var pf=document.createElement("div");pf.className="pkg-footer"; var ppd=document.createElement("div");ppd.className="pkg-price";ppd.innerText=fmtPrice(Math.round(s.totalPrice||0),cur); var pps=document.createElement("small");pps.innerText=fmtPrice(Math.round(s.pricePerPerson||0),cur)+"/person \u00b7 "+(s.passengers||1)+" traveller(s)";ppd.appendChild(pps); var bk=document.createElement("button");bk.className="book";bk.innerText="Book Itinerary"; bk.onclick=function(){showNameForm(p,bk);}; pf.appendChild(ppd);pf.appendChild(bk); div.appendChild(ph);div.appendChild(pb);div.appendChild(pf); messages.appendChild(div); return div; }\n' +
+    // ── Header ──
+    var hdr = document.createElement('div');
+    hdr.className = 'leg-header ' + cfg.cls;
+    var hdrLeft = document.createElement('div'); hdrLeft.className = 'leg-header-left';
+    var icon = document.createElement('span'); icon.className = 'leg-icon'; icon.innerText = cfg.icon;
+    var titleWrap = document.createElement('div');
+    var title = document.createElement('div'); title.className = 'leg-title';
+    title.innerText = (idx + 1) + '. ' + (leg.label || leg.roleLabel || cfg.label);
+    var subtitle = document.createElement('div'); subtitle.className = 'leg-subtitle';
+    subtitle.innerText = leg.text ? leg.text.replace(/\\*\\*/g, '').split('\\n')[0] : cfg.label;
+    titleWrap.appendChild(title); titleWrap.appendChild(subtitle);
+    hdrLeft.appendChild(icon); hdrLeft.appendChild(titleWrap);
+    var statusBadge = document.createElement('span');
+    statusBadge.className = 'leg-status ' + (isLocked ? 'locked' : isCurrent ? 'active' : 'pending');
+    statusBadge.innerText = isLocked ? '✓ Selected' : isCurrent ? 'Choose' : 'Pending';
+    hdr.appendChild(hdrLeft); hdr.appendChild(statusBadge);
 
-  // ── SEND — FIX 1: only send previousParams if sessionId exists (same session)
-  // ── FIX 2: save tripParams and conversationHistory BEFORE needsClarification early return
-  'function send(){\n' +
-  '  var text=input.value.trim(); if(!text)return;\n' +
-  '  if(isHotelMode){\n' +
-  '    var lower=text.toLowerCase();\n' +
-  '    if(/\\b(?:cancel|modify|change|update|manage|view)\\b/.test(lower)&&/\\b(?:booking|reservation|stay|ref|reference)\\b/.test(lower)){\n' +
-  '      addMsg(text,"user"); transcript.push({type:"user",text:text}); persistState(); input.value="";\n' +
-  '      addMsg("Of course — let me pull up your reservation. Please provide your booking reference and the phone number you used.","bot");\n' +
-  '      showManageBookingForm(); return;\n' +
-  '    }\n' +
-  '  }\n' +
-  '  addMsg(text,"user"); transcript.push({type:"user",text:text}); persistState();\n' +
-  '  input.value=""; showTyping();\n' +
-  '  var endpoint=isHotelMode?"' + apiBase + '/api/hotel/orchestrate":"' + apiBase + '/api/trips/orchestrate";\n' +
-  '  var hdrs=isHotelMode?{"Content-Type":"application/json","x-hotel-key":"' + agencyKey + '"}:{"Content-Type":"application/json","x-api-key":"' + agencyKey + '"};\n' +
-  // FIX 1: only pass previousParams if we have a sessionId (same active session)
-  '  var body=isHotelMode?JSON.stringify({prompt:text,groupSlug:"' + agencyKey + '",sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams}):JSON.stringify({prompt:text,agencyId:"' + agencyKey + '",channelType:"widget",sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)});\n' +
-  '  fetch(endpoint,{method:"POST",headers:hdrs,body:body})\n' +
-  '  .then(function(r){return r.json();})\n' +
-  '  .then(function(data){\n' +
-  '    hideTyping();\n' +
-  '    if(data.sessionId)sessionId=data.sessionId;\n' +
-  // FIX 2: save tripParams and conversationHistory BEFORE the needsClarification early return
-  '    if(data.tripParams)previousParams=data.tripParams;\n' +
-  '    if(data.conversationHistory)conversationHistory=data.conversationHistory;\n' +
-  '    if(data.needsClarification){var ct=data.text||"Could you give me a bit more detail?";addMsg(ct,"bot");transcript.push({type:"bot",text:ct});persistState();return;}\n' +
-  '    var pkgs=data&&data.packages?data.packages:[];\n' +
-  '    var isHD=data.isHotelDirect||(pkgs.length>0&&pkgs[0]&&pkgs[0].isHotelDirect);\n' +
-  '    var isIt=pkgs.length===1&&pkgs[0]&&pkgs[0].isMultiDestination;\n' +
-  '    if(!pkgs.length){\n' +
-  '      var nt=(data&&data.text)?data.text:"No rooms available for those dates. Try adjusting your dates or tell me more about what you\'re looking for.";\n' +
-  '      addMsg(nt,"bot"); transcript.push({type:"bot",text:nt}); persistState(); return;\n' +
-  '    }\n' +
-  '    var rm = data.text || (isHD ? "Here\'s what we have available:" : (isIt ? "Here is your itinerary:" : "I found "+pkgs.length+" option(s) for you:"));\n' +
-  '    var botMsg = addMsg(rm,"bot"); transcript.push({type:"bot",text:rm});\n' +
-  '    var firstCard = null;\n' +
-  '    if(isHD&&isIt){ firstCard=addHotelItinerary(pkgs[0]); transcript.push({type:"hotel_itinerary",pkg:pkgs[0]}); }\n' +
-  '    else if(isHD){ pkgs.forEach(function(p,i){ var card=addHotelPackage(p,i); if(i===0)firstCard=card; }); transcript.push({type:"hotel_packages",packages:pkgs}); }\n' +
-  '    else if(isIt){ firstCard=addItinerary(pkgs[0]); transcript.push({type:"itinerary",pkg:pkgs[0]}); }\n' +
-  '    else{ pkgs.slice(0,4).forEach(function(p,i){ var card=addPackage(p,i); if(i===0)firstCard=card; }); transcript.push({type:"packages",packages:pkgs.slice(0,4)}); }\n' +
-  '    scrollToEl(botMsg);\n' +
-  '    persistState();\n' +
-  '  })\n' +
-  '  .catch(function(e){hideTyping();console.log("Widget error:",e);addMsg("Unable to load options right now. Please try again.","bot");});\n' +
-  '}\n' +
+    // ── Body ──
+    var body = document.createElement('div'); body.className = 'leg-body';
+    if (isPending) body.classList.add('collapsed'); // collapse pending legs
 
-  'sendBtn.onclick=send;\n' +
-  'input.addEventListener("keypress",function(e){if(e.key==="Enter")send();});\n' +
-  'console.log("[BODRLESS] Widget loaded — key:' + agencyKey + ' mode:' + mode + ' embed:"+(embedTarget||"floating"));\n' +
-  '}\n' +
-  'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",initWidget);}else{initWidget();}\n' +
-  '})();\n';
+    // If locked — show selected summary bar
+    if (isLocked) {
+      var selBar = document.createElement('div'); selBar.className = 'leg-selected-summary';
+      var selDetail = document.createElement('div'); selDetail.className = 'leg-selected-detail';
+      var pkg = sel.package;
+      var parts = [];
+      if (pkg.transport) parts.push(pkg.transport.airline || pkg.transport.provider || 'Flight');
+      if (pkg.hotel)     parts.push(pkg.hotel.name || 'Hotel');
+      parts.push('KES ' + Math.round(pkg.summary && pkg.summary.totalPrice || 0).toLocaleString());
+      selDetail.innerText = parts.join(' · ');
+      var changeBtn = document.createElement('button'); changeBtn.className = 'leg-change-btn';
+      changeBtn.innerText = '✏️ Change';
+      changeBtn.onclick = function(e) {
+        e.stopPropagation();
+        _unlockLeg(idx);
+      };
+      selBar.appendChild(selDetail); selBar.appendChild(changeBtn);
+      section.appendChild(hdr); section.appendChild(selBar); section.appendChild(body);
+    } else {
+      section.appendChild(hdr); section.appendChild(body);
+    }
+
+    // Toggle collapse on header click
+    hdr.onclick = function() {
+      if (body.classList.contains('collapsed')) {
+        body.classList.remove('collapsed');
+      } else if (!isCurrent) {
+        body.classList.add('collapsed');
+      }
+    };
+
+    // ── Package options inside body ──
+    var pkgs = leg.packages || [];
+    if (pkgs.length === 0) {
+      var noOpts = document.createElement('div');
+      noOpts.style.cssText = 'padding:14px;font-size:12px;color:var(--et-muted);text-align:center;';
+      noOpts.innerText = 'No options found for this leg. Reply to search again.';
+      body.appendChild(noOpts);
+    } else {
+      var pkgWrap = document.createElement('div'); pkgWrap.style.padding = '12px';
+      pkgs.forEach(function(pkg, pkgIdx) {
+        var card = addPackage(pkg, pkgIdx, idx, isLocked ? null : function(selectedPkg) {
+          _selectLegPackage(idx, selectedPkg);
+        });
+        // Dim non-selected when locked
+        if (isLocked && sel && pkg.packageId !== sel.packageId) {
+          card.style.opacity = '0.45';
+        }
+        pkgWrap.appendChild(card);
+      });
+      body.appendChild(pkgWrap);
+    }
+
+    legFlowContainer.appendChild(section);
+    return section;
+  }
+
+  // ── Select a package for a leg ─────────────────────────────────────────
+  function _selectLegPackage(legIdx, pkg) {
+    if (!legFlow) return;
+
+    // Save to legFlow
+    if (!legFlow.selections) legFlow.selections = {};
+    var leg = legFlow.legs[legIdx];
+    legFlow.selections[legIdx] = {
+      packageId: pkg.packageId,
+      package:   pkg,
+      label:     leg && leg.label || 'Leg ' + (legIdx + 1),
+      role:      leg && leg.role  || 'internal',
+    };
+    legFlow.runningTotalKES = (legFlow.runningTotalKES || 0) + (pkg.summary && pkg.summary.totalPrice || 0);
+
+    // Advance to next unselected leg
+    var nextIdx = legIdx + 1;
+    while (nextIdx < legFlow.legs.length && legFlow.selections[nextIdx]) nextIdx++;
+    legFlow.currentLegIndex = nextIdx;
+
+    // Check hotel memory: if this leg has a hotel and a later leg revisits same city,
+    // store the hotel name so we can show it with a "same hotel" note
+    if (pkg.hotel && leg) {
+      if (!legFlow._hotelMemory) legFlow._hotelMemory = {};
+      var destNorm = (leg.label || '').split('→').pop().toLowerCase().trim();
+      legFlow._hotelMemory[destNorm] = pkg.hotel;
+    }
+
+    persistState();
+
+    // Save to Supabase
+    _syncItineraryToServer();
+
+    // Re-render leg flow
+    _renderLegFlow();
+
+    // If all legs done → show summary
+    var allSelected = legFlow.legs.every(function(_, i) { return !!legFlow.selections[i]; });
+    if (allSelected) {
+      setTimeout(function() { _showTripSummary(); }, 300);
+    } else {
+      // Scroll to next active leg
+      setTimeout(function() {
+        var nextSection = document.getElementById('leg-section-' + legFlow.currentLegIndex);
+        if (nextSection) scrollToEl(nextSection);
+      }, 150);
+    }
+  }
+
+  // ── Unlock a leg (change selection) ───────────────────────────────────
+  function _unlockLeg(legIdx) {
+    if (!legFlow || !legFlow.selections) return;
+
+    // Subtract this leg's price from running total
+    var sel = legFlow.selections[legIdx];
+    if (sel && sel.package && sel.package.summary) {
+      legFlow.runningTotalKES = Math.max(0,
+        (legFlow.runningTotalKES || 0) - (sel.package.summary.totalPrice || 0)
+      );
+    }
+
+    delete legFlow.selections[legIdx];
+    legFlow.currentLegIndex = legIdx; // jump back to this leg
+
+    // Remove summary if shown
+    var summary = document.getElementById('trip-summary-card');
+    if (summary) summary.remove();
+
+    persistState();
+    _renderLegFlow();
+
+    // Ask if they want different options or just browse existing
+    setTimeout(function() {
+      _askChangeOptions(legIdx);
+    }, 200);
+  }
+
+  function _askChangeOptions(legIdx) {
+    var leg = legFlow.legs[legIdx];
+    var legLabel = leg ? (leg.label || 'Leg ' + (legIdx + 1)) : 'this leg';
+    var banner = document.createElement('div'); banner.className = 'restore-banner'; banner.id = 'et-change-banner';
+    banner.style.background = 'linear-gradient(135deg,#34495e,#2c3e50)';
+    var h4 = document.createElement('h4'); h4.innerText = '🔄 Change ' + legLabel;
+    var p  = document.createElement('p');
+    p.innerText = 'Want to see the same options again, or should I search with a different budget or criteria?';
+    var acts = document.createElement('div'); acts.className = 'restore-banner-actions';
+    var sameBtn = document.createElement('button'); sameBtn.className = 'restore-btn yes'; sameBtn.innerText = 'Same options';
+    var newBtn  = document.createElement('button'); newBtn.className  = 'restore-btn no';  newBtn.innerText  = 'New search';
+    sameBtn.onclick = function() {
+      banner.remove();
+      // Options are already showing — just scroll to the leg
+      var section = document.getElementById('leg-section-' + legIdx);
+      if (section) scrollToEl(section);
+    };
+    newBtn.onclick = function() {
+      banner.remove();
+      legFlow._awaitingNewSearch = legIdx;
+      addMsg('Got it — what should I adjust? (e.g. "cheaper hotel", "different airline", "more nights")', 'bot');
+      input.focus();
+    };
+    acts.appendChild(sameBtn); acts.appendChild(newBtn);
+    banner.appendChild(h4); banner.appendChild(p); banner.appendChild(acts);
+    messages.appendChild(banner); messages.scrollTop = messages.scrollHeight;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TRIP SUMMARY
+  // ═══════════════════════════════════════════════════════════════════════════
+  function _showTripSummary() {
+    var ex = document.getElementById('trip-summary-card'); if (ex) ex.remove();
+    if (!legFlow || !legFlow.selections) return;
+
+    var selections = legFlow.selections;
+    var legs       = legFlow.legs;
+    var total      = legFlow.runningTotalKES || 0;
+    var pax        = (legFlow.tripParams && legFlow.tripParams.passengers) || 1;
+    var currency   = 'KES';
+
+    // Calculate deposit split
+    var flightsTotal   = 0;
+    var hotelsTotal    = 0;
+    var transfersTotal = 0;
+    for (var i = 0; i < legs.length; i++) {
+      var sel = selections[i]; if (!sel) continue;
+      var pkg = sel.package; if (!pkg) continue;
+      var nights = (pkg.summary && pkg.summary.nights) || 1;
+      if (pkg.transport && pkg.transport.price)       flightsTotal   += Number(pkg.transport.price)       || 0;
+      if (pkg.returnTransport && pkg.returnTransport.price) flightsTotal += Number(pkg.returnTransport.price) || 0;
+      if (pkg.hotel && pkg.hotel.pricePerNight)       hotelsTotal    += (Number(pkg.hotel.pricePerNight)  || 0) * nights;
+      var trs = pkg.transfers || [];
+      for (var ti = 0; ti < trs.length; ti++) transfersTotal += Number(trs[ti].price) || 0;
+    }
+    var hotelDeposit = Math.round(hotelsTotal * 0.30);
+    var depositTotal = Math.round(flightsTotal + hotelDeposit);
+    var balanceDue   = Math.round(hotelsTotal - hotelDeposit + transfersTotal);
+
+    var card = document.createElement('div'); card.className = 'trip-summary'; card.id = 'trip-summary-card';
+
+    // Header
+    var sh = document.createElement('div'); sh.className = 'trip-summary-header';
+    var st = document.createElement('div'); st.className = 'trip-summary-title'; st.innerText = '🎉 Your complete trip';
+    var ss = document.createElement('div'); ss.className = 'trip-summary-sub';
+    ss.innerText = legs.length + ' legs selected · ' + pax + ' traveler(s)';
+    sh.appendChild(st); sh.appendChild(ss);
+
+    // Legs
+    var legsDiv = document.createElement('div'); legsDiv.className = 'trip-summary-legs';
+    for (var li = 0; li < legs.length; li++) {
+      var lsel = selections[li]; if (!lsel) continue;
+      var lleg  = legs[li];
+      var lpkg  = lsel.package;
+      var lcfg  = LEG_CONFIG[lleg.role] || { icon: '📍' };
+
+      var tsLeg = document.createElement('div'); tsLeg.className = 'ts-leg';
+      var tsLabel = document.createElement('div'); tsLabel.className = 'ts-leg-label';
+      tsLabel.innerText = lcfg.icon + ' ' + (lleg.roleLabel || lleg.label || 'Leg ' + (li + 1));
+      var tsDetail = document.createElement('div'); tsDetail.className = 'ts-leg-detail';
+      var dParts = [];
+      if (lpkg.transport)       dParts.push((lpkg.transport.airline || lpkg.transport.provider || 'Flight'));
+      if (lpkg.returnTransport) dParts.push('Return: ' + (lpkg.returnTransport.airline || lpkg.returnTransport.provider || 'Flight'));
+      if (lpkg.hotel)           dParts.push(lpkg.hotel.name || 'Hotel');
+      tsDetail.innerText = dParts.join(' · ') || lleg.label || '';
+
+      var tsSub = document.createElement('div'); tsSub.className = 'ts-leg-sub';
+      if (lpkg.summary && lpkg.summary.nights > 0) {
+        tsSub.innerText = lpkg.summary.nights + ' nights';
+      }
+
+      var tsPrice = document.createElement('div'); tsPrice.className = 'ts-leg-price';
+      tsPrice.innerText = fmtPrice(lpkg.summary && lpkg.summary.totalPrice || 0, currency);
+
+      var changeLink = document.createElement('button');
+      changeLink.style.cssText = 'font-size:11px;color:var(--et-gold);font-weight:600;cursor:pointer;border:none;background:none;padding:2px 0;margin-top:4px;display:block;';
+      changeLink.innerText = '✏️ Change this leg';
+      (function(idx) {
+        changeLink.onclick = function() { card.remove(); _unlockLeg(idx); };
+      })(li);
+
+      tsLeg.appendChild(tsLabel); tsLeg.appendChild(tsDetail); tsLeg.appendChild(tsSub);
+      tsLeg.appendChild(tsPrice); tsLeg.appendChild(changeLink);
+      legsDiv.appendChild(tsLeg);
+    }
+
+    // Total
+    var totalDiv = document.createElement('div'); totalDiv.className = 'trip-summary-total';
+    var totalPrice = document.createElement('div'); totalPrice.className = 'ts-total-price';
+    totalPrice.innerText = fmtPrice(Math.round(total), currency);
+    var totalSub = document.createElement('div'); totalSub.className = 'ts-total-sub';
+    totalSub.innerText = fmtPrice(Math.round(total / pax), currency) + '/person';
+    totalDiv.appendChild(totalPrice); totalDiv.appendChild(totalSub);
+
+    // Deposit breakdown
+    var depBreak = document.createElement('div'); depBreak.className = 'deposit-breakdown';
+    var depTitle = document.createElement('div');
+    depTitle.style.cssText = 'font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:8px;letter-spacing:0.5px;text-transform:uppercase;';
+    depTitle.innerText = '💳 Payment breakdown';
+    depBreak.appendChild(depTitle);
+
+    function makeDepRow(label, amount, cls) {
+      var row = document.createElement('div'); row.className = 'deposit-row' + (cls ? ' ' + cls : '');
+      var l = document.createElement('span'); l.innerText = label;
+      var a = document.createElement('span'); a.innerText = fmtPrice(amount, currency);
+      row.appendChild(l); row.appendChild(a); depBreak.appendChild(row);
+    }
+    makeDepRow('Flights (secure now, 100%)',      Math.round(flightsTotal));
+    makeDepRow('Hotel deposit (30% to secure)',    hotelDeposit);
+    makeDepRow('Initial deposit total',            depositTotal, 'total');
+    makeDepRow('Balance due before travel',        balanceDue,   'balance');
+    totalDiv.appendChild(depBreak);
+
+    // Actions
+    var actions = document.createElement('div'); actions.className = 'summary-actions';
+
+    var fullPayBtn = document.createElement('button'); fullPayBtn.className = 'summary-action-btn primary';
+    fullPayBtn.innerText = '💳 Pay in full — ' + fmtPrice(Math.round(total), currency);
+    fullPayBtn.onclick = function() { _startBooking('full'); };
+
+    var depositBtn = document.createElement('button'); depositBtn.className = 'summary-action-btn primary';
+    depositBtn.style.background = 'var(--et-green)';
+    depositBtn.innerText = '✅ Pay deposit — ' + fmtPrice(depositTotal, currency);
+    depositBtn.onclick = function() { _startBooking('deposit'); };
+
+    var flightsOnlyBtn = document.createElement('button'); flightsOnlyBtn.className = 'summary-action-btn secondary';
+    flightsOnlyBtn.innerText = '✈️ Book flights only — ' + fmtPrice(Math.round(flightsTotal), currency);
+    flightsOnlyBtn.onclick = function() { _startBooking('flights_only'); };
+
+    var changeBtn2 = document.createElement('button'); changeBtn2.className = 'summary-action-btn secondary';
+    changeBtn2.innerText = '🔄 Change a leg';
+    changeBtn2.onclick = function() {
+      card.remove();
+      _renderLegFlow();
+      addMsg('Which leg would you like to change? Just tap the ✏️ button on any leg above.', 'bot');
+    };
+
+    actions.appendChild(fullPayBtn);
+    actions.appendChild(depositBtn);
+    actions.appendChild(flightsOnlyBtn);
+    actions.appendChild(changeBtn2);
+
+    card.appendChild(sh); card.appendChild(legsDiv); card.appendChild(totalDiv); card.appendChild(actions);
+    messages.appendChild(card); messages.scrollTop = messages.scrollHeight;
+  }
+
+  // ── Start booking flow ─────────────────────────────────────────────────
+  function _startBooking(paymentType) {
+    if (!legFlow || !legFlow.selections) return;
+    var summaryCard = document.getElementById('trip-summary-card');
+    if (summaryCard) summaryCard.remove();
+    addMsg('Great! Just need a few details to confirm your booking.', 'bot');
+    showPassengerForm(paymentType);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PASSENGER FORM — collected once for the whole trip
+  // ─────────────────────────────────────────────────────────────────────────
+  function showPassengerForm(paymentType) {
+    var ex = document.getElementById('et-name-form'); if (ex) ex.remove();
+    var pax = (legFlow && legFlow.tripParams && legFlow.tripParams.passengers) || 1;
+
+    var form = document.createElement('div'); form.className = 'name-form'; form.id = 'et-name-form';
+    var fp   = document.createElement('p');
+    fp.innerText = 'Enter details for ' + pax + ' traveler' + (pax > 1 ? 's' : '') + ':';
+    form.appendChild(fp);
+
+    var pInputs = [];
+    var yr = new Date().getFullYear();
+
+    function buildDob() {
+      var row = document.createElement('div'); row.className = 'dob-row';
+      var d = document.createElement('select');
+      d.innerHTML = '<option value="">Day</option>' + Array.from({length:31},function(_,i){return '<option value="'+(i+1)+'">'+(i+1)+'</option>';}).join('');
+      var m = document.createElement('select');
+      m.innerHTML = '<option value="">Month</option>' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map(function(mn,i){return '<option value="'+(i+1)+'">'+mn+'</option>';}).join('');
+      var y = document.createElement('select');
+      y.innerHTML = '<option value="">Year</option>' + Array.from({length:100},function(_,i){return yr-i;}).map(function(yy){return '<option value="'+yy+'">'+yy+'</option>';}).join('');
+      row.appendChild(d); row.appendChild(m); row.appendChild(y);
+      return {row:row, d:d, m:m, y:y};
+    }
+
+    for (var pi = 0; pi < pax; pi++) {
+      var pb = document.createElement('div');
+      pb.style.cssText = 'margin-bottom:12px;padding-bottom:10px;border-bottom:' + (pi < pax-1 ? '1px solid var(--et-border)' : 'none') + ';';
+      if (pax > 1) {
+        var pl = document.createElement('div');
+        pl.style.cssText = 'font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:6px;';
+        pl.innerText = 'Traveler ' + (pi + 1); pb.appendChild(pl);
+      }
+      var fn = document.createElement('input'); fn.className = 'name-input'; fn.placeholder = 'First name'; fn.type = 'text'; pb.appendChild(fn);
+      var ln = document.createElement('input'); ln.className = 'name-input'; ln.placeholder = 'Last name';  ln.type = 'text'; pb.appendChild(ln);
+      var dl = document.createElement('div');   dl.className = 'field-label'; dl.innerText = 'Date of birth'; pb.appendChild(dl);
+      var dob = buildDob(); pb.appendChild(dob.row);
+      var gs  = document.createElement('select'); gs.className = 'name-input';
+      gs.innerHTML = '<option value="male">Male</option><option value="female">Female</option>'; pb.appendChild(gs);
+      var cl  = document.createElement('label');
+      cl.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:var(--et-navy);margin-bottom:8px;';
+      var cc  = document.createElement('input'); cc.type = 'checkbox';
+      cl.appendChild(cc); cl.appendChild(document.createTextNode('This traveler is a child')); pb.appendChild(cl);
+      var idl = document.createElement('div'); idl.className = 'field-label'; idl.innerText = 'Passport or National ID'; pb.appendChild(idl);
+      var ii  = document.createElement('input'); ii.className = 'name-input'; ii.placeholder = 'Passport / ID number'; ii.type = 'text'; pb.appendChild(ii);
+      pInputs.push({fn:fn, ln:ln, d:dob.d, m:dob.m, y:dob.y, gs:gs, cc:cc, ii:ii});
+      form.appendChild(pb);
+    }
+
+    var cl2 = document.createElement('div');
+    cl2.style.cssText = 'font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:6px;';
+    cl2.innerText = 'Contact details'; form.appendChild(cl2);
+    var phi = document.createElement('input'); phi.className = 'name-input'; phi.placeholder = 'Phone (e.g. 0712345678)'; phi.type = 'tel'; form.appendChild(phi);
+    var emi = document.createElement('input'); emi.className = 'name-input'; emi.placeholder = 'Email'; emi.type = 'email'; form.appendChild(emi);
+    var em  = document.createElement('div');  em.style.cssText = 'color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;'; form.appendChild(em);
+
+    var cfb = document.createElement('button'); cfb.className = 'confirm-btn';
+    cfb.innerText = paymentType === 'full' ? 'Confirm & Pay in Full' :
+                    paymentType === 'deposit' ? 'Confirm & Pay Deposit' :
+                    'Confirm Flight Bookings';
+    cfb.onclick = function() {
+      em.style.display = 'none';
+      var passengers = [];
+      for (var k = 0; k < pInputs.length; k++) {
+        var pin = pInputs[k];
+        var f = pin.fn.value.trim(), l = pin.ln.value.trim();
+        if (!f || !l) { em.innerText = 'Please fill in all traveler names.'; em.style.display = 'block'; return; }
+        var dd = pin.d.value, mm = pin.m.value, yy = pin.y.value;
+        if (!dd || !mm || !yy) { em.innerText = 'Please select a date of birth for traveler ' + (k+1) + '.'; em.style.display = 'block'; return; }
+        var dstr = yy + '-' + String(mm).padStart(2,'0') + '-' + String(dd).padStart(2,'0');
+        var idn  = pin.ii.value.trim();
+        if (!pin.cc.checked && !idn) { em.innerText = 'Passport/ID required for traveler ' + (k+1) + '.'; em.style.display = 'block'; return; }
+        passengers.push({firstName:f, lastName:l, dateOfBirth:dstr, gender:pin.gs.value, type:pin.cc.checked?'child':'adult', idNumber:idn||null});
+      }
+      var phone = phi.value.trim(), email = emi.value.trim();
+      if (!phone) { em.innerText = 'Phone number is required.'; em.style.display = 'block'; return; }
+      if (!email) { em.innerText = 'Email is required for booking confirmation.'; em.style.display = 'block'; return; }
+
+      cfb.innerText = 'Processing...'; cfb.disabled = true;
+
+      // Attach phone to itinerary for WhatsApp continuity
+      if (itineraryId) {
+        fetch(apiBase + '/api/trips/itinerary/' + itineraryId + '/attach-phone', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json','x-api-key': agencyKey},
+          body: JSON.stringify({ phone: phone, agencyId: agencyKey }),
+        }).catch(function(){});
+      }
+
+      // Submit booking
+      var selectedPackages = [];
+      if (legFlow && legFlow.selections) {
+        var sels = legFlow.selections;
+        for (var si = 0; si < legFlow.legs.length; si++) {
+          if (sels[si] && sels[si].package) selectedPackages.push(sels[si].package);
+        }
+      }
+
+      fetch(apiBase + '/api/trips/book-init', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          agencyId:        agencyKey,
+          guestName:       passengers[0].firstName + ' ' + passengers[0].lastName,
+          guestPhone:      phone,
+          guestEmail:      email,
+          passengers:      passengers,
+          packages:        selectedPackages,
+          paymentType:     paymentType,
+          itineraryId:     itineraryId || null,
+          legFlow:         legFlow,
+        })
+      })
+      .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res) {
+        if (!res.ok || !res.data.success) {
+          em.innerText = (res.data && res.data.error) || 'Booking failed. Please try again.';
+          em.style.display = 'block'; cfb.innerText = 'Confirm Booking'; cfb.disabled = false; return;
+        }
+        form.remove();
+        var ref = res.data.bookingRef || res.data.refs && res.data.refs.join(', ');
+        addMsg('🎉 Booking confirmed! Ref: ' + ref + '. Check your phone for the M-Pesa prompt.', 'bot');
+        // Clear leg flow on full completion
+        if (paymentType === 'full') {
+          legFlow = null; itineraryId = null; persistState();
+        }
+      })
+      .catch(function() {
+        em.innerText = 'Network error. Please try again.';
+        em.style.display = 'block'; cfb.innerText = 'Confirm Booking'; cfb.disabled = false;
+      });
+    };
+
+    form.appendChild(cfb);
+    var tb = document.createElement('div'); tb.className = 'trust-badge';
+    tb.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Secure payment via M-Pesa';
+    form.appendChild(tb);
+    messages.appendChild(form); messages.scrollTop = messages.scrollHeight;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SYNC ITINERARY TO SERVER
+  // ─────────────────────────────────────────────────────────────────────────
+  function _syncItineraryToServer() {
+    fetch(apiBase + '/api/trips/itinerary/save', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','x-api-key': agencyKey},
+      body: JSON.stringify({
+        itineraryId:  itineraryId,
+        sessionId:    sessionId,
+        agencyId:     agencyKey,
+        channel:      'widget',
+        tripParams:   legFlow && legFlow.tripParams,
+        legFlow:      legFlow,
+        status:       'active',
+      }),
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d && d.itineraryId && !itineraryId) {
+        itineraryId = d.itineraryId;
+        persistState();
+      }
+    })
+    .catch(function(){});
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PACKAGE CARD (used inside leg body + standalone for simple trips)
+  // onSelect: if provided, shows "Select" button; if null, shows "Book Now"
+  // ─────────────────────────────────────────────────────────────────────────
+  function addPackage(p, i, legIdx, onSelect) {
+    var div = document.createElement('div'); div.className = 'package';
+    var t = p.transport || null, rt = p.returnTransport || null, h = p.hotel || null;
+    var tr = p.transfers || null, s = p.summary || {};
+    var cur = s.currency || 'KES', total = Math.round(s.totalPrice || 0);
+    var ppp = Math.round(s.pricePerPerson || 0), nights = s.nights || 0, pax = s.passengers || 1;
+    var route = s.route || ((t && t.origin ? t.origin : 'TBC') + ' to ' + (t && t.destination ? t.destination : 'TBC'));
+
+    var ph = document.createElement('div'); ph.className = 'pkg-header';
+    var pt = document.createElement('span'); pt.className = 'pkg-title'; pt.innerText = 'Option ' + (i + 1);
+    var pr = document.createElement('span'); pr.className = 'pkg-route'; pr.innerText = route;
+    ph.appendChild(pt); ph.appendChild(pr);
+
+    var pb = document.createElement('div'); pb.className = 'pkg-body';
+
+    if (t) {
+      var isb = (t.transportType || '').toLowerCase() === 'bus';
+      var ist = (t.transportType || '').toLowerCase() === 'train';
+      var sub = (t.origin || 'TBC') + ' → ' + (t.destination || 'TBC') + ' · ' + fmtTime(t.departureTime) + ' - ' + fmtTime(t.arrivalTime);
+      if (t.stops) sub += ' · ' + t.stops;
+      if (t.cabinClass) sub += ' · ' + t.cabinClass;
+      if (!isb && t.baggageSummary) sub += ' · ' + t.baggageSummary;
+      sub += ' · ' + fmtPrice(t.price, t.currency);
+      pb.appendChild(makeRow(isb ? 'Outbound Bus' : ist ? 'Train' : 'Outbound Flight', t.airline || t.provider || 'TBC', sub));
+      if (t.policySummary) pb.appendChild(makeHL(t.policySummary, t.isRefundable === true ? 'good' : t.isRefundable === false ? 'warn' : 'neutral'));
+    }
+
+    if (rt) {
+      var rsub = (rt.origin || 'TBC') + ' → ' + (rt.destination || 'TBC') + ' · ' + fmtTime(rt.departureTime) + ' - ' + fmtTime(rt.arrivalTime);
+      if (rt.baggageSummary) rsub += ' · ' + rt.baggageSummary;
+      rsub += ' · ' + fmtPrice(rt.price, rt.currency);
+      pb.appendChild(makeRow('Return Flight', rt.airline || rt.provider || 'TBC', rsub));
+    }
+
+    if (h) {
+      var stars = h.stars ? Array(Math.min(Math.round(h.stars), 5) + 1).join('★') : '';
+      var hsub = (h.location || 'TBC');
+      if (nights > 0) hsub += ' · ' + nights + ' nights · ' + fmtPrice(h.pricePerNight, h.currency) + '/night';
+      if (h.images && h.images.length > 0) {
+        var hi = document.createElement('img'); hi.src = h.images[0]; hi.alt = h.name || 'Hotel';
+        hi.style.cssText = 'width:100%;height:140px;object-fit:cover;border-radius:10px;margin-bottom:8px;display:block;';
+        hi.onerror = function(){ this.style.display = 'none'; };
+        pb.appendChild(hi);
+      }
+      // Hotel memory note
+      var hotelNote = p.summary && p.summary.hotelNote;
+      pb.appendChild(makeRow('Hotel', (h.name || 'TBC') + (stars ? ' ' + stars : ''), hsub));
+      if (hotelNote) {
+        var hn = document.createElement('div');
+        hn.style.cssText = 'font-size:11px;color:var(--et-gold);padding:6px 8px;background:#FFF8EC;border-radius:8px;margin-top:4px;';
+        hn.innerText = '🏨 ' + hotelNote;
+        pb.appendChild(hn);
+      }
+      if (h.mealPlan) pb.appendChild(makeHL('🍽️ Board: ' + h.mealPlan.replace(/_/g,' '), 'neutral'));
+      pb.appendChild(makeHL(h.policySummary || (h.isRefundable === false ? '⚠️ Non-refundable' : 'Refund terms confirmed at booking'),
+        h.isRefundable === false ? 'warn' : h.isRefundable === true || h.policySummary ? 'good' : 'neutral'));
+    }
+
+    if (p._safariLeg) {
+      pb.appendChild(makeHL('🏕️ Lodge included — accommodation in the reserve', 'good'));
+    }
+
+    var trl = Array.isArray(tr) ? tr : (tr ? [tr] : []);
+    if (trl.length > 0) {
+      var tsub = trl.map(function(x) {
+        return (x.legType === 'departure' ? 'Departure' : 'Arrival') + ': ' + (x.description || x.location || 'TBC') + ' (' + fmtPrice(x.price, x.currency) + ')';
+      }).join(' · ');
+      pb.appendChild(makeRow('Transfer', trl[0].provider || 'Bodrless Transfer', tsub));
+    }
+
+    if (p.connectionAdvisory) {
+      var ar = document.createElement('div'); ar.className = 'pkg-row';
+      var al = document.createElement('div'); al.className = 'pkg-label'; al.innerText = '⚠️ Before you book';
+      var at = document.createElement('div'); at.className = 'pkg-sub'; at.innerText = p.connectionAdvisory;
+      ar.appendChild(al); ar.appendChild(at); pb.appendChild(ar);
+    }
+
+    var excNote = p._excursionNote;
+    if (excNote) {
+      var en = document.createElement('div');
+      en.style.cssText = 'font-size:11px;color:#1B7A3D;padding:8px;background:#E8F8EE;border-radius:8px;margin-top:6px;';
+      en.innerText = excNote;
+      pb.appendChild(en);
+    }
+
+    var pf  = document.createElement('div'); pf.className = 'pkg-footer';
+    var ppd = document.createElement('div'); ppd.className = 'pkg-price'; ppd.innerText = fmtPrice(total, cur);
+    var pps = document.createElement('small');
+    pps.innerText = fmtPrice(ppp, cur) + '/person · ' + pax + ' traveller(s)';
+    ppd.appendChild(pps);
+
+    if (onSelect) {
+      // Leg-flow mode: Select button
+      var selBtn = document.createElement('button'); selBtn.className = 'select-btn';
+      selBtn.innerText = '✓ Select';
+      selBtn.onclick = function() {
+        selBtn.innerText = 'Selected ✓'; selBtn.className = 'select-btn selected'; selBtn.disabled = true;
+        onSelect(p);
+      };
+      pf.appendChild(ppd); pf.appendChild(selBtn);
+    } else {
+      // Standalone: Book Now
+      var bk = document.createElement('button'); bk.className = 'book'; bk.innerText = 'Book Now';
+      bk.onclick = function(){ showNameFormStandalone(p, bk); };
+      pf.appendChild(ppd); pf.appendChild(bk);
+    }
+
+    div.appendChild(ph); div.appendChild(pb); div.appendChild(pf);
+    return div;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // STANDALONE BOOKING (non-classified, single destination trips)
+  // ─────────────────────────────────────────────────────────────────────────
+  function showNameFormStandalone(p, bookBtn) {
+    var ex = document.getElementById('et-name-form'); if (ex) ex.remove();
+    var pc = (p.summary && p.summary.passengers) ? p.summary.passengers : 1;
+    var form = document.createElement('div'); form.className = 'name-form'; form.id = 'et-name-form';
+    var fp = document.createElement('p'); fp.innerText = 'Enter passenger details to confirm:'; form.appendChild(fp);
+    var pInputs = []; var yr = new Date().getFullYear();
+    function buildDob2() {
+      var row = document.createElement('div'); row.className = 'dob-row';
+      var d = document.createElement('select'); d.innerHTML = '<option value="">Day</option>' + Array.from({length:31},function(_,i){return '<option value="'+(i+1)+'">'+(i+1)+'</option>';}).join('');
+      var m = document.createElement('select'); m.innerHTML = '<option value="">Month</option>' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map(function(mn,i){return '<option value="'+(i+1)+'">'+mn+'</option>';}).join('');
+      var y = document.createElement('select'); y.innerHTML = '<option value="">Year</option>' + Array.from({length:100},function(_,i){return yr-i;}).map(function(yy){return '<option value="'+yy+'">'+yy+'</option>';}).join('');
+      row.appendChild(d); row.appendChild(m); row.appendChild(y); return {row:row,d:d,m:m,y:y};
+    }
+    for (var pi2 = 0; pi2 < pc; pi2++) {
+      var pb2 = document.createElement('div'); pb2.style.cssText = 'margin-bottom:12px;padding-bottom:10px;border-bottom:'+(pi2<pc-1?'1px solid var(--et-border)':'none')+';';
+      if (pc > 1) { var pl2 = document.createElement('div'); pl2.style.cssText='font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:6px;'; pl2.innerText='Traveler '+(pi2+1); pb2.appendChild(pl2); }
+      var fn2=document.createElement('input');fn2.className='name-input';fn2.placeholder='First name';fn2.type='text';pb2.appendChild(fn2);
+      var ln2=document.createElement('input');ln2.className='name-input';ln2.placeholder='Last name';ln2.type='text';pb2.appendChild(ln2);
+      var dl2=document.createElement('div');dl2.className='field-label';dl2.innerText='Date of birth';pb2.appendChild(dl2);
+      var dob2=buildDob2();pb2.appendChild(dob2.row);
+      var gs2=document.createElement('select');gs2.className='name-input';gs2.innerHTML='<option value="male">Male</option><option value="female">Female</option>';pb2.appendChild(gs2);
+      var cl3=document.createElement('label');cl3.style.cssText='display:flex;align-items:center;gap:6px;font-size:11px;color:var(--et-navy);margin-bottom:8px;';
+      var cc3=document.createElement('input');cc3.type='checkbox';cl3.appendChild(cc3);cl3.appendChild(document.createTextNode('This traveler is a child'));pb2.appendChild(cl3);
+      var idl2=document.createElement('div');idl2.className='field-label';idl2.innerText='Passport or National ID';pb2.appendChild(idl2);
+      var ii2=document.createElement('input');ii2.className='name-input';ii2.placeholder='Passport / ID number';ii2.type='text';pb2.appendChild(ii2);
+      pInputs.push({fn:fn2,ln:ln2,d:dob2.d,m:dob2.m,y:dob2.y,gs:gs2,cc:cc3,ii:ii2}); form.appendChild(pb2);
+    }
+    var cl4=document.createElement('div');cl4.style.cssText='font-size:11px;font-weight:700;color:var(--et-navy);margin-bottom:6px;';cl4.innerText='Contact details';form.appendChild(cl4);
+    var phi2=document.createElement('input');phi2.className='name-input';phi2.placeholder='Phone (e.g. 0712345678)';phi2.type='tel';form.appendChild(phi2);
+    var emi2=document.createElement('input');emi2.className='name-input';emi2.placeholder='Email';emi2.type='email';form.appendChild(emi2);
+    var em2=document.createElement('div');em2.style.cssText='color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;';form.appendChild(em2);
+    var cfb2=document.createElement('button');cfb2.className='confirm-btn';cfb2.innerText='Confirm Booking';
+    cfb2.onclick=function(){
+      em2.style.display='none';
+      var pax2=[];
+      for(var k=0;k<pInputs.length;k++){
+        var pin=pInputs[k];var f=pin.fn.value.trim(),l=pin.ln.value.trim();
+        if(!f||!l){em2.innerText='Please fill in all traveler names.';em2.style.display='block';return;}
+        var dd=pin.d.value,mm=pin.m.value,yy=pin.y.value;
+        if(!dd||!mm||!yy){em2.innerText='Please select a date of birth for traveler '+(k+1)+'.';em2.style.display='block';return;}
+        var dstr=yy+'-'+String(mm).padStart(2,'0')+'-'+String(dd).padStart(2,'0');
+        var idn=pin.ii.value.trim();
+        if(!pin.cc.checked&&!idn){em2.innerText='Passport/ID required for traveler '+(k+1)+'.';em2.style.display='block';return;}
+        pax2.push({firstName:f,lastName:l,dateOfBirth:dstr,gender:pin.gs.value,type:pin.cc.checked?'child':'adult',idNumber:idn||null});
+      }
+      var phone2=phi2.value.trim(),email2=emi2.value.trim();
+      if(!phone2){em2.innerText='Phone number is required.';em2.style.display='block';return;}
+      if(!email2){em2.innerText='Email is required.';em2.style.display='block';return;}
+      var gn=pax2[0].firstName+' '+pax2[0].lastName;
+      cfb2.innerText='Processing...';cfb2.disabled=true;
+      fetch(apiBase+'/api/trips/book-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencyId:agencyKey,guestName:gn,guestPhone:phone2,guestEmail:email2,passengers:pax2,package:p})})
+      .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})
+      .then(function(res){
+        if(!res.ok&&res.data&&res.data.code==='PRICE_CHANGED'){form.remove();showPriceAlert(res.data,{guestName:gn,phone:phone2,email:email2,passengers:pax2,pkg:p},bookBtn);return;}
+        if(!res.ok||!res.data.success){em2.innerText=(res.data&&res.data.error)||'Booking failed.';em2.style.display='block';cfb2.innerText='Confirm Booking';cfb2.disabled=false;return;}
+        form.remove();continueToPayment(res.data,{guestName:gn,phone:phone2,email:email2,passengers:pax2},bookBtn);
+      })
+      .catch(function(){em2.innerText='Network error.';em2.style.display='block';cfb2.innerText='Confirm Booking';cfb2.disabled=false;});
+    };
+    form.appendChild(cfb2);
+    var tb2=document.createElement('div');tb2.className='trust-badge';
+    tb2.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Secure payment via M-Pesa';
+    form.appendChild(tb2);messages.appendChild(form);messages.scrollTop=messages.scrollHeight;
+  }
+
+  function showPriceAlert(info, ctx, btn) {
+    var ex=document.getElementById('et-price-alert');if(ex)ex.remove();
+    var d=document.createElement('div');d.className='price-alert';d.id='et-price-alert';
+    var p=document.createElement('p');p.innerHTML='The price changed: <span style="text-decoration:line-through;color:var(--et-muted);">'+fmtPrice(info.oldPrice,info.currency)+'</span> → <strong style="color:var(--et-red);">'+fmtPrice(info.newPrice,info.currency)+'</strong>';
+    d.appendChild(p);
+    var acts=document.createElement('div');acts.className='price-alert-actions';
+    var ap=document.createElement('button');ap.className='price-approve';ap.innerText='Approve new price';
+    var ca=document.createElement('button');ca.className='price-cancel';ca.innerText='Cancel';
+    acts.appendChild(ap);acts.appendChild(ca);d.appendChild(acts);messages.appendChild(d);messages.scrollTop=messages.scrollHeight;
+    ca.onclick=function(){d.remove();addMsg('Booking cancelled — no charge was made.','bot');};
+    ap.onclick=function(){ap.disabled=true;ca.disabled=true;ap.innerText='Processing...';
+      fetch(apiBase+'/api/trips/book-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencyId:agencyKey,guestName:ctx.guestName,guestPhone:ctx.phone,guestEmail:ctx.email,passengers:ctx.passengers,package:ctx.pkg,priceApproved:true})})
+      .then(function(r){return r.json().then(function(data){return{ok:r.ok,data:data};});})
+      .then(function(res){d.remove();if(!res.ok||!res.data.success){addMsg((res.data&&res.data.error)||'Booking failed.','bot');return;}continueToPayment(res.data,ctx,btn);})
+      .catch(function(){d.remove();addMsg('Network error.','bot');});
+    };
+  }
+
+  function continueToPayment(data, ctx, btn) {
+    var ref=data.bookingRef,total=data.totalPrice,cur=data.currency;
+    addMsg('Flight held! Ref: '+ref+'. Total: '+cur+' '+total.toLocaleString()+'. Sending M-Pesa prompt to '+ctx.phone+'...','bot');
+    messages.scrollTop=messages.scrollHeight;
+    fetch(apiBase+'/api/trips/book-pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bookingRef:ref,phone:ctx.phone,amount:total,currency:cur,email:ctx.email,firstName:ctx.passengers[0].firstName,lastName:ctx.passengers[0].lastName})})
+    .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})
+    .then(function(pr){
+      if(!pr.ok||!pr.data.success){if(btn){btn.innerText='Payment failed';btn.style.background='var(--et-red)';}addMsg('Flight held but M-Pesa prompt failed. Contact support with ref '+ref+'.','bot');return;}
+      if(btn){btn.innerText='Awaiting payment...';btn.style.background='#f0ad4e';btn.disabled=true;}
+      addMsg('Check your phone and enter your PIN. Ref: '+ref+'.','bot');messages.scrollTop=messages.scrollHeight;
+      pollBookingStatus(ref, btn||{innerText:'',style:{}});
+    });
+  }
+
+  function pollBookingStatus(ref, btn) {
+    var a=0,max=40,iv=setInterval(function(){a++;
+      fetch(apiBase+'/api/trips/booking/'+ref).then(function(r){return r.json();}).then(function(d){
+        if(d.bookingStage==='paid'){clearInterval(iv);btn.innerText='Paid & Confirmed!';btn.style.background='#27ae60';addMsg('Payment received! Booking '+ref+' confirmed.','bot');messages.scrollTop=messages.scrollHeight;}
+        else if(d.bookingStage==='failed'||d.status==='cancelled'){clearInterval(iv);btn.innerText='Payment not received';btn.style.background='var(--et-red)';addMsg('We did not receive payment for booking '+ref+'.','bot');messages.scrollTop=messages.scrollHeight;}
+        else if(a>=max){clearInterval(iv);addMsg('Still waiting on payment for '+ref+'.','bot');messages.scrollTop=messages.scrollHeight;}
+      }).catch(function(){});
+    }, 5000);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // HOTEL MODE (unchanged from original)
+  // ─────────────────────────────────────────────────────────────────────────
+  function showHotelEntry() {
+    var card=document.createElement('div');card.className='et-welcome';card.id='et-hotel-entry';
+    var eyebrow=document.createElement('div');eyebrow.className='et-welcome-eyebrow';eyebrow.innerText='Your Personal Concierge';
+    var title=document.createElement('div');title.className='et-welcome-title';title.innerText='Welcome to ${agencyName}';
+    var body=document.createElement('div');body.className='et-welcome-body';body.innerText="It's a pleasure to have you with us. Tell me the occasion, your preferred dates, and how many guests — I'll take care of finding the perfect room and making it special.";
+    var ctaBtn=document.createElement('button');
+    ctaBtn.style.cssText='display:block;width:100%;background:var(--et-navy);color:white;border:none;padding:12px 20px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.3px;margin-top:4px;transition:background 0.2s;';
+    ctaBtn.innerText='Start Planning';
+    ctaBtn.onmouseover=function(){this.style.background='var(--et-gold)';};
+    ctaBtn.onmouseout=function(){this.style.background='var(--et-navy)';};
+    ctaBtn.onclick=function(){card.remove();setTimeout(function(){showHotelWelcome();input.focus();},300);};
+    card.appendChild(eyebrow);card.appendChild(title);card.appendChild(body);card.appendChild(ctaBtn);
+    messages.appendChild(card);messages.scrollTop=messages.scrollHeight;
+  }
+
+  function showHotelWelcome() {
+    var card=document.createElement('div');card.className='et-welcome';
+    var eyebrow=document.createElement('div');eyebrow.className='et-welcome-eyebrow';eyebrow.innerText='Your Personal Concierge';
+    var title=document.createElement('div');title.className='et-welcome-title';title.innerText='Welcome to ${agencyName}';
+    var body=document.createElement('div');body.className='et-welcome-body';body.innerText="It's a pleasure to have you with us. Tell me the occasion, your preferred dates, and how many guests — I'll take care of finding the perfect room and making it special.";
+    var divider=document.createElement('div');divider.className='et-divider';
+    var promptLabel=document.createElement('div');promptLabel.className='et-prompts-label';promptLabel.innerText='Popular requests';
+    var starters=(window.bodrlessStarters&&window.bodrlessStarters.length)?window.bodrlessStarters.slice(0,3):[
+      {icon:'❤️',title:'Romantic Getaway',text:"We're celebrating our anniversary — recommend your most romantic room for 2 nights."},
+      {icon:'👨‍👩‍👧',title:'Family Stay',text:'Family room for 2 adults and 2 children, full board, arriving this weekend.'},
+      {icon:'💼',title:'Business Trip',text:'Single business room for tomorrow night, need early check-in if possible.'}
+    ];
+    card.appendChild(eyebrow);card.appendChild(title);card.appendChild(body);card.appendChild(divider);card.appendChild(promptLabel);
+    starters.forEach(function(s){
+      var btn=document.createElement('button');btn.className='et-starter';
+      var t=document.createElement('div');t.className='st-title';t.innerText=s.icon+'  '+s.title;
+      var b=document.createElement('div');b.className='st-body';b.innerText=s.text;
+      btn.appendChild(t);btn.appendChild(b);btn.onclick=function(){input.value=s.text;send();};card.appendChild(btn);
+    });
+    messages.appendChild(card);messages.scrollTop=messages.scrollHeight;
+  }
+
+  function addHotelPackage(p, idx) {
+    var div=document.createElement('div');div.className='package';
+    var hotel=p.hotel||{};var summary=p.summary||{};
+    var currency=hotel.currency||summary.currency||'KES';var nights=hotel.nights||summary.nights||1;
+    var passengers=summary.passengers||1;var baseTotal=hotel.totalRate||(hotel.pricePerNight*nights)||summary.totalPrice||0;
+    var pkgH=document.createElement('div');pkgH.className='pkg-header';
+    var pt=document.createElement('span');pt.className='pkg-title';pt.innerText='Option '+(idx+1);
+    var pr=document.createElement('span');pr.className='pkg-route';pr.innerText=hotel.location||summary.route||'Room';
+    pkgH.appendChild(pt);pkgH.appendChild(pr);
+    var pkgB=document.createElement('div');pkgB.className='pkg-body';
+    var images=hotel.images||[];
+    if(images.length>0){var img=document.createElement('img');img.src=images[0];img.alt=hotel.roomType||'Room';img.style.cssText='width:100%;height:160px;object-fit:cover;border-radius:10px;margin-bottom:10px;display:block;';img.onerror=function(){this.style.display='none';};pkgB.appendChild(img);}
+    var stars=hotel.stars?Array(Math.min(Math.round(hotel.stars),5)+1).join('★'):'';
+    pkgB.appendChild(makeRow('Property',(hotel.propertyName||hotel.name||'TBC')+(stars?' '+stars:''),hotel.location||hotel.address||''));
+    pkgB.appendChild(makeRow('Room',hotel.roomType||'Standard Room',''));
+    pkgB.appendChild(makeRow('Dates',(hotel.checkIn||'')+' → '+(hotel.checkOut||''),nights+' night'+(nights!==1?'s':'')+' · '+passengers+' guest(s)'));
+    pkgB.appendChild(makeCancelBadge(hotel.policySummary,hotel.isRefundable));
+    var pkgF=document.createElement('div');pkgF.className='pkg-footer';
+    var pd=document.createElement('div');pd.className='pkg-price';
+    var pm=document.createElement('span');pm.innerText=currency+' '+Math.round(baseTotal).toLocaleString();
+    var ps=document.createElement('small');ps.innerText=currency+' '+Math.round(hotel.pricePerNight||0).toLocaleString()+'/night';
+    pd.appendChild(pm);pd.appendChild(ps);
+    var bk=document.createElement('button');bk.className='book';bk.innerText='Reserve';
+    bk.onclick=function(){showHotelGuestForm(p,bk);};
+    pkgF.appendChild(pd);pkgF.appendChild(bk);
+    div.appendChild(pkgH);div.appendChild(pkgB);div.appendChild(pkgF);
+    messages.appendChild(div);return div;
+  }
+
+  function showHotelGuestForm(p, bookBtn) {
+    var ex=document.getElementById('et-hotel-form');if(ex)ex.remove();
+    var hotel=p.hotel||{};var summary=p.summary||{};
+    var currency=hotel.currency||summary.currency||'KES';var total=summary.totalPrice||hotel.totalRate||0;
+    var form=document.createElement('div');form.className='name-form';form.id='et-hotel-form';
+    var fp=document.createElement('p');fp.innerText='Complete your reservation:';form.appendChild(fp);
+    var ni=document.createElement('input');ni.className='name-input';ni.placeholder='Full name';ni.type='text';form.appendChild(ni);
+    var pi=document.createElement('input');pi.className='name-input';pi.placeholder='Phone number';pi.type='tel';form.appendChild(pi);
+    var ei=document.createElement('input');ei.className='name-input';ei.placeholder='Email (for voucher)';ei.type='email';form.appendChild(ei);
+    var ri=document.createElement('textarea');ri.className='name-input';ri.placeholder='Special requests (optional)';ri.style.cssText='height:56px;resize:none;';form.appendChild(ri);
+    var err=document.createElement('div');err.style.cssText='color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;';form.appendChild(err);
+    var cb=document.createElement('button');cb.className='confirm-btn';cb.innerText='Confirm Reservation';
+    cb.onclick=function(){
+      err.style.display='none';var name=ni.value.trim();var phone=pi.value.trim();
+      if(!name){err.innerText='Please enter your name.';err.style.display='block';return;}
+      if(!phone){err.innerText='Please enter your phone number.';err.style.display='block';return;}
+      cb.innerText='Processing...';cb.disabled=true;
+      fetch(apiBase+'/api/hotel/reserve',{method:'POST',headers:{'Content-Type':'application/json','x-hotel-key':'${agencyKey}'},body:JSON.stringify({groupSlug:'${agencyKey}',pkg:p,guestName:name,guestPhone:phone,guestEmail:ei.value.trim()||null,specialRequests:ri.value.trim()||null,channel:'widget'})})
+      .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})
+      .then(function(res){
+        if(!res.ok||!res.data.success){err.innerText=(res.data&&res.data.error)||'Reservation failed.';err.style.display='block';cb.innerText='Confirm Reservation';cb.disabled=false;return;}
+        form.remove();var ref=res.data.reservationRef;
+        addMsg('🏨 Reservation '+ref+' confirmed. '+currency+' '+Math.round(total).toLocaleString()+' due.','bot');
+      })
+      .catch(function(){err.innerText='Network error.';err.style.display='block';cb.innerText='Confirm Reservation';cb.disabled=false;});
+    };
+    form.appendChild(cb);messages.appendChild(form);messages.scrollTop=messages.scrollHeight;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SEND
+  // ─────────────────────────────────────────────────────────────────────────
+  function send() {
+    var text = input.value.trim(); if (!text) return;
+
+    // Hotel manage flow
+    if (isHotelMode && /\\b(?:cancel|modify|change|update|manage|view)\\b/.test(text.toLowerCase()) && /\\b(?:booking|reservation|stay|ref|reference)\\b/.test(text.toLowerCase())) {
+      addMsg(text, 'user'); transcript.push({type:'user',text:text}); persistState(); input.value = '';
+      addMsg("Of course — let me pull up your reservation. Please provide your booking reference and the phone number you used.", 'bot');
+      return;
+    }
+
+    // If waiting for new search criteria for a specific leg
+    if (legFlow && legFlow._awaitingNewSearch !== undefined && legFlow._awaitingNewSearch !== null) {
+      var awaitingLeg = legFlow._awaitingNewSearch;
+      delete legFlow._awaitingNewSearch;
+      addMsg(text, 'user'); transcript.push({type:'user',text:text}); persistState(); input.value = '';
+      showTyping();
+      _searchAlternativesForLeg(awaitingLeg, text);
+      return;
+    }
+
+    addMsg(text, 'user'); transcript.push({type:'user',text:text}); persistState();
+    input.value = ''; showTyping();
+
+    var endpoint = isHotelMode ? apiBase+'/api/hotel/orchestrate' : apiBase+'/api/trips/orchestrate';
+    var hdrs     = isHotelMode
+      ? {'Content-Type':'application/json','x-hotel-key':'${agencyKey}'}
+      : {'Content-Type':'application/json','x-api-key':'${agencyKey}'};
+
+    var body = isHotelMode
+      ? JSON.stringify({prompt:text,groupSlug:'${agencyKey}',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams})
+      : JSON.stringify({prompt:text,agencyId:'${agencyKey}',channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)});
+
+    fetch(endpoint, {method:'POST', headers:hdrs, body:body})
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      hideTyping();
+      if (data.sessionId)           sessionId           = data.sessionId;
+      if (data.tripParams)          previousParams      = data.tripParams;
+      if (data.conversationHistory) conversationHistory = data.conversationHistory;
+
+      if (data.needsClarification) {
+        var ct = data.text || "Could you give me a bit more detail?";
+        addMsg(ct, 'bot'); transcript.push({type:'bot',text:ct}); persistState(); return;
+      }
+
+      var pkgs = data && data.packages ? data.packages : [];
+      var isHD = data.isHotelDirect || (pkgs.length > 0 && pkgs[0] && pkgs[0].isHotelDirect);
+
+      // ── CLASSIFIED MULTI-LEG TRIP ──────────────────────────────────────
+      if (data.isClassifiedTrip && Array.isArray(data.tripResults)) {
+        var responseText = data.text || "Here's your trip broken down by leg:";
+        var botMsg = addMsg(responseText, 'bot');
+        transcript.push({type:'bot',text:responseText});
+
+        // Initialise leg flow from engine response
+        var actionableLegs = data.tripResults.filter(function(r){ return r.packages && r.packages.length > 0; });
+        if (actionableLegs.length > 0) {
+          legFlow = {
+            active:          true,
+            startedAt:       new Date().toISOString(),
+            tripParams:      data.tripParams || previousParams,
+            legs:            data.tripResults, // all legs incl. empty ones
+            currentLegIndex: 0,
+            selections:      {},
+            runningTotalKES: 0,
+            _hotelMemory:    {},
+          };
+          persistState();
+          _syncItineraryToServer();
+          _renderLegFlow();
+          scrollToEl(botMsg);
+        }
+        return;
+      }
+
+      // ── HOTEL MODE ─────────────────────────────────────────────────────
+      if (isHD) {
+        if (!pkgs.length) {
+          var nt2 = (data && data.text) ? data.text : "No rooms available for those dates.";
+          addMsg(nt2,'bot'); transcript.push({type:'bot',text:nt2}); persistState(); return;
+        }
+        var rm2 = data.text || "Here's what we have available:";
+        var botMsg2 = addMsg(rm2,'bot'); transcript.push({type:'bot',text:rm2});
+        pkgs.forEach(function(p,i){ addHotelPackage(p,i); });
+        transcript.push({type:'hotel_packages',packages:pkgs});
+        scrollToEl(botMsg2); persistState(); return;
+      }
+
+      // ── SINGLE DESTINATION (non-classified) ────────────────────────────
+      if (!pkgs.length) {
+        var nt3 = (data && data.text) ? data.text : "No options available. Try adjusting your dates.";
+        addMsg(nt3,'bot'); transcript.push({type:'bot',text:nt3}); persistState(); return;
+      }
+      var rm3 = data.text || 'I found ' + pkgs.length + ' option(s) for you:';
+      var botMsg3 = addMsg(rm3,'bot'); transcript.push({type:'bot',text:rm3});
+      // Single destination: no leg flow, show Book Now
+      pkgs.slice(0,4).forEach(function(p,i){ addPackage(p, i, null, null); });
+      transcript.push({type:'packages',packages:pkgs.slice(0,4)});
+      scrollToEl(botMsg3); persistState();
+    })
+    .catch(function(e){ hideTyping(); console.log('Widget error:', e); addMsg('Unable to load options right now. Please try again.','bot'); });
+  }
+
+  // ── Search alternatives for a specific leg ──────────────────────────────
+  function _searchAlternativesForLeg(legIdx, adjustmentText) {
+    var leg = legFlow && legFlow.legs && legFlow.legs[legIdx];
+    if (!leg) { hideTyping(); return; }
+
+    var legParams = (legFlow && legFlow.tripParams) ? Object.assign({}, legFlow.tripParams, {
+      origin:        leg.label && leg.label.split('→')[0] && leg.label.split('→')[0].trim() || legFlow.tripParams.origin,
+      destination:   leg.label && leg.label.split('→')[1] && leg.label.split('→')[1].trim() || legFlow.tripParams.destination,
+    }) : previousParams;
+
+    fetch(apiBase+'/api/trips/orchestrate', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','x-api-key':'${agencyKey}'},
+      body: JSON.stringify({
+        prompt:              adjustmentText + ' for the leg: ' + (leg.label || ''),
+        agencyId:            '${agencyKey}',
+        channelType:         'widget',
+        sessionId:           sessionId,
+        conversationHistory: conversationHistory,
+        previousParams:      legParams,
+      })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      hideTyping();
+      if (data.packages && data.packages.length > 0) {
+        // Cache original options, replace leg packages with new ones
+        if (!legFlow._cachedOptions) legFlow._cachedOptions = {};
+        if (!legFlow._cachedOptions[legIdx]) legFlow._cachedOptions[legIdx] = leg.packages;
+        legFlow.legs[legIdx].packages = data.packages;
+        persistState();
+        addMsg('Here are the updated options for ' + (leg.label || 'this leg') + ':', 'bot');
+        _renderLegFlow();
+        var section = document.getElementById('leg-section-' + legIdx);
+        if (section) scrollToEl(section);
+      } else {
+        addMsg(data.text || 'No alternatives found. Want to see the original options instead?', 'bot');
+        // Offer to restore cached
+        if (legFlow._cachedOptions && legFlow._cachedOptions[legIdx]) {
+          var restoreBtn = document.createElement('button');
+          restoreBtn.className = 'summary-action-btn secondary';
+          restoreBtn.style.cssText = 'margin:8px 0;padding:10px 16px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;border:1.5px solid var(--et-border);background:var(--et-cream);color:var(--et-navy);';
+          restoreBtn.innerText = 'Show original options';
+          restoreBtn.onclick = function() {
+            legFlow.legs[legIdx].packages = legFlow._cachedOptions[legIdx];
+            persistState();
+            restoreBtn.remove();
+            _renderLegFlow();
+          };
+          messages.appendChild(restoreBtn);
+        }
+      }
+    })
+    .catch(function() { hideTyping(); addMsg('Network error. Please try again.', 'bot'); });
+  }
+
+  sendBtn.onclick = send;
+  input.addEventListener('keypress', function(e){ if (e.key === 'Enter') send(); });
+  console.log('[BODRLESS] Widget loaded — key:${agencyKey} mode:${mode} embed:'+(embedTarget||'floating'));
+}
+if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initWidget); } else { initWidget(); }
+})();`;
 
   res.send(widgetCode);
 });
