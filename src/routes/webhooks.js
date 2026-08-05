@@ -26,6 +26,9 @@
  * → Package selection (1/2/3/4) → start booking
  * → Mid-conversation modify (change nights/budget/hotel while
  *   a package is held) — patch in place or re-search
+ * → Origin clarification resume — if previous turn set
+ *   needsOriginClarification: true, the next message is treated
+ *   as the origin answer and re-runs orchestration with it patched in
  * → Normal orchestration with durable conversation memory
  *   → if result.isClassifiedTrip → start leg flow, present leg 1
  *   → otherwise → send packages normally
@@ -190,7 +193,7 @@ router.post('/whatsapp', async (req, res) => {
         }
       }
 
-      // PATCH 1: Clear both the conversation history AND the booking session for a true fresh start
+      // Clear both the conversation history AND the booking session for a true fresh start
       await conversationMemory.clearConversation(from, agencyId);
       await whatsappBookingFlow.clearSession(from);
       await whatsappService.sendText(phoneNumberId, from,
@@ -254,26 +257,17 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── ACTIVE BOOKING SESSION ─────────────────────────────
-    // PATCH 2: Only intercept if the message looks like a booking detail,
-    // NOT a fresh trip search. Prevents the session from swallowing new searches.
     const _looksLikeFreshSearch = (text) => {
       const t = text.trim();
-      
-      // Catch explicit restart commands (added based on earlier discussion)
       if (/^(new booking|new search|start over|restart|cancel)$/i.test(t)) return true;
-      
-      // Multi-word trip prompts: "Nairobi to Zanzibar", "Washington to Nairobi 10th August..."
       if (/\b(to|from)\b.{3,}/i.test(t) && t.split(/\s+/).length >= 4) return true;
-      // Explicit nights/dates
       if (/\d+\s*nights?\b/i.test(t)) return true;
-      // Month names with numbers
       if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(t)) return true;
       if (/\d+\s*(st|nd|rd|th)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(t)) return true;
       return false;
     };
 
     if (_looksLikeFreshSearch(prompt)) {
-      // Clear stale booking session — user has moved on
       const hadStaleSession = await whatsappBookingFlow.hasActiveSession(from);
       if (hadStaleSession) {
         logger.info('Booking session: clearing stale session — fresh search detected', { from, preview: prompt.slice(0, 80) });
@@ -288,10 +282,6 @@ router.post('/whatsapp', async (req, res) => {
 
     // ═══════════════════════════════════════════════════════
     // LEG FLOW STATE MACHINE
-    // ─────────────────────────────────────────────────────
-    // Checked BEFORE package selection so that "1" during an
-    // active leg flow selects a LEG OPTION, not a full package
-    // from the global cache. The leg flow takes priority.
     // ═══════════════════════════════════════════════════════
     const activeLegFlow = await conversationMemory.loadLegFlow(from, agencyId);
 
@@ -300,14 +290,7 @@ router.post('/whatsapp', async (req, res) => {
         phoneNumberId, from, agencyId, prompt, activeLegFlow,
       });
       if (handled) return;
-      // If _handleLegFlowMessage returned false, the user sent
-      // something that doesn't look like a leg selection (e.g. a
-      // fresh trip search) — fall through to normal orchestration,
-      // which will clear the leg flow and start fresh.
     }
-    // ─────────────────────────────────────────────────────
-    // END LEG FLOW STATE MACHINE
-    // ═══════════════════════════════════════════════════════
 
     // ── PACKAGE SELECTION (1 / 2 / 3 / 4) ─────────────────
     const selectionMatch = prompt.trim().match(/^(?:option\s*)?([1-4])$/i);
@@ -334,7 +317,6 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── STRAY PASSENGER DETAILS ────────────────────────────
-    // PATCH 3: Handles edge case where user sends passenger details while NOT in an active session
     if (PASSENGER_DETAIL_LINE.test(prompt.trim())) {
       const hasSession = await whatsappBookingFlow.hasActiveSession(from);
       if (!hasSession) {
@@ -343,12 +325,89 @@ router.post('/whatsapp', async (req, res) => {
         );
         return;
       }
-      // Has session — let it fall through to booking flow (already handled above)
     }
 
-    // ── MID-CONVERSATION MODIFY ────────────────────────────
+    // ── LOAD CONVERSATION CONTEXT ──────────────────────────
+    // Loaded here so it's available for both the clarification
+    // resume block and the mid-conversation modify block below.
     const memCtx = await conversationMemory.getConversationContext(from, agencyId);
 
+    // ── ORIGIN CLARIFICATION RESUME ───────────────────────
+    // If the previous turn asked "which city are you departing from?"
+    // (needsOriginClarification: true), the user's next short reply
+    // is the origin answer — patch it into previousParams and
+    // re-run orchestration instead of treating it as a fresh search.
+    if (
+      memCtx.previousParams?.needsOriginClarification &&
+      !memCtx.previousParams?.origin
+    ) {
+      const candidateOrigin = prompt.trim();
+
+      // Only treat as a place name if it's short and doesn't look
+      // like a full trip prompt (nights, "to X", dates etc.)
+      const looksLikePlace =
+        candidateOrigin.split(/\s+/).length <= 3 &&
+        !/\d+\s*nights?\b/i.test(candidateOrigin) &&
+        !/\bto\b.{3,}/i.test(candidateOrigin) &&
+        !/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(candidateOrigin);
+
+      if (looksLikePlace) {
+        logger.info('Clarification resume: injecting origin from reply', {
+          from,
+          origin:              candidateOrigin,
+          previousDestination: memCtx.previousParams.destination,
+        });
+
+        await whatsappService.sendText(phoneNumberId, from, _pickAcknowledgment());
+
+        // Reconstruct a clean prompt so the parser has full context
+        const resumePrompt = memCtx.previousParams.destination
+          ? `${candidateOrigin} to ${memCtx.previousParams.destination}`
+          : candidateOrigin;
+
+        const result = await orchestrationEngine.orchestrate(
+          resumePrompt,
+          agencyId,
+          {
+            conversationHistory: memCtx.conversationHistory,
+            previousParams: {
+              ...memCtx.previousParams,
+              origin:                   candidateOrigin,
+              needsOriginClarification: false,
+            },
+            channel: 'whatsapp',
+            phone:   from,
+          }
+        );
+
+        await conversationMemory.saveTurn(from, agencyId, {
+          userMessage:    prompt,
+          engineResponse: result.text,
+          tripParams:     result.tripParams,
+          packages:       result.packages || [],
+          sessionId:      result.sessionId,
+        });
+
+        if (result.needsClarification) {
+          await whatsappService.sendText(phoneNumberId, from, result.text);
+          return;
+        }
+
+        await whatsappService.sendText(phoneNumberId, from, result.text);
+
+        if (result.packages?.length > 0) {
+          await whatsappService.sendPackages(phoneNumberId, from, result.packages);
+          await packageCache.save(from, result.packages, result.tripParams);
+          await whatsappService.sendText(phoneNumberId, from,
+            `Reply with the option number (1-${result.packages.length}) to book that option.`
+          );
+        }
+        return;
+      }
+    }
+    // ─────────────────────────────────────────────────────
+
+    // ── MID-CONVERSATION MODIFY ────────────────────────────
     if (memCtx.selectedPackage) {
       const intent = orchestrationEngine._detectIntent(prompt, memCtx.previousParams);
       const hasAdjustments = Object.keys(intent.adjustments || {}).length > 0;
@@ -381,8 +440,6 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── NORMAL ORCHESTRATION ───────────────────────────────
-    // Any active leg flow is implicitly abandoned when the user
-    // sends a fresh search — clear it so state doesn't bleed.
     if (activeLegFlow) {
       logger.info('LegFlow: user sent fresh search — clearing active flow', { from });
       await conversationMemory.clearLegFlow(from, agencyId);
@@ -413,9 +470,6 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── CLASSIFIED TRIP → START LEG FLOW ──────────────────
-    // Engine returned a multi-leg classified trip.
-    // Instead of dumping all legs at once, start the leg flow
-    // and present only the first leg.
     if (result.isClassifiedTrip && result.tripResults?.length > 0) {
       const actionableLegs = result.tripResults.filter(r => r.packages?.length > 0);
 
@@ -426,13 +480,10 @@ router.post('/whatsapp', async (req, res) => {
         return;
       }
 
-      // Store all leg packages in global cache too — useful if the
-      // user later asks to see all options again.
       const allPackages = actionableLegs.flatMap(r => r.packages);
       await packageCache.save(from, allPackages, result.tripParams);
 
       if (actionableLegs.length === 1) {
-        // Only one actionable leg — no need for a flow, just show it normally
         await whatsappService.sendText(phoneNumberId, from, result.text);
         await whatsappService.sendPackages(phoneNumberId, from, actionableLegs[0].packages);
         await whatsappService.sendText(phoneNumberId, from,
@@ -441,20 +492,17 @@ router.post('/whatsapp', async (req, res) => {
         return;
       }
 
-      // Start the leg flow
       const flow = await conversationMemory.startLegFlow(from, agencyId, {
         legs:       actionableLegs,
         tripParams: result.tripParams,
       });
 
       if (!flow) {
-        // Fallback: couldn't start flow, dump everything
         await whatsappService.sendText(phoneNumberId, from, result.text);
         await whatsappService.sendPackages(phoneNumberId, from, allPackages);
         return;
       }
 
-      // Intro message
       const totalLegs   = flow.legs.length;
       const tripSummary = result.tripParams?.trips
         ? result.tripParams.trips.map(t => `${t.origin || ''} → ${t.destination}`).join(', ')
@@ -464,7 +512,6 @@ router.post('/whatsapp', async (req, res) => {
         `✅ Found options for all *${totalLegs} legs* of your trip to *${_titleCase(tripSummary)}*.\n\nI'll walk you through one leg at a time — pick your preferred option for each leg, then I'll show you the total and let you pay all at once or leg by leg.`
       );
 
-      // Present leg 0
       await _sendCurrentLeg(phoneNumberId, from, flow);
       return;
     }
@@ -518,39 +565,23 @@ router.post('/whatsapp', async (req, res) => {
 
 // ═════════════════════════════════════════════════════════════
 // LEG FLOW MESSAGE HANDLER
-// ─────────────────────────────────────────────────────────────
-// Called when an active leg flow exists. Interprets the traveler's
-// message as either:
-//   a) An option selection (1/2/3/4) → save, advance, send next leg
-//      or final summary if all legs done
-//   b) A modification request ("cheaper", "different hotel") →
-//      resend current leg with an acknowledgment
-//   c) An "abandon" keyword → clear the flow and return false
-//      so the caller falls through to normal orchestration
-//   d) Anything that looks like a fresh trip search → return false
-//
-// Returns true if the message was handled, false if it should
-// fall through to the normal orchestration path.
 // ═════════════════════════════════════════════════════════════
 async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, activeLegFlow }) {
   const flow    = activeLegFlow;
   const trimmed = prompt.trim();
 
-  // ── "Start over" / "New search" → abandon flow ──────────
   const isAbandonment = /\b(start over|new search|fresh start|forget it|cancel|restart|different trip)\b/i.test(trimmed);
   if (isAbandonment) {
-    await conversationMemory.clearLegFlow(from, agencyId);
-    return false; // fall through to orchestration
-  }
-
-  const currentLeg = flow.legs[flow.currentLegIndex];
-  if (!currentLeg) {
-    // Flow is done but wasn't cleared — clean up
     await conversationMemory.clearLegFlow(from, agencyId);
     return false;
   }
 
-  // ── "Show all" / "See all legs" → send summary of what's left ──
+  const currentLeg = flow.legs[flow.currentLegIndex];
+  if (!currentLeg) {
+    await conversationMemory.clearLegFlow(from, agencyId);
+    return false;
+  }
+
   if (/\b(show all|all legs|whole trip|see all|overview)\b/i.test(trimmed)) {
     const remaining = flow.legs.slice(flow.currentLegIndex);
     await whatsappService.sendText(phoneNumberId, from,
@@ -561,7 +592,6 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
     return true;
   }
 
-  // ── Option selection (1/2/3/4) ──────────────────────────
   const selectionMatch = trimmed.match(/^(?:option\s*)?([1-4])$/i);
   if (selectionMatch) {
     const optionNum      = parseInt(selectionMatch[1], 10);
@@ -574,7 +604,6 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
       return true;
     }
 
-    // Save this leg's selection and advance
     const updatedFlow = await conversationMemory.saveLegSelection(from, agencyId, {
       legIndex:        flow.currentLegIndex,
       selectedPackage,
@@ -587,49 +616,38 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
       return true;
     }
 
-    // Confirm selection with a brief acknowledgment
     const legPrice    = selectedPackage.summary?.totalPrice || 0;
     const legCurrency = selectedPackage.summary?.currency || 'KES';
     await whatsappService.sendText(phoneNumberId, from,
       `✅ Got it — *Option ${optionNum}* selected for *${currentLeg.roleLabel || currentLeg.label}* (${legCurrency} ${legPrice.toLocaleString()})`
     );
 
-    // ── All legs done → show final summary ──────────────
     if (!updatedFlow.active) {
-      // Save all selected packages to the global cache so booking
-      // can be initiated from the final summary screen
       const allSelected = Object.values(updatedFlow.selections).map(s => s.package);
       await packageCache.save(from, allSelected, updatedFlow.tripParams);
 
       const finalSummary = conversationMemory.buildFinalLegSummary(updatedFlow);
       await whatsappService.sendText(phoneNumberId, from, finalSummary);
 
-      // Clear the leg flow — it's complete
       await conversationMemory.clearLegFlow(from, agencyId);
       return true;
     }
 
-    // ── More legs to go → show running total then next leg ──
     const summaryBlock = conversationMemory.getLegFlowSummary(updatedFlow);
     if (summaryBlock) {
       await whatsappService.sendText(phoneNumberId, from, summaryBlock);
     }
 
-    // Small pause before next leg so messages don't blur together
     await new Promise(resolve => setTimeout(resolve, 800));
-
     await _sendCurrentLeg(phoneNumberId, from, updatedFlow);
     return true;
   }
 
-  // ── Modification request while in leg flow ───────────────
-  // e.g. "cheaper option", "different hotel", "morning flight"
   const looksLikeModification = /\b(cheaper|different|another|change|morning|evening|upgrade|luxury|budget|hotel|flight|bus)\b/i.test(trimmed);
   if (looksLikeModification) {
     await whatsappService.sendText(phoneNumberId, from,
       `Here are the options again for *${currentLeg.roleLabel || currentLeg.label}* — reply with *1*${currentLeg.packages.length > 1 ? `–*${currentLeg.packages.length}*` : ''} to choose:`
     );
-    // Re-send the current leg's packages
     await whatsappService.sendLegPackages(phoneNumberId, from, {
       leg:             currentLeg,
       legIndex:        flow.currentLegIndex,
@@ -639,7 +657,6 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
     return true;
   }
 
-  // ── Looks like a fresh search — return false to fall through ──
   const looksLikeFreshSearch = trimmed.split(/\s+/).length > 6
     || /\bto\b.{2,30}\bfrom\b/i.test(trimmed)
     || /\d+\s*nights?\b/i.test(trimmed);
@@ -650,7 +667,6 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
     return false;
   }
 
-  // ── Unclear message — nudge the traveler ────────────────
   await whatsappService.sendText(phoneNumberId, from,
     `We're working through your trip leg by leg. Reply with *1*${currentLeg.packages.length > 1 ? `–*${currentLeg.packages.length}*` : ''} to pick an option for *${currentLeg.roleLabel || currentLeg.label}*.\n\nSay "show all" to see all remaining legs, or "start over" for a new search.`
   );
@@ -659,7 +675,6 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
 
 // ─────────────────────────────────────────────
 // SEND CURRENT LEG
-// Helper — presents whichever leg the flow is currently on.
 // ─────────────────────────────────────────────
 async function _sendCurrentLeg(phoneNumberId, from, flow) {
   const leg = flow.legs[flow.currentLegIndex];
