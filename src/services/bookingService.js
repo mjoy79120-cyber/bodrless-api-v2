@@ -48,6 +48,25 @@ try {
   logger.warn('Supplier adapter not loaded in bookingService', { error: e.message });
 }
 
+// ─────────────────────────────────────────────
+// MODULE-LEVEL HELPERS
+// ─────────────────────────────────────────────
+function _titleCase(str) {
+  if (!str) return '';
+  return String(str).replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function _formatDateHuman(dateStr) {
+  if (!dateStr) return null;
+  try {
+    return new Date(dateStr).toLocaleDateString('en-GB', {
+      weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
 class BookingService {
 
   validatePackage(pkg, passengerDetails, guestPhone, guestEmail) {
@@ -186,16 +205,6 @@ class BookingService {
         logger.info('Duffel flight held', { bookingRef, orderId: flightResult?.orderId });
 
       } catch (err) {
-        // BUG FIX (found via a real WhatsApp sandbox booking,
-        // 2026-07-04): duffel.js throws this structured error when
-        // Duffel's own invalid_order_create_type response reveals the
-        // offer genuinely requires instant payment — something the
-        // earlier validatePackage() check couldn't catch because
-        // requiresInstantPayment came back null/unconfirmed at search
-        // time rather than an explicit true. Surface the SAME clean,
-        // honest message/code the pre-check produces, rather than
-        // letting this fall through to the generic FLIGHT_HOLD_FAILED
-        // path below with a raw supplier error the traveler can't act on.
         if (err.code === 'REQUIRES_INSTANT_PAYMENT') {
           logger.warn('Duffel offer required instant payment (discovered at booking time, not pre-validated)', { bookingRef, offerId: transport.offerId });
           return {
@@ -391,17 +400,6 @@ class BookingService {
         });
 
         if (flightResult) {
-          // IMPROVEMENT (2026-07-03): previously just left the
-          // flight hold to expire naturally rather than actively
-          // releasing it — safe to do now that duffel.js's cancel()
-          // actually completes both real steps (create + confirm a
-          // cancellation), not just the first half. Releases the
-          // held seat/inventory immediately instead of tying it up
-          // until natural expiry. Never blocks the response to the
-          // traveler either way — this is a best-effort cleanup, and
-          // a failure here is logged but doesn't change what the
-          // traveler is told (the hold expiring naturally is still
-          // the honest fallback if active cancellation itself fails).
           let flightCancelSucceeded = null;
           try {
             await supplierAdapter.cancel({ supplier: transport.supplier, orderId: flightResult.orderId, bookingRef: flightResult.supplierBookingReference });
@@ -569,7 +567,7 @@ class BookingService {
       logger.warn('Could not fetch agency for voucher', { agencyId: booking.agency_id, error: err.message });
     }
 
-    const packageSnapshot  = booking.package_snapshot || {};
+    const packageSnapshot   = booking.package_snapshot || {};
     const outboundTransport = packageSnapshot.transport       || booking.flight_details || null;
     const returnTransport   = packageSnapshot.returnTransport || null;
 
@@ -606,16 +604,17 @@ class BookingService {
           age:  isChild ? age : null,
         };
       }).filter(p => p.name),
-      totalAmount:              hotelDetails.totalRate       || booking.total_price || 0,
-      currency:                 hotelDetails.currency        || booking.currency || 'EUR',
-      rateComments:             hotelDetails.rateComments    || null,
-      cancellationPolicies:     hotelDetails.cancellationPolicies || [],
-      promotions:               hotelDetails.promotions      || [],
-      supplier_tag:             hotelDetails.supplier_tag    || null,
-      booking_ref:              booking.booking_ref,
+      totalAmount:          hotelDetails.totalRate       || booking.total_price || 0,
+      currency:             hotelDetails.currency        || booking.currency || 'EUR',
+      rateComments:         hotelDetails.rateComments    || null,
+      cancellationPolicies: hotelDetails.cancellationPolicies || [],
+      promotions:           hotelDetails.promotions      || [],
+      supplier_tag:         hotelDetails.supplier_tag    || null,
+      booking_ref:          booking.booking_ref,
     };
 
-    await Promise.allSettled([
+    // Fire email voucher + booking confirmed notification in parallel
+    const [voucherResult, notifResult] = await Promise.allSettled([
       voucherService.sendVoucher({
         booking: voucherBooking,
         hotel:   hotelDetails,
@@ -624,6 +623,123 @@ class BookingService {
       }),
       this._fireBookingConfirmedNotifications(booking),
     ]);
+
+    // Log outcomes for observability
+    if (voucherResult.status === 'rejected') {
+      logger.error('Voucher send failed', {
+        bookingRef: booking.booking_ref,
+        error: voucherResult.reason?.message || voucherResult.reason,
+      });
+    } else {
+      logger.info('Voucher sent', { bookingRef: booking.booking_ref });
+    }
+
+    if (notifResult.status === 'rejected') {
+      logger.warn('Booking confirmed notification failed', {
+        bookingRef: booking.booking_ref,
+        error: notifResult.reason?.message || notifResult.reason,
+      });
+    }
+
+    // ── WhatsApp voucher delivery ──────────────────────────────
+    // Send a voucher summary to the traveler on WhatsApp.
+    // Requires agency.whatsapp_phone_number_id to be set.
+    // Non-blocking — failure never affects booking status.
+    if (agency?.whatsapp_phone_number_id && booking.guest_phone) {
+      this._sendWhatsAppVoucher(booking, voucherBooking, agency).catch(err =>
+        logger.warn('WhatsApp voucher delivery failed (booking still confirmed)', {
+          bookingRef: booking.booking_ref,
+          error: err.message,
+        })
+      );
+    } else {
+      logger.info('WhatsApp voucher skipped', {
+        bookingRef: booking.booking_ref,
+        reason: !agency?.whatsapp_phone_number_id
+          ? 'no whatsapp_phone_number_id on agency'
+          : 'no guest phone',
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // WHATSAPP VOUCHER DELIVERY
+  // Sends a formatted voucher summary to the traveler on WhatsApp
+  // after payment is confirmed. Non-blocking — called fire-and-forget
+  // from _fetchAgencyAndFireVoucher.
+  // ─────────────────────────────────────────────
+  async _sendWhatsAppVoucher(booking, voucherBooking, agency) {
+    // Lazy-load to avoid circular deps
+    let whatsappService;
+    try {
+      whatsappService = require('./whatsappService');
+    } catch (e) {
+      try {
+        whatsappService = require('../services/whatsappService');
+      } catch (e2) {
+        logger.warn('Could not load whatsappService for voucher delivery', {
+          bookingRef: booking.booking_ref,
+          error: e2.message,
+        });
+        return;
+      }
+    }
+
+    const {
+      booking_ref, guest_phone, guest_name,
+      destination, origin, nights,
+    } = booking;
+
+    const hotel    = voucherBooking.hotelName   || null;
+    const checkIn  = voucherBooking.checkIn     || null;
+    const checkOut = voucherBooking.checkOut    || null;
+    const total    = voucherBooking.totalAmount || booking.total_price || 0;
+    const currency = voucherBooking.currency    || booking.currency    || 'KES';
+    const flight   = booking.flight_details;
+
+    const lines = [
+      `🎉 *Booking Confirmed!*`,
+      ``,
+      `Hi ${guest_name || 'Traveler'} — your trip is locked in. Here are your details:`,
+      ``,
+      `*Booking Ref:* ${booking_ref}`,
+      `*Route:* ${origin ? `${_titleCase(origin)} → ` : ''}${_titleCase(destination || 'your destination')}`,
+      nights ? `*Duration:* ${nights} night${nights !== 1 ? 's' : ''}` : null,
+      ``,
+    ];
+
+    if (flight) {
+      lines.push(`*Flight:* ${flight.airline || 'TBC'}${flight.flightNumber ? ' ' + flight.flightNumber : ''}`);
+      if (flight.departureTime) lines.push(`*Departs:* ${_formatDateHuman(flight.departureTime)}`);
+      lines.push('');
+    }
+
+    if (hotel) {
+      lines.push(`*Hotel:* ${hotel}`);
+      if (checkIn)  lines.push(`*Check-in:*  ${_formatDateHuman(checkIn)}`);
+      if (checkOut) lines.push(`*Check-out:* ${_formatDateHuman(checkOut)}`);
+      lines.push('');
+    }
+
+    lines.push(`*Total Paid:* ${currency} ${Math.round(total).toLocaleString()}`);
+    lines.push(``);
+    lines.push(`Your full voucher has been sent to ${booking.guest_email || 'your email'}. Show it at check-in.`);
+    lines.push(``);
+    lines.push(`Safe travels! ✈️`);
+
+    const message = lines.filter(l => l !== null).join('\n');
+
+    await whatsappService.sendMessage(
+      guest_phone,
+      message,
+      booking.agency_id,
+      agency.whatsapp_phone_number_id
+    );
+
+    logger.info('WhatsApp voucher delivered', {
+      bookingRef: booking_ref,
+      phone:      guest_phone,
+    });
   }
 
   async _fireBookingConfirmedNotifications(booking) {
@@ -633,18 +749,18 @@ class BookingService {
 
     await notificationService.notifyBookingConfirmed({
       booking: {
-        bookingRef:   booking.booking_ref,
-        agencyId:     booking.agency_id,
-        guestName:    booking.guest_name,
-        guestPhone:   booking.guest_phone,
-        guestEmail:   booking.guest_email,
-        origin:       booking.origin,
-        destination:  booking.destination,
-        checkIn:      booking.flight_details?.departureTime || null,
-        checkOut:     null,
-        passengers:   booking.passengers,
-        totalPrice:   booking.total_price,
-        currency:     booking.currency,
+        bookingRef:      booking.booking_ref,
+        agencyId:        booking.agency_id,
+        guestName:       booking.guest_name,
+        guestPhone:      booking.guest_phone,
+        guestEmail:      booking.guest_email,
+        origin:          booking.origin,
+        destination:     booking.destination,
+        checkIn:         booking.flight_details?.departureTime || null,
+        checkOut:        null,
+        passengers:      booking.passengers,
+        totalPrice:      booking.total_price,
+        currency:        booking.currency,
         specialRequests: null,
       },
       flight:    booking.flight_details    || null,
@@ -653,16 +769,6 @@ class BookingService {
     });
   }
 
-  // ─────────────────────────────────────────────
-  // REQUEST A FLIGHT CHANGE (change flight — step 1 of 2)
-  // Only for confirmed, PAID Duffel bookings — this changes an
-  // existing paid order, not a tentative hold. Fetches the order's
-  // CURRENT real slice ID fresh via getOrder() rather than trusting
-  // anything stored, since that's the authoritative source and this
-  // isn't something we call often enough to justify caching it.
-  // Returns real change offers with real cost/penalty — nothing is
-  // booked or charged by this step alone.
-  // ─────────────────────────────────────────────
   async requestFlightChange({ bookingRef, newDepartureDate }) {
     const { data: booking, error } = await supabase
       .from('bookings')
@@ -722,7 +828,7 @@ class BookingService {
         success: true,
         hasOffers: true,
         changeRequestId: changeRequest.changeRequestId,
-        offers: changeRequest.offers, // cheapest first, see duffel.js
+        offers: changeRequest.offers,
       };
     } catch (err) {
       const supplierMessage = err.response?.data?.errors?.[0]?.message || err.message;
@@ -731,38 +837,6 @@ class BookingService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // CONFIRM A FLIGHT CHANGE (step 2 of 2)
-  // Actually applies the change with the airline and charges/refunds
-  // the difference via Bodrless's funded Duffel balance — the
-  // traveler-facing side (collecting any extra amount from the
-  // traveler themselves, e.g. via M-Pesa) is NOT handled here; see
-  // the caller for how that's presented/collected before this is
-  // invoked. Updates the booking record with the new flight details
-  // on success.
-  //
-  // BUG FIX (found via real sandbox test, 2026-07-04): confirmOrderChange's
-  // own response field `newTotalAmount` does NOT reliably match the
-  // order's real, authoritative total. A live sandbox run showed
-  // confirmOrderChange reporting newTotalAmount: 317.85 for a change
-  // with a $25 penalty, while immediately re-fetching the order via
-  // getOrder() showed the REAL total was 342.85 — exactly
-  // changeTotalAmount (125) higher than the pre-change total
-  // (217.85), i.e. correctly including the penalty. confirmOrderChange's
-  // own newTotalAmount appears to omit the penalty and cannot be
-  // trusted as the source of truth for what Duffel actually charged
-  // and now holds as the order's total.
-  //
-  // Fix: after confirmOrderChange succeeds, re-fetch the order via
-  // getOrder() — the same "always trust a fresh fetch, never a
-  // stale/self-reported total" pattern already used correctly for
-  // payHoldOrder (see _completeDuffelPayment) — and persist THAT
-  // total, not confirmedChange's own fields. If the re-fetch itself
-  // fails, the change has already been applied and charged with the
-  // airline (this must never be undone or reported as a failure to
-  // the traveler at this point) — log loudly and alert for manual
-  // reconciliation of the stored total instead.
-  // ─────────────────────────────────────────────
   async confirmFlightChange({ bookingRef, offerId, changeTotalAmount, changeTotalCurrency }) {
     const { data: booking, error } = await supabase
       .from('bookings')
@@ -812,14 +886,8 @@ class BookingService {
       return { success: false, error: `We couldn't finalize this change with the airline (${err.message}). Our team has been notified — please contact support.` };
     }
 
-    // Re-fetch the order for its authoritative total — see the
-    // BUG FIX note above. The change itself is already applied and
-    // charged/refunded with the airline at this point regardless of
-    // what happens next; a failure here is a reporting problem, not
-    // a booking failure, and must never be surfaced to the traveler
-    // as the change having failed.
     let authoritativeTotalAmount = confirmedChange.newTotalAmount;
-    let authoritativeCurrency = confirmedChange.newTotalCurrency;
+    let authoritativeCurrency    = confirmedChange.newTotalCurrency;
 
     try {
       const freshOrder = await supplierAdapter.getOrder({ supplier: 'duffel', orderId: booking.supplier_order_id });
@@ -833,14 +901,9 @@ class BookingService {
           });
         }
         authoritativeTotalAmount = freshOrder.totalAmount;
-        authoritativeCurrency = freshOrder.currency || authoritativeCurrency;
+        authoritativeCurrency    = freshOrder.currency || authoritativeCurrency;
       }
     } catch (err) {
-      // The change is already confirmed and charged with the airline —
-      // this only means we couldn't verify/refresh the total to store.
-      // Fall back to confirmedChange's own (possibly-short) figures,
-      // but flag it loudly so someone reconciles the real total
-      // manually rather than it silently being wrong forever.
       logger.error('confirmFlightChange: could not re-fetch order after a successfully confirmed change — stored total may not reflect the real charge', {
         bookingRef, changeId: pendingChange.changeId, error: err.message,
       });
@@ -855,13 +918,12 @@ class BookingService {
       });
     }
 
-    // Update the booking record with the new flight details.
     try {
       await supabase
         .from('bookings')
         .update({
           total_price: authoritativeTotalAmount || booking.total_price,
-          currency: authoritativeCurrency || booking.currency,
+          currency:    authoritativeCurrency    || booking.currency,
         })
         .eq('booking_ref', bookingRef);
     } catch (err) {
@@ -871,28 +933,14 @@ class BookingService {
     logger.info('Flight change confirmed', { bookingRef, changeId: confirmedChange.changeId, changeTotalAmount: confirmedChange.changeTotalAmount, authoritativeTotalAmount });
 
     return {
-      success: true,
-      changeTotalAmount: confirmedChange.changeTotalAmount,
+      success:             true,
+      changeTotalAmount:   confirmedChange.changeTotalAmount,
       changeTotalCurrency: confirmedChange.changeTotalCurrency,
-      newTotalAmount: authoritativeTotalAmount,
-      newTotalCurrency: authoritativeCurrency,
+      newTotalAmount:      authoritativeTotalAmount,
+      newTotalCurrency:    authoritativeCurrency,
     };
   }
 
-  // ─────────────────────────────────────────────
-  // REQUEST A HOTEL CHANGE (change hotel dates — step 1 of 2)
-  // Built as cancel-old + book-new rather than trusting an
-  // unverified "true in-place modify" contract — HotelBeds' own
-  // modification docs confirm a bookingChangeCode search flag and a
-  // sourceMarket field on the booking confirmation step, but don't
-  // clearly show whether this actually patches an existing booking
-  // or is really just special-context pricing that still requires
-  // the same cancel+rebook underneath. Cancel+rebook is PROVEN safe
-  // here since both halves already work correctly (see
-  // cancelConfirmedBooking and the hotel booking branch of
-  // initBooking) — this only searches for new availability, nothing
-  // is cancelled or booked yet.
-  // ─────────────────────────────────────────────
   async requestHotelChange({ bookingRef, newCheckIn, newCheckOut }) {
     const { data: booking, error } = await supabase
       .from('bookings')
@@ -916,41 +964,41 @@ class BookingService {
       return { success: false, error: 'Booking system is temporarily unavailable. Please try again shortly.' };
     }
 
-    const passengers = Array.isArray(booking.passenger_details) ? booking.passenger_details : [];
-    const adults = passengers.filter(p => p.type !== 'child').length || 1;
-    const children = passengers.filter(p => p.type === 'child');
-    const childAges = children.map(p => this._calculateAge(p.dateOfBirth || p.date_of_birth || p.dob)).filter(a => a != null);
+    const passengers  = Array.isArray(booking.passenger_details) ? booking.passenger_details : [];
+    const adults      = passengers.filter(p => p.type !== 'child').length || 1;
+    const children    = passengers.filter(p => p.type === 'child');
+    const childAges   = children.map(p => this._calculateAge(p.dateOfBirth || p.date_of_birth || p.dob)).filter(a => a != null);
 
     try {
       const results = await supplierAdapter.searchHotels({
-        hotelCode: booking.hotel_details.hotelCode,
-        checkIn: newCheckIn,
-        checkOut: newCheckOut,
+        hotelCode:         booking.hotel_details.hotelCode,
+        checkIn:           newCheckIn,
+        checkOut:          newCheckOut,
         adults,
-        children: children.length,
+        children:          children.length,
         childAges,
-        rooms: 1,
+        rooms:             1,
         bookingChangeCode: 'CANCELLATION_POLICY_CHANGE',
       });
 
       if (!results || results.length === 0) {
         return {
-          success: true,
+          success:  true,
           hasOffers: false,
-          message: `No availability found at ${booking.hotel_details.name || 'this hotel'} for ${newCheckIn} to ${newCheckOut}. Try different dates.`,
+          message:  `No availability found at ${booking.hotel_details.name || 'this hotel'} for ${newCheckIn} to ${newCheckOut}. Try different dates.`,
         };
       }
 
-      const newRate = results[0]; // cheapest/first real result
+      const newRate = results[0];
       return {
-        success: true,
-        hasOffers: true,
-        hotelName: newRate.name,
-        newRateKey: newRate.rateKey,
-        newTotalPrice: newRate.totalRate,
-        newCurrency: newRate.currency,
+        success:          true,
+        hasOffers:        true,
+        hotelName:        newRate.name,
+        newRateKey:       newRate.rateKey,
+        newTotalPrice:    newRate.totalRate,
+        newCurrency:      newRate.currency,
         currentTotalPrice: booking.total_price,
-        currentCurrency: booking.currency,
+        currentCurrency:  booking.currency,
         newCheckIn,
         newCheckOut,
       };
@@ -960,20 +1008,6 @@ class BookingService {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // CONFIRM A HOTEL CHANGE (step 2 of 2)
-  // Cancels the current hotel booking, then books the new dates
-  // under the SAME bookingRef (traveler keeps their existing
-  // reference and voucher — no need to reissue a whole new booking
-  // identity for what is, from their perspective, one continuous
-  // stay being adjusted).
-  //
-  // CRITICAL FAILURE CASE: if the cancel succeeds but the new
-  // booking fails, the traveler is left with NO hotel at all — this
-  // is flagged as a critical alert for immediate manual follow-up,
-  // not something to paper over. Rare (both steps individually are
-  // reliable), but must never be silently swallowed.
-  // ─────────────────────────────────────────────
   async confirmHotelChange({ bookingRef, newRateKey, newCheckIn, newCheckOut }) {
     const { data: booking, error } = await supabase
       .from('bookings')
@@ -1003,21 +1037,21 @@ class BookingService {
     const passengers = Array.isArray(booking.passenger_details) ? booking.passenger_details : [];
     let newHotelResult;
     try {
-      const leadGuest = { firstName: passengers[0]?.firstName, lastName: passengers[0]?.lastName };
+      const leadGuest      = { firstName: passengers[0]?.firstName, lastName: passengers[0]?.lastName };
       const guestsForHotel = passengers.map(p => ({
         firstName: p.firstName,
-        lastName: p.lastName,
-        type: p.type === 'child' ? 'child' : 'adult',
-        roomId: 1,
+        lastName:  p.lastName,
+        type:      p.type === 'child' ? 'child' : 'adult',
+        roomId:    1,
       }));
 
       newHotelResult = await supplierAdapter.book({
-        supplier: 'hotelbeds',
-        rateKey: newRateKey,
-        holder: leadGuest,
-        guests: guestsForHotel,
+        supplier:        'hotelbeds',
+        rateKey:         newRateKey,
+        holder:          leadGuest,
+        guests:          guestsForHotel,
         clientReference: bookingRef,
-        remark: `Booking change via Bodrless for ${booking.agency_id}`,
+        remark:          `Booking change via Bodrless for ${booking.agency_id}`,
       });
     } catch (err) {
       logger.error('confirmHotelChange: new hotel booking failed AFTER old was cancelled', { bookingRef, error: err.message });
@@ -1041,9 +1075,9 @@ class BookingService {
         .from('bookings')
         .update({
           hotel_supplier_reference: newHotelResult.supplierBookingReference || null,
-          hotel_rate_key: newRateKey,
-          total_price: newHotelResult.totalRate || booking.total_price,
-          currency: newHotelResult.currency || booking.currency,
+          hotel_rate_key:           newRateKey,
+          total_price:              newHotelResult.totalRate || booking.total_price,
+          currency:                 newHotelResult.currency  || booking.currency,
           hotel_details: { ...(booking.hotel_details || {}), ...newHotelResult, checkIn: newCheckIn, checkOut: newCheckOut, rateKey: newRateKey },
         })
         .eq('booking_ref', bookingRef);
@@ -1054,11 +1088,11 @@ class BookingService {
     logger.info('Hotel change confirmed', { bookingRef, newSupplierRef: newHotelResult.supplierBookingReference });
 
     return {
-      success: true,
+      success:       true,
       newCheckIn,
       newCheckOut,
       newTotalPrice: newHotelResult.totalRate || booking.total_price,
-      newCurrency: newHotelResult.currency || booking.currency,
+      newCurrency:   newHotelResult.currency  || booking.currency,
     };
   }
 
@@ -1084,21 +1118,21 @@ class BookingService {
     const policies = booking.hotel_details?.cancellationPolicies || [];
     const now = new Date();
     let feeApplies = false;
-    let feeAmount = 0;
+    let feeAmount  = 0;
     let feeCurrency = booking.currency || 'KES';
     for (const p of policies) {
       if (p.from && now >= new Date(p.from)) {
         const amt = Number(p.amount) || 0;
         if (amt >= feeAmount) {
-          feeApplies = true;
-          feeAmount = amt;
+          feeApplies  = true;
+          feeAmount   = amt;
           feeCurrency = p.currencyId || feeCurrency;
         }
       }
     }
 
     let supplierCancelSucceeded = null;
-    let supplierCancelError = null;
+    let supplierCancelError     = null;
 
     if (booking.hotel_supplier_reference && supplierAdapter) {
       try {
@@ -1108,7 +1142,7 @@ class BookingService {
       } catch (err) {
         logger.error('Failed to cancel confirmed booking on HotelBeds', { bookingRef, error: err.message });
         supplierCancelSucceeded = false;
-        supplierCancelError = err.message;
+        supplierCancelError     = err.message;
 
         tracking.alert({
           type:     'hotel_cancel_failed',
@@ -1125,14 +1159,14 @@ class BookingService {
     await supabase
       .from('bookings')
       .update({
-        status: 'cancelled',
+        status:        'cancelled',
         booking_stage: 'cancelled',
-        cancelled_at: new Date().toISOString(),
-        cancelled_by: requestedBy,
+        cancelled_at:  new Date().toISOString(),
+        cancelled_by:  requestedBy,
       })
       .eq('booking_ref', bookingRef);
 
-    const totalPaid = Number(booking.total_price || 0);
+    const totalPaid    = Number(booking.total_price || 0);
     const refundAmount = feeApplies ? Math.max(0, totalPaid - feeAmount) : totalPaid;
 
     if (booking.payment_status === 'paid' && refundAmount > 0) {
@@ -1148,16 +1182,16 @@ class BookingService {
     }
 
     return {
-      success: true,
+      success:                true,
       bookingRef,
-      status: 'cancelled',
+      status:                 'cancelled',
       supplierCancelSucceeded,
       supplierCancelError,
       feeApplies,
       feeAmount,
       feeCurrency,
       refundAmount,
-      refundCurrency: feeCurrency,
+      refundCurrency:         feeCurrency,
       refundNote: refundAmount > 0
         ? 'Refund will be processed by our team — this is not yet automated, so allow some time for it to reach you.'
         : null,
@@ -1172,7 +1206,7 @@ class BookingService {
       .single();
 
     let supplierCancelSucceeded = null;
-    let supplierCancelError = null;
+    let supplierCancelError     = null;
 
     if (booking?.hotel_supplier_reference && supplierAdapter) {
       try {
@@ -1182,7 +1216,7 @@ class BookingService {
       } catch (err) {
         logger.error('Failed to cancel hotel after payment failure', { bookingRef, error: err.message });
         supplierCancelSucceeded = false;
-        supplierCancelError = err.message;
+        supplierCancelError     = err.message;
 
         tracking.alert({
           type:     'hotel_cancel_failed',
@@ -1204,7 +1238,7 @@ class BookingService {
     return {
       success: true,
       bookingRef,
-      status: 'cancelled',
+      status:                 'cancelled',
       supplierCancelSucceeded,
       supplierCancelError,
     };
@@ -1223,11 +1257,11 @@ class BookingService {
 
   async _reconcileHotelOccupancy({ pkg, passengerDetails, priceApproved }) {
     const hotel = pkg.hotel || {};
-    const occ = (pkg.summary && pkg.summary.occupancy) || null;
+    const occ   = (pkg.summary && pkg.summary.occupancy) || null;
 
     const guests = (passengerDetails || []).map(p => {
-      const dob = p.dateOfBirth || p.date_of_birth || p.dob || null;
-      const age = this._calculateAge(dob);
+      const dob     = p.dateOfBirth || p.date_of_birth || p.dob || null;
+      const age     = this._calculateAge(dob);
       const isChild = age != null && age < 18;
       const g = {
         firstName: p.firstName || p.first_name,
@@ -1243,11 +1277,8 @@ class BookingService {
       return { guests, rateKey: hotel.rateKey, priceChanged: false };
     }
 
-    const trueChildAges = guests
-      .filter(g => g.type === 'child' && g.age != null)
-      .map(g => g.age).sort((a, b) => a - b);
-    const searchedChildAges = (Array.isArray(occ.childAges) ? occ.childAges : [])
-      .slice().sort((a, b) => a - b);
+    const trueChildAges    = guests.filter(g => g.type === 'child' && g.age != null).map(g => g.age).sort((a, b) => a - b);
+    const searchedChildAges = (Array.isArray(occ.childAges) ? occ.childAges : []).slice().sort((a, b) => a - b);
 
     const agesMatch =
       trueChildAges.length === searchedChildAges.length &&
@@ -1258,7 +1289,7 @@ class BookingService {
     }
 
     const adults = Math.max(1, guests.filter(g => g.type === 'adult').length);
-    let refetch = null;
+    let refetch  = null;
     try {
       refetch = await supplierAdapter.refetchRate({
         supplier:  'hotelbeds',
@@ -1280,18 +1311,19 @@ class BookingService {
       return { guests, rateKey: hotel.rateKey, priceChanged: false };
     }
 
-    const oldPrice = Number(hotel.totalRate || (hotel.pricePerNight || 0) * (occ.nights || pkg.summary?.nights || 1) || 0);
-    const newPrice = Number(refetch.totalRate || 0);
+    const oldPrice  = Number(hotel.totalRate || (hotel.pricePerNight || 0) * (occ.nights || pkg.summary?.nights || 1) || 0);
+    const newPrice  = Number(refetch.totalRate || 0);
     const tolerance = Math.max(2, oldPrice * 0.02);
     const priceChanged = oldPrice > 0 && newPrice > 0 && Math.abs(newPrice - oldPrice) > tolerance;
 
     if (priceChanged && !priceApproved) {
       return {
         guests,
-        rateKey: refetch.rateKey,
+        rateKey:      refetch.rateKey,
         priceChanged: true,
-        oldPrice, newPrice,
-        currency: refetch.currency || hotel.currency || 'EUR',
+        oldPrice,
+        newPrice,
+        currency:     refetch.currency || hotel.currency || 'EUR',
       };
     }
 
@@ -1301,39 +1333,38 @@ class BookingService {
 
   async _persistStage(bookingRef, agencyId, pkg, passengerDetails, guestName, guestPhone, guestEmail, channel, stage, flightResult, hotelResult) {
     const transport = pkg.transport || {};
-    const hotel      = pkg.hotel || {};
-    const transfers  = pkg.transfers || {};
-    const summary    = pkg.summary || {};
+    const hotel     = pkg.hotel    || {};
+    const summary   = pkg.summary  || {};
 
     try {
       await supabase.from('bookings').upsert({
-        booking_ref: bookingRef,
-        agency_id: agencyId,
-        guest_name: guestName,
-        guest_phone: guestPhone,
-        guest_email: guestEmail,
-        destination: transport.destination || summary.destination || null,
-        origin: transport.origin || summary.origin || null,
-        nights: summary.nights || 0,
-        passengers: passengerDetails?.length || summary.passengers || 1,
-        passenger_details: passengerDetails || null,
-        total_price: summary.totalPrice || 0,
-        currency: summary.currency || 'KES',
-        status: stage === 'failed' ? 'cancelled' : 'pending',
-        booking_status: stage,
-        booking_stage: stage,
-        payment_status: 'pending',
-        supplier_status: stage,
+        booking_ref:                bookingRef,
+        agency_id:                  agencyId,
+        guest_name:                 guestName,
+        guest_phone:                guestPhone,
+        guest_email:                guestEmail,
+        destination:                transport.destination || summary.destination || null,
+        origin:                     transport.origin      || summary.origin      || null,
+        nights:                     summary.nights        || 0,
+        passengers:                 passengerDetails?.length || summary.passengers || 1,
+        passenger_details:          passengerDetails      || null,
+        total_price:                summary.totalPrice    || 0,
+        currency:                   summary.currency      || 'KES',
+        status:                     stage === 'failed' ? 'cancelled' : 'pending',
+        booking_status:             stage,
+        booking_stage:              stage,
+        payment_status:             'pending',
+        supplier_status:            stage,
         supplier_booking_reference: flightResult?.supplierBookingReference || null,
-        supplier_order_id: flightResult?.orderId || null,
-        hotel_supplier_reference: hotelResult?.supplierBookingReference || null,
-        hotel_rate_key: hotel.rateKey || null,
-        flight_hold_expires_at: transport.expiresAt || null,
-        channel: channel || 'widget',
-        flight_details: pkg.transport || null,
-        hotel_details: hotel || null,
-        transfer_details: pkg.transfers || null,
-        package_snapshot: pkg || null,
+        supplier_order_id:          flightResult?.orderId                   || null,
+        hotel_supplier_reference:   hotelResult?.supplierBookingReference  || null,
+        hotel_rate_key:             hotel.rateKey                          || null,
+        flight_hold_expires_at:     transport.expiresAt                    || null,
+        channel:                    channel                                || 'widget',
+        flight_details:             pkg.transport  || null,
+        hotel_details:              hotel          || null,
+        transfer_details:           pkg.transfers  || null,
+        package_snapshot:           pkg            || null,
       }, { onConflict: 'booking_ref' });
     } catch (err) {
       logger.error('CRITICAL: supplier action succeeded but Supabase persist failed', {
