@@ -1,6 +1,10 @@
-// HOTEL DIRECT ENGINE — v6.2
-// Conversational AI layer: Groq (llama-3.3-70b) handles intent, context, and follow-ups.
-// Supabase layer: rooms, rates, availability, reservations (unchanged).
+// HOTEL DIRECT ENGINE — v6.3
+// Changes from v6.2:
+// - Intent-to-upsell tag mapping: honeymoon/wedding/anniversary/spa/adventure/business/family
+// - Upsells presented AFTER room selection via enrichPackageWithUpsells()
+// - Transfer upsell prompts for pickup location (airport/train/bus)
+// - Multi-property booking: guest selects all rooms first, single checkout at end
+// - Groq system prompt updated to understand wedding, anniversary, celebration intents
 
 const { v4: uuidv4 } = require('uuid');
 const Groq           = require('groq-sdk');
@@ -17,6 +21,32 @@ const MEAL_LABELS = {
   all_inclusive:     'All Inclusive',
 };
 
+// ─────────────────────────────────────────────
+// INTENT → UPSELL TAG MAPPING
+// When a guest says "honeymoon" or "wedding", these tags
+// are used to filter ancillary_services.upsell_tags.
+// Add new intents here as Sarova/JW add more services.
+// ─────────────────────────────────────────────
+const INTENT_UPSELL_MAP = {
+  honeymoon:   ['honeymoon', 'spa', 'wellness', 'romantic'],
+  wedding:     ['honeymoon', 'spa', 'wellness', 'romantic', 'upgrade'],
+  anniversary: ['honeymoon', 'spa', 'wellness', 'romantic'],
+  birthday:    ['upgrade', 'wellness', 'spa'],
+  celebration: ['upgrade', 'wellness', 'spa'],
+  spa:         ['spa', 'wellness'],
+  wellness:    ['spa', 'wellness'],
+  business:    ['business', 'transfer', 'upgrade'],
+  corporate:   ['business', 'transfer', 'upgrade'],
+  family:      ['family', 'adventure'],
+  adventure:   ['adventure'],
+  safari:      ['adventure', 'transfer'],
+  beach:       ['adventure', 'honeymoon'],
+  romantic:    ['honeymoon', 'spa', 'wellness', 'romantic'],
+};
+
+// Transfer categories that need pickup location prompting
+const TRANSFER_CATEGORIES = ['transfer'];
+
 function buildSystemPrompt(group, allProperties) {
   const propList = allProperties.map(p =>
     `- ${p.name} (id: ${p.id}) — ${p.destination || p.location || ''}`
@@ -31,10 +61,23 @@ ${propList}
 YOUR JOB:
 Understand what the guest wants — no matter how they phrase it, across multiple turns — and return a JSON object so the system can search availability.
 
+INTENT DETECTION — detect these special occasions and set preferences accordingly:
+- "honeymoon", "honeymoners" → preferences: ["honeymoon"]
+- "wedding", "just married", "newlyweds" → preferences: ["wedding"]  
+- "anniversary" → preferences: ["anniversary"]
+- "birthday", "birthday trip" → preferences: ["birthday"]
+- "celebration", "special occasion" → preferences: ["celebration"]
+- "spa", "spa getaway", "wellness retreat" → preferences: ["spa"]
+- "business trip", "corporate", "work trip" → preferences: ["business"]
+- "family", "kids", "children" → preferences: ["family"]
+- "adventure", "safari", "hiking" → preferences: ["adventure"]
+- "romantic", "couples", "couple's getaway" → preferences: ["romantic"]
+- Multiple can apply: "honeymoon safari" → preferences: ["honeymoon", "adventure"]
+
 ALWAYS respond with valid JSON in this exact shape:
 {
   "intent": "search" | "refine" | "question" | "clarify" | "manage" | "chitchat",
-  "replyText": "Your warm, natural reply to the guest (1-3 sentences). For search/refine, briefly confirm what you're looking for. For question, answer it from context. For clarify, ask the one missing thing.",
+  "replyText": "Your warm, natural reply to the guest (1-3 sentences). For honeymoon/wedding/anniversary/celebration intents, acknowledge the occasion warmly. For search/refine, briefly confirm what you're looking for. Never list room prices.",
   "searchParams": {
     "legs": [
       {
@@ -45,8 +88,8 @@ ALWAYS respond with valid JSON in this exact shape:
         "nights": <number or null>
       }
     ],
-    "propertyId": "<uuid or null — first leg or single property>",
-    "propertyName": "<name or null — first leg or single property>",
+    "propertyId": "<uuid or null>",
+    "propertyName": "<name or null>",
     "checkIn": "YYYY-MM-DD or null",
     "checkOut": "YYYY-MM-DD or null",
     "nights": <number or null>,
@@ -54,7 +97,7 @@ ALWAYS respond with valid JSON in this exact shape:
     "children": <number or null>,
     "mealPlan": "room_only|bed_and_breakfast|half_board|full_board|all_inclusive or null",
     "budget": "low|mid|luxury or null",
-    "preferences": ["honeymoon","family","business","beach","safari","spa"] or [],
+    "preferences": [] or ["honeymoon","wedding","anniversary","birthday","celebration","spa","wellness","business","corporate","family","adventure","safari","beach","romantic"],
     "shouldSearch": <true if we have enough to search, false if we need more info>
   },
   "clarifyQuestion": "<single question to ask if intent=clarify, else null>"
@@ -63,17 +106,12 @@ ALWAYS respond with valid JSON in this exact shape:
 RULES:
 - Today is ${new Date().toISOString().split('T')[0]}.
 - If the guest says yes, sure, go ahead, sounds good, check it, that works — this is a CONFIRMATION. Use the property and params from the previous assistant message and set shouldSearch=true.
-- If the guest mentions multiple properties or destinations (e.g. "mara and mombasa", "3 nights in X then 2 nights in Y"), populate the "legs" array with one entry per property. Set shouldSearch=true if at least one leg is resolvable. Set top-level propertyId/checkIn to the FIRST leg.
-- If the guest doesn't specify a property but we can infer one from context (e.g. "the beach one", "that lodge"), use it.
-- If the guest refines (e.g. "what about full board?", "do you have suites?", "make it 5 nights", "1 adult and 1 child"), update ONLY the changed fields and keep everything else from context.
+- If the guest mentions multiple properties or destinations, populate the "legs" array. Set shouldSearch=true if at least one leg is resolvable. Set top-level to FIRST leg.
 - If dates are relative ("this weekend", "next Friday", "tomorrow"), resolve them to YYYY-MM-DD.
 - If no check-in is given, default to tomorrow. If no nights, default to 3. If no adults, default to 1.
-- Only set shouldSearch=true when you have at minimum: a clear property match AND checkIn.
-- If the guest asks about a location we don't have a property in, suggest the closest matching property by context (beach request = suggest coastal property) and set shouldSearch=false with a clarifyQuestion asking if they would like to check that property instead.
-- For intent=question (e.g. "what's the cancellation policy?", "is breakfast included?"), answer from conversation context and set shouldSearch=false.
-- For intent=manage (cancel/modify/view booking), set shouldSearch=false — the widget handles this.
-- Keep replyText warm and concise. Never list room prices in replyText — the system renders cards.
-- Never make up room prices or availability — the system fetches live data.`;
+- For honeymoon/wedding: if adults not specified, default to 2.
+- Only set shouldSearch=true when you have: a clear property match AND checkIn.
+- Keep replyText warm. Never list room prices. For special occasions, acknowledge warmly (e.g. "Congratulations on your upcoming wedding! Let me find something perfect for you.").`;
 }
 
 function resolveCheckOut(checkIn, nights) {
@@ -81,6 +119,22 @@ function resolveCheckOut(checkIn, nights) {
   const d = new Date(checkIn);
   d.setDate(d.getDate() + (nights || 3));
   return d.toISOString().split('T')[0];
+}
+
+// ─────────────────────────────────────────────
+// RESOLVE UPSELL TAGS FROM PREFERENCES
+// Takes preferences array from Groq and returns
+// the full set of ancillary tags to surface.
+// ─────────────────────────────────────────────
+function resolveUpsellTags(preferences = []) {
+  const tags = new Set();
+  for (const pref of preferences) {
+    const mapped = INTENT_UPSELL_MAP[pref.toLowerCase()] || [];
+    mapped.forEach(t => tags.add(t));
+  }
+  // Always include transfers and blank-tagged services
+  tags.add('transfer');
+  return [...tags];
 }
 
 class HotelDirectEngine {
@@ -116,7 +170,7 @@ class HotelDirectEngine {
       }
       messages.push({ role: 'user', content: prompt });
 
-      // ── Call Groq ─────────────────────────────────────────────────────
+      // ── Call Groq ──────────────────────────────────────────────────────
       let groqResult;
       try {
         const response = await groq.chat.completions.create({
@@ -140,10 +194,9 @@ class HotelDirectEngine {
 
       const { intent, replyText, searchParams, clarifyQuestion } = groqResult;
 
-      console.log('[HOTEL DIRECT] Groq intent:', intent, '| shouldSearch:', searchParams?.shouldSearch);
-      console.log('[HOTEL DIRECT] Search params:', JSON.stringify(searchParams));
+      logger.info('[HOTEL DIRECT] Groq intent', { intent, shouldSearch: searchParams?.shouldSearch, preferences: searchParams?.preferences });
 
-      // ── Non-search intents ────────────────────────────────────────────
+      // ── Non-search intents ─────────────────────────────────────────────
       if (intent === 'clarify' || !searchParams?.shouldSearch) {
         const msg = clarifyQuestion || replyText || "Could you give me a bit more detail?";
         return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
@@ -155,7 +208,7 @@ class HotelDirectEngine {
           replyText || "How can I help?", []);
       }
 
-      // ── Resolve first/single property ────────────────────────────────
+      // ── Resolve first/single property ──────────────────────────────────
       let property = null;
       if (searchParams.propertyId) {
         property = allProperties.find(p => p.id === searchParams.propertyId) || null;
@@ -167,13 +220,22 @@ class HotelDirectEngine {
         ) || null;
       }
 
-      // ── Build shared tripParams ───────────────────────────────────────
+      // ── Resolve upsell tags from preferences ───────────────────────────
+      const preferences  = searchParams.preferences || [];
+      const upsellTags   = resolveUpsellTags(preferences);
+      const isSpecialOccasion = preferences.some(p =>
+        ['honeymoon','wedding','anniversary','birthday','celebration','romantic'].includes(p)
+      );
+
+      // ── Build shared tripParams ────────────────────────────────────────
       const nights   = searchParams.nights  || 3;
       const checkIn  = searchParams.checkIn || (() => {
         const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0];
       })();
       const checkOut = searchParams.checkOut || resolveCheckOut(checkIn, nights);
-      const adults   = searchParams.adults   || 1;
+
+      // For honeymoon/wedding default to 2 adults if not specified
+      const adults   = searchParams.adults   || (isSpecialOccasion ? 2 : 1);
       const children = searchParams.children || 0;
       const mealPlan = searchParams.mealPlan || null;
       const budget   = searchParams.budget   || 'mid';
@@ -184,14 +246,16 @@ class HotelDirectEngine {
         destination:  property?.destination || property?.location || null,
         nights, adults, passengers: adults, children, childAges: [],
         mealPlan, departureDate: checkIn, returnDate: checkOut,
-        budget, preferences: searchParams.preferences || [],
+        budget, preferences, upsellTags,
+        isSpecialOccasion,
         groupSlug, _originalPrompt: prompt,
       };
 
-      // ── Multi-leg search ──────────────────────────────────────────────
+      // ── Multi-leg search ───────────────────────────────────────────────
       const legs = Array.isArray(searchParams.legs) ? searchParams.legs : [];
       if (legs.length > 1) {
-        const allPackages = [];
+        const allPackages   = [];
+        const legSummaries  = []; // for unified checkout tracking
         let legCheckInCursor = checkIn;
 
         for (const leg of legs) {
@@ -210,7 +274,7 @@ class HotelDirectEngine {
           const legNights   = leg.nights || 3;
           const legCheckIn  = leg.checkIn  || legCheckInCursor;
           const legCheckOut = leg.checkOut || resolveCheckOut(legCheckIn, legNights);
-          legCheckInCursor  = legCheckOut; // next leg starts where this one ends
+          legCheckInCursor  = legCheckOut;
 
           const rooms = await this._searchRooms(legProperty, {
             checkIn: legCheckIn, checkOut: legCheckOut,
@@ -218,34 +282,68 @@ class HotelDirectEngine {
           });
           if (!rooms.length) continue;
 
+          // Fetch ancillaries with upsell tag filtering
           const ancillaries = await this._getAncillaryServices(legProperty.id, {
-            ...tripParams, propertyId: legProperty.id, propertyName: legProperty.name,
+            ...tripParams,
+            propertyId: legProperty.id, propertyName: legProperty.name,
             nights: legNights, departureDate: legCheckIn, returnDate: legCheckOut,
+            upsellTags,
           });
 
+          const legTripParams = {
+            ...tripParams,
+            propertyId: legProperty.id, propertyName: legProperty.name,
+            nights: legNights, departureDate: legCheckIn, returnDate: legCheckOut,
+          };
+
           const legPackages = rooms.slice(0, 12).map(room =>
-            this._buildRoomPackage(room, legProperty, ancillaries, {
-              ...tripParams,
-              propertyId: legProperty.id, propertyName: legProperty.name,
-              nights: legNights, departureDate: legCheckIn, returnDate: legCheckOut,
-            }, group)
+            this._buildRoomPackage(room, legProperty, ancillaries, legTripParams, group)
           );
+
+          // Tag each package with its leg index for unified checkout
+          legPackages.forEach(pkg => {
+            pkg._legIndex    = legSummaries.length;
+            pkg._legProperty = legProperty.name;
+            pkg._requiresLegSelection = true; // flag for widget: collect all legs before checkout
+          });
+
           allPackages.push(...legPackages);
+          legSummaries.push({
+            propertyId:   legProperty.id,
+            propertyName: legProperty.name,
+            checkIn:      legCheckIn,
+            checkOut:     legCheckOut,
+            nights:       legNights,
+          });
         }
 
         if (allPackages.length) {
           const matched = await this._applyPriceMatch(allPackages, groupSlug, checkIn, nights);
-          logger.info('Hotel orchestrate', { groupSlug, packages: matched.length });
-          return this._buildResponse(sessionId, tripParams, conversationHistory,
-            replyText || `Here are options across your requested properties:`, matched);
+          logger.info('Hotel orchestrate multi-leg', { groupSlug, packages: matched.length, legs: legSummaries.length });
+
+          // Build a reply that mentions the occasion if relevant
+          let multiText = replyText || `Here are options across your requested properties:`;
+          if (isSpecialOccasion && !replyText) {
+            const occasion = preferences[0];
+            multiText = `Here are our options across both properties for your ${occasion} — select a room at each property and we'll combine everything into one booking for you:`;
+          } else if (!replyText) {
+            multiText = `Here are options across both properties — select your preferred room at each and we'll handle checkout together at the end:`;
+          }
+
+          return this._buildResponse(sessionId, tripParams, conversationHistory, multiText, matched, {
+            isMultiLeg:   true,
+            legSummaries,
+            legCount:     legSummaries.length,
+            // Widget uses this to know: don't show checkout until all legs have a selection
+            requiresAllLegsSelected: true,
+          });
         }
 
-        // All legs returned no rooms
         return this._buildResponse(sessionId, tripParams, conversationHistory,
           replyText || `Unfortunately I couldn't find availability across those properties for your dates. Would you like to try different dates?`, []);
       }
 
-      // ── Single property fallback ──────────────────────────────────────
+      // ── Single property fallback ───────────────────────────────────────
       if (!property) {
         const propList = allProperties
           .map((p, i) => `${i + 1}. ${p.name} — ${p.destination || p.location || ''}`)
@@ -254,7 +352,7 @@ class HotelDirectEngine {
           `${replyText || "Which of our properties would you like?"}\n\n${propList}`, []);
       }
 
-      // ── Search rooms ──────────────────────────────────────────────────
+      // ── Search rooms ───────────────────────────────────────────────────
       const rooms = await this._searchRooms(property, {
         checkIn, checkOut, nights, adults, children, childAges: [], mealPlan, budget,
       });
@@ -265,16 +363,16 @@ class HotelDirectEngine {
           []);
       }
 
-      const ancillaries    = await this._getAncillaryServices(property.id, tripParams);
+      // Fetch ancillaries with intent-aware upsell tag filtering
+      const ancillaries    = await this._getAncillaryServices(property.id, { ...tripParams, upsellTags });
       const mealPlansFound = new Set(rooms.map(r => r.mealPlan));
       const packages       = rooms.slice(0, 12).map(room =>
         this._buildRoomPackage(room, property, ancillaries, tripParams, group)
       );
 
-      // ── Apply price match silently ────────────────────────────────────
       const matchedPackages = await this._applyPriceMatch(packages, groupSlug, checkIn, nights);
 
-      // ── Build reply text ──────────────────────────────────────────────
+      // ── Build reply text ───────────────────────────────────────────────
       const foundLabels    = [...mealPlansFound].map(m => MEAL_LABELS[m] || m);
       const requestedLabel = mealPlan ? (MEAL_LABELS[mealPlan] || mealPlan) : null;
 
@@ -295,8 +393,12 @@ class HotelDirectEngine {
         }
       }
 
-      logger.info('Hotel orchestrate', { groupSlug, packages: matchedPackages.length });
-      return this._buildResponse(sessionId, tripParams, conversationHistory, text, matchedPackages);
+      logger.info('Hotel orchestrate', { groupSlug, packages: matchedPackages.length, preferences, upsellTags });
+      return this._buildResponse(sessionId, tripParams, conversationHistory, text, matchedPackages, {
+        upsellTags,
+        isSpecialOccasion,
+        preferences,
+      });
 
     } catch (err) {
       logger.error('[HOTEL DIRECT] Engine failure', { error: err.message, stack: err.stack });
@@ -305,7 +407,118 @@ class HotelDirectEngine {
     }
   }
 
-  // ── PRICE MATCH ───────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // POST-SELECTION UPSELL ENRICHMENT
+  // Called by the widget/API AFTER a guest selects a room.
+  // Returns the relevant upsells for that selection,
+  // with transfer services flagged to prompt for pickup location.
+  // ─────────────────────────────────────────────
+  async enrichPackageWithUpsells(packageId, selectedPackage, tripParams) {
+    try {
+      const propertyId = selectedPackage?.hotel?.propertyId;
+      if (!propertyId) return { upsells: [], transferPrompt: null };
+
+      const preferences = tripParams.preferences || [];
+      const upsellTags  = resolveUpsellTags(preferences);
+
+      const ancillaries = await this._getAncillaryServices(propertyId, {
+        ...tripParams,
+        upsellTags,
+      });
+
+      // Separate transfers from other upsells
+      const transfers   = ancillaries.filter(a => TRANSFER_CATEGORIES.includes(a.category));
+      const otherUpsells = ancillaries.filter(a => !TRANSFER_CATEGORIES.includes(a.category));
+
+      // Build transfer prompt if transfers exist
+      const transferPrompt = transfers.length > 0 ? {
+        question: 'Would you like to add an airport transfer?',
+        followUp: 'Where will you be arriving from?',
+        options:  ['Airport', 'Train Station', 'Bus Station', 'CBD / City Centre', 'No transfer needed'],
+        services: transfers.map(t => ({
+          id:          t.id,
+          name:        t.name,
+          price:       t.price,
+          currency:    t.currency,
+          priceBasis:  t.priceBasis,
+          requiresPickupLocation: true,
+        })),
+      } : null;
+
+      logger.info('[HOTEL DIRECT] Upsell enrichment', {
+        propertyId, preferences, upsellCount: otherUpsells.length,
+        hasTransfer: transfers.length > 0,
+      });
+
+      return {
+        upsells: otherUpsells.map(a => ({
+          id:              a.id,
+          name:            a.name,
+          description:     a.description,
+          category:        a.category,
+          price:           a.price,
+          currency:        a.currency,
+          priceBasis:      a.priceBasis,
+          requiresBooking: a.requiresBooking,
+          images:          a.images || [],
+          // Badge for special occasion services
+          badge: this._getUpsellBadge(a, preferences),
+        })),
+        transferPrompt,
+      };
+    } catch (err) {
+      logger.error('[HOTEL DIRECT] enrichPackageWithUpsells failed', { error: err.message });
+      return { upsells: [], transferPrompt: null };
+    }
+  }
+
+  // Badge labels for upsell cards
+  _getUpsellBadge(service, preferences = []) {
+    const tags = service.upsell_tags || service.upsellTags || [];
+    if (preferences.includes('honeymoon') && tags.includes('honeymoon')) return '💍 Perfect for Honeymoons';
+    if (preferences.includes('wedding')   && tags.includes('honeymoon')) return '💒 Wedding Special';
+    if (preferences.includes('anniversary') && tags.includes('honeymoon')) return '🥂 Anniversary Package';
+    if (preferences.includes('business')  && tags.includes('business'))  return '💼 Business Essential';
+    if (preferences.includes('family')    && tags.includes('family'))    return '👨‍👩‍👧 Great for Families';
+    if (preferences.includes('adventure') && tags.includes('adventure')) return '🌿 Adventure Add-on';
+    if (tags.includes('spa') || tags.includes('wellness'))               return '🧖 Wellness';
+    if (tags.includes('upgrade'))                                         return '⭐ Room Upgrade';
+    return null;
+  }
+
+  // ─────────────────────────────────────────────
+  // ANCILLARY SERVICES — intent-aware filtering
+  // ─────────────────────────────────────────────
+  async _getAncillaryServices(propertyId, tripParams) {
+    try {
+      const { data: services } = await supabase
+        .from('ancillary_services').select('*')
+        .eq('property_id', propertyId).eq('is_active', true).order('sort_order');
+      if (!services?.length) return [];
+
+      // Use pre-resolved upsell tags if available, otherwise derive from preferences
+      const activeTags = tripParams.upsellTags ||
+        resolveUpsellTags(tripParams.preferences || []);
+
+      return services.filter(service => {
+        const tags = Array.isArray(service.upsell_tags) ? service.upsell_tags : [];
+
+        // Always include services with no tags (universal upsells like room upgrades)
+        if (tags.length === 0) return true;
+
+        // Always include transfers — prompted separately post-selection
+        if (service.category === 'transfer') return true;
+
+        // Match against resolved upsell tags
+        return tags.some(tag => activeTags.includes(tag));
+      });
+    } catch (err) {
+      logger.warn('[HOTEL DIRECT] Could not fetch ancillary services', { error: err.message });
+      return [];
+    }
+  }
+
+  // ── PRICE MATCH ────────────────────────────────────────────────────────────
   async _applyPriceMatch(packages, groupSlug, checkIn, nights) {
     try {
       const { data: rates } = await supabase
@@ -374,7 +587,7 @@ class HotelDirectEngine {
     }
   }
 
-  // ── ROOM SEARCH ───────────────────────────────────────────────────────────
+  // ── ROOM SEARCH ────────────────────────────────────────────────────────────
   async _searchRooms(property, params) {
     if (property.pms_type === 'opera_cloud') return this._searchRoomsOperaCloud(property, params);
     if (property.pms_type === 'opera_5')     return this._searchRoomsOpera5(property, params);
@@ -403,7 +616,6 @@ class HotelDirectEngine {
         const ratePlans = await this._getRatePlans(roomType.id, checkIn, mealPlan, budget);
         if (!ratePlans.length) continue;
 
-        // Push a result for every rate plan, not just the best one
         for (const ratePlan of ratePlans) {
           const extraAdults = Math.max(0, adults - (ratePlan.base_occupancy || adults));
           const nightsCount = nights || 1;
@@ -479,36 +691,13 @@ class HotelDirectEngine {
     return seasonFiltered;
   }
 
-  async _getAncillaryServices(propertyId, tripParams) {
-    try {
-      const { data: services } = await supabase
-        .from('ancillary_services').select('*')
-        .eq('property_id', propertyId).eq('is_active', true).order('sort_order');
-      if (!services?.length) return [];
-      const tripTags = [
-        ...(tripParams.preferences || []),
-        tripParams.mealPlan ? 'dining' : null,
-        (tripParams.passengers || 1) > 2 ? 'family' : null,
-        tripParams.mealPlan === 'all_inclusive' ? 'wellness' : null,
-      ].filter(Boolean);
-      return services.filter(service => {
-        const tags = Array.isArray(service.upsell_tags) ? service.upsell_tags : [];
-        if (tags.length === 0) return true;
-        if (service.category === 'transfer') return true;
-        return tags.some(tag => tripTags.includes(tag));
-      });
-    } catch (err) {
-      logger.warn('[HOTEL DIRECT] Could not fetch ancillary services', { error: err.message });
-      return [];
-    }
-  }
-
   _buildRoomPackage(room, property, ancillaries, tripParams, group) {
     const nights     = room.nights || 1;
     const passengers = tripParams.passengers || tripParams.adults || 1;
     const currency   = room.currency;
     const cancellationNote = this._formatCancellationNote(room.cancellationPolicy, room.ratePlan);
 
+    // Only count required ancillaries in total (optional ones shown post-selection)
     const ancillaryTotal = ancillaries.filter(a => a.requires_booking).reduce((sum, a) => {
       if (a.price_basis === 'per_person') return sum + (a.price * passengers);
       if (a.price_basis === 'per_night')  return sum + (a.price * nights);
@@ -524,6 +713,8 @@ class HotelDirectEngine {
       isHotelDirect: true,
       groupSlug:     group.slug,
       groupId:       group.id,
+      preferences:   tripParams.preferences || [],
+      isSpecialOccasion: tripParams.isSpecialOccasion || false,
       summary: {
         route: property.destination, nights, passengers, totalPrice,
         roomTotal: room.totalPrice, ancillaryTotal,
@@ -568,11 +759,25 @@ class HotelDirectEngine {
         groupSlug:   group.slug,
       },
       transfers: [],
+      // Ancillaries are passed through for reference but NOT shown until room is selected.
+      // The widget calls enrichPackageWithUpsells() after selection to show these.
       ancillaryServices: ancillaries.map(a => ({
-        id: a.id, name: a.name, description: a.description,
-        category: a.category, price: a.price, currency: a.currency,
-        priceBasis: a.price_basis, requiresBooking: a.requires_booking,
-        images: a.images || [],
+        id:              a.id,
+        name:            a.name,
+        description:     a.description,
+        category:        a.category,
+        price:           a.price,
+        currency:        a.currency,
+        priceBasis:      a.price_basis,
+        requiresBooking: a.requires_booking,
+        images:          a.images || [],
+        upsellTags:      a.upsell_tags || [],
+        badge:           this._getUpsellBadge(a, tripParams.preferences || []),
+        // Transfer services need pickup location before booking
+        requiresPickupLocation: TRANSFER_CATEGORIES.includes(a.category),
+        pickupOptions: TRANSFER_CATEGORIES.includes(a.category)
+          ? ['Airport', 'Train Station', 'Bus Station', 'CBD / City Centre']
+          : null,
       })),
       status: 'available',
     };
