@@ -1029,10 +1029,10 @@ function initWidget() {
       : JSON.stringify({prompt:text,agencyId:'${agencyKey}',channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)});
 
     fetch(endpoint,{method:'POST',headers:hdrs,body:body})
-    .then(function(r){return r.json();})
     .then(function(data){
-      hideTyping();
-      if(data.sessionId)           sessionId           = data.sessionId;
+  hideTyping();
+  console.log('BODRLESS_DEBUG:', JSON.stringify(data, null, 2));
+  if(data.sessionId)           sessionId           = data.sessionId;
       if(data.tripParams)          previousParams      = data.tripParams;
       if(data.conversationHistory) conversationHistory = data.conversationHistory;
 
@@ -1042,7 +1042,8 @@ function initWidget() {
       var isHD = data.isHotelDirect || (pkgs.length > 0 && pkgs[0] && pkgs[0].isHotelDirect);
 
       // ── CLASSIFIED MULTI-LEG TRIP ────────────────────────────────────────
-      if(data.isClassifiedTrip && Array.isArray(data.tripResults)){
+      if(data.isClas.then(function(data){
+sifiedTrip && Array.isArray(data.tripResults)){
         var responseText=data.text||"Here's your trip broken down by leg:";
         var botMsg=addMsg(responseText,'bot');transcript.push({type:'bot',text:responseText});
         var actionableLegs=data.tripResults.filter(function(r){return r.packages&&r.packages.length>0;});
