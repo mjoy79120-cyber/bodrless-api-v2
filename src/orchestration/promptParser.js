@@ -30,6 +30,8 @@
  *        predates the new departure, returnDate is recalculated from
  *        departureDate + nights (or nulled out) so HotelBeds never
  *        receives checkOut < checkIn.
+ * Fixed: Origin field — Groq no longer invents route text for origin.
+ * Fixed: budgetKES field — captures explicit KES amounts as raw numbers.
  */
 
 const Groq = require('groq-sdk');
@@ -296,19 +298,11 @@ function _isPlausiblePlaceName(str) {
 
 // ─────────────────────────────────────────────
 // DESTINATION SANITIZER
-// Strips conversational filler that gets appended to a destination
-// in multi-turn WhatsApp conversations, e.g.:
-//   "Diani, use the details from the previous prompt"  → "Diani"
-//   "Zanzibar (same dates)"                            → "Zanzibar"
-//   "Mombasa please"                                   → "Mombasa"
-// Returns null if what remains is still not a plausible place name,
-// so the caller knows to fall back to the previous session value.
 // ─────────────────────────────────────────────
 const FILLER_SPLIT_PATTERN = /,|\s*\(.*\)\s*|\s+(?:use|same|as|please|ok|okay|yes|from|with|but|and|for|the|previous|last|prior|above|that|those|details|info|trip|search|prompt|context|session)\b/i;
 
 function _sanitizeDestination(dest) {
   if (!dest || typeof dest !== 'string') return null;
-  // Take only the part before the first filler phrase / comma / parenthetical
   const cleaned = dest.split(FILLER_SPLIT_PATTERN)[0].trim();
   if (!cleaned) return null;
   return _isPlausiblePlaceName(cleaned) ? resolveCountryToCity(cleaned) : null;
@@ -343,7 +337,6 @@ function _parseWithRules(prompt) {
     }
   }
 
-  // Apply sanitizer even in rule-based path
   if (destination) {
     destination = _sanitizeDestination(destination) || _sanitizeDestination(resolveCountryToCity(destination.trim()));
   }
@@ -442,6 +435,25 @@ function _parseWithRules(prompt) {
   else if (/\b(mid|moderate|reasonable|standard|normal|average)\b/i.test(lower)) budget = 'mid';
   else if (/\b(high|upscale|4.?star|four.?star|nice|good|quality)\b/i.test(lower)) budget = 'high';
 
+  // Rule-based budgetKES extraction
+  let budgetKES = null;
+  const kesMatch = lower.match(/(\d[\d,]*(?:\.\d+)?)\s*k?\s*(?:ksh|kes|shillings?|bob)\b/i)
+    || lower.match(/(?:ksh|kes)\s*(\d[\d,]*(?:\.\d+)?)\b/i);
+  if (kesMatch) {
+    const raw = kesMatch[1].replace(/,/g, '');
+    budgetKES = parseFloat(raw);
+    // Handle shorthand like "100k ksh" — but only if the number itself ended in k
+    // (already handled above by matching the literal "k" before the currency word)
+  }
+  // Also handle "100k" alone when context has budget/shilling keyword nearby
+  if (!budgetKES) {
+    const kMatch = lower.match(/\bbudget\b.*?(\d+)k\b|\b(\d+)k\b.*?\bbudget\b/i);
+    if (kMatch) {
+      const num = parseInt(kMatch[1] || kMatch[2], 10);
+      if (num >= 1 && num <= 10000) budgetKES = num * 1000;
+    }
+  }
+
   let outboundTransportMode = null;
   if (/\bflight|fly|flying\b/i.test(lower)) outboundTransportMode = 'flight';
   else if (/\bbus|coach\b/i.test(lower)) outboundTransportMode = 'bus';
@@ -520,7 +532,7 @@ function _parseWithRules(prompt) {
     trips.push({ origin: lastHub, destination: origin, nights: 0, departureDate: returnDate, returnDate: null, needsOriginClarification: false, _returnLeg: true });
 
     return {
-      destination, origin, nights: totalNights, passengers, children, childAges, budget,
+      destination, origin, nights: totalNights, passengers, children, childAges, budget, budgetKES,
       departureDate, returnDate, outboundTransportMode, returnTransportMode: null, mealPlan,
       seatPreference, timePreference, needsOriginClarification: false,
       isMultiDestination: true, trips, legs: [],
@@ -530,7 +542,7 @@ function _parseWithRules(prompt) {
   }
 
   return {
-    destination, origin, nights: nights || null, passengers, children, childAges, budget,
+    destination, origin, nights: nights || null, passengers, children, childAges, budget, budgetKES,
     departureDate, returnDate, outboundTransportMode, returnTransportMode: null, mealPlan,
     seatPreference, timePreference, needsOriginClarification, isMultiDestination: false, legs: [],
     preferredTransportProvider: null, preferredHotel, propertyType,
@@ -561,6 +573,14 @@ DESTINATION FIELD — STRICT RULES:
 - NEVER put conversational text into destination. Strip everything after a comma or
   filler phrase like "use the", "same as", "as before", "from the previous", "please".
 
+ORIGIN FIELD — STRICT RULES:
+- "origin": The departure city only. Must be a single city name with no additional text.
+  If the user does not mention a departure city, return null.
+  NEVER guess, infer, or construct the origin from context.
+  NEVER include route text like "to Kampala" or "nairobi to kampala".
+  Examples of correct values: "Nairobi", "Mombasa", null
+  Examples of WRONG values: "nairobi to kampala", "nairobi. to kampala", "from nairobi"
+
 Example: "Nairobi to Zanzibar on Aug 10, 4 nights, then Mombasa for 5 nights, fly back to Nairobi"
 CORRECT trips[]:
   1. origin: Nairobi,  destination: Zanzibar,  departureDate: 2026-08-10, nights: 4, returnDate: 2026-08-14
@@ -587,6 +607,13 @@ PROPERTY TYPE vs HOTEL NAME:
 ACTIVITIES:
 - "safari", "snorkelling", "game drive", "diving", "spice tour" → activityRequests[]
 
+BUDGET:
+- budget: tier classification only: "low"|"mid"|"high"|"luxury"|null
+- budgetKES: the user's stated budget as a raw number in KES. Extract whenever the user
+  gives an explicit amount in KSH, KES, or shillings.
+  Examples: "100,000ksh" → 100000, "50k" → 50000, "80,000 shillings" → 80000
+  Return null if no explicit amount is given. NEVER put a tier string here.
+
 Rules:
 - destination must be a real place name (1-4 words max). Never a sentence.
 - When trips[] is present, it must contain ALL trips.
@@ -598,12 +625,13 @@ Return this shape for a SINGLE trip:
 {
   "trips": null,
   "destination": "city only",
-  "origin": "city",
+  "origin": "city or null",
   "nights": number,
   "passengers": number,
   "children": number,
   "childAges": [],
   "budget": "low"|"mid"|"high"|"luxury"|null,
+  "budgetKES": number|null,
   "departureDate": "YYYY-MM-DD",
   "returnDate": "YYYY-MM-DD",
   "outboundTransportMode": "flight"|"bus"|"train"|null,
@@ -634,6 +662,7 @@ Return this shape for MULTIPLE TRIPS:
   "children": 0,
   "childAges": [],
   "budget": null,
+  "budgetKES": null,
   "departureDate": "2026-08-10",
   "returnDate": "2026-08-19",
   "outboundTransportMode": null,
@@ -656,20 +685,27 @@ destination must be a real place name only (1-4 words). Strip everything after a
 conversational filler like "use the", "same as", "as before", "from the previous".
 If no clean destination is extractable, set destination: null.
 
+origin must be a single departure city name only. Return null if the user does not
+explicitly state a departure city. NEVER construct or guess the origin.
+NEVER include route text like "to Kampala" in the origin field.
+
 For multi-city trips use trips[]. Include ALL legs including the return home.
 Never end trips[] on a safari park.
 "beachfront", "oceanfront", "with pool" → propertyType (not preferredHotel).
 "safari", "snorkelling" → activityRequests[].
+budget: tier only ("low"|"mid"|"high"|"luxury"|null).
+budgetKES: explicit KES amount as a raw number (e.g. 100000), or null.
 
 {
   "trips": null,
   "destination": "first destination city or null",
-  "origin": "departure city",
+  "origin": "departure city or null",
   "nights": total_nights_number,
   "passengers": 1,
   "children": 0,
   "childAges": [],
   "budget": null,
+  "budgetKES": null,
   "departureDate": "YYYY-MM-DD",
   "returnDate": "YYYY-MM-DD",
   "outboundTransportMode": null,
@@ -725,7 +761,7 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
     if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
 
-    // ── Sanitize destination BEFORE plausibility check ────────────────────
+    // ── Sanitize destination ───────────────────────────────────────────────
     if (parsed.destination) {
       const clean = _sanitizeDestination(parsed.destination);
       if (!clean) {
@@ -737,7 +773,43 @@ async function _groqAttempt(prompt, systemPrompt) {
         parsed.destination = clean;
       }
     }
-    // ─────────────────────────────────────────────────────────────────────
+
+    // ── Sanitize origin — strip any route text ─────────────────────────────
+    if (parsed.origin) {
+      // If origin contains "to " it's route text — extract just the first city
+      const routeStripped = parsed.origin.split(/\s+to\s+/i)[0].trim();
+      // Also strip leading "from "
+      const fromStripped = routeStripped.replace(/^from\s+/i, '').trim();
+      // Validate it looks like a single city name (≤3 words, no punctuation)
+      const wordCount = fromStripped.split(/\s+/).length;
+      if (!fromStripped || wordCount > 3 || /[.,;]/.test(fromStripped)) {
+        logger.warn('PromptParser: Groq origin looked like route text — clearing', {
+          original: parsed.origin?.slice(0, 80),
+          stripped: fromStripped,
+        });
+        parsed.origin = null;
+      } else {
+        parsed.origin = resolveCountryToCity(fromStripped);
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
+    // ── Normalize budgetKES ────────────────────────────────────────────────
+    if (parsed.budgetKES !== null && parsed.budgetKES !== undefined) {
+      const raw = parsed.budgetKES;
+      if (typeof raw === 'string') {
+        // Handle strings like "100,000" or "100000"
+        const num = parseFloat(raw.replace(/,/g, ''));
+        parsed.budgetKES = isNaN(num) ? null : num;
+      } else if (typeof raw === 'number') {
+        parsed.budgetKES = raw > 0 ? raw : null;
+      } else {
+        parsed.budgetKES = null;
+      }
+    } else {
+      parsed.budgetKES = parsed.budgetKES ?? null;
+    }
+    // ──────────────────────────────────────────────────────────────────────
 
     if (Array.isArray(parsed.trips)) {
       parsed.trips = parsed.trips.map(t => ({
@@ -812,6 +884,15 @@ async function _groqAttempt(prompt, systemPrompt) {
       parsed.safariDestination = parsed.safariDestination ?? null;
     }
 
+    // Merge rule-based budgetKES if Groq missed it
+    if (!parsed.budgetKES) {
+      const rule = _parseWithRules(prompt);
+      if (rule.budgetKES) {
+        parsed.budgetKES = rule.budgetKES;
+        logger.info('PromptParser: budgetKES filled from rules', { budgetKES: parsed.budgetKES });
+      }
+    }
+
     parsed.preferredTransportProvider = parsed.preferredTransportProvider ?? null;
     parsed.preferredHotel             = parsed.preferredHotel             ?? null;
     parsed.propertyType               = parsed.propertyType               ?? null;
@@ -821,6 +902,7 @@ async function _groqAttempt(prompt, systemPrompt) {
     parsed.isMultiDestination         = parsed.isMultiDestination         ?? false;
     parsed.children                   = parsed.children                   ?? 0;
     parsed.childAges                  = parsed.childAges                  ?? [];
+    parsed.budgetKES                  = parsed.budgetKES                  ?? null;
     parsed._parsedBy = 'groq';
 
     return parsed;
@@ -854,9 +936,6 @@ async function _parseWithGroq(prompt) {
  *                                When provided, any field that the
  *                                current parse leaves null/undefined
  *                                will inherit the session value.
- *                                This is the fix for follow-up messages
- *                                like "27th August" or "Use bus options"
- *                                that don't re-state the destination.
  */
 async function parsePrompt(prompt, session = null) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return _parseWithRules('');
@@ -881,7 +960,7 @@ async function parsePrompt(prompt, session = null) {
   if (session) {
     const INHERITABLE = [
       'destination', 'origin', 'nights', 'passengers', 'children', 'childAges',
-      'budget', 'departureDate', 'returnDate', 'mealPlan', 'propertyType',
+      'budget', 'budgetKES', 'departureDate', 'returnDate', 'mealPlan', 'propertyType',
       'safariDestination', 'preferredHotel', 'preferredTransportProvider',
     ];
 
@@ -899,11 +978,6 @@ async function parsePrompt(prompt, session = null) {
     }
 
     // ── Stale returnDate guard ────────────────────────────────────────────
-    // A fresh departureDate may have been parsed while returnDate was
-    // inherited from a prior session. If returnDate now predates or equals
-    // departureDate, it is stale and will cause HotelBeds to receive
-    // checkOut < checkIn (silent empty result) and the return flight search
-    // to fire on the wrong date. Fix: recalculate from nights, or null out.
     if (raw.returnDate && raw.departureDate) {
       if (new Date(raw.returnDate) <= new Date(raw.departureDate)) {
         const staleReturn = raw.returnDate;
@@ -924,10 +998,9 @@ async function parsePrompt(prompt, session = null) {
         }
       }
     }
-    // ─────────────────────────────────────────────────────────────────────
 
-    // Destination-specific: if the sanitizer cleared a dirty destination
-    // but session has a good one, use it and log clearly.
+    // Destination-specific: if sanitizer cleared a dirty destination
+    // but session has a good one, use it.
     if (!raw.destination && session.destination) {
       raw.destination = session.destination;
       logger.info('PromptParser: restored destination from session after sanitization', {

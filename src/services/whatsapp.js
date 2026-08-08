@@ -166,7 +166,7 @@ class WhatsAppService {
     // ── Cards in reverse order ───────────────────────────────
     // Send highest-numbered option first so Option 1 lands last
     // (most recent) at the bottom of the traveler's screen.
-    for (let i = packages.length - 1; i >= 0; i--) {
+    for (let i = 0; i < packages.length; i++) {
       const pkg = packages[i];
       if (pkg.isMultiDestination) {
         await this._sendItineraryCard(phoneNumberId, to, pkg);
