@@ -28,7 +28,7 @@
  *   a package is held) — patch in place or re-search
  * → Origin clarification resume — if previous turn set
  *   needsOriginClarification: true, the next message is treated
- *   as the origin answer and re-runs orchestration with it patched in
+ *   as the origin answer — params patched directly, Groq bypassed
  * → Normal orchestration with durable conversation memory
  *   → if result.isClassifiedTrip → start leg flow, present leg 1
  *   → otherwise → send packages normally
@@ -328,23 +328,19 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── LOAD CONVERSATION CONTEXT ──────────────────────────
-    // Loaded here so it's available for both the clarification
-    // resume block and the mid-conversation modify block below.
     const memCtx = await conversationMemory.getConversationContext(from, agencyId);
 
     // ── ORIGIN CLARIFICATION RESUME ───────────────────────
     // If the previous turn asked "which city are you departing from?"
     // (needsOriginClarification: true), the user's next short reply
-    // is the origin answer — patch it into previousParams and
-    // re-run orchestration instead of treating it as a fresh search.
+    // is the origin answer — patch it directly into previousParams and
+    // skip Groq entirely. Do NOT reconstruct a prompt string.
     if (
       memCtx.previousParams?.needsOriginClarification &&
       !memCtx.previousParams?.origin
     ) {
       const candidateOrigin = prompt.trim();
 
-      // Only treat as a place name if it's short and doesn't look
-      // like a full trip prompt (nights, "to X", dates etc.)
       const looksLikePlace =
         candidateOrigin.split(/\s+/).length <= 3 &&
         !/\d+\s*nights?\b/i.test(candidateOrigin) &&
@@ -360,23 +356,22 @@ router.post('/whatsapp', async (req, res) => {
 
         await whatsappService.sendText(phoneNumberId, from, _pickAcknowledgment());
 
-        // Reconstruct a clean prompt so the parser has full context
-        const resumePrompt = memCtx.previousParams.destination
-          ? `${candidateOrigin} to ${memCtx.previousParams.destination}`
-          : candidateOrigin;
+        // ✅ Patch params directly — do NOT reconstruct a prompt or call Groq
+        const resumedParams = {
+          ...memCtx.previousParams,
+          origin:                   candidateOrigin.replace(/\.$/, '').trim(),
+          needsOriginClarification: false,
+        };
 
         const result = await orchestrationEngine.orchestrate(
-          resumePrompt,
+          null,        // no prompt — params are already complete
           agencyId,
           {
             conversationHistory: memCtx.conversationHistory,
-            previousParams: {
-              ...memCtx.previousParams,
-              origin:                   candidateOrigin,
-              needsOriginClarification: false,
-            },
-            channel: 'whatsapp',
-            phone:   from,
+            previousParams:      resumedParams,
+            skipParsing:         true,  // tells engine to bypass Groq
+            channel:             'whatsapp',
+            phone:               from,
           }
         );
 
@@ -594,7 +589,7 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
 
   const selectionMatch = trimmed.match(/^(?:option\s*)?([1-4])$/i);
   if (selectionMatch) {
-    const optionNum      = parseInt(selectionMatch[1], 10);
+    const optionNum       = parseInt(selectionMatch[1], 10);
     const selectedPackage = currentLeg.packages[optionNum - 1];
 
     if (!selectedPackage) {

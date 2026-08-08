@@ -9,6 +9,9 @@ const tracking = require("../services/trackingService");
 const travelerIntelligence = require("../services/travelerIntelligence");
 const tripMonitoringService = require("../services/tripMonitoringService");
 
+// CHANGE 1 — cachedSearch import
+const cachedSearch = require('./cachedSearch');
+
 // ── Route Learning (Waze layer) ───────────────────────────────────────────────
 // Loaded with graceful fallback so a missing file never crashes the engine.
 let routeLearning = null;
@@ -79,7 +82,7 @@ class OrchestrationEngine {
   // ─────────────────────────────
   async orchestrate(prompt, agencyId, context = {}) {
     const sessionId = uuidv4();
-    const { conversationHistory = [], previousParams = null } = context;
+    const { conversationHistory = [], previousParams = null, skipParsing = false } = context;
 
     logger.info(`[${sessionId}] Started`, { agencyId, prompt });
 
@@ -101,6 +104,27 @@ class OrchestrationEngine {
     }
 
     try {
+      // ── SKIP PARSING: origin was just clarified, params are complete ──────
+      if (skipParsing && previousParams) {
+        const tripParams = { ...previousParams, agencyId };
+        const intent = {
+          isFollowUp:          false,
+          adjustments:         {},
+          productScope:        previousParams._pendingProductScope ||
+                               { needsTransport: true, needsHotel: true, needsTransfers: true },
+          wantsCheapest:       false,
+          wantsAffordableSort: false,
+          wantsSuggestDates:   false,
+        };
+        logger.info('Engine: skipParsing=true — using patched params directly', {
+          origin:      tripParams.origin,
+          destination: tripParams.destination,
+        });
+        return await this._continueOrchestration(
+          tripParams, agencyId, '', conversationHistory, sessionId, intent, context.channel, context.phone
+        );
+      }
+
       if (previousParams?._awaitingClarification) {
         return await this._resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, context.channel, context.phone);
       }
@@ -223,6 +247,10 @@ class OrchestrationEngine {
 
       console.log("INTENT:", intent);
       console.log("PARSED TRIP PARAMS:", tripParams);
+
+      // CHANGE 5 — inject _channel and _sendWhatsApp into tripParams
+      tripParams._channel      = context.channel || 'widget';
+      tripParams._sendWhatsApp = context.sendWhatsApp || null;
 
       return await this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, context.channel, context.phone);
 
@@ -1400,14 +1428,21 @@ class OrchestrationEngine {
     return { from: fromStop.destination, to: toStop.destination, transport: legFromHub || null, connectsVia: hubOrigin, bufferNight: false, connectingLegBookable: !!_legToHub };
   }
 
+  // CHANGE 2 — _searchCheapestDirect now uses cachedSearch.flights
   async _searchCheapestDirect(fromCity, toCity, date, tripParams) {
-    if (!supplierAdapter || !date) return null;
+    if (!date) return null;
     try {
-      const results = await this._withTimeout(
-        supplierAdapter.searchTransport({ origin: fromCity, destination: toCity, date, passengers: tripParams.passengers || 1, transportMode: 'flight', timePreference: tripParams.timePreference, children: tripParams.children || 0, childAges: Array.isArray(tripParams.childAges) ? tripParams.childAges : [] }),
-        [],
-        `transition ${fromCity}->${toCity}`
-      );
+      const params = {
+        origin:        fromCity,
+        destination:   toCity,
+        departureDate: date,
+        passengers:    tripParams.passengers || 1,
+        cabinClass:    tripParams.cabinClass || 'economy',
+        tripType:      'one_way',
+        channel:       'engine',
+      };
+      const result = await cachedSearch.flights(params, null);
+      const results = result.results || [];
       return this._pickCheapest(this._dedupeEquivalentFlights(results), r => r.price);
     } catch (err) {
       logger.error('MultiDest: transition search failed', { from: fromCity, to: toCity, error: err.message });
@@ -1661,6 +1696,9 @@ class OrchestrationEngine {
 
   async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone = null) {
     tripParams.agencyId = agencyId;
+
+    // Defensive: ensure _channel always set for internal calls that bypass orchestrate()
+    if (!tripParams._channel) tripParams._channel = channel || 'widget';
 
     // ── SAFARI LEG INJECTION ──────────────────────────────────────────────
     // If the parser detected a safari request, add the game reserve as a
@@ -2042,13 +2080,33 @@ class OrchestrationEngine {
     if (passMatch) adjustments.passengers = parseInt(passMatch[1]);
 
     let newDestination = null;
-    const insteadMatch = lower.match(/\b(?:let'?s do|do|go to|make it|change (?:it|that) to|switch to)\s+([a-z\s]{2,30}?)\s+instead\b/i)
-      || lower.match(/\binstead\s+(?:of\s+[a-z\s]{2,30}?,?\s*)?(?:let'?s do|do|go to|make it)\s+([a-z\s]{2,30}?)(?:\s*[.,]|$)/i)
-      || lower.match(/\bactually,?\s+(?:let'?s do|do|go to|make it)\s+([a-z\s]{2,30}?)(?:\s+instead)?(?:\s*[.,]|$)/i);
-    if (insteadMatch && insteadMatch[1]) {
+
+    const insteadMatch =
+      lower.match(/\b(?:let'?s do|do|go to|make it|change (?:it|that) to|switch to)\s+([a-z\s]{2,30}?)\s+instead\b/i) ||
+      lower.match(/\binstead\s+(?:of\s+[a-z\s]{2,30}?,?\s*)?(?:let'?s do|do|go to|make it)\s+([a-z\s]{2,30}?)(?:\s*[.,]|$)/i) ||
+      lower.match(/\bactually,?\s+(?:let'?s do|do|go to|make it)\s+([a-z\s]{2,30}?)(?:\s+instead)?(?:\s*[.,]|$)/i);
+
+    if (insteadMatch?.[1]) {
       const candidate = insteadMatch[1].trim();
-      if (candidate.length >= 3 && !/^(that|this|it|there|here)$/i.test(candidate)) newDestination = candidate;
+      if (candidate.length >= 3 && !/^(that|this|it|there|here)$/i.test(candidate)) {
+        newDestination = candidate;
+      }
     }
+
+    // NEW: "what if I go to Zanzibar" / "what about Zanzibar" patterns
+    if (!newDestination) {
+      const whatIfMatch =
+        lower.match(/\bwhat\s+(?:if|about)\s+(?:i\s+)?(?:go(?:es)?|travel(?:(?:l)ed)?|went|fly|flew|do|did|visit(?:ed)?)?\s*(?:to\s+)?([a-z][a-z\s]{1,25}?)(?:\s+(?:instead|on the same|with the same|\?|$))/i) ||
+        lower.match(/\bwhat\s+(?:if|about)\s+([a-z][a-z\s]{1,25}?)(?:\s*\?|$)/i);
+
+      if (whatIfMatch?.[1]) {
+        const candidate = whatIfMatch[1].trim().replace(/\s+(instead|on the same dates?|with the same dates?)$/i, '').trim();
+        if (candidate.length >= 3 && !/^(i|we|the|a|an|that|this|it|there|here|my|our|same|different)$/i.test(candidate)) {
+          newDestination = candidate;
+        }
+      }
+    }
+
     if (newDestination) adjustments.destination = newDestination;
 
     const wantsSuggestDates = /\b(suggest|recommend|propose|what|any good)\s+(dates?|times?|days?)\b/i.test(lower)
@@ -2155,18 +2213,41 @@ class OrchestrationEngine {
       console.log(`[FLIGHT FALLBACK] No date for ${leg} — using ${searchDate}`);
     }
 
+    // CHANGE 3 — replaced supplierAdapter.searchTransport with cachedSearch.flights
     const results = [];
-    if (supplierAdapter && searchDate) {
+    if (searchDate) {
       try {
-        const liveFlights = await this._withTimeout(
-          supplierAdapter.searchTransport({ origin: searchOrigin, destination: searchDestination, date: searchDate, passengers: tripParams.passengers || 1, transportMode: 'flight', timePreference: tripParams.timePreference, children: tripParams.children || 0, childAges: Array.isArray(tripParams.childAges) ? tripParams.childAges : [] }),
-          [],
-          `flight ${leg} ${searchOrigin}->${searchDestination}`
-        );
-        console.log(`TRAVELDUQA FLIGHTS (${leg}):`, liveFlights.length);
+        const flightParams = {
+          origin:        searchOrigin,
+          destination:   searchDestination,
+          departureDate: searchDate,
+          returnDate:    null,
+          passengers:    tripParams.passengers || 1,
+          cabinClass:    tripParams.cabinClass || tripParams.transportClass || 'economy',
+          tripType:      'one_way',
+          timePreference: tripParams.timePreference || null,
+          children:      tripParams.children || 0,
+          childAges:     Array.isArray(tripParams.childAges) ? tripParams.childAges : [],
+          channel:       tripParams._channel || 'engine',
+        };
+
+        const sendFn = (tripParams._channel === 'whatsapp' && tripParams._sendWhatsApp)
+          ? tripParams._sendWhatsApp
+          : null;
+
+        const cacheResult = await cachedSearch.flights(flightParams, sendFn);
+        const liveFlights = cacheResult.results || [];
+
+        logger.info(`CachedSearch flights (${leg})`, {
+          route:     `${searchOrigin}->${searchDestination}`,
+          count:     liveFlights.length,
+          fromCache: cacheResult.fromCache,
+          cacheAge:  cacheResult.cacheAge,
+        });
+
         results.push(...(hubLanding ? liveFlights.map(f => ({ ...f, hubLanding })) : liveFlights));
       } catch (err) {
-        logger.error(`TravelDuqa flight search failed (${leg})`, { error: err.message });
+        logger.error(`Flight search failed (${leg})`, { error: err.message });
       }
     }
 
@@ -2224,18 +2305,35 @@ class OrchestrationEngine {
     const iabiriSearchOrigin      = busSearchAs && leg === 'return' ? busSearchAs : searchOrigin;
     const iabiriSearchDestination = busSearchAs && leg !== 'return' ? busSearchAs : searchDestination;
 
+    // CHANGE 6 — replaced supplierAdapter bus call with cachedSearch.buses
     try {
-      const buses = await this._withTimeout(
-        supplierAdapter.searchTransport({ origin: iabiriSearchOrigin, destination: iabiriSearchDestination, date: searchDate, passengers: tripParams.passengers, transportMode: 'bus', timePreference: tripParams.timePreference }),
-        [],
-        `bus ${leg} ${iabiriSearchOrigin}->${iabiriSearchDestination}`
-      );
-      console.log(`IABIRI BUSES (${leg}):`, buses.length);
+      const busParams = {
+        origin:        iabiriSearchOrigin,
+        destination:   iabiriSearchDestination,
+        date:          searchDate,
+        passengers:    tripParams.passengers || 1,
+        timePreference: tripParams.timePreference || null,
+        channel:       tripParams._channel || 'engine',
+      };
+
+      const sendFn = (tripParams._channel === 'whatsapp' && tripParams._sendWhatsApp)
+        ? tripParams._sendWhatsApp
+        : null;
+
+      const cacheResult = await cachedSearch.buses(busParams, sendFn);
+      const buses       = cacheResult.results || [];
+
+      logger.info(`CachedSearch buses (${leg})`, {
+        route:     `${iabiriSearchOrigin}->${iabiriSearchDestination}`,
+        count:     buses.length,
+        fromCache: cacheResult.fromCache,
+      });
+
       return buses.map(bus => ({
         supplier: bus.supplier || 'iabiri', transportType: 'bus', tripId: bus.tripId, busId: bus.busId, routeId: bus.routeId, token: bus.token, sourceCityId: bus.sourceCityId, destCityId: bus.destCityId, airline: bus.provider, provider: bus.provider, busType: bus.busType, departureTime: bus.departureTime, arrivalTime: bus.arrivalTime, duration: bus.duration,
         origin:      busSearchAs ? this._titleCase(leg === 'return' ? tripParams.destination : tripParams.origin) : bus.origin,
         destination: busSearchAs ? this._titleCase(leg === 'return' ? tripParams.origin : tripParams.destination) : bus.destination,
-        routeNote:   busSearchAs ? `This service runs ${this._titleCase(tripParams.origin)} \u2194 ${this._titleCase(busSearchAs)} and stops at ${this._titleCase(tripParams.destination)} along the way \u2014 request that ${leg === 'return' ? 'boarding' : 'drop-off'} point when you book.` : null,
+        routeNote:   busSearchAs ? `This service runs ${this._titleCase(tripParams.origin)} ↔ ${this._titleCase(busSearchAs)} and stops at ${this._titleCase(tripParams.destination)} along the way — request that ${leg === 'return' ? 'boarding' : 'drop-off'} point when you book.` : null,
         price: bus.price, currency: bus.currency || 'KES', availableSeats: bus.availableSeats, totalSeats: bus.totalSeats, amenities: bus.amenities || [], cancellationPolicy: bus.cancellationPolicy || 'Non-refundable', isDelayed: bus.isDelayed || false,
       }));
     } catch (err) {
@@ -2340,24 +2438,49 @@ class OrchestrationEngine {
       console.log(`[HOTEL FALLBACK] No departureDate — using ${checkIn}`);
     }
 
-    if (supplierAdapter) {
-      try {
-        const nights   = tripParams.nights || 1;
-        const checkOut = tripParams.returnDate || this._addDaysStr(checkIn, nights);
-        const liveHotels = await this._withTimeout(
-          supplierAdapter.searchHotels({ destination: tripParams.destination, checkIn, checkOut, passengers: tripParams.passengers || 1, adults: tripParams.adults != null ? tripParams.adults : (tripParams.passengers || 1), children: tripParams.children || 0, childAges: Array.isArray(tripParams.childAges) ? tripParams.childAges : [], nights, budget: tripParams.budget, rooms: tripParams.rooms || 1, roomType: tripParams.roomType || null }),
-          [],
-          `hotels ${tripParams.destination}`
-        );
-        console.log("HOTELBEDS HOTELS (engine):", liveHotels.length);
-        results.push(...liveHotels);
-      } catch (err) {
-        logger.error('HotelBeds hotel search failed', { error: err.message });
-      }
+    // CHANGE 4 — replaced supplierAdapter.searchHotels with cachedSearch.hotels
+    try {
+      const nights   = tripParams.nights || 1;
+      const checkOut = tripParams.returnDate || this._addDaysStr(checkIn, nights);
+
+      const hotelParams = {
+        destination: tripParams.destination,
+        checkIn,
+        checkOut,
+        nights,
+        adults:     tripParams.adults != null ? tripParams.adults : (tripParams.passengers || 1),
+        children:   tripParams.children || 0,
+        childAges:  Array.isArray(tripParams.childAges) ? tripParams.childAges : [],
+        passengers: tripParams.passengers || 1,
+        budget:     tripParams.budget     || null,
+        rooms:      tripParams.rooms      || 1,
+        roomType:   tripParams.roomType   || null,
+        channel:    tripParams._channel   || 'engine',
+      };
+
+      const sendFn = (tripParams._channel === 'whatsapp' && tripParams._sendWhatsApp)
+        ? tripParams._sendWhatsApp
+        : null;
+
+      const cacheResult = await cachedSearch.hotels(hotelParams, sendFn);
+      const liveHotels  = cacheResult.results || [];
+
+      logger.info('CachedSearch hotels', {
+        destination: tripParams.destination,
+        count:       liveHotels.length,
+        fromCache:   cacheResult.fromCache,
+        cacheAge:    cacheResult.cacheAge,
+      });
+
+      results.push(...liveHotels);
+    } catch (err) {
+      logger.error('Hotel search failed', { error: err.message });
     }
 
     let finalHotels = results;
-    if (tripParams.budget) finalHotels = await this._filterHotelsByBudget(finalHotels, tripParams.budget);
+    if (tripParams.budget || tripParams.budgetKES) {
+      finalHotels = await this._filterHotelsByBudget(finalHotels, tripParams.budget, tripParams.budgetKES);
+    }
 
     // Property type filter — "beachfront", "lodge", "tented camp" etc.
     // This is a soft filter: only applied if it narrows the list, never wipes it.
@@ -2380,7 +2503,25 @@ class OrchestrationEngine {
     return finalHotels;
   }
 
-  async _filterHotelsByBudget(hotels, budget) {
+  async _filterHotelsByBudget(hotels, budget, budgetKES = null) {
+    // If user gave an explicit KES amount, use it as the ceiling
+    if (budgetKES && budgetKES > 0) {
+      const hotelCeiling = Math.round(budgetKES * 0.6);
+      const withKESPrice = await Promise.all(hotels.map(async h => {
+        const rawPrice = Number(h.pricePerNight ?? h.price_per_night ?? h.price ?? 0);
+        const kesPrice = await toKES(rawPrice, h.currency || 'KES');
+        return { hotel: h, kesPrice };
+      }));
+      const filtered = withKESPrice
+        .filter(({ kesPrice }) => kesPrice <= hotelCeiling)
+        .map(({ hotel }) => hotel);
+      logger.info('_filterHotelsByBudget: budgetKES ceiling applied', {
+        budgetKES, hotelCeiling, before: hotels.length, after: filtered.length,
+      });
+      return filtered.length > 0 ? filtered : hotels;
+    }
+
+    // Existing tier logic — keep exactly as-is below this line
     const ranges = { low: { min: 0, max: 8000 }, mid: { min: 5000, max: 20000 }, high: { min: 15000, max: 50000 }, luxury: { min: 40000, max: 9999999 } };
     const range = ranges[budget];
     if (!range) return hotels;
