@@ -91,25 +91,24 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) {
-  // ... existing code
-  return;
-}
-
-// TEMP: log full value to diagnose from field
-logger.info('Webhook: full value dump', {
-  value: JSON.stringify(body.entry[0].changes[0].value).slice(0, 1000),
-});
+    // TEMP: log full value to diagnose from field
+    logger.info('Webhook: full value dump', {
+      value: JSON.stringify(body?.entry?.[0]?.changes?.[0]?.value).slice(0, 1000),
+    });
 
     const message       = body.entry[0].changes[0].value.messages[0];
     const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
 
     // ── GUARD: resolve sender phone ────────────────────────
-    // Primary: message.from
+    // Primary: message.from (Cloud API standard)
+    // Fallback: message.from_user_id (Business API / some BSP payloads)
     // Fallback: contacts[0].wa_id (system messages, number changes)
-    const from = message.from
+    const rawFrom = message.from
+      || message.from_user_id
       || body.entry[0].changes[0].value?.contacts?.[0]?.wa_id
       || null;
+
+    const from = _normalizePhone(rawFrom);
 
     if (!from) {
       logger.warn('Webhook: message has no from — ignoring', {
@@ -190,7 +189,7 @@ logger.info('Webhook: full value dump', {
     }
 
     // ── AWAITING NAME ──────────────────────────────────────
-    if (contact.awaiting_name) {
+    if (contact.awaitting_name) {
       const extractedName = _extractName(prompt);
       if (extractedName) {
         await _saveContactName(from, extractedName);
@@ -865,6 +864,17 @@ async function _clearAwaitingName(phone) {
     .update({ awaiting_name: false, updated_at: new Date().toISOString() })
     .eq('phone', phone);
   if (error) logger.error('whatsapp_contacts awaiting_name clear failed', { error: error.message, phone });
+}
+
+function _normalizePhone(raw) {
+  if (!raw) return null;
+  // Strip country-code prefixes like "KE.", "UG.", "TZ." that some BSPs attach
+  let cleaned = raw.replace(/^[A-Z]{2}\./, '');
+  // Ensure it starts with + if it looks like a full international number
+  if (/^\d{10,15}$/.test(cleaned) && !cleaned.startsWith('+')) {
+    return '+' + cleaned;
+  }
+  return cleaned;
 }
 
 function _titleCase(str) {
