@@ -491,4 +491,11 @@ setTimeout(async () => {
   catch (err) { logger.error('[Startup scraper] Error:', { error: err.message }); }
 }, 10000);
 
+// Run once on startup after 10 seconds
+// setTimeout(async () => {
+//   logger.info('[Startup] Running initial rate scrape...');
+//   try { await runScraper(); }
+//   catch (err) { logger.error('[Startup scraper] Error:', { error: err.message }); }
+// }, 10000);
+
 module.exports = app;
