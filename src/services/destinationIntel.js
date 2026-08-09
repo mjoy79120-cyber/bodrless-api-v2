@@ -51,6 +51,28 @@ function _cityOverride(name, iata, { transferFrom = null, transferKm = null } = 
 }
 
 // ─────────────────────────────────────────────
+// ALLOWED DESTINATION TYPES
+// Must match the destination_intel_destination_type_check constraint
+// ─────────────────────────────────────────────
+const ALLOWED_DESTINATION_TYPES = new Set([
+  'city', 'town', 'landmark', 'park', 'island',
+  'region', 'airstrip_destination', 'country',
+]);
+
+function _normalizeDestinationType(raw) {
+  if (!raw) return 'city';
+  const lower = String(raw).toLowerCase().trim();
+  if (ALLOWED_DESTINATION_TYPES.has(lower)) return lower;
+  // Common Groq aliases → safe fallbacks
+  if (lower === 'nation' || lower === 'state' || lower === 'territory') return 'country';
+  if (lower === 'village' || lower === 'district' || lower === 'suburb') return 'town';
+  if (lower === 'beach' || lower === 'resort' || lower === 'bay')        return 'landmark';
+  if (lower === 'national park' || lower === 'game reserve')             return 'park';
+  logger.warn('DestinationIntel: unknown destinationType — defaulting to city', { raw });
+  return 'city';
+}
+
+// ─────────────────────────────────────────────
 // STATIC CORRIDOR OVERRIDES
 // Hand-verified, never go to Groq for these.
 // ─────────────────────────────────────────────
@@ -225,6 +247,12 @@ STATIC_DESTINATION_OVERRIDES['zagreb']        = _cityOverride('zagreb',        '
 STATIC_DESTINATION_OVERRIDES['reykjavik']     = _cityOverride('reykjavik',     'KEF');
 
 // ── Asia ──────────────────────────────────────
+STATIC_DESTINATION_OVERRIDES['malaysia']      = _cityOverride('malaysia',      'KUL');
+STATIC_DESTINATION_OVERRIDES['kuala lumpur']  = _cityOverride('kuala lumpur',  'KUL');
+STATIC_DESTINATION_OVERRIDES['penang']        = _cityOverride('penang',        'PEN');
+STATIC_DESTINATION_OVERRIDES['langkawi']      = _cityOverride('langkawi',      'LGK');
+STATIC_DESTINATION_OVERRIDES['kota kinabalu'] = _cityOverride('kota kinabalu', 'BKI');
+STATIC_DESTINATION_OVERRIDES['johor bahru']   = _cityOverride('johor bahru',   'JHB');
 STATIC_DESTINATION_OVERRIDES['bali']          = _cityOverride('bali',          'DPS');
 STATIC_DESTINATION_OVERRIDES['ubud']          = _cityOverride('ubud',          'DPS', { transferFrom: 'bali',          transferKm: 75 });
 STATIC_DESTINATION_OVERRIDES['seminyak']      = _cityOverride('seminyak',      'DPS', { transferFrom: 'bali',          transferKm: 10 });
@@ -234,12 +262,14 @@ STATIC_DESTINATION_OVERRIDES['koh samui']     = _cityOverride('koh samui',     '
 STATIC_DESTINATION_OVERRIDES['krabi']         = _cityOverride('krabi',         'KBV');
 STATIC_DESTINATION_OVERRIDES['chiang mai']    = _cityOverride('chiang mai',    'CNX');
 STATIC_DESTINATION_OVERRIDES['bangkok']       = _cityOverride('bangkok',       'BKK');
+STATIC_DESTINATION_OVERRIDES['thailand']      = _cityOverride('thailand',      'BKK');
 STATIC_DESTINATION_OVERRIDES['singapore']     = _cityOverride('singapore',     'SIN');
-STATIC_DESTINATION_OVERRIDES['kuala lumpur']  = _cityOverride('kuala lumpur',  'KUL');
 STATIC_DESTINATION_OVERRIDES['delhi']         = _cityOverride('delhi',         'DEL');
+STATIC_DESTINATION_OVERRIDES['india']         = _cityOverride('india',         'DEL');
 STATIC_DESTINATION_OVERRIDES['mumbai']        = _cityOverride('mumbai',        'BOM');
 STATIC_DESTINATION_OVERRIDES['goa']           = _cityOverride('goa',           'GOI');
 STATIC_DESTINATION_OVERRIDES['kathmandu']     = _cityOverride('kathmandu',     'KTM');
+STATIC_DESTINATION_OVERRIDES['nepal']         = _cityOverride('nepal',         'KTM');
 STATIC_DESTINATION_OVERRIDES['colombo']       = _cityOverride('colombo',       'CMB');
 STATIC_DESTINATION_OVERRIDES['sri lanka']     = _cityOverride('sri lanka',     'CMB');
 STATIC_DESTINATION_OVERRIDES['dhaka']         = _cityOverride('dhaka',         'DAC');
@@ -247,50 +277,67 @@ STATIC_DESTINATION_OVERRIDES['karachi']       = _cityOverride('karachi',       '
 STATIC_DESTINATION_OVERRIDES['lahore']        = _cityOverride('lahore',        'LHE');
 STATIC_DESTINATION_OVERRIDES['islamabad']     = _cityOverride('islamabad',     'ISB');
 STATIC_DESTINATION_OVERRIDES['tokyo']         = _cityOverride('tokyo',         'TYO');
+STATIC_DESTINATION_OVERRIDES['japan']         = _cityOverride('japan',         'TYO');
 STATIC_DESTINATION_OVERRIDES['osaka']         = _cityOverride('osaka',         'KIX');
 STATIC_DESTINATION_OVERRIDES['beijing']       = _cityOverride('beijing',       'PEK');
+STATIC_DESTINATION_OVERRIDES['china']         = _cityOverride('china',         'PEK');
 STATIC_DESTINATION_OVERRIDES['shanghai']      = _cityOverride('shanghai',      'PVG');
 STATIC_DESTINATION_OVERRIDES['hong kong']     = _cityOverride('hong kong',     'HKG');
 STATIC_DESTINATION_OVERRIDES['seoul']         = _cityOverride('seoul',         'ICN');
+STATIC_DESTINATION_OVERRIDES['south korea']   = _cityOverride('south korea',   'ICN');
 STATIC_DESTINATION_OVERRIDES['manila']        = _cityOverride('manila',        'MNL');
+STATIC_DESTINATION_OVERRIDES['philippines']   = _cityOverride('philippines',   'MNL');
 STATIC_DESTINATION_OVERRIDES['ho chi minh']   = _cityOverride('ho chi minh',   'SGN');
 STATIC_DESTINATION_OVERRIDES['saigon']        = STATIC_DESTINATION_OVERRIDES['ho chi minh'];
+STATIC_DESTINATION_OVERRIDES['vietnam']       = _cityOverride('vietnam',       'SGN');
 STATIC_DESTINATION_OVERRIDES['hanoi']         = _cityOverride('hanoi',         'HAN');
 STATIC_DESTINATION_OVERRIDES['hoi an']        = _cityOverride('hoi an',        'DAD', { transferFrom: 'da nang',       transferKm: 30 });
 STATIC_DESTINATION_OVERRIDES['ha long bay']   = _cityOverride('ha long bay',   'HAN', { transferFrom: 'hanoi',         transferKm: 170 });
 STATIC_DESTINATION_OVERRIDES['phnom penh']    = _cityOverride('phnom penh',    'PNH');
+STATIC_DESTINATION_OVERRIDES['cambodia']      = _cityOverride('cambodia',      'PNH');
 STATIC_DESTINATION_OVERRIDES['siem reap']     = _cityOverride('siem reap',     'REP');
 STATIC_DESTINATION_OVERRIDES['yangon']        = _cityOverride('yangon',        'RGN');
+STATIC_DESTINATION_OVERRIDES['myanmar']       = _cityOverride('myanmar',       'RGN');
+STATIC_DESTINATION_OVERRIDES['indonesia']     = _cityOverride('indonesia',     'CGK');
+STATIC_DESTINATION_OVERRIDES['jakarta']       = _cityOverride('jakarta',       'CGK');
 
 // ── Americas ──────────────────────────────────
 STATIC_DESTINATION_OVERRIDES['new york']      = _cityOverride('new york',      'JFK');
+STATIC_DESTINATION_OVERRIDES['usa']           = _cityOverride('usa',           'JFK');
 STATIC_DESTINATION_OVERRIDES['miami']         = _cityOverride('miami',         'MIA');
 STATIC_DESTINATION_OVERRIDES['los angeles']   = _cityOverride('los angeles',   'LAX');
 STATIC_DESTINATION_OVERRIDES['san francisco'] = _cityOverride('san francisco', 'SFO');
 STATIC_DESTINATION_OVERRIDES['las vegas']     = _cityOverride('las vegas',     'LAS');
 STATIC_DESTINATION_OVERRIDES['cancun']        = _cityOverride('cancun',        'CUN');
 STATIC_DESTINATION_OVERRIDES['toronto']       = _cityOverride('toronto',       'YYZ');
+STATIC_DESTINATION_OVERRIDES['canada']        = _cityOverride('canada',        'YYZ');
 STATIC_DESTINATION_OVERRIDES['vancouver']     = _cityOverride('vancouver',     'YVR');
 STATIC_DESTINATION_OVERRIDES['montreal']      = _cityOverride('montreal',      'YUL');
 STATIC_DESTINATION_OVERRIDES['sao paulo']     = _cityOverride('sao paulo',     'GRU');
+STATIC_DESTINATION_OVERRIDES['brazil']        = _cityOverride('brazil',        'GRU');
 STATIC_DESTINATION_OVERRIDES['rio de janeiro']= _cityOverride('rio de janeiro','GIG');
 STATIC_DESTINATION_OVERRIDES['buenos aires']  = _cityOverride('buenos aires',  'EZE');
+STATIC_DESTINATION_OVERRIDES['argentina']     = _cityOverride('argentina',     'EZE');
 STATIC_DESTINATION_OVERRIDES['bogota']        = _cityOverride('bogota',        'BOG');
 STATIC_DESTINATION_OVERRIDES['lima']          = _cityOverride('lima',          'LIM');
 STATIC_DESTINATION_OVERRIDES['cusco']         = _cityOverride('cusco',         'CUZ');
 STATIC_DESTINATION_OVERRIDES['machu picchu']  = _cityOverride('machu picchu',  'CUZ', { transferFrom: 'cusco',         transferKm: 80 });
 STATIC_DESTINATION_OVERRIDES['mexico city']   = _cityOverride('mexico city',   'MEX');
+STATIC_DESTINATION_OVERRIDES['mexico']        = _cityOverride('mexico',        'MEX');
 STATIC_DESTINATION_OVERRIDES['havana']        = _cityOverride('havana',        'HAV');
+STATIC_DESTINATION_OVERRIDES['cuba']          = _cityOverride('cuba',          'HAV');
 STATIC_DESTINATION_OVERRIDES['punta cana']    = _cityOverride('punta cana',    'PUJ');
 STATIC_DESTINATION_OVERRIDES['montego bay']   = _cityOverride('montego bay',   'MBJ');
 STATIC_DESTINATION_OVERRIDES['nassau']        = _cityOverride('nassau',        'NAS');
 
 // ── Australia / Pacific ───────────────────────
 STATIC_DESTINATION_OVERRIDES['sydney']        = _cityOverride('sydney',        'SYD');
+STATIC_DESTINATION_OVERRIDES['australia']     = _cityOverride('australia',     'SYD');
 STATIC_DESTINATION_OVERRIDES['melbourne']     = _cityOverride('melbourne',     'MEL');
 STATIC_DESTINATION_OVERRIDES['brisbane']      = _cityOverride('brisbane',      'BNE');
 STATIC_DESTINATION_OVERRIDES['perth']         = _cityOverride('perth',         'PER');
 STATIC_DESTINATION_OVERRIDES['auckland']      = _cityOverride('auckland',      'AKL');
+STATIC_DESTINATION_OVERRIDES['new zealand']   = _cityOverride('new zealand',   'AKL');
 STATIC_DESTINATION_OVERRIDES['queenstown']    = _cityOverride('queenstown',    'ZQN');
 STATIC_DESTINATION_OVERRIDES['fiji']          = _cityOverride('fiji',          'NAN');
 STATIC_DESTINATION_OVERRIDES['nadi']          = _cityOverride('nadi',          'NAN');
@@ -374,7 +421,7 @@ class DestinationIntel {
 
 {
   "destination": "string, normalized lowercase",
-  "destinationType": "city|town|landmark|park|island|region|airstrip_destination",
+  "destinationType": "city|town|landmark|park|island|region|airstrip_destination|country",
   "isAirstripDestination": boolean,
   "airstripCodes": ["array of named airstrips if applicable, else empty array"],
   "accessByMode": {
@@ -389,6 +436,7 @@ Rules:
 - If the destination does not have a major airport and is reached via a nearby hub with a road transfer (e.g. Watamu via Malindi), set hubName/hubCode to that airport hub and transferRequired true.
 - If a mode has no reasonable route, set hubName null and directService false.
 - For safari/wilderness destinations served by small aircraft (e.g. Maasai Mara), set isAirstripDestination true, list real named airstrips in airstripCodes, and leave air.hubCode null.
+- For countries, use the main international gateway airport as the hub.
 - Real, geographically accurate transport facts only. Do not invent airport codes.`;
 
     try {
@@ -414,9 +462,6 @@ Rules:
       const parsed = JSON.parse(content);
 
       // ── SANITY CHECK: hubCode must be a valid 3-letter IATA code ──
-      // Groq occasionally hallucinates codes like "mrUganda". Reject
-      // anything that doesn't look like a real IATA before it poisons
-      // the flight search.
       const airHub = parsed?.accessByMode?.air;
       if (airHub?.hubCode) {
         const clean = String(airHub.hubCode).toUpperCase().trim();
@@ -489,20 +534,22 @@ Rules:
   // CACHE WRITE
   // ─────────────────────────────────────────────
   async _cacheResult(normalized, result) {
+    const safeType = _normalizeDestinationType(result.destinationType);
+
     const { error } = await supabase
       .from('destination_intel')
       .upsert({
-        destination_name: normalized,
-        destination_type: result.destinationType,
-        access_by_mode: result.accessByMode,
+        destination_name:        normalized,
+        destination_type:        safeType,
+        access_by_mode:          result.accessByMode,
         is_airstrip_destination: result.isAirstripDestination || false,
-        airstrip_codes: result.airstripCodes || [],
-        requires_charter: result.requiresCharter || false,
-        resolved_by: 'gemini',
-        validation_status: result.validationStatus,
-        validation_source: result.validationSource,
-        raw_gemini_response: result,
-        last_validated_at: new Date().toISOString(),
+        airstrip_codes:          result.airstripCodes || [],
+        requires_charter:        result.requiresCharter || false,
+        resolved_by:             'gemini',
+        validation_status:       result.validationStatus,
+        validation_source:       result.validationSource,
+        raw_gemini_response:     result,
+        last_validated_at:       new Date().toISOString(),
       }, { onConflict: 'destination_name' });
 
     if (error) {
@@ -512,14 +559,14 @@ Rules:
 
   _toResultShape(row) {
     return {
-      destination: row.destination_name,
-      destinationType: row.destination_type,
-      accessByMode: row.access_by_mode,
+      destination:          row.destination_name,
+      destinationType:      row.destination_type,
+      accessByMode:         row.access_by_mode,
       isAirstripDestination: row.is_airstrip_destination,
-      airstripCodes: row.airstrip_codes,
-      requiresCharter: row.requires_charter,
-      validationStatus: row.validation_status,
-      validationSource: row.validation_source,
+      airstripCodes:        row.airstrip_codes,
+      requiresCharter:      row.requires_charter,
+      validationStatus:     row.validation_status,
+      validationSource:     row.validation_source,
     };
   }
 }
