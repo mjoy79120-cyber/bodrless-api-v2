@@ -19,7 +19,8 @@
  * First run: npx playwright install chromium
  */
 
-const { chromium } = require('playwright');
+let playwright = null;
+try { playwright = require('playwright'); } catch(e) {}
 const supabase      = require('../utils/supabase');
 const { logger }    = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');

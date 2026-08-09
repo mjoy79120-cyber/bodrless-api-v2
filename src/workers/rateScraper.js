@@ -1,4 +1,5 @@
-const { chromium } = require('playwright');
+let playwright = null;
+try { playwright = require('playwright'); } catch(e) {}
 const supabase = require('../utils/supabase');
 const PROPERTIES = [
   {

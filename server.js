@@ -16,7 +16,6 @@ const agencyRoutes = require('./src/routes/agencies');
 const healthRoutes = require('./src/routes/health');
 const uploadRoutes = require('./src/routes/uploads');
 const widgetRoutes = require('./src/routes/widget');
-const apiV1Routes = require('./src/routes/api');
 const adminRoutes = require('./src/routes/admin');
 const itineraryRoutes = require('./src/routes/itineraryRoutes');
 const { startSweeper } = require('./src/services/paymentSweeper');
@@ -79,9 +78,6 @@ app.use('/widget.js', (req, res, next) => {
 // ── Other Public Routes (no auth) ─────────────────────
 app.use('/health', healthRoutes);
 app.use('/widget.js', widgetRoutes);
-
-// ── Public API v1 (OTA/partner API) ──────────────────
-app.use('/api/v1', apiV1Routes);
 
 // ── Agency routes (auth handled inside the router) ───
 app.use('/api/agencies', agencyRoutes);
