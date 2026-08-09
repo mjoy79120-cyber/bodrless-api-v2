@@ -77,11 +77,38 @@ router.post('/whatsapp', async (req, res) => {
 
   try {
     const body = req.body;
-    if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) return;
+
+    // ── TOP GUARD: unexpected payload shape ────────────────
+    if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) {
+      const value = body?.entry?.[0]?.changes?.[0]?.value;
+      if (value?.statuses) {
+        // Read receipts / delivery updates — ignore silently
+      } else {
+        logger.warn('Webhook: unexpected payload shape', {
+          keys: Object.keys(value || {}).join(','),
+        });
+      }
+      return;
+    }
 
     const message       = body.entry[0].changes[0].value.messages[0];
     const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
-    const from          = message.from;
+
+    // ── GUARD: resolve sender phone ────────────────────────
+    // Primary: message.from
+    // Fallback: contacts[0].wa_id (system messages, number changes)
+    const from = message.from
+      || body.entry[0].changes[0].value?.contacts?.[0]?.wa_id
+      || null;
+
+    if (!from) {
+      logger.warn('Webhook: message has no from — ignoring', {
+        type:      message.type,
+        messageId: message.id,
+        payload:   JSON.stringify(message).slice(0, 300),
+      });
+      return;
+    }
 
     logger.info('Incoming WhatsApp message', { from, type: message.type });
 
