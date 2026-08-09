@@ -157,7 +157,7 @@ async function warmUp(params) {
     page = await context.newPage();
 
     // ── Navigate ────────────────────────────────────────────
-    await page.goto(SGR_URL, { waitUntil: 'networkidle', timeout: 20000 });
+    await page.goto(SGR_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     const fromStation = _resolveStation(params.origin);
     const toStation   = _resolveStation(params.destination);
