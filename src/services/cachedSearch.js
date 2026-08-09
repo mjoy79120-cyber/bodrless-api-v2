@@ -55,10 +55,10 @@ const fareCache   = require('./fareCache');
 const { logger }  = require('../utils/logger');
 
 // Lazy-load adapters — same pattern used throughout this codebase
-function getDuffel()     { return require('../adapters/duffelAdapter');     }
-function getTravelDuqa() { return require('../adapters/travelduqaAdapter'); }
-function getHotelBeds()  { return require('../adapters/hotelbedsAdapter');  }
-function getIabiri()     { return require('../adapters/iabiriAdapter');     }
+function getDuffel()     { return require('../adapters/duffel');     }
+function getTravelDuqa() { return require('../adapters/travelduqa'); }
+function getHotelBeds()  { return require('../adapters/hotelbeds');  }
+function getIabiri()     { return require('../adapters/travler');     }
 
 // ─────────────────────────────────────────────
 // CHANNEL DETECTION
