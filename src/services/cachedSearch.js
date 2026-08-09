@@ -149,8 +149,8 @@ async function flights(params, sendWhatsApp = null) {
 // Extracted so both the foreground call and _backgroundRefresh can use it
 async function _liveFlight(params, cached) {
   const [duffelRes, travelduqaRes] = await Promise.allSettled([
-    getDuffel().search(params),
-    getTravelDuqa().search(params),
+    getDuffel().search({ ...params, date: params.departureDate }),
+      getTravelDuqa().search({ ...params, date: params.departureDate }),
   ]);
 
   const duffelResults     = duffelRes.status    === 'fulfilled' ? duffelRes.value    : [];
