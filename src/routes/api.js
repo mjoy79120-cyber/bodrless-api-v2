@@ -606,7 +606,7 @@ function createRateLimiter(endpointType) {
       if (custom?.[endpointType]) return custom[endpointType];
       return CONFIG.rateLimits[plan]?.[endpointType] || CONFIG.rateLimits.free[endpointType];
     },
-    keyGenerator: (req) => req.context?.agency?.id || req.ip,
+    keyGenerator: (req) => req.context?.agency?.id || req.headers['x-forwarded-for'] || req.ip,
     handler: (req, res, next) => {
       const err = new Error('Rate limit exceeded. Retry after the window resets.');
       err.code = 'RATE_LIMIT_EXCEEDED';
