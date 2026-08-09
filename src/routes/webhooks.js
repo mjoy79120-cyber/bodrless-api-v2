@@ -91,6 +91,16 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
+    if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) {
+  // ... existing code
+  return;
+}
+
+// TEMP: log full value to diagnose from field
+logger.info('Webhook: full value dump', {
+  value: JSON.stringify(body.entry[0].changes[0].value).slice(0, 1000),
+});
+
     const message       = body.entry[0].changes[0].value.messages[0];
     const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
 
