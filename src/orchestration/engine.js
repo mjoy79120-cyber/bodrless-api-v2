@@ -475,7 +475,7 @@ class OrchestrationEngine {
     // If any result is a train, pre-warm the browser session so booking is instant.
     const hasTrain = rankedPackages.some(p => p.summary?.transportType === 'train');
     if (hasTrain && tripParams.origin && tripParams.destination) {
-      const trainBookingService = require('./trainBookingService');
+      require('../services/trainBookingService')
       const pendingRef = `TRN-${Date.now()}`;                // temp ref — overwritten on confirm
       trainBookingService.warmUp(tripParams, pendingRef);    // fire-and-forget, never awaited
     }
