@@ -16,7 +16,6 @@ const agencyRoutes          = require('./routes/agencies');
 const healthRoutes          = require('./routes/health');
 const uploadRoutes          = require('./routes/uploads');
 const widgetRoutes          = require('./routes/widget');
-const apiV1Routes           = require('./routes/api');
 const adminRoutes           = require('./routes/admin');
 const tripMonitoringRoutes  = require('./routes/tripMonitoring');
 const { startSweeper }      = require('./services/paymentSweeper');
@@ -77,7 +76,6 @@ app.use('/health',       healthRoutes);
 app.use('/widget.js',    widgetRoutes);
 app.use('/api/hotel',    hotelRoutes);
 app.use('/hotel-admin',  hotelAdminRouter);
-app.use('/api/v1',       apiV1Routes);
 app.use('/api/agencies', agencyRoutes);
 app.use('/admin',        adminRoutes);
 
