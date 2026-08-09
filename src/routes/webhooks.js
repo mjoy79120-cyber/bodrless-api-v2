@@ -306,6 +306,46 @@ router.post('/whatsapp', async (req, res) => {
             );
           }
           await conversationMemory.saveSelectedPackage(from, agencyId, selectedPackage);
+
+          // ── TRAIN PACKAGE — route to booking agent ──────
+          const isTrain = selectedPackage?.summary?.transportType === 'train'
+                       || selectedPackage?.transport?.transportType === 'train';
+
+          if (isTrain) {
+            const trainBookingService = require('../services/trainBookingService');
+            const bookingRef = `BDL-${Date.now()}`;
+
+            await whatsappService.sendText(phoneNumberId, from,
+              `🚆 Booking your SGR ticket now — one moment...`
+            );
+
+            const trainResult = await trainBookingService.book({
+              bookingRef,
+              agencyId,
+              tripParams: cached.previousParams || {},
+            });
+
+            if (trainResult.success) {
+              const refLine = trainResult.krcRef
+                ? `\n\n📋 *KRC Reference: ${trainResult.krcRef}*`
+                : '';
+              await whatsappService.sendText(phoneNumberId, from,
+                `✅ Your SGR ticket has been submitted!${refLine}\n\n` +
+                `📱 *Check your phone* — M-Pesa will prompt you to pay KES ${selectedPackage.summary?.totalPrice?.toLocaleString() || ''}. Enter your PIN within 2 minutes to confirm.\n\n` +
+                `You'll receive an SMS from Kenya Railways once the payment goes through. Show that SMS at the station to collect your ticket.`
+              );
+            } else {
+              await whatsappService.sendText(phoneNumberId, from,
+                `⚠️ We couldn't auto-book your SGR ticket this time.\n\n` +
+                `Book directly at: *metickets.krc.co.ke*\n` +
+                `Or call KRC: *0709 388 887*\n\n` +
+                `Your trip details are saved — reply if you need help.`
+              );
+            }
+            return;
+          }
+          // ── END TRAIN BOOKING ───────────────────────────
+
           await whatsappBookingFlow.startBooking({ phoneNumberId, from, agencyId, selectedPackage });
           return;
         }
@@ -331,10 +371,6 @@ router.post('/whatsapp', async (req, res) => {
     const memCtx = await conversationMemory.getConversationContext(from, agencyId);
 
     // ── ORIGIN CLARIFICATION RESUME ───────────────────────
-    // If the previous turn asked "which city are you departing from?"
-    // (needsOriginClarification: true), the user's next short reply
-    // is the origin answer — patch it directly into previousParams and
-    // skip Groq entirely. Do NOT reconstruct a prompt string.
     if (
       memCtx.previousParams?.needsOriginClarification &&
       !memCtx.previousParams?.origin
@@ -356,7 +392,6 @@ router.post('/whatsapp', async (req, res) => {
 
         await whatsappService.sendText(phoneNumberId, from, _pickAcknowledgment());
 
-        // ✅ Patch params directly — do NOT reconstruct a prompt or call Groq
         const resumedParams = {
           ...memCtx.previousParams,
           origin:                   candidateOrigin.replace(/\.$/, '').trim(),
@@ -364,12 +399,12 @@ router.post('/whatsapp', async (req, res) => {
         };
 
         const result = await orchestrationEngine.orchestrate(
-          null,        // no prompt — params are already complete
+          null,
           agencyId,
           {
             conversationHistory: memCtx.conversationHistory,
             previousParams:      resumedParams,
-            skipParsing:         true,  // tells engine to bypass Groq
+            skipParsing:         true,
             channel:             'whatsapp',
             phone:               from,
           }
@@ -400,7 +435,6 @@ router.post('/whatsapp', async (req, res) => {
         return;
       }
     }
-    // ─────────────────────────────────────────────────────
 
     // ── MID-CONVERSATION MODIFY ────────────────────────────
     if (memCtx.selectedPackage) {
@@ -430,7 +464,6 @@ router.post('/whatsapp', async (req, res) => {
           });
           return;
         }
-        // 'research' — fall through to normal orchestrate()
       }
     }
 
@@ -457,6 +490,22 @@ router.post('/whatsapp', async (req, res) => {
       packages:       result.packages || [],
       sessionId:      result.sessionId,
     });
+
+    // ── TRAIN WARM-UP ──────────────────────────────────────
+    // If any result is a train, pre-warm the Playwright session
+    // in the background so booking is instant when user confirms.
+    if (result.packages?.length > 0) {
+      const hasTrain = result.packages.some(p =>
+        p.summary?.transportType === 'train' ||
+        p.transport?.transportType === 'train'
+      );
+      if (hasTrain && result.tripParams?.origin && result.tripParams?.destination) {
+        const trainBookingService = require('../services/trainBookingService');
+        const pendingRef = `TRN-${Date.now()}`;
+        trainBookingService.warmUp(result.tripParams, pendingRef); // fire-and-forget
+        logger.info('Train warm-up triggered', { from, pendingRef });
+      }
+    }
 
     // ── SEND RESULTS ───────────────────────────────────────
     if (result.needsClarification) {
@@ -511,7 +560,7 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    // ── MULTI-TRIP RESULTS (separate independent trips) ────
+    // ── MULTI-TRIP RESULTS ─────────────────────────────────
     if (result.tripResults && result.tripResults.length > 1) {
       const allPackages = [];
 

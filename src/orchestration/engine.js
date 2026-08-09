@@ -10,7 +10,7 @@ const travelerIntelligence = require("../services/travelerIntelligence");
 const tripMonitoringService = require("../services/tripMonitoringService");
 
 // CHANGE 1 — cachedSearch import
-const cachedSearch = require('./cachedSearch');
+const cachedSearch = require('../services/cachedSearch');
 
 // ── Route Learning (Waze layer) ───────────────────────────────────────────────
 // Loaded with graceful fallback so a missing file never crashes the engine.
@@ -470,6 +470,16 @@ class OrchestrationEngine {
     }
 
     const rankedPackages = rankPackages(packages, tripParams, travelerProfile).slice(0, 4);
+
+    // ── TRAIN WARM-UP ─────────────────────────────────────────────────────────
+    // If any result is a train, pre-warm the browser session so booking is instant.
+    const hasTrain = rankedPackages.some(p => p.summary?.transportType === 'train');
+    if (hasTrain && tripParams.origin && tripParams.destination) {
+      const trainBookingService = require('./trainBookingService');
+      const pendingRef = `TRN-${Date.now()}`;                // temp ref — overwritten on confirm
+      trainBookingService.warmUp(tripParams, pendingRef);    // fire-and-forget, never awaited
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
 
@@ -1970,7 +1980,90 @@ class OrchestrationEngine {
     }
   }
 
-  async saveBooking({ agencyId, guestName, guestPhone, guestEmail, tripParams, selectedPackage, supplierBookingReference, supplierName, channel = 'widget', passengers = [] }) {
+  async saveBooking({ agencyId, guestName, guestPhone, guestEmail,
+                    tripParams, selectedPackage, supplierBookingReference,
+                    supplierName, channel = 'widget', passengers = [] }) {
+
+    // ── TRAIN BOOKING — route to agent instead of Duffel ─────────────────
+    const isTrain = selectedPackage?.transport?.transportType === 'train'
+                 || selectedPackage?.summary?.transportType === 'train';
+
+    if (isTrain) {
+      const bookingRef = `BDL-${Date.now()}`;
+      const trainBookingService = require('./trainBookingService');
+
+      // Save initial booking record first
+      const { data: booking } = await supabase.from('bookings').insert({
+        id:           require('uuid').v4(),
+        booking_ref:  bookingRef,
+        agency_id:    agencyId,
+        guest_name:   guestName,
+        guest_phone:  guestPhone,
+        guest_email:  guestEmail,
+        destination:  tripParams.destination,
+        origin:       tripParams.origin,
+        nights:       tripParams.nights || null,
+        passengers:   tripParams.passengers || 1,
+        total_price:  selectedPackage.summary?.totalPrice || 0,
+        currency:     'KES',
+        status:       'pending',
+        booking_status:   'pending',
+        payment_status:   'pending',
+        supplier_status:  'pending',
+        channel,
+        trip_params:  tripParams,
+        flight_details: selectedPackage.transport || null,
+        created_at:   new Date().toISOString(),
+      }).select().single();
+
+      // Insert passenger manifest row
+      if (passengers.length > 0) {
+        await supabase.from('passenger_manifest').insert(
+          passengers.map(p => ({
+            id:           require('uuid').v4(),
+            booking_ref:  bookingRef,
+            agency_id:    agencyId,
+            first_name:   p.firstName || p.first_name,
+            last_name:    p.lastName  || p.last_name,
+            national_id:  p.nationalId || p.national_id || null,
+            passport_number: p.passportNumber || p.passport_number || null,
+            phone:        p.phone  || guestPhone,
+            email:        p.email  || guestEmail,
+            transport_provider: 'SGR',
+            created_at:   new Date().toISOString(),
+          }))
+        );
+      }
+
+      // Trigger Playwright booking — resumes warm session if available
+      const result = await trainBookingService.book({
+        bookingRef,
+        agencyId,
+        tripParams,
+      });
+
+      if (!result.success) {
+        logger.error('Train booking agent failed', { bookingRef, error: result.error });
+        // Don't throw — return gracefully so user sees a manual fallback message
+        return {
+          bookingRef,
+          bookingId: booking?.id,
+          trainBookingFailed: true,
+          error: result.error,
+          manualFallback: `We couldn't auto-book your SGR ticket. Please book directly at metickets.krc.co.ke or call 0709 388 887.`,
+        };
+      }
+
+      return {
+        bookingRef,
+        bookingId:   booking?.id,
+        krcRef:      result.krcRef,
+        trainBooked: true,
+        message:     result.message,
+      };
+    }
+    // ── END TRAIN BOOKING ─────────────────────────────────────────────────
+
     const bookingRef = `BDL-${Date.now()}`;
     try {
       const { data: booking, error: bookingError } = await supabase.from('bookings').insert({ id: uuidv4(), booking_ref: bookingRef, agency_id: agencyId, guest_name: guestName, guest_phone: guestPhone, guest_email: guestEmail, destination: tripParams.destination, origin: tripParams.origin, nights: tripParams.nights || null, passengers: tripParams.passengers || 1, total_price: selectedPackage.summary?.totalPrice || 0, currency: selectedPackage.transport?.currency || 'KES', status: 'confirmed', booking_status: 'confirmed', payment_status: 'pending', supplier_status: 'confirmed', supplier_booking_reference: supplierBookingReference, channel, flight_details: selectedPackage.transport || null, hotel_details: selectedPackage.hotel || null, transfer_details: selectedPackage.transfers || null, trip_params: tripParams, created_at: new Date().toISOString() }).select().single();
