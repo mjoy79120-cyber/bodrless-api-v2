@@ -471,14 +471,14 @@ class OrchestrationEngine {
 
     const rankedPackages = rankPackages(packages, tripParams, travelerProfile).slice(0, 4);
 
-    // ── TRAIN WARM-UP ─────────────────────────────────────────────────────────
-    // If any result is a train, pre-warm the browser session so booking is instant.
-    const hasTrain = rankedPackages.some(p => p.summary?.transportType === 'train');
-    if (hasTrain && tripParams.origin && tripParams.destination) {
-      const trainBookingService = require('../services/trainBookingService');
-      const pendingRef = `TRN-${Date.now()}`;                // temp ref — overwritten on confirm
-      trainBookingService.warmUp(tripParams, pendingRef);    // fire-and-forget, never awaited
-    }
+     // ── TRAIN WARM-UP ─────────────────────────────────────────────────────────
+    // Disabled on free tier — re-enable on paid tier (needs 2GB RAM for Playwright)
+    // const hasTrain = rankedPackages.some(p => p.summary?.transportType === 'train');
+    // if (hasTrain && tripParams.origin && tripParams.destination) {
+    //   const trainBookingService = require('../services/trainBookingService');
+    //   const pendingRef = `TRN-${Date.now()}`;                // temp ref — overwritten on confirm
+    //   trainBookingService.warmUp(tripParams, pendingRef);    // fire-and-forget, never awaited
+    // }
     // ─────────────────────────────────────────────────────────────────────────
 
     const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
