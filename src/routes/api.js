@@ -26,6 +26,7 @@ const cors         = require('cors');
 const hpp          = require('hpp');
 const compression  = require('compression');
 const rateLimit    = require('express-rate-limit');
+const { RedisStore } = require('rate-limit-redis');
 const Joi          = require('joi');
 const Queue        = require('bull');
 const Redis        = require('ioredis');
@@ -116,8 +117,8 @@ async function dbHealthCheck() {
 // ═══════════════════════════════════════════════════════════════════════════
 // REDIS
 // ═══════════════════════════════════════════════════════════════════════════
-const { RedisStore } = require('rate-limit-redis');
-maxRetriesPerRequest: 3,
+const redis = new Redis({
+  maxRetriesPerRequest: 3,
   enableReadyCheck: true,
   retryStrategy: (times) => {
     if (times > 3) return null;
