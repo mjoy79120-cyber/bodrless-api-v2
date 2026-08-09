@@ -607,7 +607,7 @@ function createRateLimiter(endpointType) {
       return CONFIG.rateLimits[plan]?.[endpointType] || CONFIG.rateLimits.free[endpointType];
     },
     keyGenerator: (req) => req.context?.agency?.id || req.socket.remoteAddress || req.ip,
-validate: { keyGenerator: false },
+    validate: { ipv6SubnetOrKeyGenerator: false },
     handler: (req, res, next) => {
       const err = new Error('Rate limit exceeded. Retry after the window resets.');
       err.code = 'RATE_LIMIT_EXCEEDED';
