@@ -606,7 +606,8 @@ function createRateLimiter(endpointType) {
       if (custom?.[endpointType]) return custom[endpointType];
       return CONFIG.rateLimits[plan]?.[endpointType] || CONFIG.rateLimits.free[endpointType];
     },
-    keyGenerator: (req) => req.context?.agency?.id || req.headers['x-forwarded-for'] || req.ip,
+    keyGenerator: (req) => req.context?.agency?.id || req.socket.remoteAddress || req.ip,
+validate: { keyGenerator: false },
     handler: (req, res, next) => {
       const err = new Error('Rate limit exceeded. Retry after the window resets.');
       err.code = 'RATE_LIMIT_EXCEEDED';
@@ -2027,3 +2028,5 @@ if (process.argv.includes('--worker')) {
     logger.info(`Bodrless API v${CONFIG.apiVersion} running on port ${CONFIG.port}`);
   });
 }
+
+module.exports = app;
