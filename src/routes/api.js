@@ -26,7 +26,6 @@ const cors         = require('cors');
 const hpp          = require('hpp');
 const compression  = require('compression');
 const rateLimit    = require('express-rate-limit');
-const { RedisStore } = require('rate-limit-redis');
 const Joi          = require('joi');
 const Queue        = require('bull');
 const Redis        = require('ioredis');
