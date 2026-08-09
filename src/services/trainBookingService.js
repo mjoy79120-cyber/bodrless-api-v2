@@ -11,7 +11,7 @@
  * across webhook turns (WhatsApp) or widget refreshes.
  */
 
-const agent    = require('./trainBookingAgent');
+const agent    = require('../orchestration/trainBookingAgent');
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 
