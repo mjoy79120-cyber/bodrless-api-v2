@@ -63,7 +63,7 @@ const CONFIG = {
   },
 
   supabaseUrl: process.env.SUPABASE_URL,
-  supabaseKey: process.env.SUPABASE_SERVICE_KEY,
+  supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   redisUrl:    process.env.REDIS_URL || 'redis://localhost:6379',
 
   // Bodrless default LLM — used when OTA does not supply their own
@@ -102,7 +102,7 @@ function getRequestLogger(req) {
 // SUPABASE
 // ═══════════════════════════════════════════════════════════════════════════
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
-  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY must be set');
+  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
 }
 
 const supabase = createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey, {
