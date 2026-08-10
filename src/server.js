@@ -399,7 +399,7 @@ ${propCardsHTML}
   });
 </script>
 
-<script src="${apiBase}/widget.js?key=${encodeURIComponent(hotelSlug)}&name=${encodeURIComponent(groupName)}&mode=hotel_direct&embed=hotel-widget-mount"></script>
+<script src="${apiBase}/widget/hotel?key=${encodeURIComponent(hotelSlug)}&name=${encodeURIComponent(groupName)}&embed=hotel-widget-mount"></script>
 
 </body>
 </html>`);
