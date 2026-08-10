@@ -2,36 +2,7 @@
  * WEBHOOK ROUTES
  * ─────────────────────────────────────────────────────────────
  * Handles incoming messages from WhatsApp Business API.
- *
- * Flow:
- * Traveler messages agency WhatsApp
- * → WhatsApp sends webhook to Bodrless
- * → First-ever message: send welcome, ask name, stop
- * → Awaiting name: capture it, greet, stop
- * → Drop-off recovery: returning traveler after 30+ min gap —
- *   offer resume vs fresh start before anything else runs
- * → Resume/fresh choice: re-show cached packages or clear and start over
- * → Disruption tap (disruption_alt_* / disruption_keep_*) — handled
- *   by disruptionFlow before any other button handler
- * → Cancellation flow (post-booking cancel with ref)
- * → Flight change flow
- * → Active booking session (passenger detail collection)
- * → Mid-booking cancel ("cancel" while in booking flow) —
- *   clears session, preserves context, re-shows packages
- * → LEG FLOW (multi-leg trip, one leg at a time):
- *     • Active leg flow + option selection → save leg, show running
- *       total, advance to next leg OR show final summary
- *     • Active leg flow + non-numeric message → treat as leg
- *       modification or let user ask to restart
- * → Package selection (1/2/3/4) → start booking
- * → Mid-conversation modify (change nights/budget/hotel while
- *   a package is held) — patch in place or re-search
- * → Origin clarification resume — if previous turn set
- *   needsOriginClarification: true, the next message is treated
- *   as the origin answer — params patched directly, Groq bypassed
- * → Normal orchestration with durable conversation memory
- *   → if result.isClassifiedTrip → start leg flow, present leg 1
- *   → otherwise → send packages normally
+ * Supports both phone-based (from/wa_id) and user_id-based identities.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -49,8 +20,6 @@ const disruptionFlow = require('../services/disruptionFlow');
 const { logger } = require('../utils/logger');
 
 const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|phone|email|dob|date of birth)\s*:/im;
-
-// Short-lived in-memory map for the resume/fresh-start choice.
 const _pendingResumeChoice = new Map();
 
 // ─────────────────────────────────────────────
@@ -91,27 +60,14 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    // TEMP: log full value to diagnose from field
-    logger.info('Webhook: full value dump', {
-      value: JSON.stringify(body?.entry?.[0]?.changes?.[0]?.value).slice(0, 1000),
-    });
-
     const message       = body.entry[0].changes[0].value.messages[0];
     const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
 
-    // ── GUARD: resolve sender phone ────────────────────────
-    // Primary: message.from (Cloud API standard)
-    // Fallback: message.from_user_id (Business API / some BSP payloads)
-    // Fallback: contacts[0].wa_id (system messages, number changes)
-    const rawFrom = message.from
-      || message.from_user_id
-      || body.entry[0].changes[0].value?.contacts?.[0]?.wa_id
-      || null;
+    // ── RESOLVE IDENTITY (phone vs user_id) ────────────────
+    const identity = _resolveIdentity(body, message);
 
-    const from = _normalizePhone(rawFrom);
-
-    if (!from) {
-      logger.warn('Webhook: message has no from — ignoring', {
+    if (!identity.userKey) {
+      logger.warn('Webhook: message has no identifiable sender — ignoring', {
         type:      message.type,
         messageId: message.id,
         payload:   JSON.stringify(message).slice(0, 300),
@@ -119,7 +75,16 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    logger.info('Incoming WhatsApp message', { from, type: message.type });
+    logger.info('Incoming WhatsApp message', {
+      userKey:   identity.userKey,
+      phone:     identity.phone,
+      userId:    identity.userId,
+      username:  identity.username,
+      type:      message.type,
+      preview:   message.text?.body?.slice(0, 60),
+    });
+
+    const { userKey, phone, userId, username, recipient } = identity;
 
     // ── INTERACTIVE REPLIES (button/list taps) ─────────────
     if (message.type === 'interactive') {
@@ -132,8 +97,8 @@ router.post('/whatsapp', async (req, res) => {
         buttonId.startsWith('disruption_alt_') ||
         buttonId.startsWith('disruption_keep_')
       )) {
-        logger.info('Disruption tap received', { buttonId, from });
-        disruptionFlow.handleAlternativeTap(buttonId, from).catch(err => {
+        logger.info('Disruption tap received', { buttonId, userKey });
+        disruptionFlow.handleAlternativeTap(buttonId, userKey).catch(err => {
           logger.error('DisruptionFlow tap handler failed', { buttonId, error: err.message });
         });
         return;
@@ -144,13 +109,13 @@ router.post('/whatsapp', async (req, res) => {
         const photoMatch = buttonId.match(/^photo_(\d+)$/);
         if (photoMatch) {
           const idx    = parseInt(photoMatch[1], 10);
-          const cached = await packageCache.get(from);
+          const cached = await packageCache.get(userKey);
           const pkg    = cached?.packages?.[idx];
           const imageUrl = pkg?.hotel?.images?.[0];
           if (imageUrl) {
-            await whatsappService.sendImage(phoneNumberId, from, imageUrl, pkg.hotel.name || null);
+            await whatsappService.sendImage(phoneNumberId, recipient, imageUrl, pkg.hotel.name || null);
           } else {
-            await whatsappService.sendText(phoneNumberId, from,
+            await whatsappService.sendText(phoneNumberId, recipient,
               "Sorry, that photo isn't available anymore — try searching again."
             );
           }
@@ -160,131 +125,122 @@ router.post('/whatsapp', async (req, res) => {
 
       // Booking flow interactive (gender/type list taps etc.)
       const handledByBooking = await whatsappBookingFlow.handleMessage({
-        phoneNumberId, from, text: null, interactive: message.interactive,
+        phoneNumberId, from: userKey, text: null, interactive: message.interactive,
       });
       if (handledByBooking) return;
 
-      await whatsappService.sendText(phoneNumberId, from, "Got it, thanks!");
+      await whatsappService.sendText(phoneNumberId, recipient, "Got it, thanks!");
       return;
     }
 
     // ── NON-TEXT MESSAGES ──────────────────────────────────
     if (message.type !== 'text') {
-      await whatsappService.sendText(phoneNumberId, from,
+      await whatsappService.sendText(phoneNumberId, recipient,
         "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
       );
       return;
     }
 
-    const prompt   = message.text.body;
+    const prompt = message.text.body;
     const agencyId = await _resolveAgency(phoneNumberId);
-    const contact  = await _getOrCreateContact(from, agencyId);
+
+    // ── GET OR CREATE CONTACT ──────────────────────────────
+    const contact = await _getOrCreateContact({ phone, userId, username, agencyId });
 
     // ── FIRST-EVER MESSAGE ─────────────────────────────────
     if (contact.justCreated) {
-      await whatsappService.sendText(phoneNumberId, from,
+      await whatsappService.sendText(phoneNumberId, recipient,
         `Hey there! 👋 Welcome to Rove.\nThink of me as your personal travel guy, I'll sort out your transportation, stays and transfers\n\nBefore we get into it though, what's your name? I'd rather not just call you "traveler" the whole time`
       );
       return;
     }
 
     // ── AWAITING NAME ──────────────────────────────────────
-    if (contact.awaitting_name) {
+    if (contact.awaiting_name) {
       const extractedName = _extractName(prompt);
       if (extractedName) {
-        await _saveContactName(from, extractedName);
-        await whatsappService.sendText(phoneNumberId, from,
+        await _saveContactName({ phone, userId, name: extractedName });
+        await whatsappService.sendText(phoneNumberId, recipient,
           `Good to meet you, ${extractedName}! Alright — tell me about the trip you're dreaming up. Where to, when, how many of you, and roughly what budget you're working with. I'll handle the rest.`
         );
         return;
       }
-      await _clearAwaitingName(from);
+      await _clearAwaitingName({ phone, userId });
     }
 
     // ── DROP-OFF RECOVERY ──────────────────────────────────
-    const resumePending = _pendingResumeChoice.get(from);
+    const resumePending = _pendingResumeChoice.get(userKey);
     if (resumePending && Date.now() < resumePending.expiresAt) {
-      _pendingResumeChoice.delete(from);
+      _pendingResumeChoice.delete(userKey);
       const choice = prompt.trim();
-
       const wantsResume = choice === '1' || /\b(resume|continue|pick up|yes|go on)\b/i.test(choice);
 
       if (wantsResume && resumePending.dropOff.hasPreviousSearch) {
         const { cachedPackages, previousDestination } = resumePending.dropOff;
-
         if (cachedPackages?.length > 0) {
           const destPhrase = previousDestination ? ` for ${_titleCase(previousDestination)}` : '';
-          await whatsappService.sendText(phoneNumberId, from,
+          await whatsappService.sendText(phoneNumberId, recipient,
             `Welcome back! Here are the options you were looking at${destPhrase}:`
           );
-          await whatsappService.sendPackages(phoneNumberId, from, cachedPackages);
-          await whatsappService.sendText(phoneNumberId, from,
+          await whatsappService.sendPackages(phoneNumberId, recipient, cachedPackages);
+          await whatsappService.sendText(phoneNumberId, recipient,
             `Reply with the option number to book, or tell me any changes you'd like.`
           );
-          await packageCache.save(from, cachedPackages, resumePending.dropOff.previousParams);
-          await conversationMemory.upsertContact(from, agencyId, {
-            drop_off_at: new Date().toISOString(),
-          });
+          await packageCache.save(userKey, cachedPackages, resumePending.dropOff.previousParams);
+          await conversationMemory.upsertContact(userKey, agencyId, { drop_off_at: new Date().toISOString() });
           return;
         }
       }
 
-      // Clear both the conversation history AND the booking session for a true fresh start
-      await conversationMemory.clearConversation(from, agencyId);
-      await whatsappBookingFlow.clearSession(from);
-      await whatsappService.sendText(phoneNumberId, from,
+      await conversationMemory.clearConversation(userKey, agencyId);
+      await whatsappBookingFlow.clearSession(userKey);
+      await whatsappService.sendText(phoneNumberId, recipient,
         "Fresh start! Tell me about your next trip — where to, when, and how many of you?"
       );
       return;
     }
 
-    const dropOff = await conversationMemory.checkDropOff(from, agencyId);
+    const dropOff = await conversationMemory.checkDropOff(userKey, agencyId);
     if (dropOff.isDropOff) {
       const welcomeMsg = conversationMemory.buildDropOffWelcome({
         minutesAway:         dropOff.minutesAway,
         previousDestination: dropOff.previousDestination,
         hasPreviousSearch:   dropOff.hasPreviousSearch,
       });
-      await whatsappService.sendText(phoneNumberId, from, welcomeMsg);
+      await whatsappService.sendText(phoneNumberId, recipient, welcomeMsg);
 
       if (dropOff.hasPreviousSearch) {
-        _pendingResumeChoice.set(from, {
-          dropOff,
-          agencyId,
-          expiresAt: Date.now() + 5 * 60 * 1000,
-        });
+        _pendingResumeChoice.set(userKey, { dropOff, agencyId, expiresAt: Date.now() + 5 * 60 * 1000 });
       } else {
-        await conversationMemory.upsertContact(from, agencyId, {
-          drop_off_at: new Date().toISOString(),
-        });
+        await conversationMemory.upsertContact(userKey, agencyId, { drop_off_at: new Date().toISOString() });
       }
       return;
     }
 
     // ── POST-BOOKING CANCEL FLOW ───────────────────────────
     const handledByCancel = await whatsappCancelFlow.handleMessage({
-      phoneNumberId, from, text: prompt, agencyId,
+      phoneNumberId, from: userKey, text: prompt, agencyId,
     });
     if (handledByCancel) return;
 
     // ── FLIGHT CHANGE FLOW ─────────────────────────────────
     const handledByChange = await whatsappChangeFlow.handleMessage({
-      phoneNumberId, from, text: prompt,
+      phoneNumberId, from: userKey, text: prompt,
     });
     if (handledByChange) return;
 
     // ── MID-BOOKING CANCEL ─────────────────────────────────
     if (/^cancel$/i.test(prompt.trim())) {
-      const hadSession = await whatsappBookingFlow.hasActiveSession(from);
+      const hadSession = await whatsappBookingFlow.hasActiveSession(userKey);
       if (hadSession) {
-        await conversationMemory.cancelMidBooking(from, agencyId);
-        await whatsappService.sendText(phoneNumberId, from,
+        await conversationMemory.cancelMidBooking(userKey, agencyId);
+        await whatsappService.sendText(phoneNumberId, recipient,
           "Booking cancelled — no problem at all. Your previous search results are still available if you'd like to pick a different option, or just tell me where you'd like to go!"
         );
-        const cached = await packageCache.get(from);
+        const cached = await packageCache.get(userKey);
         if (cached?.packages?.length > 0) {
-          await whatsappService.sendPackages(phoneNumberId, from, cached.packages);
-          await whatsappService.sendText(phoneNumberId, from,
+          await whatsappService.sendPackages(phoneNumberId, recipient, cached.packages);
+          await whatsappService.sendText(phoneNumberId, recipient,
             `Reply with the option number (1-${cached.packages.length}) to book, or describe what you'd like instead.`
           );
         }
@@ -304,14 +260,14 @@ router.post('/whatsapp', async (req, res) => {
     };
 
     if (_looksLikeFreshSearch(prompt)) {
-      const hadStaleSession = await whatsappBookingFlow.hasActiveSession(from);
+      const hadStaleSession = await whatsappBookingFlow.hasActiveSession(userKey);
       if (hadStaleSession) {
-        logger.info('Booking session: clearing stale session — fresh search detected', { from, preview: prompt.slice(0, 80) });
-        await whatsappBookingFlow.clearSession(from);
+        logger.info('Booking session: clearing stale session — fresh search detected', { userKey, preview: prompt.slice(0, 80) });
+        await whatsappBookingFlow.clearSession(userKey);
       }
     } else {
       const handledByBooking = await whatsappBookingFlow.handleMessage({
-        phoneNumberId, from, text: prompt, interactive: null,
+        phoneNumberId, from: userKey, text: prompt, interactive: null,
       });
       if (handledByBooking) return;
     }
@@ -319,11 +275,10 @@ router.post('/whatsapp', async (req, res) => {
     // ═══════════════════════════════════════════════════════
     // LEG FLOW STATE MACHINE
     // ═══════════════════════════════════════════════════════
-    const activeLegFlow = await conversationMemory.loadLegFlow(from, agencyId);
-
+    const activeLegFlow = await conversationMemory.loadLegFlow(userKey, agencyId);
     if (activeLegFlow) {
       const handled = await _handleLegFlowMessage({
-        phoneNumberId, from, agencyId, prompt, activeLegFlow,
+        phoneNumberId, recipient, userKey, agencyId, prompt, activeLegFlow,
       });
       if (handled) return;
     }
@@ -331,62 +286,44 @@ router.post('/whatsapp', async (req, res) => {
     // ── PACKAGE SELECTION (1 / 2 / 3 / 4) ─────────────────
     const selectionMatch = prompt.trim().match(/^(?:option\s*)?([1-4])$/i);
     if (selectionMatch) {
-      const cached = await packageCache.get(from);
+      const cached = await packageCache.get(userKey);
       if (cached?.packages?.length > 0) {
-        const idx             = parseInt(selectionMatch[1], 10) - 1;
+        const idx = parseInt(selectionMatch[1], 10) - 1;
         const selectedPackage = cached.packages[idx];
         if (selectedPackage) {
           if (cached.isStale) {
-            await whatsappService.sendText(phoneNumberId, from,
+            await whatsappService.sendText(phoneNumberId, recipient,
               "One moment — just double-checking that's still available before we begin..."
             );
           }
-          await conversationMemory.saveSelectedPackage(from, agencyId, selectedPackage);
+          await conversationMemory.saveSelectedPackage(userKey, agencyId, selectedPackage);
 
-          // ── TRAIN PACKAGE — route to booking agent ──────
           const isTrain = selectedPackage?.summary?.transportType === 'train'
                        || selectedPackage?.transport?.transportType === 'train';
 
           if (isTrain) {
             const trainBookingService = require('../services/trainBookingService');
             const bookingRef = `BDL-${Date.now()}`;
-
-            await whatsappService.sendText(phoneNumberId, from,
-              `🚆 Booking your SGR ticket now — one moment...`
-            );
-
-            const trainResult = await trainBookingService.book({
-              bookingRef,
-              agencyId,
-              tripParams: cached.previousParams || {},
-            });
-
+            await whatsappService.sendText(phoneNumberId, recipient, `🚆 Booking your SGR ticket now — one moment...`);
+            const trainResult = await trainBookingService.book({ bookingRef, agencyId, tripParams: cached.previousParams || {} });
             if (trainResult.success) {
-              const refLine = trainResult.krcRef
-                ? `\n\n📋 *KRC Reference: ${trainResult.krcRef}*`
-                : '';
-              await whatsappService.sendText(phoneNumberId, from,
-                `✅ Your SGR ticket has been submitted!${refLine}\n\n` +
-                `📱 *Check your phone* — M-Pesa will prompt you to pay KES ${selectedPackage.summary?.totalPrice?.toLocaleString() || ''}. Enter your PIN within 2 minutes to confirm.\n\n` +
-                `You'll receive an SMS from Kenya Railways once the payment goes through. Show that SMS at the station to collect your ticket.`
+              const refLine = trainResult.krcRef ? `\n\n📋 *KRC Reference: ${trainResult.krcRef}*` : '';
+              await whatsappService.sendText(phoneNumberId, recipient,
+                `✅ Your SGR ticket has been submitted!${refLine}\n\n📱 *Check your phone* — M-Pesa will prompt you to pay KES ${selectedPackage.summary?.totalPrice?.toLocaleString() || ''}. Enter your PIN within 2 minutes to confirm.\n\nYou'll receive an SMS from Kenya Railways once the payment goes through. Show that SMS at the station to collect your ticket.`
               );
             } else {
-              await whatsappService.sendText(phoneNumberId, from,
-                `⚠️ We couldn't auto-book your SGR ticket this time.\n\n` +
-                `Book directly at: *metickets.krc.co.ke*\n` +
-                `Or call KRC: *0709 388 887*\n\n` +
-                `Your trip details are saved — reply if you need help.`
+              await whatsappService.sendText(phoneNumberId, recipient,
+                `⚠️ We couldn't auto-book your SGR ticket this time.\n\nBook directly at: *metickets.krc.co.ke*\nOr call KRC: *0709 388 887*\n\nYour trip details are saved — reply if you need help.`
               );
             }
             return;
           }
-          // ── END TRAIN BOOKING ───────────────────────────
 
-          await whatsappBookingFlow.startBooking({ phoneNumberId, from, agencyId, selectedPackage });
+          await whatsappBookingFlow.startBooking({ phoneNumberId, from: userKey, agencyId, selectedPackage });
           return;
         }
       }
-      await whatsappService.sendText(phoneNumberId, from,
+      await whatsappService.sendText(phoneNumberId, recipient,
         "I don't have a recent list of options for you anymore — could you search again? For example: \"Nairobi to Zanzibar, 3 nights\"."
       );
       return;
@@ -394,9 +331,9 @@ router.post('/whatsapp', async (req, res) => {
 
     // ── STRAY PASSENGER DETAILS ────────────────────────────
     if (PASSENGER_DETAIL_LINE.test(prompt.trim())) {
-      const hasSession = await whatsappBookingFlow.hasActiveSession(from);
+      const hasSession = await whatsappBookingFlow.hasActiveSession(userKey);
       if (!hasSession) {
-        await whatsappService.sendText(phoneNumberId, from,
+        await whatsappService.sendText(phoneNumberId, recipient,
           "It looks like you're sending traveler details, but I don't have an active booking for you right now. Please search for a trip first, then reply with the option number to start booking."
         );
         return;
@@ -404,15 +341,11 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── LOAD CONVERSATION CONTEXT ──────────────────────────
-    const memCtx = await conversationMemory.getConversationContext(from, agencyId);
+    const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
 
     // ── ORIGIN CLARIFICATION RESUME ───────────────────────
-    if (
-      memCtx.previousParams?.needsOriginClarification &&
-      !memCtx.previousParams?.origin
-    ) {
+    if (memCtx.previousParams?.needsOriginClarification && !memCtx.previousParams?.origin) {
       const candidateOrigin = prompt.trim();
-
       const looksLikePlace =
         candidateOrigin.split(/\s+/).length <= 3 &&
         !/\d+\s*nights?\b/i.test(candidateOrigin) &&
@@ -421,50 +354,39 @@ router.post('/whatsapp', async (req, res) => {
 
       if (looksLikePlace) {
         logger.info('Clarification resume: injecting origin from reply', {
-          from,
-          origin:              candidateOrigin,
-          previousDestination: memCtx.previousParams.destination,
+          userKey, origin: candidateOrigin, previousDestination: memCtx.previousParams.destination,
         });
-
-        await whatsappService.sendText(phoneNumberId, from, _pickAcknowledgment());
+        await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
 
         const resumedParams = {
           ...memCtx.previousParams,
-          origin:                   candidateOrigin.replace(/\.$/, '').trim(),
+          origin: candidateOrigin.replace(/\.$/, '').trim(),
           needsOriginClarification: false,
         };
 
-        const result = await orchestrationEngine.orchestrate(
-          null,
-          agencyId,
-          {
-            conversationHistory: memCtx.conversationHistory,
-            previousParams:      resumedParams,
-            skipParsing:         true,
-            channel:             'whatsapp',
-            phone:               from,
-          }
-        );
+        const result = await orchestrationEngine.orchestrate(null, agencyId, {
+          conversationHistory: memCtx.conversationHistory,
+          previousParams:      resumedParams,
+          skipParsing:         true,
+          channel:             'whatsapp',
+          phone:               phone || userKey,
+        });
 
-        await conversationMemory.saveTurn(from, agencyId, {
-          userMessage:    prompt,
-          engineResponse: result.text,
-          tripParams:     result.tripParams,
-          packages:       result.packages || [],
-          sessionId:      result.sessionId,
+        await conversationMemory.saveTurn(userKey, agencyId, {
+          userMessage: prompt, engineResponse: result.text, tripParams: result.tripParams,
+          packages: result.packages || [], sessionId: result.sessionId,
         });
 
         if (result.needsClarification) {
-          await whatsappService.sendText(phoneNumberId, from, result.text);
+          await whatsappService.sendText(phoneNumberId, recipient, result.text);
           return;
         }
 
-        await whatsappService.sendText(phoneNumberId, from, result.text);
-
+        await whatsappService.sendText(phoneNumberId, recipient, result.text);
         if (result.packages?.length > 0) {
-          await whatsappService.sendPackages(phoneNumberId, from, result.packages);
-          await packageCache.save(from, result.packages, result.tripParams);
-          await whatsappService.sendText(phoneNumberId, from,
+          await whatsappService.sendPackages(phoneNumberId, recipient, result.packages);
+          await packageCache.save(userKey, result.packages, result.tripParams);
+          await whatsappService.sendText(phoneNumberId, recipient,
             `Reply with the option number (1-${result.packages.length}) to book that option.`
           );
         }
@@ -476,27 +398,17 @@ router.post('/whatsapp', async (req, res) => {
     if (memCtx.selectedPackage) {
       const intent = orchestrationEngine._detectIntent(prompt, memCtx.previousParams);
       const hasAdjustments = Object.keys(intent.adjustments || {}).length > 0;
-
       if (intent.isFollowUp && hasAdjustments) {
-        const modifyResult = await conversationMemory.handleModify(
-          from, agencyId, intent, memCtx.previousParams
-        );
-
+        const modifyResult = await conversationMemory.handleModify(userKey, agencyId, intent, memCtx.previousParams);
         if (modifyResult.action === 'patch') {
-          const pkg    = modifyResult.updatedPackage;
+          const pkg = modifyResult.updatedPackage;
           const nights = intent.adjustments.nights;
-          await whatsappService.sendText(phoneNumberId, from,
-            `Updated to *${nights} nights* — here's your revised package:`
-          );
-          await whatsappService.sendPackages(phoneNumberId, from, [pkg]);
-          await whatsappService.sendText(phoneNumberId, from,
-            "Reply *book* to proceed, or tell me anything else you'd like to change."
-          );
-          await conversationMemory.saveTurn(from, agencyId, {
-            userMessage:    prompt,
-            engineResponse: `Updated to ${nights} nights`,
-            tripParams:     modifyResult.updatedParams,
-            packages:       [pkg],
+          await whatsappService.sendText(phoneNumberId, recipient, `Updated to *${nights} nights* — here's your revised package:`);
+          await whatsappService.sendPackages(phoneNumberId, recipient, [pkg]);
+          await whatsappService.sendText(phoneNumberId, recipient, "Reply *book* to proceed, or tell me anything else you'd like to change.");
+          await conversationMemory.saveTurn(userKey, agencyId, {
+            userMessage: prompt, engineResponse: `Updated to ${nights} nights`,
+            tripParams: modifyResult.updatedParams, packages: [pkg],
           });
           return;
         }
@@ -505,122 +417,102 @@ router.post('/whatsapp', async (req, res) => {
 
     // ── NORMAL ORCHESTRATION ───────────────────────────────
     if (activeLegFlow) {
-      logger.info('LegFlow: user sent fresh search — clearing active flow', { from });
-      await conversationMemory.clearLegFlow(from, agencyId);
+      logger.info('LegFlow: user sent fresh search — clearing active flow', { userKey });
+      await conversationMemory.clearLegFlow(userKey, agencyId);
     }
 
-    await whatsappService.sendText(phoneNumberId, from, _pickAcknowledgment());
+    await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
 
     const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
       conversationHistory: memCtx.conversationHistory,
       previousParams:      memCtx.previousParams,
       channel:             'whatsapp',
-      phone:               from,
+      phone:               phone || userKey,
     });
 
-    // ── SAVE TO DURABLE MEMORY ─────────────────────────────
-    await conversationMemory.saveTurn(from, agencyId, {
-      userMessage:    prompt,
-      engineResponse: result.text,
-      tripParams:     result.tripParams,
-      packages:       result.packages || [],
-      sessionId:      result.sessionId,
+    await conversationMemory.saveTurn(userKey, agencyId, {
+      userMessage: prompt, engineResponse: result.text, tripParams: result.tripParams,
+      packages: result.packages || [], sessionId: result.sessionId,
     });
 
-    // ── TRAIN WARM-UP ──────────────────────────────────────
-    // If any result is a train, pre-warm the Playwright session
-    // in the background so booking is instant when user confirms.
     if (result.packages?.length > 0) {
       const hasTrain = result.packages.some(p =>
-        p.summary?.transportType === 'train' ||
-        p.transport?.transportType === 'train'
+        p.summary?.transportType === 'train' || p.transport?.transportType === 'train'
       );
       if (hasTrain && result.tripParams?.origin && result.tripParams?.destination) {
         const trainBookingService = require('../services/trainBookingService');
         const pendingRef = `TRN-${Date.now()}`;
-        trainBookingService.warmUp(result.tripParams, pendingRef); // fire-and-forget
-        logger.info('Train warm-up triggered', { from, pendingRef });
+        trainBookingService.warmUp(result.tripParams, pendingRef);
+        logger.info('Train warm-up triggered', { userKey, pendingRef });
       }
     }
 
     // ── SEND RESULTS ───────────────────────────────────────
     if (result.needsClarification) {
-      await whatsappService.sendText(phoneNumberId, from, result.text);
+      await whatsappService.sendText(phoneNumberId, recipient, result.text);
       return;
     }
 
-    // ── CLASSIFIED TRIP → START LEG FLOW ──────────────────
     if (result.isClassifiedTrip && result.tripResults?.length > 0) {
       const actionableLegs = result.tripResults.filter(r => r.packages?.length > 0);
-
       if (actionableLegs.length === 0) {
-        await whatsappService.sendText(phoneNumberId, from,
+        await whatsappService.sendText(phoneNumberId, recipient,
           "I searched your whole trip but couldn't find options for any of the legs. Try adjusting your dates or destinations."
         );
         return;
       }
 
       const allPackages = actionableLegs.flatMap(r => r.packages);
-      await packageCache.save(from, allPackages, result.tripParams);
+      await packageCache.save(userKey, allPackages, result.tripParams);
 
       if (actionableLegs.length === 1) {
-        await whatsappService.sendText(phoneNumberId, from, result.text);
-        await whatsappService.sendPackages(phoneNumberId, from, actionableLegs[0].packages);
-        await whatsappService.sendText(phoneNumberId, from,
+        await whatsappService.sendText(phoneNumberId, recipient, result.text);
+        await whatsappService.sendPackages(phoneNumberId, recipient, actionableLegs[0].packages);
+        await whatsappService.sendText(phoneNumberId, recipient,
           `Reply with the option number (1-${actionableLegs[0].packages.length}) to book.`
         );
         return;
       }
 
-      const flow = await conversationMemory.startLegFlow(from, agencyId, {
-        legs:       actionableLegs,
-        tripParams: result.tripParams,
+      const flow = await conversationMemory.startLegFlow(userKey, agencyId, {
+        legs: actionableLegs, tripParams: result.tripParams,
       });
-
       if (!flow) {
-        await whatsappService.sendText(phoneNumberId, from, result.text);
-        await whatsappService.sendPackages(phoneNumberId, from, allPackages);
+        await whatsappService.sendText(phoneNumberId, recipient, result.text);
+        await whatsappService.sendPackages(phoneNumberId, recipient, allPackages);
         return;
       }
 
-      const totalLegs   = flow.legs.length;
+      const totalLegs = flow.legs.length;
       const tripSummary = result.tripParams?.trips
         ? result.tripParams.trips.map(t => `${t.origin || ''} → ${t.destination}`).join(', ')
         : (result.tripParams?.destination || 'your trip');
 
-      await whatsappService.sendText(phoneNumberId, from,
+      await whatsappService.sendText(phoneNumberId, recipient,
         `✅ Found options for all *${totalLegs} legs* of your trip to *${_titleCase(tripSummary)}*.\n\nI'll walk you through one leg at a time — pick your preferred option for each leg, then I'll show you the total and let you pay all at once or leg by leg.`
       );
-
-      await _sendCurrentLeg(phoneNumberId, from, flow);
+      await _sendCurrentLeg(phoneNumberId, recipient, flow);
       return;
     }
 
-    // ── MULTI-TRIP RESULTS ─────────────────────────────────
     if (result.tripResults && result.tripResults.length > 1) {
       const allPackages = [];
-
       for (let i = 0; i < result.tripResults.length; i++) {
-        const trip      = result.tripResults[i];
+        const trip = result.tripResults[i];
         const introLine = i === 0
           ? `Here are options for *Trip 1 — ${trip.label}*:`
           : `And here are options for *Trip ${i + 1} — ${trip.label}*:`;
-
-        await whatsappService.sendText(phoneNumberId, from, introLine);
-
+        await whatsappService.sendText(phoneNumberId, recipient, introLine);
         if (trip.packages?.length > 0) {
-          await whatsappService.sendPackages(phoneNumberId, from, trip.packages);
+          await whatsappService.sendPackages(phoneNumberId, recipient, trip.packages);
           allPackages.push(...trip.packages);
         } else {
-          await whatsappService.sendText(phoneNumberId, from,
-            `Sorry, I couldn't find any options for ${trip.label}.`
-          );
+          await whatsappService.sendText(phoneNumberId, recipient, `Sorry, I couldn't find any options for ${trip.label}.`);
         }
       }
-
       if (allPackages.length > 0) {
-        await packageCache.save(from, allPackages, result.tripParams);
-        await whatsappService.sendText(phoneNumberId, from,
+        await packageCache.save(userKey, allPackages, result.tripParams);
+        await whatsappService.sendText(phoneNumberId, recipient,
           `Reply with the option number (1-${allPackages.length}) to book any of the above.`
         );
       }
@@ -628,12 +520,11 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── SINGLE-TRIP RESULTS ────────────────────────────────
-    await whatsappService.sendText(phoneNumberId, from, result.text);
-
+    await whatsappService.sendText(phoneNumberId, recipient, result.text);
     if (result.packages?.length > 0) {
-      await whatsappService.sendPackages(phoneNumberId, from, result.packages);
-      await packageCache.save(from, result.packages, result.tripParams);
-      await whatsappService.sendText(phoneNumberId, from,
+      await whatsappService.sendPackages(phoneNumberId, recipient, result.packages);
+      await packageCache.save(userKey, result.packages, result.tripParams);
+      await whatsappService.sendText(phoneNumberId, recipient,
         `Reply with the option number (1-${result.packages.length}) to book that option.`
       );
     }
@@ -646,25 +537,25 @@ router.post('/whatsapp', async (req, res) => {
 // ═════════════════════════════════════════════════════════════
 // LEG FLOW MESSAGE HANDLER
 // ═════════════════════════════════════════════════════════════
-async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, activeLegFlow }) {
-  const flow    = activeLegFlow;
+async function _handleLegFlowMessage({ phoneNumberId, recipient, userKey, agencyId, prompt, activeLegFlow }) {
+  const flow = activeLegFlow;
   const trimmed = prompt.trim();
 
   const isAbandonment = /\b(start over|new search|fresh start|forget it|cancel|restart|different trip)\b/i.test(trimmed);
   if (isAbandonment) {
-    await conversationMemory.clearLegFlow(from, agencyId);
+    await conversationMemory.clearLegFlow(userKey, agencyId);
     return false;
   }
 
   const currentLeg = flow.legs[flow.currentLegIndex];
   if (!currentLeg) {
-    await conversationMemory.clearLegFlow(from, agencyId);
+    await conversationMemory.clearLegFlow(userKey, agencyId);
     return false;
   }
 
   if (/\b(show all|all legs|whole trip|see all|overview)\b/i.test(trimmed)) {
     const remaining = flow.legs.slice(flow.currentLegIndex);
-    await whatsappService.sendText(phoneNumberId, from,
+    await whatsappService.sendText(phoneNumberId, recipient,
       `You're on leg *${flow.currentLegIndex + 1} of ${flow.legs.length}*. Here's what's coming:\n\n` +
       remaining.map((l, i) => `*${flow.currentLegIndex + i + 1}.* ${l.roleLabel || l.label}`).join('\n') +
       `\n\nReply with your option choice (1–${currentLeg.packages.length}) to continue.`
@@ -674,65 +565,52 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
 
   const selectionMatch = trimmed.match(/^(?:option\s*)?([1-4])$/i);
   if (selectionMatch) {
-    const optionNum       = parseInt(selectionMatch[1], 10);
+    const optionNum = parseInt(selectionMatch[1], 10);
     const selectedPackage = currentLeg.packages[optionNum - 1];
-
     if (!selectedPackage) {
-      await whatsappService.sendText(phoneNumberId, from,
+      await whatsappService.sendText(phoneNumberId, recipient,
         `I only have ${currentLeg.packages.length} option${currentLeg.packages.length > 1 ? 's' : ''} for this leg. Reply *1*${currentLeg.packages.length > 1 ? `–*${currentLeg.packages.length}*` : ''} to choose.`
       );
       return true;
     }
 
-    const updatedFlow = await conversationMemory.saveLegSelection(from, agencyId, {
-      legIndex:        flow.currentLegIndex,
-      selectedPackage,
+    const updatedFlow = await conversationMemory.saveLegSelection(userKey, agencyId, {
+      legIndex: flow.currentLegIndex, selectedPackage,
     });
-
     if (!updatedFlow) {
-      await whatsappService.sendText(phoneNumberId, from,
-        "Something went wrong saving your choice — please try again."
-      );
+      await whatsappService.sendText(phoneNumberId, recipient, "Something went wrong saving your choice — please try again.");
       return true;
     }
 
-    const legPrice    = selectedPackage.summary?.totalPrice || 0;
+    const legPrice = selectedPackage.summary?.totalPrice || 0;
     const legCurrency = selectedPackage.summary?.currency || 'KES';
-    await whatsappService.sendText(phoneNumberId, from,
+    await whatsappService.sendText(phoneNumberId, recipient,
       `✅ Got it — *Option ${optionNum}* selected for *${currentLeg.roleLabel || currentLeg.label}* (${legCurrency} ${legPrice.toLocaleString()})`
     );
 
     if (!updatedFlow.active) {
       const allSelected = Object.values(updatedFlow.selections).map(s => s.package);
-      await packageCache.save(from, allSelected, updatedFlow.tripParams);
-
+      await packageCache.save(userKey, allSelected, updatedFlow.tripParams);
       const finalSummary = conversationMemory.buildFinalLegSummary(updatedFlow);
-      await whatsappService.sendText(phoneNumberId, from, finalSummary);
-
-      await conversationMemory.clearLegFlow(from, agencyId);
+      await whatsappService.sendText(phoneNumberId, recipient, finalSummary);
+      await conversationMemory.clearLegFlow(userKey, agencyId);
       return true;
     }
 
     const summaryBlock = conversationMemory.getLegFlowSummary(updatedFlow);
-    if (summaryBlock) {
-      await whatsappService.sendText(phoneNumberId, from, summaryBlock);
-    }
-
+    if (summaryBlock) await whatsappService.sendText(phoneNumberId, recipient, summaryBlock);
     await new Promise(resolve => setTimeout(resolve, 800));
-    await _sendCurrentLeg(phoneNumberId, from, updatedFlow);
+    await _sendCurrentLeg(phoneNumberId, recipient, flow);
     return true;
   }
 
   const looksLikeModification = /\b(cheaper|different|another|change|morning|evening|upgrade|luxury|budget|hotel|flight|bus)\b/i.test(trimmed);
   if (looksLikeModification) {
-    await whatsappService.sendText(phoneNumberId, from,
+    await whatsappService.sendText(phoneNumberId, recipient,
       `Here are the options again for *${currentLeg.roleLabel || currentLeg.label}* — reply with *1*${currentLeg.packages.length > 1 ? `–*${currentLeg.packages.length}*` : ''} to choose:`
     );
-    await whatsappService.sendLegPackages(phoneNumberId, from, {
-      leg:             currentLeg,
-      legIndex:        flow.currentLegIndex,
-      totalLegs:       flow.legs.length,
-      runningTotalKES: flow.runningTotalKES || 0,
+    await whatsappService.sendLegPackages(phoneNumberId, recipient, {
+      leg: currentLeg, legIndex: flow.currentLegIndex, totalLegs: flow.legs.length, runningTotalKES: flow.runningTotalKES || 0,
     });
     return true;
   }
@@ -742,12 +620,12 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
     || /\d+\s*nights?\b/i.test(trimmed);
 
   if (looksLikeFreshSearch) {
-    logger.info('LegFlow: message looks like fresh search — abandoning flow', { from, preview: trimmed.slice(0, 80) });
-    await conversationMemory.clearLegFlow(from, agencyId);
+    logger.info('LegFlow: message looks like fresh search — abandoning flow', { userKey, preview: trimmed.slice(0, 80) });
+    await conversationMemory.clearLegFlow(userKey, agencyId);
     return false;
   }
 
-  await whatsappService.sendText(phoneNumberId, from,
+  await whatsappService.sendText(phoneNumberId, recipient,
     `We're working through your trip leg by leg. Reply with *1*${currentLeg.packages.length > 1 ? `–*${currentLeg.packages.length}*` : ''} to pick an option for *${currentLeg.roleLabel || currentLeg.label}*.\n\nSay "show all" to see all remaining legs, or "start over" for a new search.`
   );
   return true;
@@ -756,21 +634,43 @@ async function _handleLegFlowMessage({ phoneNumberId, from, agencyId, prompt, ac
 // ─────────────────────────────────────────────
 // SEND CURRENT LEG
 // ─────────────────────────────────────────────
-async function _sendCurrentLeg(phoneNumberId, from, flow) {
+async function _sendCurrentLeg(phoneNumberId, recipient, flow) {
   const leg = flow.legs[flow.currentLegIndex];
   if (!leg) return;
-
-  await whatsappService.sendLegPackages(phoneNumberId, from, {
-    leg,
-    legIndex:        flow.currentLegIndex,
-    totalLegs:       flow.legs.length,
-    runningTotalKES: flow.runningTotalKES || 0,
+  await whatsappService.sendLegPackages(phoneNumberId, recipient, {
+    leg, legIndex: flow.currentLegIndex, totalLegs: flow.legs.length, runningTotalKES: flow.runningTotalKES || 0,
   });
 }
 
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
+
+function _resolveIdentity(body, message) {
+  const value = body.entry[0].changes[0].value;
+  const contacts = value.contacts || [];
+
+  // Phone-based identity (traditional WhatsApp Business API)
+  const phone = message.from || contacts[0]?.wa_id || null;
+
+  // User-ID-based identity (newer WhatsApp / BSP payloads)
+  // KEEP the prefix exactly as WhatsApp sends it (e.g. KE.4521012381488781)
+  const rawUserId = message.from_user_id || contacts[0]?.user_id || null;
+  const userId = rawUserId || null;
+
+  // Display name / username if available
+  const username = contacts[0]?.profile?.username
+    || contacts[0]?.profile?.name
+    || null;
+
+  // userKey = stable internal identifier (phone preferred, fallback to userId)
+  const userKey = phone || userId || null;
+
+  // recipient = what we pass to WhatsApp send API (phone preferred, fallback to raw userId)
+  const recipient = phone || rawUserId || null;
+
+  return { phone, userId, rawUserId, username, userKey, recipient };
+}
 
 async function _resolveAgency(phoneNumberId) {
   try {
@@ -786,40 +686,103 @@ async function _resolveAgency(phoneNumberId) {
   return process.env.DEFAULT_AGENCY_ID || 'azaki-adventures';
 }
 
-async function _getOrCreateContact(phone, agencyId) {
-  const { data: existing, error: selectError } = await supabase
-    .from('whatsapp_contacts')
-    .select('*')
-    .eq('phone', phone)
-    .maybeSingle();
+async function _getOrCreateContact({ phone, userId, username, agencyId }) {
+  // 1. Try lookup by phone
+  if (phone) {
+    const { data: byPhone, error: phoneErr } = await supabase
+      .from('whatsapp_contacts')
+      .select('*')
+      .eq('phone', phone)
+      .maybeSingle();
 
-  if (selectError) {
-    logger.error('whatsapp_contacts lookup failed', { error: selectError.message });
-    return { justCreated: false, awaiting_name: false, name: null, conversation_history: [], previous_params: null };
-  }
+    if (phoneErr) logger.error('whatsapp_contacts lookup by phone failed', { error: phoneErr.message, phone });
 
-  if (existing) {
-    if (!existing.agency_id && agencyId) {
-      supabase
-        .from('whatsapp_contacts')
-        .update({ agency_id: agencyId })
-        .eq('phone', phone)
-        .then(() => {})
-        .catch(err => logger.error('whatsapp_contacts agency_id backfill failed', { error: err.message, phone }));
+    if (byPhone) {
+      // Backfill user_id if we now have one and it was missing
+      if (userId && !byPhone.user_id) {
+        supabase.from('whatsapp_contacts').update({ user_id: userId }).eq('phone', phone)
+          .then(() => {}).catch(err => logger.error('whatsapp_contacts user_id backfill failed', { error: err.message }));
+      }
+      if (!byPhone.agency_id && agencyId) {
+        supabase.from('whatsapp_contacts').update({ agency_id: agencyId }).eq('phone', phone)
+          .then(() => {}).catch(err => logger.error('whatsapp_contacts agency_id backfill failed', { error: err.message }));
+      }
+      return { ...byPhone, justCreated: false };
     }
-    return { ...existing, justCreated: false };
   }
+
+  // 2. Try lookup by user_id
+  if (userId) {
+    const { data: byUserId, error: userIdErr } = await supabase
+      .from('whatsapp_contacts')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (userIdErr) logger.error('whatsapp_contacts lookup by user_id failed', { error: userIdErr.message, userId });
+
+    if (byUserId) {
+      // Backfill phone if we now have one and it was missing
+      if (phone && !byUserId.phone) {
+        supabase.from('whatsapp_contacts').update({ phone }).eq('user_id', userId)
+          .then(() => {}).catch(err => logger.error('whatsapp_contacts phone backfill failed', { error: err.message }));
+      }
+      if (!byUserId.agency_id && agencyId) {
+        supabase.from('whatsapp_contacts').update({ agency_id: agencyId }).eq('user_id', userId)
+          .then(() => {}).catch(err => logger.error('whatsapp_contacts agency_id backfill failed', { error: err.message }));
+      }
+      return { ...byUserId, justCreated: false };
+    }
+  }
+
+  // 3. Create new contact
+  const insertPayload = {
+    phone:        phone || null,
+    user_id:      userId || null,
+    username:     username || null,
+    name:         username || null,
+    awaiting_name: !username,
+    agency_id:    agencyId || null,
+  };
 
   const { error: insertError } = await supabase
     .from('whatsapp_contacts')
-    .insert({ phone, name: null, awaiting_name: true, agency_id: agencyId || null });
+    .insert(insertPayload);
 
   if (insertError) {
-    logger.error('whatsapp_contacts insert failed', { error: insertError.message });
-    return { justCreated: false, awaiting_name: false, name: null, conversation_history: [], previous_params: null };
+    logger.error('whatsapp_contacts insert failed', { error: insertError.message, phone, userId });
+    return { justCreated: false, awaiting_name: false, name: username || null, conversation_history: [], previous_params: null };
   }
 
-  return { justCreated: true, awaiting_name: true, name: null };
+  return { justCreated: true, awaiting_name: !username, name: username || null };
+}
+
+async function _saveContactName({ phone, userId, name }) {
+  const query = supabase.from('whatsapp_contacts').update({
+    name, awaiting_name: false, updated_at: new Date().toISOString(),
+  });
+
+  if (phone) {
+    const { error } = await query.eq('phone', phone);
+    if (error) logger.error('whatsapp_contacts name save by phone failed', { error: error.message, phone });
+  } else if (userId) {
+    const { error } = await query.eq('user_id', userId);
+    if (error) logger.error('whatsapp_contacts name save by user_id failed', { error: error.message, userId });
+  }
+}
+
+async function _clearAwaitingName({ phone, userId }) {
+  const query = supabase.from('whatsapp_contacts').update({
+    awaiting_name: false, updated_at: new Date().toISOString(),
+  });
+
+  if (phone) {
+    const { error } = await query.eq('phone', phone);
+    if (error) logger.error('whatsapp_contacts awaiting_name clear by phone failed', { error: error.message, phone });
+  } else if (userId) {
+    const { error } = await query.eq('user_id', userId);
+    if (error) logger.error('whatsapp_contacts awaiting_name clear by user_id failed', { error: error.message, userId });
+  }
 }
 
 const ACKNOWLEDGMENT_MESSAGES = [
@@ -844,37 +807,7 @@ function _extractName(text) {
   if (looksLikeTripPrompt) return null;
   if (cleaned.split(/\s+/).length > 4) return null;
   if (cleaned.length > 40) return null;
-  return cleaned
-    .split(/\s+/)
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(' ');
-}
-
-async function _saveContactName(phone, name) {
-  const { error } = await supabase
-    .from('whatsapp_contacts')
-    .update({ name, awaiting_name: false, updated_at: new Date().toISOString() })
-    .eq('phone', phone);
-  if (error) logger.error('whatsapp_contacts name save failed', { error: error.message, phone });
-}
-
-async function _clearAwaitingName(phone) {
-  const { error } = await supabase
-    .from('whatsapp_contacts')
-    .update({ awaiting_name: false, updated_at: new Date().toISOString() })
-    .eq('phone', phone);
-  if (error) logger.error('whatsapp_contacts awaiting_name clear failed', { error: error.message, phone });
-}
-
-function _normalizePhone(raw) {
-  if (!raw) return null;
-  // Strip country-code prefixes like "KE.", "UG.", "TZ." that some BSPs attach
-  let cleaned = raw.replace(/^[A-Z]{2}\./, '');
-  // Ensure it starts with + if it looks like a full international number
-  if (/^\d{10,15}$/.test(cleaned) && !cleaned.startsWith('+')) {
-    return '+' + cleaned;
-  }
-  return cleaned;
+  return cleaned.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
 }
 
 function _titleCase(str) {
