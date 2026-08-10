@@ -149,7 +149,7 @@ class HotelDirectEngine {
       const group = await this._getHotelGroup(groupSlug);
       if (!group) {
         return this._buildResponse(sessionId, {}, conversationHistory,
-          `I couldn't find a hotel configuration for "${groupSlug}". Please contact support.`, []);
+          `I couldn't find a hotel configuration for "${groupSlug}". Please contact support.`, [], {}, prompt);
       }
 
       const allProperties = await this._getAllProperties(group.id);
@@ -189,7 +189,7 @@ class HotelDirectEngine {
       } catch (err) {
         logger.error('[HOTEL DIRECT] Groq parse failed', { error: err.message });
         return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
-          "I didn't quite catch that. Could you tell me which property you'd like and your preferred dates?", []);
+          "I didn't quite catch that. Could you tell me which property you'd like and your preferred dates?", [], {}, prompt);
       }
 
       const { intent, replyText, searchParams, clarifyQuestion } = groqResult;
@@ -200,12 +200,12 @@ class HotelDirectEngine {
       if (intent === 'clarify' || !searchParams?.shouldSearch) {
         const msg = clarifyQuestion || replyText || "Could you give me a bit more detail?";
         return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
-          msg, [], { needsClarification: true });
+          msg, [], { needsClarification: true }, prompt);
       }
 
       if (intent === 'question' || intent === 'manage' || intent === 'chitchat') {
         return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
-          replyText || "How can I help?", []);
+          replyText || "How can I help?", [], {}, prompt);
       }
 
       // ── Resolve first/single property ──────────────────────────────────
@@ -814,10 +814,10 @@ class HotelDirectEngine {
     return 'Cancellation policy confirmed at booking.';
   }
 
-  _buildResponse(sessionId, tripParams, conversationHistory, text, packages, meta = {}) {
+  _buildResponse(sessionId, tripParams, conversationHistory, text, packages, meta = {}, originalPrompt = '') {
     const updatedHistory = [
       ...conversationHistory,
-      { role: 'user',      content: tripParams._originalPrompt || '' },
+      { role: 'user',      content: originalPrompt || tripParams._originalPrompt || '' },
       { role: 'assistant', content: text, packageCount: packages.length },
     ].slice(-20);
 
