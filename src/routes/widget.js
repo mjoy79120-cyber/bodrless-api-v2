@@ -287,10 +287,21 @@ function initWidget() {
   var welcomeShown = false;
   if (!embedTarget) {
     var triggerBtn = document.createElement('button'); triggerBtn.id = 'bodrless-trigger';
-    triggerBtn.innerText = isHotelMode ? 'Book a Room' : 'Plan Your Trip';
-    document.body.appendChild(triggerBtn);
-    triggerBtn.onclick = function() { chatDiv.classList.add('open'); input.focus(); if (!welcomeShown) { welcomeShown = true; _initView(); } };
-    closeBtn.onclick = function() { chatDiv.classList.remove('open'); };
+triggerBtn.innerText = isHotelMode ? 'Book a Room' : '✈️ Plan Your Trip';
+triggerBtn.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1E2A5E;color:white;border:none;padding:16px 36px;border-radius:30px;cursor:pointer;font-size:16px;font-weight:600;box-shadow:0 8px 32px rgba(0,0,0,0.25);z-index:999998;font-family:Inter,Arial,sans-serif;transition:all 0.2s;letter-spacing:0.3px;';
+triggerBtn.onmouseover = function(){ this.style.background='#B8964A'; this.style.transform='translate(-50%,-50%) scale(1.04)'; };
+triggerBtn.onmouseout  = function(){ this.style.background='#1E2A5E'; this.style.transform='translate(-50%,-50%) scale(1)'; };
+document.body.appendChild(triggerBtn);
+triggerBtn.onclick = function() {
+  triggerBtn.style.display = 'none';
+  chatDiv.classList.add('open');
+  input.focus();
+  if (!welcomeShown) { welcomeShown = true; _initView(); }
+};
+closeBtn.onclick = function() {
+  chatDiv.classList.remove('open');
+  triggerBtn.style.display = 'block';
+};
   } else { chatDiv.classList.add('open'); if (!welcomeShown) { welcomeShown = true; _initView(); } }
 
   function _initView() {

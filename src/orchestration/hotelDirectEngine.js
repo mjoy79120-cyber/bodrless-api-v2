@@ -110,7 +110,8 @@ RULES:
 - If dates are relative ("this weekend", "next Friday", "tomorrow"), resolve them to YYYY-MM-DD.
 - If no check-in is given, default to tomorrow. If no nights, default to 3. If no adults, default to 1.
 - For honeymoon/wedding: if adults not specified, default to 2.
-- Only set shouldSearch=true when you have: a clear property match AND checkIn.
+- Set shouldSearch=true when you have a clear property match AND any of: a specific date, a month name, "this weekend", "next week", or any relative time reference. Resolve month names to the 1st of that month (e.g. "november" → "${new Date().getFullYear()}-11-01"). Do NOT wait for an exact date.
+- Only set shouldSearch=false if you have NO date or time reference at all.
 - Keep replyText warm. Never list room prices. For special occasions, acknowledge warmly (e.g. "Congratulations on your upcoming wedding! Let me find something perfect for you.").`;
 }
 
@@ -195,6 +196,32 @@ class HotelDirectEngine {
       const { intent, replyText, searchParams, clarifyQuestion } = groqResult;
 
       logger.info('[HOTEL DIRECT] Groq intent', { intent, shouldSearch: searchParams?.shouldSearch, preferences: searchParams?.preferences });
+
+      // ── Auto-resolve: if Groq said shouldSearch=false but we can infer enough, override ──
+      if (!searchParams?.shouldSearch && searchParams) {
+        const hasProperty = !!(searchParams.propertyId || searchParams.propertyName ||
+          (Array.isArray(searchParams.legs) && searchParams.legs.length > 0));
+        const monthMatch  = prompt.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i);
+        const hasTimeRef  = !!(searchParams.checkIn || monthMatch ||
+          /\b(today|tomorrow|tonight|this week|next week|this weekend|next weekend)\b/i.test(prompt));
+
+        if (hasProperty && hasTimeRef) {
+          // Resolve month name to 1st of that month if no checkIn was set
+          if (!searchParams.checkIn && monthMatch) {
+            const monthNames = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+            const monthIdx   = monthNames.indexOf(monthMatch[1].toLowerCase());
+            const year       = new Date().getMonth() > monthIdx
+              ? new Date().getFullYear() + 1   // month already passed this year → next year
+              : new Date().getFullYear();
+            searchParams.checkIn  = `${year}-${String(monthIdx + 1).padStart(2, '0')}-01`;
+            searchParams.checkOut = resolveCheckOut(searchParams.checkIn, searchParams.nights || 3);
+          }
+          searchParams.shouldSearch = true;
+          logger.info('[HOTEL DIRECT] Auto-resolved shouldSearch=true from month/time reference', {
+            checkIn: searchParams.checkIn, prompt,
+          });
+        }
+      }
 
       // ── Non-search intents ─────────────────────────────────────────────
       if (intent === 'clarify' || !searchParams?.shouldSearch) {
