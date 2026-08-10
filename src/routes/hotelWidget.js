@@ -49,8 +49,8 @@ router.get('/', (req, res) => {
   width:400px;height:660px;
 }
 #bd-hotel-chat.embedded{
-  position:relative;width:100%;height:760px;
-  display:flex;border-radius:0;border:none;
+  position:relative;width:100%;min-height:600px;
+  display:flex;flex-direction:column;border-radius:0;border:none;
 }
 
 /* ── Header ── */
@@ -85,7 +85,7 @@ router.get('/', (req, res) => {
 #bd-hotel-messages{
   flex:1;padding:14px 12px;overflow-y:auto;
   display:flex;flex-direction:column;gap:10px;
-  background:var(--bd-cream);min-height:0;
+  background:var(--bd-cream);min-height:300px;
 }
 
 /* ── Input area ── */
@@ -180,6 +180,7 @@ router.get('/', (req, res) => {
 .bd-pkg{
   background:var(--bd-warm-white);border:1px solid var(--bd-border);
   border-radius:16px;overflow:hidden;margin-bottom:6px;
+  width:100%;flex-shrink:0;
 }
 .bd-pkg:last-child{margin-bottom:0;}
 
