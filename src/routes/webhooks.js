@@ -684,7 +684,7 @@ function _resolveIdentity(body, message) {
   const phone = message.from || contacts[0]?.wa_id || null;
 
   // User-ID-based identity (newer WhatsApp / BSP payloads)
-  // KEEP the prefix exactly as WhatsApp sends it (e.g. KE.4521012381488781)
+  // KEEP the prefix exactly as WhatsApp sends it for DB storage
   const rawUserId = message.from_user_id || contacts[0]?.user_id || null;
   const userId = rawUserId || null;
 
@@ -696,8 +696,9 @@ function _resolveIdentity(body, message) {
   // userKey = stable internal identifier (phone preferred, fallback to userId)
   const userKey = phone || userId || null;
 
-  // recipient = what we pass to WhatsApp send API (phone preferred, fallback to raw userId)
-  const recipient = phone || rawUserId || null;
+  // recipient = what we pass to WhatsApp send API
+  // Meta only understands the numeric part, so strip KE./UG./TZ. prefix
+  const recipient = phone || (rawUserId ? rawUserId.replace(/^[A-Z]{2}\./, '') : null) || null;
 
   return { phone, userId, rawUserId, username, userKey, recipient };
 }
@@ -728,6 +729,7 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     if (phoneErr) logger.error('whatsapp_contacts lookup by phone failed', { error: phoneErr.message, phone });
 
     if (byPhone) {
+      // Backfill user_id if we now have one and it was missing
       if (userId && !byPhone.user_id) {
         supabase.from('whatsapp_contacts').update({ user_id: userId }).eq('phone', phone)
           .then(() => {}).catch(err => logger.error('whatsapp_contacts user_id backfill failed', { error: err.message }));
@@ -751,6 +753,7 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     if (userIdErr) logger.error('whatsapp_contacts lookup by user_id failed', { error: userIdErr.message, userId });
 
     if (byUserId) {
+      // Backfill phone if we now have one and it was missing
       if (phone && !byUserId.phone) {
         supabase.from('whatsapp_contacts').update({ phone }).eq('user_id', userId)
           .then(() => {}).catch(err => logger.error('whatsapp_contacts phone backfill failed', { error: err.message }));
