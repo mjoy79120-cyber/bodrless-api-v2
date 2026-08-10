@@ -694,7 +694,7 @@ function _resolveIdentity(body, message) {
     || null;
 
   // userKey = stable internal identifier (phone preferred, fallback to userId)
-  const userKey = phone || userId || null;
+  const userKey = userId || phone || null;
 
   // recipient = what we pass to WhatsApp send API
   // Meta only understands the numeric part, so strip KE./UG./TZ. prefix
@@ -718,6 +718,38 @@ async function _resolveAgency(phoneNumberId) {
 }
 
 async function _getOrCreateContact({ phone, userId, username, agencyId }) {
+  // 0. Merge: phone-only message from someone who previously used user_id
+  if (phone && !userId && username) {
+    const { data: anonymousContact, error: mergeErr } = await supabase
+      .from('whatsapp_contacts')
+      .select('*')
+      .eq('username', username)
+      .is('phone', null)
+      .not('user_id', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (mergeErr) logger.error('whatsapp_contacts merge lookup failed', { error: mergeErr.message, username });
+
+    if (anonymousContact) {
+      logger.info('whatsapp_contacts: merging anonymous user_id contact with new phone', {
+        userId: anonymousContact.user_id,
+        phone,
+      });
+      const { error: updateErr } = await supabase
+        .from('whatsapp_contacts')
+        .update({ phone, agency_id: agencyId || anonymousContact.agency_id })
+        .eq('id', anonymousContact.id);
+
+      if (updateErr) {
+        logger.error('whatsapp_contacts merge update failed', { error: updateErr.message });
+      } else {
+        return { ...anonymousContact, phone, agency_id: agencyId || anonymousContact.agency_id, justCreated: false };
+      }
+    }
+  }
+
   // 1. Try lookup by phone
   if (phone) {
     const { data: byPhone, error: phoneErr } = await supabase
@@ -729,7 +761,6 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     if (phoneErr) logger.error('whatsapp_contacts lookup by phone failed', { error: phoneErr.message, phone });
 
     if (byPhone) {
-      // Backfill user_id if we now have one and it was missing
       if (userId && !byPhone.user_id) {
         supabase.from('whatsapp_contacts').update({ user_id: userId }).eq('phone', phone)
           .then(() => {}).catch(err => logger.error('whatsapp_contacts user_id backfill failed', { error: err.message }));
@@ -753,7 +784,6 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     if (userIdErr) logger.error('whatsapp_contacts lookup by user_id failed', { error: userIdErr.message, userId });
 
     if (byUserId) {
-      // Backfill phone if we now have one and it was missing
       if (phone && !byUserId.phone) {
         supabase.from('whatsapp_contacts').update({ phone }).eq('user_id', userId)
           .then(() => {}).catch(err => logger.error('whatsapp_contacts phone backfill failed', { error: err.message }));
@@ -776,16 +806,18 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     agency_id:    agencyId || null,
   };
 
-  const { error: insertError } = await supabase
+  const { data: inserted, error: insertError } = await supabase
     .from('whatsapp_contacts')
-    .insert(insertPayload);
+    .insert(insertPayload)
+    .select()
+    .single();
 
   if (insertError) {
     logger.error('whatsapp_contacts insert failed', { error: insertError.message, phone, userId });
     return { justCreated: false, awaiting_name: false, name: username || null, conversation_history: [], previous_params: null };
   }
 
-  return { justCreated: true, awaiting_name: !username, name: username || null };
+  return { ...inserted, justCreated: true, awaiting_name: !username, name: username || null };
 }
 
 async function _saveContactName({ phone, userId, name }) {
