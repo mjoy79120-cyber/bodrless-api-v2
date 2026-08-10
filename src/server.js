@@ -378,9 +378,9 @@ ${propCardsHTML}
     }).join(',\n    ')}
   ];
 
-  function sendPrompt(text) {
-    var input = document.getElementById('bodrless-input');
-    var btn   = document.getElementById('bodrless-send');
+ function sendPrompt(text) {
+    var input = document.getElementById('bd-hotel-input');
+    var btn   = document.getElementById('bd-hotel-send');
     if (input && btn) {
       input.value = text;
       btn.click();
@@ -393,9 +393,9 @@ ${propCardsHTML}
     e.preventDefault();
     document.getElementById('concierge').scrollIntoView({ behavior: 'smooth' });
     setTimeout(function() {
-      var input = document.getElementById('bodrless-input');
+      var input = document.getElementById('bd-hotel-input');
       if (input) input.focus();
-    }, 600);
+    }, 600);;
   });
 </script>
 
