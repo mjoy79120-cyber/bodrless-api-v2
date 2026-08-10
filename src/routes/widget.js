@@ -968,7 +968,7 @@ function initWidget() {
     text:             data.text,
     needsClarification: data.needsClarification,
   }));
-  
+
       if(data.sessionId)           sessionId           = data.sessionId;
       if(data.tripParams)          previousParams      = data.tripParams;
       if(data.conversationHistory) conversationHistory = data.conversationHistory;
@@ -1013,7 +1013,10 @@ function initWidget() {
       if(!pkgs.length){var nt3=(data&&data.text)?data.text:"No options available.";addMsg(nt3,'bot');transcript.push({type:'bot',text:nt3});persistState();return;}
       var rm3=data.text||'I found '+pkgs.length+' option(s) for you:';
       var botMsg3=addMsg(rm3,'bot');transcript.push({type:'bot',text:rm3});
-      pkgs.slice(0,4).forEach(function(p,i){addPackage(p,i,null,null);});
+      pkgs.slice(0,4).forEach(function(p,i){
+  var card = addPackage(p,i,null,null);
+  messages.appendChild(card);
+});
       transcript.push({type:'packages',packages:pkgs.slice(0,4)});
       scrollToEl(botMsg3);persistState();
 
