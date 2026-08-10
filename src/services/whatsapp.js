@@ -129,8 +129,8 @@ class WhatsAppService {
   // ─────────────────────────────────────────────
   // Packages are sent in REVERSE ORDER (highest index first) so
   // that Option 1 is the LAST message delivered and therefore
-  // appears at the BOTTOM of the screen — right where the
-  // traveler's thumb is resting. They scroll UP to compare 2/3/4.
+  // appears at the BOTTOM of the traveler's screen — right where
+  // the traveler's thumb is resting. They scroll UP to compare 2/3/4.
   //
   // Display numbers (i+1) are preserved correctly regardless of
   // send order — the loop uses the original index.
@@ -475,9 +475,19 @@ class WhatsAppService {
   }
 
   /**
-   * Core send function
+   * Core send function — with diagnostic logging
    */
   async _send(phoneNumberId, payload) {
+    const to = payload.to;
+
+    logger.info('WhatsApp outbound send', {
+      phoneNumberId,
+      to,
+      toType: typeof to,
+      messageType: payload.type,
+      textPreview: payload.text?.body?.slice(0, 60) || payload.image?.link || payload.interactive?.type || null,
+    });
+
     try {
       const response = await axios.post(
         `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
@@ -490,10 +500,19 @@ class WhatsAppService {
           timeout: 10000,
         }
       );
+
+      logger.info('WhatsApp send succeeded', {
+        to,
+        messageId: response.data?.messages?.[0]?.id,
+      });
+
       return response.data;
     } catch (error) {
       logger.error('WhatsApp send failed', {
-        error: error.response?.data || error.message,
+        to,
+        status: error.response?.status,
+        errorBody: error.response?.data,
+        message: error.message,
       });
       throw error;
     }

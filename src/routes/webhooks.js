@@ -422,6 +422,7 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
+    logger.info('Webhook: calling orchestrationEngine...', { userKey, prompt: prompt.slice(0, 80) });
 
     const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
       conversationHistory: memCtx.conversationHistory,
@@ -430,11 +431,26 @@ router.post('/whatsapp', async (req, res) => {
       phone:               phone || userKey,
     });
 
-    await conversationMemory.saveTurn(userKey, agencyId, {
-      userMessage: prompt, engineResponse: result.text, tripParams: result.tripParams,
-      packages: result.packages || [], sessionId: result.sessionId,
+    logger.info('Webhook: orchestration returned', {
+      userKey,
+      hasText: !!result.text,
+      textLength: result.text?.length,
+      packagesCount: result.packages?.length,
+      tripResultsCount: result.tripResults?.length,
+      isClassifiedTrip: result.isClassifiedTrip,
+      needsClarification: result.needsClarification,
     });
 
+    // ── SEND RESULTS (fire-and-forget memory save so it can't block) ──
+    conversationMemory.saveTurn(userKey, agencyId, {
+      userMessage:    prompt,
+      engineResponse: result.text,
+      tripParams:     result.tripParams,
+      packages:       result.packages || [],
+      sessionId:      result.sessionId,
+    }).catch(err => logger.error('Webhook: saveTurn failed (non-blocking)', { error: err.message, userKey }));
+
+    // ── TRAIN WARM-UP ──────────────────────────────────────
     if (result.packages?.length > 0) {
       const hasTrain = result.packages.some(p =>
         p.summary?.transportType === 'train' || p.transport?.transportType === 'train'
@@ -447,15 +463,18 @@ router.post('/whatsapp', async (req, res) => {
       }
     }
 
-    // ── SEND RESULTS ───────────────────────────────────────
+    // ── CLARIFICATION ──────────────────────────────────────
     if (result.needsClarification) {
+      logger.info('Webhook: sending clarification', { userKey, textPreview: result.text?.slice(0, 60) });
       await whatsappService.sendText(phoneNumberId, recipient, result.text);
       return;
     }
 
+    // ── CLASSIFIED TRIP → LEG FLOW ─────────────────────────
     if (result.isClassifiedTrip && result.tripResults?.length > 0) {
       const actionableLegs = result.tripResults.filter(r => r.packages?.length > 0);
       if (actionableLegs.length === 0) {
+        logger.info('Webhook: classified trip but no actionable legs', { userKey });
         await whatsappService.sendText(phoneNumberId, recipient,
           "I searched your whole trip but couldn't find options for any of the legs. Try adjusting your dates or destinations."
         );
@@ -466,6 +485,7 @@ router.post('/whatsapp', async (req, res) => {
       await packageCache.save(userKey, allPackages, result.tripParams);
 
       if (actionableLegs.length === 1) {
+        logger.info('Webhook: sending single-leg classified trip', { userKey, packages: actionableLegs[0].packages.length });
         await whatsappService.sendText(phoneNumberId, recipient, result.text);
         await whatsappService.sendPackages(phoneNumberId, recipient, actionableLegs[0].packages);
         await whatsappService.sendText(phoneNumberId, recipient,
@@ -478,6 +498,7 @@ router.post('/whatsapp', async (req, res) => {
         legs: actionableLegs, tripParams: result.tripParams,
       });
       if (!flow) {
+        logger.info('Webhook: leg flow start failed, falling back to flat send', { userKey });
         await whatsappService.sendText(phoneNumberId, recipient, result.text);
         await whatsappService.sendPackages(phoneNumberId, recipient, allPackages);
         return;
@@ -495,7 +516,9 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
+    // ── MULTI-TRIP RESULTS ─────────────────────────────────
     if (result.tripResults && result.tripResults.length > 1) {
+      logger.info('Webhook: sending multi-trip results', { userKey, tripCount: result.tripResults.length });
       const allPackages = [];
       for (let i = 0; i < result.tripResults.length; i++) {
         const trip = result.tripResults[i];
@@ -520,13 +543,20 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── SINGLE-TRIP RESULTS ────────────────────────────────
-    await whatsappService.sendText(phoneNumberId, recipient, result.text);
+    logger.info('Webhook: sending single-trip results', { userKey, hasText: !!result.text, packages: result.packages?.length });
+    
+    const textToSend = result.text || "Here are some options I found for you:";
+    await whatsappService.sendText(phoneNumberId, recipient, textToSend);
+
     if (result.packages?.length > 0) {
+      logger.info('Webhook: sending packages', { userKey, count: result.packages.length });
       await whatsappService.sendPackages(phoneNumberId, recipient, result.packages);
       await packageCache.save(userKey, result.packages, result.tripParams);
       await whatsappService.sendText(phoneNumberId, recipient,
         `Reply with the option number (1-${result.packages.length}) to book that option.`
       );
+    } else {
+      logger.warn('Webhook: no packages to send', { userKey, resultKeys: Object.keys(result) });
     }
 
   } catch (error) {
@@ -698,7 +728,6 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     if (phoneErr) logger.error('whatsapp_contacts lookup by phone failed', { error: phoneErr.message, phone });
 
     if (byPhone) {
-      // Backfill user_id if we now have one and it was missing
       if (userId && !byPhone.user_id) {
         supabase.from('whatsapp_contacts').update({ user_id: userId }).eq('phone', phone)
           .then(() => {}).catch(err => logger.error('whatsapp_contacts user_id backfill failed', { error: err.message }));
@@ -722,7 +751,6 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     if (userIdErr) logger.error('whatsapp_contacts lookup by user_id failed', { error: userIdErr.message, userId });
 
     if (byUserId) {
-      // Backfill phone if we now have one and it was missing
       if (phone && !byUserId.phone) {
         supabase.from('whatsapp_contacts').update({ phone }).eq('user_id', userId)
           .then(() => {}).catch(err => logger.error('whatsapp_contacts phone backfill failed', { error: err.message }));
