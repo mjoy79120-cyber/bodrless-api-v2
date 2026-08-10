@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 
 router.get('/', (req, res) => {
+    console.log('[HOTEL WIDGET ROUTE] hit — key:',
   const groupSlug   = req.query.key   || 'sarova';
   const hotelName   = req.query.name  || 'Sarova Hotels';
   const embedTarget = req.query.embed || null;
