@@ -485,6 +485,7 @@ function initHotelWidget(){
 
   // ── Room card ────────────────────────────────────────────────────────────
   function addRoomCard(p, idx){
+  console.log('[BODRLESS] card data:', JSON.stringify(p));
     var hotel   = p.hotel||{};
     var summary = p.summary||{};
     var currency= hotel.currency||summary.currency||'KES';
