@@ -186,10 +186,15 @@ router.get('/', (req, res) => {
 /* Image zone */
 .bd-pkg-img{
   width:100%;height:140px;overflow:hidden;position:relative;
-  background:var(--bd-navy);display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,#1C2B4A 0%,#243560 100%);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
 }
 .bd-pkg-img img{width:100%;height:100%;object-fit:cover;display:block;}
-.bd-pkg-img-placeholder{font-size:32px;opacity:.15;}
+.bd-pkg-img-placeholder{font-size:36px;opacity:.35;line-height:1;}
+.bd-pkg-img-placeholder-name{
+  font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;
+  color:rgba(255,255,255,.5);margin-top:8px;text-align:center;padding:0 16px;
+}
 .bd-pkg-badge{
   position:absolute;top:10px;left:10px;
   background:var(--bd-gold);color:#fff;
@@ -403,7 +408,7 @@ function initHotelWidget(){
   // Input area
   var inputArea = document.createElement('div'); inputArea.id = 'bd-hotel-input-area';
   var input = document.createElement('input'); input.id = 'bd-hotel-input';
-  input.placeholder = 'Ask about availability, dates, upgrades…';
+  input.placeholder = 'Ask about availability, dates, upgrades\u2026';
   input.type = 'text'; input.setAttribute('autocomplete','off');
   var sendBtn = document.createElement('button'); sendBtn.id = 'bd-hotel-send';
   sendBtn.innerHTML = '&#10148;'; sendBtn.setAttribute('aria-label','Send message');
@@ -442,12 +447,12 @@ function initHotelWidget(){
     var ey = document.createElement('div'); ey.className = 'bd-eyebrow'; ey.innerText = 'Your personal concierge';
     var tt = document.createElement('div'); tt.className = 'bd-welcome-title'; tt.innerText = 'Welcome to '+hotelName;
     var bd = document.createElement('div'); bd.className = 'bd-welcome-body';
-    bd.innerText = "Tell me the occasion, your preferred dates, and how many guests — I'll find the perfect room.";
+    bd.innerText = "Tell me the occasion, your preferred dates, and how many guests \u2014 I'll find the perfect room.";
     var dv = document.createElement('div'); dv.className = 'bd-divider';
     var pl = document.createElement('div'); pl.className = 'bd-prompts-label'; pl.innerText = 'Popular requests';
 
     var starters = [
-      {title:'Honeymoon stay',   text:"We're honeymooners — what's your most romantic room for 5 nights?"},
+      {title:'Honeymoon stay',   text:"We're honeymooners \u2014 what's your most romantic room for 5 nights?"},
       {title:'Family holiday',   text:'Family room for 2 adults and 2 children, full board, arriving next weekend.'},
       {title:'Business trip',    text:'Single business room for tomorrow night, early check-in if possible.'},
     ];
@@ -485,7 +490,6 @@ function initHotelWidget(){
 
   // ── Room card ────────────────────────────────────────────────────────────
   function addRoomCard(p, idx){
-  console.log('[BODRLESS] card data:', JSON.stringify(p));
     var hotel   = p.hotel||{};
     var summary = p.summary||{};
     var currency= hotel.currency||summary.currency||'KES';
@@ -505,8 +509,13 @@ function initHotelWidget(){
       imgZone.appendChild(img);
     } else {
       var ph = document.createElement('div'); ph.className = 'bd-pkg-img-placeholder';
-      ph.innerText = '🛏'; imgZone.appendChild(ph);
+      ph.innerText = '\uD83C\uDFE8';
+      var phn = document.createElement('div'); phn.className = 'bd-pkg-img-placeholder-name';
+      phn.innerText = hotel.propertyName||hotel.name||'Room';
+      imgZone.appendChild(ph);
+      imgZone.appendChild(phn);
     }
+
     if(hotel.priceMatchApplied){
       var badge = document.createElement('div'); badge.className = 'bd-pkg-badge';
       badge.innerText = 'Price matched'; imgZone.appendChild(badge);
@@ -520,11 +529,11 @@ function initHotelWidget(){
     var body = document.createElement('div'); body.className = 'bd-pkg-body';
 
     var nameEl = document.createElement('div'); nameEl.className = 'bd-pkg-name';
-    var stars  = hotel.stars ? Array(Math.min(Math.round(hotel.stars),5)+1).join('★') : '';
+    var stars  = hotel.stars ? Array(Math.min(Math.round(hotel.stars),5)+1).join('\u2605') : '';
     nameEl.innerText = (hotel.roomType||hotel.name||'Room')+(stars?' '+stars:'');
 
     var meta = document.createElement('div'); meta.className = 'bd-pkg-meta';
-    meta.innerText = (hotel.checkIn||'')+(hotel.checkOut?' → '+hotel.checkOut:'')+' · '+nights+' night'+(nights!==1?'s':'')+' · '+(summary.passengers||hotel.adults||1)+' guest'+(( summary.passengers||1)!==1?'s':'');
+    meta.innerText = (hotel.checkIn||'')+(hotel.checkOut?' \u2192 '+hotel.checkOut:'')+' \u00B7 '+nights+' night'+(nights!==1?'s':'')+' \u00B7 '+(summary.passengers||hotel.adults||1)+' guest'+((summary.passengers||1)!==1?'s':'');
 
     body.appendChild(nameEl); body.appendChild(meta);
 
@@ -545,20 +554,20 @@ function initHotelWidget(){
     // Meal plan
     if(hotel.mealPlan){
       var ml = document.createElement('div'); ml.className = 'bd-meal';
-      ml.innerText = '🍽 '+mealLabel(hotel.mealPlan); body.appendChild(ml);
+      ml.innerText = '\uD83C\uDF7D '+mealLabel(hotel.mealPlan); body.appendChild(ml);
     }
 
     // Cancellation policy
     var canEl = document.createElement('div');
-    if(hotel.isRefundable===true){ canEl.className='bd-cancel bd-cancel-ok'; canEl.innerHTML='<span class="bd-cancel-icon">✓</span>'+(hotel.policySummary||'Free cancellation available'); }
-    else if(hotel.isRefundable===false){ canEl.className='bd-cancel bd-cancel-no'; canEl.innerHTML='<span class="bd-cancel-icon">✕</span>'+(hotel.policySummary||'Non-refundable'); }
+    if(hotel.isRefundable===true){ canEl.className='bd-cancel bd-cancel-ok'; canEl.innerHTML='<span class="bd-cancel-icon">\u2713</span>'+(hotel.policySummary||'Free cancellation available'); }
+    else if(hotel.isRefundable===false){ canEl.className='bd-cancel bd-cancel-no'; canEl.innerHTML='<span class="bd-cancel-icon">\u2715</span>'+(hotel.policySummary||'Non-refundable'); }
     else{ canEl.className='bd-cancel bd-cancel-neutral'; canEl.innerText = hotel.policySummary||'Cancellation policy confirmed at booking'; }
     body.appendChild(canEl);
 
     // Price match saving
     if(hotel.priceMatchApplied && hotel.priceMatchSaving){
       var pm = document.createElement('div'); pm.className = 'bd-price-match';
-      pm.innerHTML = '✓ Saving '+currency+' '+Math.round(hotel.priceMatchSaving).toLocaleString()+'/night vs '+hotel.priceMatchOta;
+      pm.innerHTML = '\u2713 Saving '+currency+' '+Math.round(hotel.priceMatchSaving).toLocaleString()+'/night vs '+hotel.priceMatchOta;
       body.appendChild(pm);
     }
 
@@ -579,14 +588,13 @@ function initHotelWidget(){
           row.classList.add('active');
           priceMain.innerText = currency+' '+Math.round(r.pricePerNight*nights).toLocaleString();
           priceSub.innerText  = currency+' '+Math.round(r.pricePerNight).toLocaleString()+'/night';
-          // Update the package ref for reservation
           p.hotel.ratePlanId    = r.ratePlanId;
           p.hotel.pricePerNight = r.pricePerNight;
           p.hotel.totalRate     = r.pricePerNight * nights;
           p.hotel.mealPlan      = r.mealPlan;
           p.hotel.isRefundable  = r.isRefundable;
           canEl.className       = r.isRefundable===false?'bd-cancel bd-cancel-no':'bd-cancel bd-cancel-ok';
-          canEl.innerText       = r.isRefundable===false?'✕ Non-refundable':'✓ Flexible cancellation';
+          canEl.innerText       = r.isRefundable===false?'\u2715 Non-refundable':'\u2713 Flexible cancellation';
         };
         ratesEl.appendChild(row);
       });
@@ -607,7 +615,7 @@ function initHotelWidget(){
     var reserveBtn = document.createElement('button'); reserveBtn.className = 'bd-reserve-btn';
     reserveBtn.innerText = 'Reserve';
     reserveBtn.onclick = function(){
-      reserveBtn.innerText = 'Selected ✓';
+      reserveBtn.innerText = 'Selected \u2713';
       reserveBtn.classList.add('selected');
       reserveBtn.disabled = true;
       loadUpsellsThenForm(p, currency, total, wrap);
@@ -648,7 +656,7 @@ function initHotelWidget(){
           var ua = document.createElement('button'); ua.className = 'bd-upsell-add'; ua.innerText = '+ Add';
           ua.onclick = function(){
             if(ua.classList.contains('added')){ return; }
-            ua.classList.add('added'); ua.innerText = '✓ Added';
+            ua.classList.add('added'); ua.innerText = '\u2713 Added';
             selectedUpsells.push(u);
             total += u.priceBasis==='per_person'
               ? u.price*(previousParams&&previousParams.adults||1)
@@ -677,24 +685,24 @@ function initHotelWidget(){
 
     var ni = document.createElement('input'); ni.className = 'bd-input'; ni.placeholder = 'Full name'; ni.type = 'text'; form.appendChild(ni);
     var pi = document.createElement('input'); pi.className = 'bd-input'; pi.placeholder = 'Phone number'; pi.type = 'tel'; form.appendChild(pi);
-    var ei = document.createElement('input'); ei.className = 'bd-input'; ei.placeholder = 'Email — voucher will be sent here'; ei.type = 'email'; form.appendChild(ei);
+    var ei = document.createElement('input'); ei.className = 'bd-input'; ei.placeholder = 'Email \u2014 voucher will be sent here'; ei.type = 'email'; form.appendChild(ei);
     var ri = document.createElement('textarea'); ri.className = 'bd-input bd-textarea'; ri.placeholder = 'Special requests (optional)'; form.appendChild(ri);
 
     var err = document.createElement('div'); err.className = 'bd-err'; form.appendChild(err);
 
     var cb = document.createElement('button'); cb.className = 'bd-confirm-btn';
-    cb.innerText = 'Confirm reservation — '+fmtPrice(total, currency);
+    cb.innerText = 'Confirm reservation \u2014 '+fmtPrice(total, currency);
     cb.onclick = function(){
       err.style.display = 'none';
       var name = ni.value.trim(), phone = pi.value.trim();
       if(!name){ err.innerText = 'Please enter your name.'; err.style.display='block'; return; }
       if(!phone){ err.innerText = 'Please enter your phone number.'; err.style.display='block'; return; }
-      cb.innerText = 'Processing…'; cb.disabled = true;
+      cb.innerText = 'Processing\u2026'; cb.disabled = true;
       fetch(apiBase+'/api/hotel/reserve',{
         method:'POST',
         headers:{'Content-Type':'application/json','x-hotel-key':groupSlug},
         body: JSON.stringify({
-          groupSlug, pkg:p,
+          groupSlug:groupSlug, pkg:p,
           guestName:ni.value.trim(), guestPhone:pi.value.trim(),
           guestEmail:ei.value.trim()||null,
           specialRequests:ri.value.trim()||null,
@@ -728,8 +736,8 @@ function initHotelWidget(){
       method:'POST',
       headers:{'Content-Type':'application/json','x-hotel-key':groupSlug},
       body: JSON.stringify({
-        prompt:text, groupSlug, sessionId,
-        conversationHistory, previousParams,
+        prompt:text, groupSlug:groupSlug, sessionId:sessionId,
+        conversationHistory:conversationHistory, previousParams:previousParams,
       }),
     })
     .then(function(r){ return r.json(); })
@@ -741,7 +749,7 @@ function initHotelWidget(){
 
       var pkgs = data.packages||[];
       if(data.needsClarification||!pkgs.length){
-        addMsg(data.text||"Could you share a bit more — dates and how many guests?", 'bot');
+        addMsg(data.text||"Could you share a bit more \u2014 dates and how many guests?",'bot');
         return;
       }
       addMsg(data.text||"Here's what we have available:",'bot');
@@ -757,7 +765,7 @@ function initHotelWidget(){
 
   sendBtn.onclick = send;
   input.addEventListener('keypress', function(e){ if(e.key==='Enter') send(); });
-  console.log('[BODRLESS] Hotel widget v2 loaded — group:'+groupSlug);
+  console.log('[BODRLESS] Hotel widget v2 loaded \u2014 group:'+groupSlug);
 }
 
 if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',initHotelWidget); }
