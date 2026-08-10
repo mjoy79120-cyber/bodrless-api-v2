@@ -31,7 +31,20 @@ router.get('/', (req, res) => {
   --bd-text:#1A1A1A;
 }
 
-#bd-hotel-root *{box-sizing:border-box;font-family:'Inter',system-ui,-apple-system,sans-serif;}
+#bd-hotel-root *{box-sizing:border-box !important;font-family:'Inter',system-ui,-apple-system,sans-serif;}
+#bd-hotel-root .bd-pkg-body{padding:13px 14px 10px !important;}
+#bd-hotel-root .bd-pkg-footer{padding:10px 14px !important;}
+#bd-hotel-root .bd-pkg-img{height:140px !important;display:flex !important;}
+#bd-hotel-root .bd-pkg-name{font-size:13px !important;font-weight:600 !important;margin-bottom:3px !important;}
+#bd-hotel-root .bd-pkg-meta{font-size:11px !important;margin-bottom:10px !important;}
+#bd-hotel-root .bd-pkg-price-main{font-size:20px !important;font-weight:700 !important;line-height:1 !important;}
+#bd-hotel-root .bd-reserve-btn{padding:10px 20px !important;}
+#bd-hotel-root .bd-welcome{padding:18px 16px !important;}
+#bd-hotel-root .bd-starter{padding:11px 13px !important;margin-bottom:7px !important;}
+#bd-hotel-root .bd-msg{padding:10px 14px !important;}
+#bd-hotel-root #bd-hotel-header{padding:14px 18px !important;}
+#bd-hotel-root #bd-hotel-input-area{padding:10px 12px !important;}
+#bd-hotel-root #bd-hotel-input{padding:9px 14px !important;}
 
 /* ── Chat container ── */
 #bd-hotel-chat{
