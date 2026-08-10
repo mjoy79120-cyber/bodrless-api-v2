@@ -80,6 +80,7 @@ router.post('/whatsapp', async (req, res) => {
       phone:     identity.phone,
       userId:    identity.userId,
       username:  identity.username,
+      isBsuid:   identity.isBsuid,
       type:      message.type,
       preview:   message.text?.body?.slice(0, 60),
     });
@@ -133,6 +134,19 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
+    // ── CONTACTS WEBHOOK (user shared phone via REQUEST_CONTACT_INFO) ──
+    if (message.type === 'contacts') {
+      const sharedPhone = message.contacts?.[0]?.phones?.[0]?.phone;
+      if (sharedPhone && userId) {
+        logger.info('Webhook: user shared phone number via contact button', { userKey, sharedPhone });
+        await supabase
+          .from('whatsapp_contacts')
+          .update({ phone: sharedPhone, updated_at: new Date().toISOString() })
+          .eq('user_id', userId);
+      }
+      return;
+    }
+
     // ── NON-TEXT MESSAGES ──────────────────────────────────
     if (message.type !== 'text') {
       await whatsappService.sendText(phoneNumberId, recipient,
@@ -169,6 +183,8 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── DROP-OFF RECOVERY ──────────────────────────────────
+    // If the user is clearly starting a new trip request, skip
+    // drop-off recovery entirely and go straight to orchestration.
     const resumePending = _pendingResumeChoice.get(userKey);
     if (resumePending && Date.now() < resumePending.expiresAt) {
       _pendingResumeChoice.delete(userKey);
@@ -200,21 +216,24 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    const dropOff = await conversationMemory.checkDropOff(userKey, agencyId);
-    if (dropOff.isDropOff) {
-      const welcomeMsg = conversationMemory.buildDropOffWelcome({
-        minutesAway:         dropOff.minutesAway,
-        previousDestination: dropOff.previousDestination,
-        hasPreviousSearch:   dropOff.hasPreviousSearch,
-      });
-      await whatsappService.sendText(phoneNumberId, recipient, welcomeMsg);
+    // Only check drop-off if the user isn't clearly asking for a new trip
+    if (!_looksLikeFreshTripRequest(prompt)) {
+      const dropOff = await conversationMemory.checkDropOff(userKey, agencyId);
+      if (dropOff.isDropOff) {
+        const welcomeMsg = conversationMemory.buildDropOffWelcome({
+          minutesAway:         dropOff.minutesAway,
+          previousDestination: dropOff.previousDestination,
+          hasPreviousSearch:   dropOff.hasPreviousSearch,
+        });
+        await whatsappService.sendText(phoneNumberId, recipient, welcomeMsg);
 
-      if (dropOff.hasPreviousSearch) {
-        _pendingResumeChoice.set(userKey, { dropOff, agencyId, expiresAt: Date.now() + 5 * 60 * 1000 });
-      } else {
-        await conversationMemory.upsertContact(userKey, agencyId, { drop_off_at: new Date().toISOString() });
+        if (dropOff.hasPreviousSearch) {
+          _pendingResumeChoice.set(userKey, { dropOff, agencyId, expiresAt: Date.now() + 5 * 60 * 1000 });
+        } else {
+          await conversationMemory.upsertContact(userKey, agencyId, { drop_off_at: new Date().toISOString() });
+        }
+        return;
       }
-      return;
     }
 
     // ── POST-BOOKING CANCEL FLOW ───────────────────────────
@@ -544,7 +563,7 @@ router.post('/whatsapp', async (req, res) => {
 
     // ── SINGLE-TRIP RESULTS ────────────────────────────────
     logger.info('Webhook: sending single-trip results', { userKey, hasText: !!result.text, packages: result.packages?.length });
-    
+
     const textToSend = result.text || "Here are some options I found for you:";
     await whatsappService.sendText(phoneNumberId, recipient, textToSend);
 
@@ -676,31 +695,55 @@ async function _sendCurrentLeg(phoneNumberId, recipient, flow) {
 // HELPERS
 // ─────────────────────────────────────────────
 
+/**
+ * Detect if the user's message is clearly a new trip request.
+ * Used to skip drop-off recovery when the user is starting fresh.
+ */
+function _looksLikeFreshTripRequest(text) {
+  const t = text.trim().toLowerCase();
+  // Explicit intent words combined with travel nouns
+  if (
+    /\b(plan|book|find|search|looking for|help me|i want|i'd like|i would like|can you help)\b/.test(t) &&
+    /\b(trip|travel|flight|hotel|holiday|vacation|visit|go to|fly to)\b/.test(t)
+  ) return true;
+  // Destination pattern: "to X" with enough words
+  if (/\bto\b.{3,}/i.test(t) && t.split(/\s+/).length >= 4) return true;
+  // Night count
+  if (/\d+\s*nights?\b/i.test(t)) return true;
+  // Month + date
+  if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(t)) return true;
+  return false;
+}
+
 function _resolveIdentity(body, message) {
-  const value = body.entry[0].changes[0].value;
+  const value    = body.entry[0].changes[0].value;
   const contacts = value.contacts || [];
 
-  // Phone-based identity (traditional WhatsApp Business API)
+  // Phone number — present for traditional users or those within 30-day window
   const phone = message.from || contacts[0]?.wa_id || null;
 
-  // User-ID-based identity (newer WhatsApp / BSP payloads)
-  // KEEP the prefix exactly as WhatsApp sends it for DB storage
+  // BSUID — always present from April 2026 onwards
+  // Keep the full prefix (KE., US., US.ENT.) exactly as Meta sends it
   const rawUserId = message.from_user_id || contacts[0]?.user_id || null;
-  const userId = rawUserId || null;
+  const userId    = rawUserId || null;
 
-  // Display name / username if available
+  // Display name / username
   const username = contacts[0]?.profile?.username
     || contacts[0]?.profile?.name
     || null;
 
-  // userKey = stable internal identifier (phone preferred, fallback to userId)
+  // userKey: stable internal key — BSUID preferred (more stable than phone)
   const userKey = userId || phone || null;
 
-  // recipient = what we pass to WhatsApp send API
-  // Meta only understands the numeric part, so strip KE./UG./TZ. prefix
-  const recipient = phone || (rawUserId ? rawUserId.replace(/^[A-Z]{2}\./, '') : null) || null;
+  // isBsuid: true when we have no phone and must send via BSUID
+  const isBsuid = !phone && !!rawUserId;
 
-  return { phone, userId, rawUserId, username, userKey, recipient };
+  // recipient: what we pass to the send API
+  // Phone takes priority. If no phone, use the full BSUID — DO NOT strip prefix.
+  // whatsappService._send will detect the BSUID and use the `recipient` field instead of `to`.
+  const recipient = phone || rawUserId || null;
+
+  return { phone, userId, rawUserId, username, userKey, isBsuid, recipient };
 }
 
 async function _resolveAgency(phoneNumberId) {
@@ -798,12 +841,12 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
 
   // 3. Create new contact
   const insertPayload = {
-    phone:        phone || null,
-    user_id:      userId || null,
-    username:     username || null,
-    name:         username || null,
+    phone:         phone || null,
+    user_id:       userId || null,
+    username:      username || null,
+    name:          username || null,
     awaiting_name: !username,
-    agency_id:    agencyId || null,
+    agency_id:     agencyId || null,
   };
 
   const { data: inserted, error: insertError } = await supabase

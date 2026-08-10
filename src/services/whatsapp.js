@@ -10,6 +10,15 @@
  *   - Multi-destination itineraries (pkg.isMultiDestination,
  *     pkg.legs[], pkg.returnTransport) -> _sendItineraryCard
  *
+ * BSUID SUPPORT:
+ *   When a WhatsApp user has enabled the username feature,
+ *   their phone number is not included in webhooks. Instead,
+ *   a BSUID (e.g. "KE.4521012381488781") is provided. Meta's
+ *   send API requires BSUID-addressed messages to use the
+ *   `recipient` field instead of the `to` field. This is
+ *   detected automatically in _send() by checking for the
+ *   country-code prefix pattern (e.g. "KE.", "US.", "US.ENT.").
+ *
  * SCROLL ORDER FIX:
  *   Packages are sent in REVERSE order (4→3→2→1) so Option 1
  *   is the last message sent and therefore sits at the bottom
@@ -21,7 +30,8 @@
 const axios = require('axios');
 const { logger } = require('../utils/logger');
 
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v18.0';
+// v21.0 required for BSUID send support (v18.0 does not support it)
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0';
 
 class WhatsAppService {
 
@@ -151,8 +161,6 @@ class WhatsAppService {
     const isItinerary = packages.length === 1 && packages[0]?.isMultiDestination;
 
     // ── Header ──────────────────────────────────────────────
-    // If this is being called from within a leg flow, show a
-    // leg-specific header instead of the generic one.
     if (legHeader) {
       await this.sendText(phoneNumberId, to, legHeader);
     } else {
@@ -164,8 +172,6 @@ class WhatsAppService {
     }
 
     // ── Cards in reverse order ───────────────────────────────
-    // Send highest-numbered option first so Option 1 lands last
-    // (most recent) at the bottom of the traveler's screen.
     for (let i = 0; i < packages.length; i++) {
       const pkg = packages[i];
       if (pkg.isMultiDestination) {
@@ -179,20 +185,14 @@ class WhatsAppService {
 
   // ─────────────────────────────────────────────
   // SEND LEG PACKAGES
-  // Wrapper used by the leg flow in webhooks.js.
-  // Builds the leg-specific header and progress line, then
-  // delegates to sendPackages for the reversed card delivery.
   // ─────────────────────────────────────────────
   async sendLegPackages(phoneNumberId, to, { leg, legIndex, totalLegs, runningTotalKES }) {
     const legNum     = legIndex + 1;
     const currency   = 'KES';
     const hasRunning = runningTotalKES > 0;
 
-    // Progress indicator: "Leg 2 of 4"
     const progressLine = `*Leg ${legNum} of ${totalLegs}*`;
-
-    // Running total so far (not shown for first leg — nothing selected yet)
-    const runningLine = hasRunning
+    const runningLine  = hasRunning
       ? `💰 Running total so far: *${currency} ${runningTotalKES.toLocaleString()}*\n`
       : '';
 
@@ -277,7 +277,6 @@ class WhatsAppService {
       }
 
       if (transport.routeNote) lines.push(`  ℹ️ ${transport.routeNote}`);
-
       lines.push(this._formatPriceLine(transport));
     }
 
@@ -306,7 +305,6 @@ class WhatsAppService {
       }
 
       if (returnTransport.routeNote) lines.push(`  ℹ️ ${returnTransport.routeNote}`);
-
       lines.push(this._formatPriceLine(returnTransport));
     }
 
@@ -475,23 +473,39 @@ class WhatsAppService {
   }
 
   /**
-   * Core send function — with diagnostic logging
+   * Core send function.
+   *
+   * BSUID detection: if `to` matches the pattern "XX." or "XX.ENT."
+   * (country-code prefix), it's a BSUID. Meta requires these to be
+   * sent via the `recipient` field, not `to`.
    */
   async _send(phoneNumberId, payload) {
-    const to = payload.to;
+    // Detect BSUID: "KE.xxx", "US.xxx", "US.ENT.xxx" etc.
+    const isBsuid = payload.to && /^[A-Z]{2,}\./.test(String(payload.to));
+
+    let finalPayload;
+    if (isBsuid) {
+      // Strip `to`, add `recipient` with the full BSUID (prefix intact)
+      const { to, ...rest } = payload;
+      finalPayload = { ...rest, recipient: to };
+    } else {
+      finalPayload = payload;
+    }
+
+    const recipientValue = finalPayload.to || finalPayload.recipient;
 
     logger.info('WhatsApp outbound send', {
       phoneNumberId,
-      to,
-      toType: typeof to,
-      messageType: payload.type,
-      textPreview: payload.text?.body?.slice(0, 60) || payload.image?.link || payload.interactive?.type || null,
+      to: recipientValue,
+      isBsuid,
+      messageType: finalPayload.type,
+      textPreview: finalPayload.text?.body?.slice(0, 60) || finalPayload.image?.link || finalPayload.interactive?.type || null,
     });
 
     try {
       const response = await axios.post(
         `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
-        payload,
+        finalPayload,
         {
           headers: {
             'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
@@ -502,14 +516,16 @@ class WhatsAppService {
       );
 
       logger.info('WhatsApp send succeeded', {
-        to,
+        to: recipientValue,
+        isBsuid,
         messageId: response.data?.messages?.[0]?.id,
       });
 
       return response.data;
     } catch (error) {
       logger.error('WhatsApp send failed', {
-        to,
+        to: recipientValue,
+        isBsuid,
         status: error.response?.status,
         errorBody: error.response?.data,
         message: error.message,
