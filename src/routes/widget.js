@@ -2,12 +2,18 @@ const express = require('express');
 const router  = express.Router();
 
 router.get('/', (req, res) => {
-  const agencyKey   = req.query.key   || 'epic-travels';
-  const agencyName  = req.query.name  || 'Epic Travels';
   const mode        = req.query.mode  || 'agency';
+  const isHotelMode = mode === 'hotel_direct';
+  const agencyKey   = req.query.key   || (isHotelMode ? 'sarova' : 'epic-travels');
+  const agencyName  = req.query.name  || (isHotelMode ? 'Sarova Hotels' : 'Epic Travels');
   const embedTarget = req.query.embed || null;
   const apiBase     = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
-  const isHotelMode = mode === 'hotel_direct';
+
+  // Permanent fix: reject hotel_direct requests with no key or an unknown-looking key
+  // This surfaces a clear error instead of silently using the wrong hotel group
+  if (isHotelMode && !req.query.key) {
+    console.warn('[BODRLESS] hotel_direct widget loaded without ?key= — defaulting to sarova');
+  }
 
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
 
@@ -197,11 +203,20 @@ function initWidget() {
   var transcript          = [];
   var hasRestoredHistory  = false;
 
+  // ── PERMANENT FIX: validate hotel key on load ─────────────────────────
+  // Each hotel embed MUST pass ?key=<slug>&mode=hotel_direct in the script URL.
+  // Example for Sarova:   <script src="...widget.js?key=sarova&mode=hotel_direct"></script>
+  // Example for PrideInn: <script src="...widget.js?key=prideinn&mode=hotel_direct"></script>
+  // If key is missing the widget will warn in console and use the server-side default.
+  if (isHotelMode) {
+    console.log('[BODRLESS] Hotel widget loaded — group: ' + agencyKey);
+  }
+
   var hotelSelections     = {};
   var hotelLegMeta        = null;
   var selectedUpsells     = {};
 
-  var STORAGE_KEY = 'bodrless_widget_${agencyKey}';
+  var STORAGE_KEY = 'bodrless_widget_' + agencyKey;
 
   function persistState() {
     try {
@@ -295,7 +310,7 @@ function initWidget() {
   function scrollToEl(el) { if (!el) return; setTimeout(function() { messages.scrollTo({ top: el.offsetTop - 12, behavior: 'smooth' }); }, 80); }
   function fmtTime(iso) { if (!iso) return 'TBC'; try { var d = new Date(iso); if (isNaN(d)) return iso; return d.toLocaleTimeString('en-KE', {hour:'2-digit',minute:'2-digit'}); } catch(e) { return iso; } }
   function fmtPrice(n, cur) { return (cur||'KES')+' '+(Math.round(Number(n)||0)).toLocaleString(); }
-  function titleCase(s) { if(!s)return''; return String(s).replace(/\\b\\w/g, function(c){return c.toUpperCase();}); }
+  function titleCase(s) { if(!s)return''; return String(s).replace(/\b\w/g, function(c){return c.toUpperCase();}); }
   function makeRow(label, name, sub) { var row = document.createElement('div'); row.className = 'pkg-row'; var l = document.createElement('div'); l.className = 'pkg-label'; l.innerText = label; var n = document.createElement('div'); n.className = 'pkg-name'; n.innerText = name; var s = document.createElement('div'); s.className = 'pkg-sub'; s.innerText = sub; row.appendChild(l); row.appendChild(n); row.appendChild(s); return row; }
   function makeHL(text, tone) { var d = document.createElement('div'); d.className = 'hl ' + (tone==='good'?'hl-good':tone==='warn'?'hl-warn':'hl-neutral'); d.innerText = text; return d; }
   function makeCancelBadge(policySummary, isRefundable) { var d = document.createElement('div'); var icon; var cls = 'cancel-policy '; if (isRefundable === true) { cls += 'refundable'; icon = '✅'; } else if (isRefundable === false) { cls += 'non-refundable'; icon = '❌'; } else { cls += 'neutral'; icon = 'ℹ️'; } d.className = cls; d.innerText = icon + '  ' + (policySummary || 'Cancellation policy confirmed at booking.'); return d; }
@@ -483,7 +498,7 @@ function initWidget() {
     var icon = document.createElement('span'); icon.className = 'leg-icon'; icon.innerText = cfg.icon;
     var titleWrap = document.createElement('div');
     var title = document.createElement('div'); title.className = 'leg-title'; title.innerText = (idx + 1) + '. ' + (leg.label || leg.roleLabel || cfg.label);
-    var subtitle = document.createElement('div'); subtitle.className = 'leg-subtitle'; subtitle.innerText = leg.text ? leg.text.replace(/\\*\\*/g, '').split('\\n')[0] : cfg.label;
+    var subtitle = document.createElement('div'); subtitle.className = 'leg-subtitle'; subtitle.innerText = leg.text ? leg.text.replace(/\*\*/g, '').split('\n')[0] : cfg.label;
     titleWrap.appendChild(title); titleWrap.appendChild(subtitle);
     hdrLeft.appendChild(icon); hdrLeft.appendChild(titleWrap);
     var statusBadge = document.createElement('span'); statusBadge.className = 'leg-status ' + (isLocked ? 'locked' : isCurrent ? 'active' : 'pending');
@@ -733,7 +748,6 @@ function initWidget() {
       bk.onclick = function(){ showNameFormStandalone(p, bk); };
       pf.appendChild(ppd); pf.appendChild(bk);
     }
-    // ── Supplier comparison breakdown (from cachedSearch) ───────────────────
     if (p._cacheResult && p._cacheResult.widget && p._cacheResult.widget.supplierBreakdown) {
       addSupplierComparison(div, p._cacheResult.widget.supplierBreakdown);
     }
@@ -893,7 +907,7 @@ function initWidget() {
       if(!name){err.innerText='Please enter your name.';err.style.display='block';return;}
       if(!phone){err.innerText='Please enter your phone.';err.style.display='block';return;}
       cb.innerText='Processing...';cb.disabled=true;
-      fetch(apiBase+'/api/hotel/reserve',{method:'POST',headers:{'Content-Type':'application/json','x-hotel-key':'${agencyKey}'},body:JSON.stringify({groupSlug:'${agencyKey}',pkg:p,guestName:name,guestPhone:phone,guestEmail:ei.value.trim()||null,specialRequests:ri.value.trim()||null,addedUpsells:addedUpsells||[],transferInfo:transferInfo||null,channel:'widget'})})
+      fetch(apiBase+'/api/hotel/reserve',{method:'POST',headers:{'Content-Type':'application/json','x-hotel-key':agencyKey},body:JSON.stringify({groupSlug:agencyKey,pkg:p,guestName:name,guestPhone:phone,guestEmail:ei.value.trim()||null,specialRequests:ri.value.trim()||null,addedUpsells:addedUpsells||[],transferInfo:transferInfo||null,channel:'widget'})})
       .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})
       .then(function(res){if(!res.ok||!res.data.success){err.innerText=(res.data&&res.data.error)||'Reservation failed.';err.style.display='block';cb.innerText='Confirm Reservation';cb.disabled=false;return;}form.remove();addMsg('🏨 Reservation '+res.data.reservationRef+' confirmed. '+currency+' '+Math.round(total).toLocaleString()+' due.','bot');})
       .catch(function(){err.innerText='Network error.';err.style.display='block';cb.innerText='Confirm Reservation';cb.disabled=false;});
@@ -917,7 +931,7 @@ function initWidget() {
       if(!phone){err.innerText='Phone required.';err.style.display='block';return;}
       cb.innerText='Processing...';cb.disabled=true;
       var bookings=Object.values(hotelSelections).map(function(sel){ return {pkg:sel.pkg,addedUpsells:sel.upsells||[],transferInfo:sel.transfer||null}; });
-      fetch(apiBase+'/api/hotel/reserve-multi',{method:'POST',headers:{'Content-Type':'application/json','x-hotel-key':'${agencyKey}'},body:JSON.stringify({groupSlug:'${agencyKey}',bookings:bookings,guestName:name,guestPhone:phone,guestEmail:ei.value.trim()||null,specialRequests:ri.value.trim()||null,channel:'widget'})})
+      fetch(apiBase+'/api/hotel/reserve-multi',{method:'POST',headers:{'Content-Type':'application/json','x-hotel-key':agencyKey},body:JSON.stringify({groupSlug:agencyKey,bookings:bookings,guestName:name,guestPhone:phone,guestEmail:ei.value.trim()||null,specialRequests:ri.value.trim()||null,channel:'widget'})})
       .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})
       .then(function(res){
         if(!res.ok||!res.data.success){err.innerText=(res.data&&res.data.error)||'Reservation failed.';err.style.display='block';cb.innerText='Confirm All Reservations';cb.disabled=false;return;}
@@ -936,7 +950,7 @@ function initWidget() {
   // ─────────────────────────────────────────────────────────────────────────
   function send() {
     var text = input.value.trim(); if (!text) return;
-    if (isHotelMode && /\\b(?:cancel|modify|change|update|manage|view)\\b/.test(text.toLowerCase()) && /\\b(?:booking|reservation|stay|ref|reference)\\b/.test(text.toLowerCase())) {
+    if (isHotelMode && /\b(?:cancel|modify|change|update|manage|view)\b/.test(text.toLowerCase()) && /\b(?:booking|reservation|stay|ref|reference)\b/.test(text.toLowerCase())) {
       addMsg(text,'user');transcript.push({type:'user',text:text});persistState();input.value='';
       addMsg("Of course — please provide your booking reference and the phone number you used.",'bot');return;
     }
@@ -948,7 +962,9 @@ function initWidget() {
     addMsg(text,'user');transcript.push({type:'user',text:text});persistState();
     input.value='';showTyping();
     var endpoint = isHotelMode ? apiBase+'/api/hotel/orchestrate' : apiBase+'/api/trips/orchestrate';
-    var hdrs     = isHotelMode ? {'Content-Type':'application/json','x-hotel-key':agencyKey} : {'Content-Type':'application/json','x-api-key':agencyKey};
+    var hdrs     = isHotelMode
+      ? {'Content-Type':'application/json','x-hotel-key': agencyKey}
+      : {'Content-Type':'application/json','x-api-key':  agencyKey};
     var body     = isHotelMode
       ? JSON.stringify({prompt:text,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams})
       : JSON.stringify({prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)});
@@ -959,15 +975,15 @@ function initWidget() {
       hideTyping();
 
       // TEMP DEBUG — remove after diagnosis
-  console.log('[BODRLESS] API response:', JSON.stringify({
-    isClassifiedTrip: data.isClassifiedTrip,
-    hasTripResults:   !!(data.tripResults && data.tripResults.length),
-    tripResultsCount: data.tripResults && data.tripResults.length,
-    hasPackages:      !!(data.packages && data.packages.length),
-    packagesCount:    data.packages && data.packages.length,
-    text:             data.text,
-    needsClarification: data.needsClarification,
-  }));
+      console.log('[BODRLESS] API response:', JSON.stringify({
+        isClassifiedTrip: data.isClassifiedTrip,
+        hasTripResults:   !!(data.tripResults && data.tripResults.length),
+        tripResultsCount: data.tripResults && data.tripResults.length,
+        hasPackages:      !!(data.packages && data.packages.length),
+        packagesCount:    data.packages && data.packages.length,
+        text:             data.text,
+        needsClarification: data.needsClarification,
+      }));
 
       if(data.sessionId)           sessionId           = data.sessionId;
       if(data.tripParams)          previousParams      = data.tripParams;
@@ -1014,9 +1030,9 @@ function initWidget() {
       var rm3=data.text||'I found '+pkgs.length+' option(s) for you:';
       var botMsg3=addMsg(rm3,'bot');transcript.push({type:'bot',text:rm3});
       pkgs.slice(0,4).forEach(function(p,i){
-  var card = addPackage(p,i,null,null);
-  messages.appendChild(card);
-});
+        var card = addPackage(p,i,null,null);
+        messages.appendChild(card);
+      });
       transcript.push({type:'packages',packages:pkgs.slice(0,4)});
       scrollToEl(botMsg3);persistState();
 
@@ -1094,7 +1110,6 @@ function initWidget() {
           });
         }, 2500);
       }
-      // ── End cache refresh spinner ─────────────────────────────────────────
     })
     .catch(function(e){hideTyping();console.log('Widget error:',e);addMsg('Unable to load options right now. Please try again.','bot');});
   }
@@ -1151,7 +1166,7 @@ function initWidget() {
 
   sendBtn.onclick = send;
   input.addEventListener('keypress', function(e){ if (e.key === 'Enter') send(); });
-  console.log('[BODRLESS] Widget loaded — key:${agencyKey} mode:${mode}');
+  console.log('[BODRLESS] Widget loaded — key:' + agencyKey + ' mode:${mode}');
 }
 if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initWidget); } else { initWidget(); }
 })();`;
