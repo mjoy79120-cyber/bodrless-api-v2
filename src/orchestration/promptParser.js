@@ -32,6 +32,9 @@
  *        receives checkOut < checkIn.
  * Fixed: Origin field — Groq no longer invents route text for origin.
  * Fixed: budgetKES field — captures explicit KES amounts as raw numbers.
+ * Fixed: Trip leg normalization — session context (origin, dates) is
+ *        propagated into trips[] legs and missing first legs are
+ *        prepended so the engine never receives origin:null or date:null.
  */
 
 const Groq = require('groq-sdk');
@@ -223,6 +226,68 @@ function _postProcessBookendTrip(trips, homeOrigin, departureDate, returnDate) {
   });
 
   return rebuilt;
+}
+
+// ─────────────────────────────────────────────
+// TRIP LEG NORMALIZER — session context propagation
+// ─────────────────────────────────────────────
+function _normalizeTripLegsFromSession(trips, topLevel) {
+  const sessionOrigin    = topLevel.origin;
+  const sessionDeparture = topLevel.departureDate;
+  const sessionNights    = topLevel.nights;
+
+  // If trips[0] destination matches the session destination, the first leg
+  // (e.g. Nairobi→Diani) is missing from Groq's output because the user's
+  // follow-up only described subsequent legs. Prepend it from session context.
+  const firstTripDest = (trips[0]?.destination || '').toLowerCase().trim();
+  const sessionDest   = (topLevel.destination  || '').toLowerCase().trim();
+  const needsPrepend  = firstTripDest === sessionDest && !!sessionOrigin && !!sessionDeparture;
+
+  const fullTrips = needsPrepend
+    ? [
+        {
+          origin:                   sessionOrigin,
+          destination:              topLevel.destination,
+          nights:                   sessionNights || 0,
+          departureDate:            sessionDeparture,
+          returnDate:               null,
+          needsOriginClarification: false,
+          _prependedFromSession:    true,
+        },
+        ...trips,
+      ]
+    : trips;
+
+  // Sequentially derive dates for any leg that is missing them
+  let cursor = sessionDeparture;
+
+  const normalized = fullTrips.map((leg, i) => {
+    const nights  = leg.nights ?? 0;
+    const depDate = leg.departureDate || cursor;
+    const retDate = nights > 0 ? _addDays(depDate, nights) : null;
+
+    if (nights > 0) cursor = _addDays(depDate, nights);
+    else if (depDate) cursor = depDate;
+
+    const inferredOrigin = i === 0
+      ? sessionOrigin
+      : (fullTrips[i - 1]?.destination || null);
+
+    return {
+      ...leg,
+      origin:                   leg.origin || inferredOrigin,
+      departureDate:            depDate,
+      returnDate:               retDate,
+      needsOriginClarification: false,
+    };
+  });
+
+  logger.info('PromptParser: normalized trip legs from session', {
+    legCount: normalized.length,
+    legs: normalized.map(t => `${t.origin}→${t.destination} (${t.departureDate}, ${t.nights}n)`),
+  });
+
+  return normalized;
 }
 
 // ─────────────────────────────────────────────
@@ -435,17 +500,13 @@ function _parseWithRules(prompt) {
   else if (/\b(mid|moderate|reasonable|standard|normal|average)\b/i.test(lower)) budget = 'mid';
   else if (/\b(high|upscale|4.?star|four.?star|nice|good|quality)\b/i.test(lower)) budget = 'high';
 
-  // Rule-based budgetKES extraction
   let budgetKES = null;
   const kesMatch = lower.match(/(\d[\d,]*(?:\.\d+)?)\s*k?\s*(?:ksh|kes|shillings?|bob)\b/i)
     || lower.match(/(?:ksh|kes)\s*(\d[\d,]*(?:\.\d+)?)\b/i);
   if (kesMatch) {
     const raw = kesMatch[1].replace(/,/g, '');
     budgetKES = parseFloat(raw);
-    // Handle shorthand like "100k ksh" — but only if the number itself ended in k
-    // (already handled above by matching the literal "k" before the currency word)
   }
-  // Also handle "100k" alone when context has budget/shilling keyword nearby
   if (!budgetKES) {
     const kMatch = lower.match(/\bbudget\b.*?(\d+)k\b|\b(\d+)k\b.*?\bbudget\b/i);
     if (kMatch) {
@@ -776,11 +837,8 @@ async function _groqAttempt(prompt, systemPrompt) {
 
     // ── Sanitize origin — strip any route text ─────────────────────────────
     if (parsed.origin) {
-      // If origin contains "to " it's route text — extract just the first city
       const routeStripped = parsed.origin.split(/\s+to\s+/i)[0].trim();
-      // Also strip leading "from "
       const fromStripped = routeStripped.replace(/^from\s+/i, '').trim();
-      // Validate it looks like a single city name (≤3 words, no punctuation)
       const wordCount = fromStripped.split(/\s+/).length;
       if (!fromStripped || wordCount > 3 || /[.,;]/.test(fromStripped)) {
         logger.warn('PromptParser: Groq origin looked like route text — clearing', {
@@ -792,13 +850,11 @@ async function _groqAttempt(prompt, systemPrompt) {
         parsed.origin = resolveCountryToCity(fromStripped);
       }
     }
-    // ──────────────────────────────────────────────────────────────────────
 
     // ── Normalize budgetKES ────────────────────────────────────────────────
     if (parsed.budgetKES !== null && parsed.budgetKES !== undefined) {
       const raw = parsed.budgetKES;
       if (typeof raw === 'string') {
-        // Handle strings like "100,000" or "100000"
         const num = parseFloat(raw.replace(/,/g, ''));
         parsed.budgetKES = isNaN(num) ? null : num;
       } else if (typeof raw === 'number') {
@@ -809,7 +865,6 @@ async function _groqAttempt(prompt, systemPrompt) {
     } else {
       parsed.budgetKES = parsed.budgetKES ?? null;
     }
-    // ──────────────────────────────────────────────────────────────────────
 
     if (Array.isArray(parsed.trips)) {
       parsed.trips = parsed.trips.map(t => ({
@@ -1007,8 +1062,17 @@ async function parsePrompt(prompt, session = null) {
         sessionDestination: session.destination,
       });
     }
+
+    // ── Trip leg normalization from session ───────────────────────────────
+    // If Groq returned trips[] but legs are missing origin/dates that exist
+    // in the session, propagate session context into each leg and prepend
+    // any missing first leg (e.g. Nairobi→Diani when the follow-up only
+    // describes Diani→Lamu→Nairobi).
+    if (Array.isArray(raw.trips) && raw.trips.length > 0 && raw.departureDate) {
+      raw.trips = _normalizeTripLegsFromSession(raw.trips, raw);
+    }
+    // ─────────────────────────────────────────────────────────────────────
   }
-  // ─────────────────────────────────────────────────────────────────────────
 
   return raw;
 }

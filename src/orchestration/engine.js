@@ -823,7 +823,16 @@ class OrchestrationEngine {
   // CLASSIFIED MULTI-TRIP ORCHESTRATOR
   // ─────────────────────────────────────────────────────────────────────────────
   async _orchestrateClassifiedTrip(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone) {
-    const classifiedLegs = this._classifyTripLegs(tripParams.trips);
+    // Inherit session origin into any trip leg missing it before classification
+    const resolvedTrips = (tripParams.trips || []).map((t, i) => {
+      const inferredOrigin = t.origin
+        ? t.origin
+        : (i === 0
+            ? tripParams.origin
+            : (tripParams.trips[i - 1]?.destination || tripParams.origin));
+      return { ...t, origin: inferredOrigin || t.origin };
+    });
+    const classifiedLegs = this._classifyTripLegs(resolvedTrips);
 
     console.log('CLASSIFIED LEGS:', classifiedLegs.map(l => ({
       origin: l.origin, destination: l.destination,
@@ -841,7 +850,8 @@ class OrchestrationEngine {
       }
 
       const role             = leg._role;
-      const needsFlight      = ['arrival', 'internal', 'return_stay', 'departure'].includes(role);
+      const needsFlight      = ['arrival', 'internal', 'return_stay', 'departure'].includes(role)
+                             && !!leg.destination;
       const needsHotel       = ['arrival', 'internal', 'return_stay'].includes(role);
       const needsArrTransfer = ['arrival', 'internal'].includes(role);
       const needsDepTransfer = ['arrival', 'internal', 'return_stay', 'departure'].includes(role);
@@ -1186,7 +1196,7 @@ class OrchestrationEngine {
   // LEG RESPONSE TEXT
   // ─────────────────────────────────────────────────────────────────────────────
   _buildLegResponseText(role, leg, packages, isRevisit) {
-    const origin = this._titleCase(leg.origin);
+    const origin = this._titleCase(leg.origin || '');
     const dest   = this._titleCase(leg.destination);
     const count  = packages.length;
     const depFmt = this._formatDateHuman(leg.departureDate);
@@ -1512,15 +1522,11 @@ class OrchestrationEngine {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // FLEXIBLE DATE DETECTOR
-  // Catches vague / range answers that _parseDateAnswer can't handle:
-  //   "I'm flexible", "anytime", "July or August", "maybe July", "around Sep"
-  // Returns { earliestDate: 'YYYY-MM-DD' } or null.
   // ─────────────────────────────────────────────────────────────────────────────
   _detectFlexibleDateAnswer(text) {
     if (!text) return null;
     const t = text.toLowerCase().trim();
 
-    // Explicit flexibility / open-ended signals
     const isFlexible = /\b(flexible|anytime|any time|open|not sure|don'?t mind|whenever|no preference|up to you|surprise me|no specific|doesn'?t matter|whatever works)\b/i.test(t);
     if (isFlexible) {
       const d = new Date();
@@ -1535,7 +1541,6 @@ class OrchestrationEngine {
       oct:10, october:10, nov:11, november:11, dec:12, december:12,
     };
 
-    // Month range: "July or August", "July/August", "between July and August", "July to August"
     const monthRangeMatch = t.match(
       /(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s*(?:or|\/|and|to|-)\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i
     );
@@ -1550,7 +1555,6 @@ class OrchestrationEngine {
       }
     }
 
-    // Single bare month with optional prefix: "July", "in August", "around September", "maybe October", "sometime in November"
     const singleMonthMatch = t.match(
       /^(?:in|around|during|sometime\s+in|maybe|perhaps|probably|likely)?\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s*$|\s+(?:or|maybe|ish|time)?$)/i
     );
@@ -1605,7 +1609,6 @@ class OrchestrationEngine {
       const tripParams = { ...previousParams };
       delete tripParams._awaitingClarification;
 
-      // 1. Try exact / specific date parse first
       const parsedDate = this._parseDateAnswer(answer);
       if (parsedDate) {
         tripParams.departureDate = parsedDate;
@@ -1617,7 +1620,6 @@ class OrchestrationEngine {
         return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
       }
 
-      // 2. Detect flexible / month-range answers — route to suggest-dates flow
       const flexibleAnswer = this._detectFlexibleDateAnswer(answer);
       if (flexibleAnswer) {
         logger.info('Flexible date answer detected — routing to suggest-dates flow', { answer, earliestDate: flexibleAnswer.earliestDate });
@@ -1626,7 +1628,6 @@ class OrchestrationEngine {
         return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, flexIntent, channel, phone);
       }
 
-      // 3. Still unparseable — re-ask once more with a helpful nudge
       return this._buildClarificationResponse({
         sessionId, prompt,
         question: `I didn't quite catch that — what date are you thinking? Something like "20 July", "early August", or even just "July" works perfectly.`,
@@ -1667,11 +1668,9 @@ class OrchestrationEngine {
     return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
   // EXCURSION NOTE BUILDER
-  // Formats in-destination excursion requests into a friendly note for the
-  // response text. These are NOT trip legs — just things to flag.
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
   _buildExcursionNote(activityRequests) {
     if (!Array.isArray(activityRequests) || activityRequests.length === 0) return null;
     const labels = {
@@ -1707,13 +1706,9 @@ class OrchestrationEngine {
   async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone = null) {
     tripParams.agencyId = agencyId;
 
-    // Defensive: ensure _channel always set for internal calls that bypass orchestrate()
     if (!tripParams._channel) tripParams._channel = channel || 'widget';
 
     // ── SAFARI LEG INJECTION ──────────────────────────────────────────────
-    // If the parser detected a safari request, add the game reserve as a
-    // proper trip leg (with lodge + transfers) before routing.
-    // Only inject if the safari destination isn't already in trips[].
     if (tripParams.safariDestination) {
       const safariDest = tripParams.safariDestination;
       const safariDestNorm = this._normalizeCity(safariDest);
@@ -1727,12 +1722,10 @@ class OrchestrationEngine {
           baseDestination: tripParams.destination,
         });
 
-        // Work out dates: safari goes after the main stay, 1-2 nights
         const safariNights = 2;
         const mainReturnDate = tripParams.returnDate;
         const mainDepartureDate = tripParams.departureDate;
 
-        // Calculate safari dates: carve out the last safariNights from the trip window
         let safariDepDate = null;
         let safariRetDate = null;
         if (mainReturnDate) {
@@ -1749,7 +1742,6 @@ class OrchestrationEngine {
           safariRetDate = ret.toISOString().split('T')[0];
         }
 
-        // Build the safari leg
         const safariOrigin = tripParams.destination || tripParams.origin;
 
         const safariLeg = {
@@ -1762,8 +1754,6 @@ class OrchestrationEngine {
           _safariLeg:    true,
         };
 
-        // If we already have trips[], splice safari in before the departure leg.
-        // Otherwise, build trips[] from scratch.
         if (Array.isArray(tripParams.trips) && tripParams.trips.length > 0) {
           const depIdx = tripParams.trips.findIndex(t => t._role === 'departure' || this._normalizeCity(t.destination) === this._normalizeCity(tripParams.origin || ''));
           if (depIdx > 0) {
@@ -1771,7 +1761,6 @@ class OrchestrationEngine {
           } else {
             tripParams.trips.push(safariLeg);
           }
-          // Re-add a departure leg back home from safari
           const homeLeg = {
             origin:        safariDest,
             destination:   tripParams.origin || tripParams.trips[0]?.origin,
@@ -1781,13 +1770,11 @@ class OrchestrationEngine {
             needsOriginClarification: false,
             _returnLeg: true,
           };
-          // Remove any existing departure-home leg and re-add correctly
           tripParams.trips = tripParams.trips.filter(t =>
             !(t._returnLeg && this._normalizeCity(t.origin) !== safariDestNorm)
           );
           tripParams.trips.push(homeLeg);
         } else {
-          // Build full trips[] from scratch
           const mainLeg = {
             origin:        tripParams.origin,
             destination:   tripParams.destination,
@@ -1808,7 +1795,6 @@ class OrchestrationEngine {
           tripParams.trips = [mainLeg, safariLeg, returnLeg];
         }
 
-        // Flag that a lodge is needed for the safari leg
         tripParams._safariLodgeNeeded = true;
         tripParams._safariDestination  = safariDest;
 
@@ -1820,8 +1806,6 @@ class OrchestrationEngine {
     // ── END SAFARI INJECTION ──────────────────────────────────────────────
 
     // ── ROUND-TRIP vs MULTI-DESTINATION ROUTING ─────────────────────────
-    // trips[] with exactly [arrival, departure] to same city = plain round-trip.
-    // Route to single-dest search instead of leg-by-leg classified flow.
     if (Array.isArray(tripParams.trips) && tripParams.trips.length > 1) {
       const classifiedLegs = this._classifyTripLegs(tripParams.trips);
       const roles = classifiedLegs.map(l => l._role);
@@ -1992,7 +1976,6 @@ class OrchestrationEngine {
       const bookingRef = `BDL-${Date.now()}`;
       const trainBookingService = require('./trainBookingService');
 
-      // Save initial booking record first
       const { data: booking } = await supabase.from('bookings').insert({
         id:           require('uuid').v4(),
         booking_ref:  bookingRef,
@@ -2016,7 +1999,6 @@ class OrchestrationEngine {
         created_at:   new Date().toISOString(),
       }).select().single();
 
-      // Insert passenger manifest row
       if (passengers.length > 0) {
         await supabase.from('passenger_manifest').insert(
           passengers.map(p => ({
@@ -2035,7 +2017,6 @@ class OrchestrationEngine {
         );
       }
 
-      // Trigger Playwright booking — resumes warm session if available
       const result = await trainBookingService.book({
         bookingRef,
         agencyId,
@@ -2044,7 +2025,6 @@ class OrchestrationEngine {
 
       if (!result.success) {
         logger.error('Train booking agent failed', { bookingRef, error: result.error });
-        // Don't throw — return gracefully so user sees a manual fallback message
         return {
           bookingRef,
           bookingId: booking?.id,
@@ -2101,9 +2081,6 @@ class OrchestrationEngine {
   _detectIntent(prompt, previousParams) {
     const lower = prompt.toLowerCase();
 
-    // ── FRESH SEARCH SIGNALS — checked FIRST to prevent false follow-up ──────
-    // Any of these patterns means the user is starting a new search, regardless
-    // of whether the prompt also contains follow-up keywords like "5 nights".
     const FRESH_SEARCH_PATTERNS = [
       /\bplan\s+(?:me\s+)?a\s+trip\b/i,
       /\bbook\s+(?:me\s+)?a\s+trip\b/i,
@@ -2186,7 +2163,6 @@ class OrchestrationEngine {
       }
     }
 
-    // NEW: "what if I go to Zanzibar" / "what about Zanzibar" patterns
     if (!newDestination) {
       const whatIfMatch =
         lower.match(/\bwhat\s+(?:if|about)\s+(?:i\s+)?(?:go(?:es)?|travel(?:(?:l)ed)?|went|fly|flew|do|did|visit(?:ed)?)?\s*(?:to\s+)?([a-z][a-z\s]{1,25}?)(?:\s+(?:instead|on the same|with the same|\?|$))/i) ||
@@ -2575,8 +2551,6 @@ class OrchestrationEngine {
       finalHotels = await this._filterHotelsByBudget(finalHotels, tripParams.budget, tripParams.budgetKES);
     }
 
-    // Property type filter — "beachfront", "lodge", "tented camp" etc.
-    // This is a soft filter: only applied if it narrows the list, never wipes it.
     if (tripParams.propertyType && finalHotels.length > 0) {
       const pt = (tripParams.propertyType || '').toLowerCase();
       const byType = finalHotels.filter(h => {
@@ -2597,7 +2571,6 @@ class OrchestrationEngine {
   }
 
   async _filterHotelsByBudget(hotels, budget, budgetKES = null) {
-    // If user gave an explicit KES amount, use it as the ceiling
     if (budgetKES && budgetKES > 0) {
       const hotelCeiling = Math.round(budgetKES * 0.6);
       const withKESPrice = await Promise.all(hotels.map(async h => {
@@ -2614,7 +2587,6 @@ class OrchestrationEngine {
       return filtered.length > 0 ? filtered : hotels;
     }
 
-    // Existing tier logic — keep exactly as-is below this line
     const ranges = { low: { min: 0, max: 8000 }, mid: { min: 5000, max: 20000 }, high: { min: 15000, max: 50000 }, luxury: { min: 40000, max: 9999999 } };
     const range = ranges[budget];
     if (!range) return hotels;

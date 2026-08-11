@@ -5,7 +5,8 @@
  *
  * Public:             /register, /signup, /login, /forgot-password
  * Session-protected:  /me, /logout, /dashboard, /settings, /ask,
- *                     /trips, /trips/:id/events, /trips/:id/resolve
+ *                     /trips, /trips/:id/events, /trips/:id/resolve,
+ *                     /searches
  * API-key-protected:  /:agencyId/regenerate-key, /whatsapp/:agencyId
  * ─────────────────────────────────────────────
  */
@@ -201,14 +202,12 @@ async function _getDashboardData(req, res) {
 
     const [
       { data: bookings },
-      { data: searches },
+      { data: searches, count: searchCount },
       { data: activeTrips },
     ] = await Promise.all([
       supabase.from('bookings').select('*').eq('agency_id', agencyId).order('created_at', { ascending: false }).limit(200),
-      supabase.from('trip_searches').select('*').eq('agency_id', agencyId).order('created_at', { ascending: false }).limit(200),
-      // Trip monitoring — reads from the view built in migration 004.
-      // Returns empty array gracefully if the table doesn't exist yet
-      // (pre-migration deploys) so the dashboard never breaks.
+      // Raised from 200 to 1000; full history available via GET /searches (paginated)
+      supabase.from('trip_searches').select('*', { count: 'exact' }).eq('agency_id', agencyId).order('created_at', { ascending: false }).limit(1000),
       supabase.from('active_trips_dashboard').select('*').eq('agency_id', agencyId).limit(50)
         .then(r => r)
         .catch(() => ({ data: [] })),
@@ -241,6 +240,9 @@ async function _getDashboardData(req, res) {
       critical:  allTrips.filter(t => t.health === 'critical').length,
     };
 
+    // Use exact count from Supabase for totalSearches (not just the loaded slice)
+    const totalSearchesCount = searchCount !== null ? searchCount : (searches || []).length;
+
     return res.json({
       success: true,
       agency: {
@@ -254,9 +256,9 @@ async function _getDashboardData(req, res) {
         totalEarnings: Math.round(totalEarnings),
         thisMonthEarnings: Math.round(thisMonthEarnings),
         activeCustomers: customers.length,
-        totalSearches: (searches || []).length,
+        totalSearches: totalSearchesCount,
         recentSearches: recentSearches.length,
-        conversionRate: searches?.length > 0 ? Math.round(((bookings?.length || 0) / searches.length) * 100) : 0,
+        conversionRate: totalSearchesCount > 0 ? Math.round(((bookings?.length || 0) / totalSearchesCount) * 100) : 0,
       },
       bookings: (bookings || []).map(b => ({
         bookingRef: b.booking_ref, guestName: b.guest_name, guestPhone: b.guest_phone,
@@ -267,10 +269,21 @@ async function _getDashboardData(req, res) {
       })),
       customers,
       recentActivity: recentSearches.slice(0, 20),
+      // Full search list (most recent 1000). Use GET /searches for paginated access to full history.
+      searches: (searches || []).map(s => ({
+        id: s.id,
+        destination: s.destination,
+        origin: s.origin,
+        rawPrompt: s.raw_prompt,
+        passengers: s.passengers,
+        budget: s.budget,
+        nights: s.nights,
+        channel: s.channel,
+        converted: s.converted,
+        packagesReturned: s.packages_returned,
+        createdAt: s.created_at,
+      })),
       // ── Trip monitoring ─────────────────────────────────────
-      // Populated as soon as bookings start confirming post-deploy.
-      // Returns zeros until then — UI should show "No active trips yet"
-      // rather than hiding the section entirely.
       trips: {
         summary: tripsSummary,
         active:  allTrips,
@@ -281,6 +294,42 @@ async function _getDashboardData(req, res) {
     return res.json({ success: false, error: err.message });
   }
 }
+
+// ─────────────────────────────────────────────
+// SESSION-PROTECTED — SEARCHES (paginated)
+// GET /api/agencies/searches
+// ─────────────────────────────────────────────
+router.get('/searches', authenticateSession, async (req, res) => {
+  try {
+    const { limit = 50, offset = 0, channel, converted, search } = req.query;
+
+    let query = supabase
+      .from('trip_searches')
+      .select('id,destination,origin,raw_prompt,passengers,budget,nights,channel,converted,packages_returned,created_at', { count: 'exact' })
+      .eq('agency_id', req.agencyId)
+      .order('created_at', { ascending: false })
+      .range(Number(offset), Number(offset) + Number(limit) - 1);
+
+    if (channel)   query = query.eq('channel', channel);
+    if (converted !== undefined && converted !== '') query = query.eq('converted', converted === 'true');
+    if (search)    query = query.or(`destination.ilike.%${search}%,origin.ilike.%${search}%,raw_prompt.ilike.%${search}%`);
+
+    const { data, error, count } = await query;
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      searches: data || [],
+      total: count,
+      offset: Number(offset),
+      limit: Number(limit),
+      hasMore: Number(offset) + Number(limit) < count,
+    });
+  } catch (err) {
+    logger.error('Agency searches fetch failed', { agencyId: req.agencyId, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // ─────────────────────────────────────────────
 // SESSION-PROTECTED — UPDATE SETTINGS
@@ -349,7 +398,6 @@ router.get('/trips', authenticateSession, async (req, res) => {
 // ─────────────────────────────────────────────
 router.get('/trips/:id/events', authenticateSession, async (req, res) => {
   try {
-    // Scoped to this agency — agencies must never see other agencies' trips
     const { data: trip } = await supabase
       .from('trips')
       .select('id')

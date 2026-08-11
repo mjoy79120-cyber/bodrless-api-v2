@@ -30,13 +30,14 @@ function requireAdminKey(req, res, next) {
 async function getOverviewStats() {
   const [
     { data: bookings },
-    { data: searches },
+    { data: searches, count: searchCount },
     { data: agencies },
     { data: contacts },
     { data: sessions },
   ] = await Promise.all([
     supabase.from('bookings').select('agency_id,total_price,currency,status,payment_status,booking_stage,channel,passengers,created_at'),
-    supabase.from('trip_searches').select('agency_id,destination,channel,converted,created_at,passengers').order('created_at', { ascending: false }).limit(500),
+    // Removed .limit(500) — now loads up to 2000 for stats; full data via /api/searches paginated endpoint
+    supabase.from('trip_searches').select('agency_id,destination,channel,converted,created_at,passengers', { count: 'exact' }).order('created_at', { ascending: false }).limit(2000),
     supabase.from('agencies').select('id,name,created_at'),
     supabase.from('whatsapp_contacts').select('phone,created_at'),
     supabase.from('whatsapp_booking_sessions').select('phone,agency_id,current_step,created_at'),
@@ -108,13 +109,15 @@ async function getOverviewStats() {
   for (const s of allSearches) { const ch = (s.channel || 'other').toLowerCase(); if (ch === 'whatsapp') channelCounts.whatsapp++; else if (ch === 'widget') channelCounts.widget++; else channelCounts.other++; }
 
   const totalTravelers = confirmedBookings.reduce((s, b) => s + (Number(b.passengers) || 1), 0);
-  const conversionRate = allSearches.length > 0 ? (confirmedBookings.length / allSearches.length * 100).toFixed(1) : 0;
+  // Use exact count from Supabase if available, otherwise fall back to loaded slice length
+  const totalSearchesCount = searchCount !== null ? searchCount : allSearches.length;
+  const conversionRate = totalSearchesCount > 0 ? (confirmedBookings.length / totalSearchesCount * 100).toFixed(1) : 0;
 
   return {
     totalAgencies: allAgencies.length,
     activeAgencies: Object.values(agencyMap).filter(a => a.searches > 0 || a.bookings > 0).length,
     agencies: Object.values(agencyMap).map(a => ({ ...a, channels: [...a.channels] })),
-    totalSearches: allSearches.length, totalBookings: allBookings.length, confirmedBookings: confirmedBookings.length,
+    totalSearches: totalSearchesCount, totalBookings: allBookings.length, confirmedBookings: confirmedBookings.length,
     totalGMVKES: Math.round(totalGMV), bodrlessCutKES: Math.round(bodrlessCut), agencyCutKES: Math.round(agencyCut),
     avgBookingValueKES: confirmedBookings.length > 0 ? Math.round(totalGMV / confirmedBookings.length) : 0,
     totalTravelers, conversionRate, topDestinations, recentActivity, bookingsByDay, channelCounts,
@@ -122,6 +125,38 @@ async function getOverviewStats() {
     totalContacts: allContacts.length, activeSessions: allSessions.length,
   };
 }
+
+// ── Searches API (paginated) ──────────────────────────────────
+router.get('/api/searches', requireAdminKey, async (req, res) => {
+  try {
+    const { agency_id, channel, converted, limit = 50, offset = 0, search } = req.query;
+
+    let query = supabase
+      .from('trip_searches')
+      .select('id,agency_id,destination,origin,raw_prompt,passengers,budget,nights,channel,converted,packages_returned,created_at', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(Number(offset), Number(offset) + Number(limit) - 1);
+
+    if (agency_id) query = query.eq('agency_id', agency_id);
+    if (channel)   query = query.eq('channel', channel);
+    if (converted !== undefined && converted !== '') query = query.eq('converted', converted === 'true');
+    if (search)    query = query.or(`destination.ilike.%${search}%,origin.ilike.%${search}%,raw_prompt.ilike.%${search}%`);
+
+    const { data, error, count } = await query;
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      searches: data || [],
+      total: count,
+      offset: Number(offset),
+      limit: Number(limit),
+      hasMore: Number(offset) + Number(limit) < count,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // ── Conversations API ─────────────────────────────────────────
 router.get('/api/conversations', requireAdminKey, async (req, res) => {
@@ -346,7 +381,7 @@ td{padding:10px 0;border-bottom:1px solid #f1f5f9;vertical-align:middle}
 tr:last-child td{border-bottom:none}
 .mono{font-family:var(--mono);font-size:12px}
 .pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:20px}
-.pill.wa{background:#dcfce7;color:#15803d}.pill.widget{background:#dbeafe;color:#1d4ed8}.pill.paid{background:#dcfce7;color:#15803d}.pill.pending{background:#fef9c3;color:#92400e}.pill.search{background:#ede9fe;color:#6d28d9}.pill.confirmed{background:#dcfce7;color:#15803d}
+.pill.wa{background:#dcfce7;color:#15803d}.pill.widget{background:#dbeafe;color:#1d4ed8}.pill.paid{background:#dcfce7;color:#15803d}.pill.pending{background:#fef9c3;color:#92400e}.pill.search{background:#ede9fe;color:#6d28d9}.pill.confirmed{background:#dcfce7;color:#15803d}.pill.converted{background:#dcfce7;color:#15803d}.pill.not-converted{background:#f1f5f9;color:#64748b}
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--navy-mid);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#60a5fa;flex-shrink:0;font-family:var(--mono)}
 .dest-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f1f5f9}.dest-row:last-child{border-bottom:none}
 .dest-name{flex:1;font-size:13px}.dest-bar-wrap{width:100px;height:5px;background:#f1f5f9;border-radius:3px}.dest-bar{height:100%;background:var(--accent);border-radius:3px}.dest-count{font-size:12px;color:var(--muted);font-family:var(--mono);min-width:28px;text-align:right}
@@ -369,6 +404,14 @@ tr:last-child td{border-bottom:none}
 .stage-pill{font-size:10px;padding:2px 7px;border-radius:10px}
 .disruption-banner{background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:12px;color:#9a3412}
 .trip-row-item{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9}.trip-row-item:last-child{border-bottom:none}
+/* Searches table */
+.searches-toolbar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.searches-toolbar input,.searches-toolbar select{padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--card);color:var(--text)}
+.searches-toolbar input{flex:1;min-width:160px}
+.pagination{display:flex;align-items:center;gap:10px;margin-top:14px;font-size:12px;color:var(--muted)}
+.pagination button{padding:5px 12px;border:1px solid var(--border);border-radius:5px;background:var(--card);cursor:pointer;font-size:12px}
+.pagination button:disabled{opacity:0.4;cursor:default}
+.prompt-cell{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -394,6 +437,10 @@ tr:last-child td{border-bottom:none}
     <div class="nav-item" onclick="showSection('destinations',this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
       Destinations
+    </div>
+    <div class="nav-item" onclick="showSection('searches',this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      Searches
     </div>
     <div class="nav-section">Live</div>
     <div class="nav-item" onclick="showSection('live',this)">
@@ -438,11 +485,37 @@ tr:last-child td{border-bottom:none}
     <div id="section-agencies" class="section"><div id="agencies-body"><div class="loading">Loading...</div></div></div>
     <div id="section-bookings" class="section"><div id="bookings-body"><div class="loading">Loading...</div></div></div>
     <div id="section-destinations" class="section"><div id="destinations-body"><div class="loading">Loading...</div></div></div>
+
+    <div id="section-searches" class="section">
+      <div class="searches-toolbar">
+        <input type="text" id="search-q" placeholder="Search destination, origin or prompt..." oninput="debounceSearches()"/>
+        <select id="search-channel" onchange="loadSearches(0)">
+          <option value="">All channels</option>
+          <option value="whatsapp">WhatsApp</option>
+          <option value="widget">Widget</option>
+        </select>
+        <select id="search-converted" onchange="loadSearches(0)">
+          <option value="">All results</option>
+          <option value="true">Converted</option>
+          <option value="false">Not converted</option>
+        </select>
+        <select id="search-agency" onchange="loadSearches(0)">
+          <option value="">All agencies</option>
+        </select>
+      </div>
+      <div id="searches-body"><div class="loading">Loading...</div></div>
+      <div class="pagination" id="searches-pagination" style="display:none">
+        <button id="searches-prev" onclick="searchesPage(-1)" disabled>← Prev</button>
+        <span id="searches-page-info"></span>
+        <button id="searches-next" onclick="searchesPage(1)">Next →</button>
+      </div>
+    </div>
+
     <div id="section-live" class="section"><div id="live-body"><div class="loading">Loading...</div></div></div>
 
     <div id="section-trips" class="section">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
-        <p style="font-size:12px;color:var(--muted);max-width:560px">All active trips across every agency — sorted by health. Critical first. Monitoring starts automatically when a booking is confirmed.</p>
+        <p style="font-size:12px;color:var(--muted);max-width:560px">All active trips across every agency — sorted by health. Critical first.</p>
         <button class="refresh-btn" onclick="loadTrips()">Refresh</button>
       </div>
       <div id="trips-body"><div class="loading">Loading...</div></div>
@@ -480,6 +553,10 @@ const ADMIN_KEY = '${adminKey}';
 const KES_TO_USD = 0.0077;
 let DATA = null;
 let gmvChart = null;
+let searchesOffset = 0;
+let searchesTotal = 0;
+const SEARCHES_LIMIT = 50;
+let searchDebounceTimer = null;
 
 function fmt(n){return Math.round(n||0).toLocaleString('en-KE')}
 function kes(n){return 'KES\u00a0'+fmt(n)}
@@ -502,13 +579,14 @@ function showSection(id, el){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   document.getElementById('section-'+id).classList.add('active');
   if(el) el.classList.add('active');
-  const titles={overview:'Overview',agencies:'Agencies',bookings:'Bookings',destinations:'Destinations',live:'Live activity',trips:'Active Trips',conversations:'Conversations',alerts:'Alerts',insights:'Insights',providers:'Top Providers'};
+  const titles={overview:'Overview',agencies:'Agencies',bookings:'Bookings',destinations:'Destinations',searches:'Searches',live:'Live activity',trips:'Active Trips',conversations:'Conversations',alerts:'Alerts',insights:'Insights',providers:'Top Providers'};
   document.getElementById('page-title').textContent = titles[id]||id;
   if(id==='conversations') loadConversations();
   else if(id==='alerts') loadAlerts();
   else if(id==='insights') loadInsights();
   else if(id==='providers') loadProviders();
   else if(id==='trips') loadTrips();
+  else if(id==='searches') loadSearches(0);
   else if(DATA) renderSection(id);
 }
 
@@ -521,6 +599,11 @@ async function loadData(){
     if(!j.success) throw new Error(j.error||'Unknown error');
     DATA = j.stats;
     document.getElementById('last-updated').textContent = new Date().toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});
+    // Populate agency filter in searches toolbar
+    if(DATA.agencies){
+      const sel=document.getElementById('search-agency');
+      if(sel){sel.innerHTML='<option value="">All agencies</option>'+DATA.agencies.map(a=>'<option value="'+a.id+'">'+a.name+'</option>').join('');}
+    }
     ['overview','agencies','bookings','destinations','live'].forEach(renderSection);
   } catch(e){
     document.getElementById('last-updated').textContent = 'Error';
@@ -555,7 +638,7 @@ function renderOverview(d){
     </div>
     <div class="kpi-grid">
       <div class="kpi hi"><div class="kpi-label">Agencies</div><div class="kpi-value">\${d.totalAgencies}</div><div class="kpi-sub">\${d.activeAgencies} active</div></div>
-      <div class="kpi"><div class="kpi-label">Total searches</div><div class="kpi-value">\${fmt(d.totalSearches)}</div><div class="kpi-sub">last 500 loaded</div></div>
+      <div class="kpi"><div class="kpi-label">Total searches</div><div class="kpi-value">\${fmt(d.totalSearches)}</div><div class="kpi-sub">all time</div></div>
       <div class="kpi go"><div class="kpi-label">Live searches</div><div class="kpi-value">\${d.liveSearchCount}</div><div class="kpi-sub">last 24 hours</div></div>
       <div class="kpi warn"><div class="kpi-label">Awaiting payment</div><div class="kpi-value">\${d.pendingPaymentCount}</div><div class="kpi-sub">open sessions</div></div>
       <div class="kpi"><div class="kpi-label">Travelers</div><div class="kpi-value">\${fmt(d.totalTravelers)}</div><div class="kpi-sub">confirmed bookings</div></div>
@@ -595,6 +678,80 @@ function renderLive(d){
   el.innerHTML='<div class="kpi-grid" style="margin-bottom:16px"><div class="kpi go"><div class="kpi-label">Searches today</div><div class="kpi-value">'+d.liveSearchCount+'</div><div class="kpi-sub">last 24 hours</div></div><div class="kpi warn"><div class="kpi-label">Open sessions</div><div class="kpi-value">'+d.activeSessions+'</div><div class="kpi-sub">WhatsApp booking flows</div></div><div class="kpi"><div class="kpi-label">Pending payments</div><div class="kpi-value">'+d.pendingPaymentCount+'</div><div class="kpi-sub">awaiting M-Pesa</div></div></div><div class="card"><div class="card-title" style="display:flex;align-items:center;gap:8px"><span class="live-dot"></span> Recent activity</div>'+(d.recentActivity||[]).slice(0,15).map(a=>'<div class="live-row">'+pill(a.type)+'<span class="live-dest">'+(a.destination||'Unknown')+'</span><span class="live-channel">'+(a.channel||'')+'</span>'+(a.price?'<span class="mono" style="color:var(--muted)">'+kes(a.price)+'</span>':'')+'<span class="live-time">'+ago(a.ts)+'</span></div>').join('')+'</div>';
 }
 
+// ── SEARCHES (paginated) ───────────────────────────────────────
+function debounceSearches(){
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(()=>loadSearches(0), 350);
+}
+
+function searchesPage(dir){
+  const newOffset = searchesOffset + dir * SEARCHES_LIMIT;
+  if(newOffset < 0 || newOffset >= searchesTotal) return;
+  loadSearches(newOffset);
+}
+
+async function loadSearches(offset=0){
+  searchesOffset = offset;
+  const el = document.getElementById('searches-body');
+  el.innerHTML = '<div class="loading">Loading searches...</div>';
+  try {
+    const q     = document.getElementById('search-q')?.value.trim()||'';
+    const ch    = document.getElementById('search-channel')?.value||'';
+    const conv  = document.getElementById('search-converted')?.value||'';
+    const ag    = document.getElementById('search-agency')?.value||'';
+    let url = '/admin/api/searches?limit='+SEARCHES_LIMIT+'&offset='+offset+'&key='+encodeURIComponent(ADMIN_KEY);
+    if(q)    url += '&search='+encodeURIComponent(q);
+    if(ch)   url += '&channel='+encodeURIComponent(ch);
+    if(conv) url += '&converted='+encodeURIComponent(conv);
+    if(ag)   url += '&agency_id='+encodeURIComponent(ag);
+    const r = await fetch(url);
+    const j = await r.json();
+    if(!j.success) throw new Error(j.error);
+    searchesTotal = j.total || 0;
+    renderSearches(j.searches, j.total, offset);
+  } catch(e){
+    el.innerHTML = '<div class="err">'+e.message+'</div>';
+  }
+}
+
+function renderSearches(rows, total, offset){
+  const el = document.getElementById('searches-body');
+  const pg = document.getElementById('searches-pagination');
+  const pgInfo = document.getElementById('searches-page-info');
+  const prevBtn = document.getElementById('searches-prev');
+  const nextBtn = document.getElementById('searches-next');
+
+  if(!rows||!rows.length){
+    el.innerHTML='<div class="card"><div class="empty">No searches found.</div></div>';
+    pg.style.display='none';
+    return;
+  }
+
+  const agencyName = (id) => {
+    if(!DATA||!DATA.agencies) return id;
+    return DATA.agencies.find(a=>a.id===id)?.name || id;
+  };
+
+  el.innerHTML='<div class="card"><table><thead><tr><th>Time</th><th>Agency</th><th>Route</th><th>Prompt</th><th>Pax</th><th>Channel</th><th>Converted</th><th>Results</th></tr></thead><tbody>'+
+    rows.map(s=>'<tr>'+
+      '<td class="mono" style="white-space:nowrap;font-size:11px;color:var(--muted)">'+ago(s.created_at)+'</td>'+
+      '<td style="font-size:12px">'+agencyName(s.agency_id)+'</td>'+
+      '<td style="font-size:12px;white-space:nowrap">'+(s.origin||'?')+' → '+(s.destination||'?')+'</td>'+
+      '<td class="prompt-cell" title="'+(s.raw_prompt||'').replace(/"/g,"&quot;")+'">'+(s.raw_prompt||'—')+'</td>'+
+      '<td class="mono" style="text-align:center">'+(s.passengers||1)+'</td>'+
+      '<td>'+pill(s.channel||'other')+'</td>'+
+      '<td>'+(s.converted?'<span class="pill converted">Yes</span>':'<span class="pill not-converted">No</span>')+'</td>'+
+      '<td class="mono" style="text-align:center">'+(s.packages_returned||0)+'</td>'+
+    '</tr>').join('')+
+  '</tbody></table></div>';
+
+  const from = offset+1, to = Math.min(offset+rows.length, total);
+  pgInfo.textContent = 'Showing '+from+'–'+to+' of '+total.toLocaleString();
+  prevBtn.disabled = offset === 0;
+  nextBtn.disabled = offset + SEARCHES_LIMIT >= total;
+  pg.style.display = 'flex';
+}
+
 // ── ACTIVE TRIPS ───────────────────────────────────────────────
 async function loadTrips() {
   const el = document.getElementById('trips-body');
@@ -619,7 +776,7 @@ function updateTripsBadge(summary) {
 function renderAdminTrips(trips, summary) {
   const el = document.getElementById('trips-body');
   if (!trips || !trips.length) {
-    el.innerHTML = '<div class="card"><div class="empty">No active trips yet — trips appear here automatically when bookings are confirmed. The monitoring engine is running and ready.</div></div>';
+    el.innerHTML = '<div class="card"><div class="empty">No active trips yet.</div></div>';
     return;
   }
   const critical = trips.filter(t => t.health === 'critical');
@@ -758,7 +915,7 @@ async function refreshInsights(){const btn=document.getElementById('insights-ref
 const INSIGHT_LABELS={dead_end_destination:'Dead-end destination',parser_struggle:'Parser struggle',conversion_gap:'Conversion gap',channel_friction:'Channel friction',repeat_no_booking:'Repeat, no booking',supplier_drift:'Supplier drift'};
 function renderInsights(insights){
   const el=document.getElementById('insights-body');
-  if(!insights||!insights.length){el.innerHTML='<div class="card"><div class="empty">No patterns detected yet — insights need real search/booking volume.</div></div>';return;}
+  if(!insights||!insights.length){el.innerHTML='<div class="card"><div class="empty">No patterns detected yet.</div></div>';return;}
   const sc={info:'#2563eb',notable:'#d97706',high:'#dc2626'};const sb={info:'#dbeafe',notable:'#fef9c3',high:'#fee2e2'};
   const byType={};for(const i of insights){if(!byType[i.type])byType[i.type]=[];byType[i.type].push(i);}
   el.innerHTML=Object.entries(byType).map(([type,items])=>'<div style="margin-bottom:20px"><div class="section-title" style="margin-top:0">'+(INSIGHT_LABELS[type]||type)+'</div>'+items.map(i=>'<div class="card" style="margin-bottom:10px;border-left:3px solid '+(sc[i.severity]||'#94a3b8')+'"><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:4px;background:'+(sb[i.severity]||'#f1f5f9')+';color:'+(sc[i.severity]||'#64748b')+'">'+(i.severity||'info').toUpperCase()+'</span>'+(i.agency_id?'<span style="font-size:11px;color:var(--muted)">'+i.agency_id+'</span>':'<span style="font-size:11px;color:var(--muted)">platform-wide</span>')+'</div><div style="font-size:13px;font-weight:500;margin-bottom:4px">'+i.title+'</div>'+(i.detail?'<div style="font-size:12px;color:var(--muted)">'+i.detail+'</div>':'')+'</div>').join('')+'</div>').join('');
