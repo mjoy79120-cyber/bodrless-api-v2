@@ -509,7 +509,7 @@ closeBtn.onclick = function() {
     var icon = document.createElement('span'); icon.className = 'leg-icon'; icon.innerText = cfg.icon;
     var titleWrap = document.createElement('div');
     var title = document.createElement('div'); title.className = 'leg-title'; title.innerText = (idx + 1) + '. ' + (leg.label || leg.roleLabel || cfg.label);
-    var subtitle = document.createElement('div'); subtitle.className = 'leg-subtitle'; subtitle.innerText = leg.text ? leg.text.replace(/\*\*/g, '').split('\n')[0] : cfg.label;
+   var subtitle = document.createElement('div'); subtitle.className = 'leg-subtitle'; subtitle.innerText = leg.text ? leg.text.replace(/\\*\\*/g, '').split('\\n')[0] : cfg.label;
     titleWrap.appendChild(title); titleWrap.appendChild(subtitle);
     hdrLeft.appendChild(icon); hdrLeft.appendChild(titleWrap);
     var statusBadge = document.createElement('span'); statusBadge.className = 'leg-status ' + (isLocked ? 'locked' : isCurrent ? 'active' : 'pending');
