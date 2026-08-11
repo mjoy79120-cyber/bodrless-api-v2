@@ -107,12 +107,15 @@ async function serveHotelLanding(req, res) {
   let properties = [];
 
   try {
+    // ── FIX: use maybeSingle() so a missing row returns null
+    // instead of throwing, which was causing the catch block to
+    // swallow the result and always show the 404 page.
     const { data: g } = await supabase
       .from('hotel_groups')
       .select('id, name, slug, logo_url, primary_color')
       .eq('slug', hotelSlug)
       .eq('is_active', true)
-      .single();
+      .maybeSingle();
     group = g;
 
     if (group) {
@@ -378,7 +381,7 @@ ${propCardsHTML}
     }).join(',\n    ')}
   ];
 
- function sendPrompt(text) {
+  function sendPrompt(text) {
     var input = document.getElementById('bd-hotel-input');
     var btn   = document.getElementById('bd-hotel-send');
     if (input && btn) {
@@ -395,7 +398,7 @@ ${propCardsHTML}
     setTimeout(function() {
       var input = document.getElementById('bd-hotel-input');
       if (input) input.focus();
-    }, 600);;
+    }, 600);
   });
 </script>
 
@@ -457,11 +460,6 @@ app.listen(PORT, '0.0.0.0', () => {
   }
 
   // ── TRIP MONITORING WORKER ────────────────────────────────
-  // Starts the frequency-aware background cron that monitors all
-  // active trips (flight status, stage advancement, disruption
-  // detection). Fires every 15 minutes internally but respects
-  // per-trip check_interval_mins so trips far from departure
-  // are only actually checked every 2 hours.
   monitoringWorker.start();
   // ── END TRIP MONITORING WORKER ────────────────────────────
 });
@@ -492,12 +490,5 @@ setTimeout(async () => {
   try { await runScraper(); }
   catch (err) { logger.error('[Startup scraper] Error:', { error: err.message }); }
 }, 10000);
-
-// Run once on startup after 10 seconds
-// setTimeout(async () => {
-//   logger.info('[Startup] Running initial rate scrape...');
-//   try { await runScraper(); }
-//   catch (err) { logger.error('[Startup scraper] Error:', { error: err.message }); }
-// }, 10000);
 
 module.exports = app;
