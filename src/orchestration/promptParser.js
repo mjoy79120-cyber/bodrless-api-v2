@@ -35,6 +35,9 @@
  * Fixed: Trip leg normalization — session context (origin, dates) is
  *        propagated into trips[] legs and missing first legs are
  *        prepended so the engine never receives origin:null or date:null.
+ * Fixed: _normalizeTripLegsFromSession — three-way match (origin +
+ *        destination + date) prevents duplicate prepend when Groq
+ *        already returns the full round-trip including the first leg.
  */
 
 const Groq = require('groq-sdk');
@@ -236,12 +239,23 @@ function _normalizeTripLegsFromSession(trips, topLevel) {
   const sessionDeparture = topLevel.departureDate;
   const sessionNights    = topLevel.nights;
 
-  // If trips[0] destination matches the session destination, the first leg
-  // (e.g. Nairobi→Diani) is missing from Groq's output because the user's
-  // follow-up only described subsequent legs. Prepend it from session context.
-  const firstTripDest = (trips[0]?.destination || '').toLowerCase().trim();
-  const sessionDest   = (topLevel.destination  || '').toLowerCase().trim();
-  const needsPrepend  = firstTripDest === sessionDest && !!sessionOrigin && !!sessionDeparture;
+  // ── PATCH 1: Three-way match prevents duplicate prepend ───────────────────
+  // When Groq correctly returns the full round-trip (including the outbound
+  // leg), the old code would prepend a duplicate because it only checked
+  // destination. Now we match origin + destination + date — all three must
+  // differ before we prepend the missing first leg.
+  const firstTripDest   = (trips[0]?.destination || '').toLowerCase().trim();
+  const firstTripOrigin = (trips[0]?.origin       || '').toLowerCase().trim();
+  const sessionDest     = (topLevel.destination   || '').toLowerCase().trim();
+  const sessionOrigNorm = (sessionOrigin          || '').toLowerCase().trim();
+
+  const firstLegMatchesSession =
+    firstTripDest   === sessionDest     &&
+    firstTripOrigin === sessionOrigNorm &&
+    (trips[0]?.departureDate || '') === (sessionDeparture || '');
+
+  const needsPrepend = !firstLegMatchesSession && !!sessionOrigin && !!sessionDeparture && !!sessionDest;
+  // ─────────────────────────────────────────────────────────────────────────
 
   const fullTrips = needsPrepend
     ? [

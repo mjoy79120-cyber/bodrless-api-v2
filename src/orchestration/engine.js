@@ -125,6 +125,60 @@ class OrchestrationEngine {
         );
       }
 
+      // ── FLIGHT-ONLY HOTEL FOLLOW-UP ───────────────────────────────────────────
+      if (previousParams?._awaitingHotelFollowUp) {
+        const lower = (prompt || '').toLowerCase().trim();
+        const isYes = /^(yes|y|sure|ok|okay|yep|yeah|yah|add|include|ndio|sawa)$/i.test(lower);
+        const isNo  = /^(no|n|nope|nah|skip|just the flight|flight only|hapana|book it)$/i.test(lower);
+
+        if (isYes) {
+          // Re-run with hotel scope unlocked
+          const hotelParams = {
+            ...previousParams,
+            _awaitingHotelFollowUp: undefined,
+          };
+          const hotelIntent = {
+            isFollowUp:          true,
+            adjustments:         {},
+            productScope:        { needsTransport: true, needsHotel: true, needsTransfers: true },
+            wantsCheapest:       false,
+            wantsAffordableSort: false,
+            wantsSuggestDates:   false,
+          };
+          return await this._continueOrchestration(
+            hotelParams, agencyId, prompt, conversationHistory, sessionId, hotelIntent, context.channel, context.phone
+          );
+        }
+
+        if (isNo) {
+          // User wants flight only — return their previously shown packages as-is
+          // with a booking nudge
+          const dest = this._titleCase(previousParams.destination || '');
+          return {
+            sessionId,
+            text: `Got it — just the flight to ${dest}. Select the option you'd like above and I'll get it booked for you.`,
+            packages:            previousParams._lastFlightPackages || [],
+            tripParams:          { ...previousParams, _awaitingHotelFollowUp: undefined },
+            intent:              null,
+            conversationHistory,
+            generatedAt:         new Date().toISOString(),
+          };
+        }
+
+        // Ambiguous answer — re-ask
+        return {
+          sessionId,
+          text: `Just to confirm — would you like me to add hotels in ${this._titleCase(previousParams.destination || 'your destination')} to your flight options? Reply *yes* or *no*.`,
+          packages:            previousParams._lastFlightPackages || [],
+          needsClarification:  true,
+          tripParams:          previousParams,
+          intent:              null,
+          conversationHistory,
+          generatedAt:         new Date().toISOString(),
+        };
+      }
+      // ── END FLIGHT-ONLY HOTEL FOLLOW-UP ──────────────────────────────────────
+
       if (previousParams?._awaitingClarification) {
         return await this._resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, context.channel, context.phone);
       }
@@ -495,7 +549,12 @@ class OrchestrationEngine {
       const dateLabel = tripParams._datesWereAssumed
         ? ` — ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''}`
         : '';
+      const isFlightOnlySearch = rankedPackages.length > 0 && rankedPackages.every(p => p._flightOnly);
       responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
+
+      if (isFlightOnlySearch && tripParams.nights > 0) {
+        responseText += `\n\nWould you also like me to find hotels in ${dest} for your ${tripParams.nights} night${tripParams.nights > 1 ? 's' : ''}? Reply *yes* to add a hotel, or *no* to book just the flight.`;
+      }
 
       const excursionNote = this._buildExcursionNote(tripParams.activityRequests);
       if (excursionNote) responseText += `\n\n${excursionNote}`;
@@ -1936,7 +1995,21 @@ class OrchestrationEngine {
       tracking.alert({ type: 'zero_results', severity: 'warning', title: `No results for "${tripParams.destination || 'unknown destination'}"`, detail: `Prompt: "${prompt.slice(0, 200)}"`, context: { prompt, destination: tripParams.destination, origin: tripParams.origin, tripParams }, agencyId, sessionId, channel: channel || 'widget' });
     }
 
-    return { sessionId, text: singleResult.text, packages: singleResult.packages, tripParams, intent, conversationHistory: updatedHistory, generatedAt: new Date().toISOString() };
+    // If this was a flight-only search with nights, tag params so the follow-up handler fires
+    const isFlightOnly = singleResult.packages.length > 0 && singleResult.packages.every(p => p._flightOnly);
+    const taggedParams  = isFlightOnly && tripParams.nights > 0
+      ? { ...tripParams, _awaitingHotelFollowUp: true, _lastFlightPackages: singleResult.packages }
+      : tripParams;
+
+    return {
+      sessionId,
+      text:                singleResult.text,
+      packages:            singleResult.packages,
+      tripParams:          taggedParams,
+      intent,
+      conversationHistory: updatedHistory,
+      generatedAt:         new Date().toISOString(),
+    };
   }
 
   async _logSearch({ sessionId, agencyId, prompt, tripParams, packagesReturned, packages = [], channel }) {
@@ -2120,7 +2193,8 @@ class OrchestrationEngine {
     const wantsCheapest = /\b(cheapest|lowest[\s-]?price|lowest[\s-]?fare|best[\s-]?price)\b/i.test(lower);
     const wantsAffordableSort = /\bcheap\b|cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/i.test(lower);
 
-    const flightExclusive = lower.match(/\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only|\bcheapest\s+flight(s)?\b|\bcheapest\s+fare\b/i);
+    const hasHotelInSamePrompt = /\b(hotel|stay|lodge|put me in|book me into|staying at|at the)\b/i.test(lower);
+    const flightExclusive = !hasHotelInSamePrompt && lower.match(/\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only|\bcheapest\s+flight(s)?\b|\bcheapest\s+fare\b|\bfind\s+me\s+(a\s+|the\s+)?(cheapest|affordable|best|most\s+affordable)?\s*flight(s)?\b|\bflight(s)?\s+from\b|\bfly(?:ing)?\s+from\b/i);
     const busExclusive   = lower.match(/\bonly\s+(a\s+)?(?<![a-z])bus(?:es)?\b|(?<![a-z])bus(?:es)?\s+only|just\s+(a\s+)?(?<![a-z])bus(?:es)?\b/i);
     const hotelExclusive = lower.match(/\bonly\s+(a\s+)?hotel\b|hotel\s+only|just\s+(a\s+)?hotel\b|stay\s+only|accommodation\s+only/i);
     const hotelIntent    = !flightExclusive && !busExclusive && lower.match(/\b(find\s+(me\s+)?a\s+hotel|looking\s+for\s+(a\s+)?hotel|need\s+(a\s+)?hotel|hotel\s+in|hotels?\s+near|where\s+to\s+stay|accommodation\s+in)\b/i);
@@ -2712,20 +2786,59 @@ class OrchestrationEngine {
     if (!hasOutbound && !hasHotels) { console.log("NO INVENTORY FOUND"); return []; }
 
     if (scope.needsTransport && !scope.needsHotel && !scope.needsTransfers) {
+      let flightPackages;
+
       if (hasOutbound && hasReturn) {
-        return Promise.all(outboundTransport.map(async (ob, i) => {
+        flightPackages = await Promise.all(outboundTransport.map(async (ob, i) => {
           const ret = returnTransport[i % returnTransport.length];
-          const obKES = await toKES(ob.price, ob.currency || 'KES');
+          const obKES  = await toKES(ob.price,  ob.currency  || 'KES');
           const retKES = await toKES(ret.price, ret.currency || 'KES');
           const totalPrice = obKES + retKES;
-          return { packageId: uuidv4(), summary: { route: `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`, passengers: tripParams.passengers || 1, nights: 0, totalPrice, pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)), currency: CANONICAL_CURRENCY, transportType: ob.transportType || 'flight' }, transport: this._formatTransportDisplay(ob, tripParams.origin, tripParams.destination), returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin), hotel: null, transfers: null, status: "available" };
+          return {
+            packageId: uuidv4(),
+            summary: {
+              route:          `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`,
+              passengers:     tripParams.passengers || 1,
+              nights:         0,
+              totalPrice,
+              pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+              currency:       CANONICAL_CURRENCY,
+              transportType:  ob.transportType || 'flight',
+            },
+            transport:       this._formatTransportDisplay(ob,  tripParams.origin,      tripParams.destination),
+            returnTransport: this._formatTransportDisplay(ret, tripParams.destination, tripParams.origin),
+            hotel:     null,
+            transfers: null,
+            status:    'available',
+            _flightOnly: true,
+          };
+        }));
+      } else {
+        const transportList = hasOutbound ? outboundTransport : returnTransport;
+        flightPackages = await Promise.all(transportList.map(async t => {
+          const totalPrice = await toKES(t.price, t.currency || 'KES');
+          return {
+            packageId: uuidv4(),
+            summary: {
+              route:          `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`,
+              passengers:     tripParams.passengers || 1,
+              nights:         0,
+              totalPrice,
+              pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)),
+              currency:       CANONICAL_CURRENCY,
+              transportType:  t.transportType || 'flight',
+            },
+            transport:       this._formatTransportDisplay(t, tripParams.origin, tripParams.destination),
+            returnTransport: null,
+            hotel:     null,
+            transfers: null,
+            status:    'available',
+            _flightOnly: true,
+          };
         }));
       }
-      const transportList = hasOutbound ? outboundTransport : returnTransport;
-      return Promise.all(transportList.map(async t => {
-        const totalPrice = await toKES(t.price, t.currency || 'KES');
-        return { packageId: uuidv4(), summary: { route: `${tripParams.origin || 'Nairobi'} to ${tripParams.destination}`, passengers: tripParams.passengers || 1, nights: 0, totalPrice, pricePerPerson: Math.round(totalPrice / (tripParams.passengers || 1)), currency: CANONICAL_CURRENCY, transportType: t.transportType || 'flight' }, transport: this._formatTransportDisplay(t, tripParams.origin, tripParams.destination), returnTransport: null, hotel: null, transfers: null, status: "available" };
-      }));
+
+      return flightPackages;
     }
 
     const packages  = [];
