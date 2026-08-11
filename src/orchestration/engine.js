@@ -287,17 +287,38 @@ class OrchestrationEngine {
 
       let tripParams;
 
-      if (intent.isFollowUp && previousParams) {
-        tripParams = this._adjustParams(previousParams, intent);
-        tripParams.agencyId = agencyId;
-        if (tripParams.destination) tripParams.destination = resolveCountryToCity(tripParams.destination);
-        if (tripParams.origin)      tripParams.origin      = resolveCountryToCity(tripParams.origin);
-        console.log("FOLLOW-UP DETECTED — adjusted params:", tripParams);
-      } else {
-        tripParams = await parsePrompt(prompt, previousParams);
-        tripParams.agencyId = agencyId;
-        console.log("FRESH SEARCH — parsed params:", tripParams);
-      }
+  if (intent.isFollowUp && previousParams) {
+  tripParams = this._adjustParams(previousParams, intent);
+  tripParams.agencyId = agencyId;
+  if (tripParams.destination) tripParams.destination = resolveCountryToCity(tripParams.destination);
+  if (tripParams.origin)      tripParams.origin      = resolveCountryToCity(tripParams.origin);
+  console.log("FOLLOW-UP DETECTED — adjusted params:", tripParams);
+
+  // ── MULTI-TRIP OVERRIDE ───────────────────────────────────────────────
+  // If a fresh parse (without session context) returns a multi-leg trips[]
+  // whose destinations differ from the adjusted single destination, the
+  // follow-up classification was wrong — re-parse fresh.
+  const freshParse = await parsePrompt(prompt, null);
+  if (Array.isArray(freshParse.trips) && freshParse.trips.length > 1) {
+    const freshDests = freshParse.trips.map(t => (t.destination || '').toLowerCase());
+    const adjustedDest = (tripParams.destination || '').toLowerCase();
+    const tripsAreDifferent = !freshDests.some(d => d === adjustedDest);
+    if (tripsAreDifferent) {
+      logger.info('Engine: multi-trip fresh parse overrides follow-up classification', {
+        freshDests, adjustedDest,
+      });
+      tripParams = { ...freshParse, agencyId };
+      intent.isFollowUp = false;
+      console.log('INTENT OVERRIDE: multi-trip fresh parse — forcing fresh search');
+    }
+  }
+  // ── END MULTI-TRIP OVERRIDE ───────────────────────────────────────────
+
+} else {
+  tripParams = await parsePrompt(prompt, previousParams);
+  tripParams.agencyId = agencyId;
+  console.log("FRESH SEARCH — parsed params:", tripParams);
+}
 
       console.log("INTENT:", intent);
       console.log("PARSED TRIP PARAMS:", tripParams);
@@ -2154,16 +2175,18 @@ class OrchestrationEngine {
   _detectIntent(prompt, previousParams) {
     const lower = prompt.toLowerCase();
 
-    const FRESH_SEARCH_PATTERNS = [
-      /\bplan\s+(?:me\s+)?a\s+trip\b/i,
-      /\bbook\s+(?:me\s+)?a\s+trip\b/i,
-      /\bi\s+(?:want|need|would like)\s+to\s+(?:go|travel|fly|visit)\b/i,
-      /\bfrom\s+[a-z]{3,}(?:\s+to)?\s+[a-z]{3,}\b/i,
-      /\b[a-z]{3,}\s+to\s+[a-z]{3,}\b/i,
-      /\btrip\s+(?:from|to)\s+[a-z]/i,
-      /\bfly(?:ing)?\s+(?:from|to)\s+[a-z]/i,
-      /\btravel(?:ling)?\s+(?:from|to)\s+[a-z]/i,
-    ];
+  const FRESH_SEARCH_PATTERNS = [
+  /\bplan\s+(?:me\s+)?a\s+trip\b/i,
+  /\bbook\s+(?:me\s+)?a\s+trip\b/i,
+  /\bi\s+(?:want|need|would like)\s+to\s+(?:go|travel|fly|visit)\b/i,
+  /\bfrom\s+[a-z]{3,}(?:\s+to)?\s+[a-z]{3,}\b/i,
+  /\b[a-z]{3,}\s+to\s+[a-z]{3,}\b/i,
+  /\btrip\s+(?:from|to)\s+[a-z]/i,
+  /\bfly(?:ing)?\s+(?:from|to)\s+[a-z]/i,
+  /\btravel(?:ling)?\s+(?:from|to)\s+[a-z]/i,
+  /\bi\s+have\s+\d+\s+(?:business\s+)?trips?\b/i,
+  /\bfirst\s+(?:one\s+)?is\s+.+second\s+(?:one\s+)?is\b/i,
+];
 
     const hasOwnDestinationStructure = FRESH_SEARCH_PATTERNS.some(p => p.test(lower));
 

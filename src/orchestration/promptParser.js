@@ -1033,11 +1033,19 @@ async function parsePrompt(prompt, session = null) {
       'safariDestination', 'preferredHotel', 'preferredTransportProvider',
     ];
 
+    // If current parse produced trips[], it owns destination/origin/dates
+    const currentParseHasTrips = Array.isArray(raw.trips) && raw.trips.length > 0;
+    const TRIP_OWNED = new Set(['destination', 'origin', 'departureDate', 'returnDate', 'nights']);
+
     for (const key of INHERITABLE) {
+      // Never inherit trip-owned fields when current parse has its own trips[]
+      if (currentParseHasTrips && TRIP_OWNED.has(key)) continue;
+
       const currentVal = raw[key];
       const sessionVal = session[key];
       const isEmpty = currentVal === null || currentVal === undefined ||
-                      (Array.isArray(currentVal) && currentVal.length === 0);
+                      (Array.isArray(currentVal) && currentVal.length === 0) ||
+                      (key === 'passengers' && (currentVal === 0 || currentVal < 1));
       const hasSession = sessionVal !== null && sessionVal !== undefined &&
                          !(Array.isArray(sessionVal) && sessionVal.length === 0);
       if (isEmpty && hasSession) {
@@ -1069,8 +1077,9 @@ async function parsePrompt(prompt, session = null) {
     }
 
     // Destination-specific: if sanitizer cleared a dirty destination
-    // but session has a good one, use it.
-    if (!raw.destination && session.destination) {
+    // but session has a good one, use it — but only if current parse
+    // doesn't already own its own trip structure.
+    if (!raw.destination && session.destination && !currentParseHasTrips) {
       raw.destination = session.destination;
       logger.info('PromptParser: restored destination from session after sanitization', {
         sessionDestination: session.destination,

@@ -183,8 +183,6 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── DROP-OFF RECOVERY ──────────────────────────────────
-    // If the user is clearly starting a new trip request, skip
-    // drop-off recovery entirely and go straight to orchestration.
     const resumePending = _pendingResumeChoice.get(userKey);
     if (resumePending && Date.now() < resumePending.expiresAt) {
       _pendingResumeChoice.delete(userKey);
@@ -248,23 +246,35 @@ router.post('/whatsapp', async (req, res) => {
     });
     if (handledByChange) return;
 
-    // ── MID-BOOKING CANCEL ─────────────────────────────────
-    if (/^cancel$/i.test(prompt.trim())) {
-      const hadSession = await whatsappBookingFlow.hasActiveSession(userKey);
-      if (hadSession) {
-        await conversationMemory.cancelMidBooking(userKey, agencyId);
+// ── CONTROL WORD GUARD + MID-BOOKING CANCEL ────────────
+// Resolve booking session once — reused in both guards below.
+const CONTROL_WORDS = /^(stop|quit|exit|abort|nevermind|never mind|forget it|reset|clear|acha|hapana|no thanks)$/i;
+const isNakedCancel = /^cancel$/i.test(prompt.trim());
+const hasBookingSession = await whatsappBookingFlow.hasActiveSession(userKey);
+
+if (CONTROL_WORDS.test(prompt.trim()) || (isNakedCancel && !hasBookingSession)) {
+  await conversationMemory.clearConversation(userKey, agencyId);
+  await conversationMemory.clearLegFlow(userKey, agencyId);
+  await whatsappBookingFlow.clearSession(userKey);
+  await whatsappService.sendText(phoneNumberId, recipient,
+    "Got it — cleared. Just send me a destination whenever you're ready! ✈️"
+  );
+  return;
+}
+
+    if (isNakedCancel && hasBookingSession) {
+      await conversationMemory.cancelMidBooking(userKey, agencyId);
+      await whatsappService.sendText(phoneNumberId, recipient,
+        "Booking cancelled — no problem at all. Your previous search results are still available if you'd like to pick a different option, or just tell me where you'd like to go!"
+      );
+      const cached = await packageCache.get(userKey);
+      if (cached?.packages?.length > 0) {
+        await whatsappService.sendPackages(phoneNumberId, recipient, cached.packages);
         await whatsappService.sendText(phoneNumberId, recipient,
-          "Booking cancelled — no problem at all. Your previous search results are still available if you'd like to pick a different option, or just tell me where you'd like to go!"
+          `Reply with the option number (1-${cached.packages.length}) to book, or describe what you'd like instead.`
         );
-        const cached = await packageCache.get(userKey);
-        if (cached?.packages?.length > 0) {
-          await whatsappService.sendPackages(phoneNumberId, recipient, cached.packages);
-          await whatsappService.sendText(phoneNumberId, recipient,
-            `Reply with the option number (1-${cached.packages.length}) to book, or describe what you'd like instead.`
-          );
-        }
-        return;
       }
+      return;
     }
 
     // ── ACTIVE BOOKING SESSION ─────────────────────────────
@@ -279,8 +289,7 @@ router.post('/whatsapp', async (req, res) => {
     };
 
     if (_looksLikeFreshSearch(prompt)) {
-      const hadStaleSession = await whatsappBookingFlow.hasActiveSession(userKey);
-      if (hadStaleSession) {
+      if (hasBookingSession) {
         logger.info('Booking session: clearing stale session — fresh search detected', { userKey, preview: prompt.slice(0, 80) });
         await whatsappBookingFlow.clearSession(userKey);
       }
@@ -350,8 +359,7 @@ router.post('/whatsapp', async (req, res) => {
 
     // ── STRAY PASSENGER DETAILS ────────────────────────────
     if (PASSENGER_DETAIL_LINE.test(prompt.trim())) {
-      const hasSession = await whatsappBookingFlow.hasActiveSession(userKey);
-      if (!hasSession) {
+      if (!hasBookingSession) {
         await whatsappService.sendText(phoneNumberId, recipient,
           "It looks like you're sending traveler details, but I don't have an active booking for you right now. Please search for a trip first, then reply with the option number to start booking."
         );
@@ -452,15 +460,15 @@ router.post('/whatsapp', async (req, res) => {
 
     logger.info('Webhook: orchestration returned', {
       userKey,
-      hasText: !!result.text,
-      textLength: result.text?.length,
-      packagesCount: result.packages?.length,
-      tripResultsCount: result.tripResults?.length,
-      isClassifiedTrip: result.isClassifiedTrip,
+      hasText:            !!result.text,
+      textLength:         result.text?.length,
+      packagesCount:      result.packages?.length,
+      tripResultsCount:   result.tripResults?.length,
+      isClassifiedTrip:   result.isClassifiedTrip,
       needsClarification: result.needsClarification,
     });
 
-    // ── SEND RESULTS (fire-and-forget memory save so it can't block) ──
+    // ── SEND RESULTS (fire-and-forget memory save) ─────────
     conversationMemory.saveTurn(userKey, agencyId, {
       userMessage:    prompt,
       engineResponse: result.text,
@@ -695,22 +703,14 @@ async function _sendCurrentLeg(phoneNumberId, recipient, flow) {
 // HELPERS
 // ─────────────────────────────────────────────
 
-/**
- * Detect if the user's message is clearly a new trip request.
- * Used to skip drop-off recovery when the user is starting fresh.
- */
 function _looksLikeFreshTripRequest(text) {
   const t = text.trim().toLowerCase();
-  // Explicit intent words combined with travel nouns
   if (
     /\b(plan|book|find|search|looking for|help me|i want|i'd like|i would like|can you help)\b/.test(t) &&
     /\b(trip|travel|flight|hotel|holiday|vacation|visit|go to|fly to)\b/.test(t)
   ) return true;
-  // Destination pattern: "to X" with enough words
   if (/\bto\b.{3,}/i.test(t) && t.split(/\s+/).length >= 4) return true;
-  // Night count
   if (/\d+\s*nights?\b/i.test(t)) return true;
-  // Month + date
   if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(t)) return true;
   return false;
 }
@@ -719,28 +719,12 @@ function _resolveIdentity(body, message) {
   const value    = body.entry[0].changes[0].value;
   const contacts = value.contacts || [];
 
-  // Phone number — present for traditional users or those within 30-day window
-  const phone = message.from || contacts[0]?.wa_id || null;
-
-  // BSUID — always present from April 2026 onwards
-  // Keep the full prefix (KE., US., US.ENT.) exactly as Meta sends it
+  const phone     = message.from || contacts[0]?.wa_id || null;
   const rawUserId = message.from_user_id || contacts[0]?.user_id || null;
   const userId    = rawUserId || null;
-
-  // Display name / username
-  const username = contacts[0]?.profile?.username
-    || contacts[0]?.profile?.name
-    || null;
-
-  // userKey: stable internal key — BSUID preferred (more stable than phone)
-  const userKey = userId || phone || null;
-
-  // isBsuid: true when we have no phone and must send via BSUID
-  const isBsuid = !phone && !!rawUserId;
-
-  // recipient: what we pass to the send API
-  // Phone takes priority. If no phone, use the full BSUID — DO NOT strip prefix.
-  // whatsappService._send will detect the BSUID and use the `recipient` field instead of `to`.
+  const username  = contacts[0]?.profile?.username || contacts[0]?.profile?.name || null;
+  const userKey   = userId || phone || null;
+  const isBsuid   = !phone && !!rawUserId;
   const recipient = phone || rawUserId || null;
 
   return { phone, userId, rawUserId, username, userKey, isBsuid, recipient };
@@ -761,7 +745,6 @@ async function _resolveAgency(phoneNumberId) {
 }
 
 async function _getOrCreateContact({ phone, userId, username, agencyId }) {
-  // 0. Merge: phone-only message from someone who previously used user_id
   if (phone && !userId && username) {
     const { data: anonymousContact, error: mergeErr } = await supabase
       .from('whatsapp_contacts')
@@ -777,8 +760,7 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
 
     if (anonymousContact) {
       logger.info('whatsapp_contacts: merging anonymous user_id contact with new phone', {
-        userId: anonymousContact.user_id,
-        phone,
+        userId: anonymousContact.user_id, phone,
       });
       const { error: updateErr } = await supabase
         .from('whatsapp_contacts')
@@ -793,7 +775,6 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     }
   }
 
-  // 1. Try lookup by phone
   if (phone) {
     const { data: byPhone, error: phoneErr } = await supabase
       .from('whatsapp_contacts')
@@ -816,7 +797,6 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     }
   }
 
-  // 2. Try lookup by user_id
   if (userId) {
     const { data: byUserId, error: userIdErr } = await supabase
       .from('whatsapp_contacts')
@@ -839,7 +819,6 @@ async function _getOrCreateContact({ phone, userId, username, agencyId }) {
     }
   }
 
-  // 3. Create new contact
   const insertPayload = {
     phone:         phone || null,
     user_id:       userId || null,
@@ -867,7 +846,6 @@ async function _saveContactName({ phone, userId, name }) {
   const query = supabase.from('whatsapp_contacts').update({
     name, awaiting_name: false, updated_at: new Date().toISOString(),
   });
-
   if (phone) {
     const { error } = await query.eq('phone', phone);
     if (error) logger.error('whatsapp_contacts name save by phone failed', { error: error.message, phone });
@@ -881,7 +859,6 @@ async function _clearAwaitingName({ phone, userId }) {
   const query = supabase.from('whatsapp_contacts').update({
     awaiting_name: false, updated_at: new Date().toISOString(),
   });
-
   if (phone) {
     const { error } = await query.eq('phone', phone);
     if (error) logger.error('whatsapp_contacts awaiting_name clear by phone failed', { error: error.message, phone });
