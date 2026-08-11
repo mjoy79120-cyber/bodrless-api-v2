@@ -1304,6 +1304,40 @@ class OrchestrationEngine {
     }
   }
 
+  _splitIntoIndependentTrips(trips) {
+    if (!trips || trips.length <= 1) return [trips];
+
+    const groups = [];
+    let currentGroup = [trips[0]];
+
+    for (let i = 1; i < trips.length; i++) {
+      const prev = trips[i - 1];
+      const curr = trips[i];
+
+      const prevEnd   = this._normalizeCity(prev.destination);
+      const currStart = this._normalizeCity(curr.origin);
+
+      const prevReturnDate = prev.returnDate || prev.departureDate;
+      const currDepartDate = curr.departureDate;
+      const dayGap = prevReturnDate && currDepartDate
+        ? Math.round((new Date(currDepartDate) - new Date(prevReturnDate)) / 86400000)
+        : 0;
+
+      const originBreaks = prevEnd && currStart && prevEnd !== currStart;
+      const hasLargeGap  = dayGap > 3;
+
+      if (originBreaks || hasLargeGap) {
+        groups.push(currentGroup);
+        currentGroup = [curr];
+      } else {
+        currentGroup.push(curr);
+      }
+    }
+
+    if (currentGroup.length > 0) groups.push(currentGroup);
+    return groups;
+  }
+
   _classifyMultiDestinationLegs(tripParams) {
     const legs = tripParams.legs || [];
     const groups = [];
@@ -1914,6 +1948,52 @@ class OrchestrationEngine {
           nights: tripParams.nights,
         });
       } else {
+        // ── INDEPENDENT TRIP SPLITTER ─────────────────────────────────────────
+        const independentGroups = this._splitIntoIndependentTrips(tripParams.trips);
+
+        if (independentGroups.length > 1) {
+          logger.info('OrchestrationEngine: detected independent trips — splitting', {
+            groupCount: independentGroups.length,
+            groups: independentGroups.map(g =>
+              g.map(l => `${l.origin}→${l.destination} (${l.departureDate})`).join(', ')
+            ),
+          });
+
+          const groupResults = await Promise.all(
+            independentGroups.map(group => {
+              const groupParams = {
+                ...tripParams,
+                trips:         group,
+                destination:   group[0].destination,
+                origin:        group[0].origin,
+                departureDate: group[0].departureDate,
+                returnDate:    group[group.length - 1].departureDate
+                               || group[group.length - 1].returnDate,
+                nights:        group.reduce((s, l) => s + (l.nights || 0), 0),
+              };
+              return this._orchestrateClassifiedTrip(
+                groupParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone
+              );
+            })
+          );
+
+          const allPackages = groupResults.flatMap(r => r.packages || []);
+          const allResults  = groupResults.flatMap(r => r.tripResults || []);
+
+          return {
+            sessionId,
+            text:                `Here are your ${independentGroups.length} separate trips broken down by leg:`,
+            packages:            allPackages,
+            tripResults:         allResults,
+            tripParams,
+            intent,
+            conversationHistory,
+            generatedAt:         new Date().toISOString(),
+            isClassifiedTrip:    true,
+          };
+        }
+        // ── END SPLITTER ──────────────────────────────────────────────────────
+
         return await this._orchestrateClassifiedTrip(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone);
       }
     }
