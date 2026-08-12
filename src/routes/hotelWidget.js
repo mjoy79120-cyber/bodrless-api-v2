@@ -1,8 +1,8 @@
 const express = require('express');
 const router  = express.Router();
 
-router.get('/', (req, res) => {
-  const groupSlug   = req.query.key   || 'sarova';
+router.get('/:slug', (req, res) => {
+  const groupSlug = req.params.slug || 'sarova';
   const hotelName   = req.query.name  || 'Sarova Hotels';
   const embedTarget = req.query.embed || null;
   const apiBase     = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';

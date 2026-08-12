@@ -402,7 +402,7 @@ ${propCardsHTML}
   });
 </script>
 
-<script src="${apiBase}/widget/hotel?key=${encodeURIComponent(hotelSlug)}&name=${encodeURIComponent(groupName)}&embed=hotel-widget-mount"></script>
+<script src="${apiBase}/widget/hotel/${encodeURIComponent(hotelSlug)}?name=${encodeURIComponent(groupName)}&embed=hotel-widget-mount"></script>
 
 </body>
 </html>`);
