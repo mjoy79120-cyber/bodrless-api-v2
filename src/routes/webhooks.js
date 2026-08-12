@@ -498,50 +498,111 @@ if (CONTROL_WORDS.test(prompt.trim()) || (isNakedCancel && !hasBookingSession)) 
     }
 
     // ── CLASSIFIED TRIP → LEG FLOW ─────────────────────────
-    if (result.isClassifiedTrip && result.tripResults?.length > 0) {
-      const actionableLegs = result.tripResults.filter(r => r.packages?.length > 0);
-      if (actionableLegs.length === 0) {
-        logger.info('Webhook: classified trip but no actionable legs', { userKey });
-        await whatsappService.sendText(phoneNumberId, recipient,
-          "I searched your whole trip but couldn't find options for any of the legs. Try adjusting your dates or destinations."
-        );
-        return;
-      }
+if (result.isClassifiedTrip && result.tripResults?.length > 0) {
+  const actionableLegs = result.tripResults.filter(r => r.packages?.length > 0);
+  if (actionableLegs.length === 0) {
+    await whatsappService.sendText(phoneNumberId, recipient,
+      "I searched your whole trip but couldn't find options for any of the legs. Try adjusting your dates or destinations."
+    );
+    return;
+  }
 
-      const allPackages = actionableLegs.flatMap(r => r.packages);
-      await packageCache.save(userKey, allPackages, result.tripParams);
+  // ── Detect independent trip groups by destination reset ──
+  // When the splitter fires, tripResults from different independent
+  // trips are concatenated. We detect boundaries by looking for
+  // legs where the role resets back to 'arrival' after a 'departure'.
+  const tripGroups = [];
+  let currentGroup = [];
+  for (const leg of actionableLegs) {
+    if (leg.role === 'arrival' && currentGroup.length > 0) {
+      tripGroups.push(currentGroup);
+      currentGroup = [leg];
+    } else {
+      currentGroup.push(leg);
+    }
+  }
+  if (currentGroup.length > 0) tripGroups.push(currentGroup);
 
-      if (actionableLegs.length === 1) {
-        logger.info('Webhook: sending single-leg classified trip', { userKey, packages: actionableLegs[0].packages.length });
-        await whatsappService.sendText(phoneNumberId, recipient, result.text);
-        await whatsappService.sendPackages(phoneNumberId, recipient, actionableLegs[0].packages);
-        await whatsappService.sendText(phoneNumberId, recipient,
-          `Reply with the option number (1-${actionableLegs[0].packages.length}) to book.`
-        );
-        return;
-      }
-
-      const flow = await conversationMemory.startLegFlow(userKey, agencyId, {
-        legs: actionableLegs, tripParams: result.tripParams,
-      });
-      if (!flow) {
-        logger.info('Webhook: leg flow start failed, falling back to flat send', { userKey });
-        await whatsappService.sendText(phoneNumberId, recipient, result.text);
-        await whatsappService.sendPackages(phoneNumberId, recipient, allPackages);
-        return;
-      }
-
-      const totalLegs = flow.legs.length;
-      const tripSummary = result.tripParams?.trips
-        ? result.tripParams.trips.map(t => `${t.origin || ''} → ${t.destination}`).join(', ')
-        : (result.tripParams?.destination || 'your trip');
+  // Multiple independent trips — handle each as its own leg flow
+  if (tripGroups.length > 1) {
+    for (let t = 0; t < tripGroups.length; t++) {
+      const group = tripGroups[t];
+      const dest = group[0]?.label?.split('→')[1]?.trim() || `Trip ${t + 1}`;
+      const groupPackages = group.flatMap(r => r.packages);
 
       await whatsappService.sendText(phoneNumberId, recipient,
-        `✅ Found options for all *${totalLegs} legs* of your trip to *${_titleCase(tripSummary)}*.\n\nI'll walk you through one leg at a time — pick your preferred option for each leg, then I'll show you the total and let you pay all at once or leg by leg.`
+        `✈️ *Trip ${t + 1} — ${_titleCase(dest)}*\n━━━━━━━━━━━━━━━━`
       );
-      await _sendCurrentLeg(phoneNumberId, recipient, flow);
-      return;
+
+      if (group.length === 1) {
+        // Single leg — just show options directly
+        await whatsappService.sendPackages(phoneNumberId, recipient, group[0].packages);
+        await packageCache.save(userKey, groupPackages, result.tripParams);
+        await whatsappService.sendText(phoneNumberId, recipient,
+          `Reply *1*${group[0].packages.length > 1 ? `–*${group[0].packages.length}*` : ''} to select your option for this trip.`
+        );
+      } else {
+        // Multi-leg — start a scoped leg flow for this trip only
+        const flow = await conversationMemory.startLegFlow(userKey, agencyId, {
+          legs: group, tripParams: result.tripParams,
+        });
+        if (flow) {
+          await whatsappService.sendText(phoneNumberId, recipient,
+            `I'll walk you through *${group.length} legs* for this trip. Pick an option for each leg.`
+          );
+          await _sendCurrentLeg(phoneNumberId, recipient, flow);
+        } else {
+          await whatsappService.sendPackages(phoneNumberId, recipient, groupPackages);
+          await packageCache.save(userKey, groupPackages, result.tripParams);
+        }
+      }
+
+      // Gap between trips
+      if (t < tripGroups.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await whatsappService.sendText(phoneNumberId, recipient,
+          `─────────────────\nNow let's sort *Trip ${t + 2}*:`
+        );
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
+
+    // Save all packages to cache for selection
+    const allPackages = actionableLegs.flatMap(r => r.packages);
+    await packageCache.save(userKey, allPackages, result.tripParams);
+    return;
+  }
+
+  // Single trip — original leg flow logic unchanged
+  const allPackages = actionableLegs.flatMap(r => r.packages);
+  await packageCache.save(userKey, allPackages, result.tripParams);
+
+  if (actionableLegs.length === 1) {
+    await whatsappService.sendText(phoneNumberId, recipient, result.text);
+    await whatsappService.sendPackages(phoneNumberId, recipient, actionableLegs[0].packages);
+    await whatsappService.sendText(phoneNumberId, recipient,
+      `Reply with the option number (1-${actionableLegs[0].packages.length}) to book.`
+    );
+    return;
+  }
+
+  const flow = await conversationMemory.startLegFlow(userKey, agencyId, {
+    legs: actionableLegs, tripParams: result.tripParams,
+  });
+  if (!flow) {
+    await whatsappService.sendText(phoneNumberId, recipient, result.text);
+    await whatsappService.sendPackages(phoneNumberId, recipient, allPackages);
+    return;
+  }
+
+  const totalLegs = flow.legs.length;
+  const tripSummary = result.tripParams?.destination || 'your trip';
+  await whatsappService.sendText(phoneNumberId, recipient,
+    `✅ Found options for all *${totalLegs} legs* of your trip to *${_titleCase(tripSummary)}*.\n\nI'll walk you through one leg at a time.`
+  );
+  await _sendCurrentLeg(phoneNumberId, recipient, flow);
+  return;
+}
 
     // ── MULTI-TRIP RESULTS ─────────────────────────────────
     if (result.tripResults && result.tripResults.length > 1) {
