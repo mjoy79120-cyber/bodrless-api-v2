@@ -20,6 +20,7 @@ const adminRoutes           = require('./routes/admin');
 const tripMonitoringRoutes  = require('./routes/tripMonitoring');
 const { startSweeper }      = require('./services/paymentSweeper');
 const monitoringWorker      = require('./workers/monitoringWorker');
+const { startPoller }       = require('./workers/ratehawkConfirmPoller');
 const tracking              = require('./services/trackingService');
 const insightsEngine        = require('./services/insightsEngine');
 const hotelbedsContent      = require('./services/hotelbedsContent');
@@ -107,9 +108,6 @@ async function serveHotelLanding(req, res) {
   let properties = [];
 
   try {
-    // ── FIX: use maybeSingle() so a missing row returns null
-    // instead of throwing, which was causing the catch block to
-    // swallow the result and always show the 404 page.
     const { data: g } = await supabase
       .from('hotel_groups')
       .select('id, name, slug, logo_url, primary_color')
@@ -141,7 +139,6 @@ async function serveHotelLanding(req, res) {
   const primaryColor = group.primary_color || '#114B43';
   const groupName    = group.name;
 
-  // Build conversation starter prompts from real property names
   const prompts = [];
   properties.forEach(p => {
     const n = p.name.toLowerCase();
@@ -167,7 +164,6 @@ async function serveHotelLanding(req, res) {
     return `<button class="prompt" onclick="sendPrompt(this.dataset.p)" data-p="${safe}">${p}</button>`;
   }).join('\n        ');
 
-  // Property photo grid — only properties with images
   const featuredProps = properties.filter(p => Array.isArray(p.images) && p.images.length > 0).slice(0, 6);
   const propCardsHTML = featuredProps.length > 0 ? `
   <section class="properties">
@@ -207,7 +203,6 @@ async function serveHotelLanding(req, res) {
     html { scroll-behavior: smooth; }
     body { font-family: 'Inter', sans-serif; background: #f8f6f2; color: #222; line-height: 1.6; }
 
-    /* HERO */
     .hero {
       position: relative; min-height: 100vh;
       background-image: url("https://images.unsplash.com/photo-1566073771259-6a8506099945?q=80&w=2070&auto=format&fit=crop");
@@ -232,7 +227,6 @@ async function serveHotelLanding(req, res) {
     }
     .hero-btn:hover { background: #8f6b1d; transform: translateY(-3px); }
 
-    /* PROPERTIES */
     .properties { background: #fff; }
     .properties-inner { max-width: 1200px; margin: 0 auto; padding: 90px 20px; }
     .section-eyebrow { font-size: 10px; font-weight: 600; letter-spacing: 4px; text-transform: uppercase; color: #b28a2e; margin-bottom: 12px; }
@@ -249,7 +243,6 @@ async function serveHotelLanding(req, res) {
     .prop-book-cta { font-size: 11px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; margin-top: 10px; color: #d4af37; opacity: 0; transition: opacity 0.3s; }
     .prop-card:hover .prop-book-cta { opacity: 1; }
 
-    /* CONCIERGE */
     .concierge { max-width: 1200px; margin: 0 auto; padding: 90px 20px; }
     .section-title { text-align: center; margin-bottom: 56px; }
     .section-title h2 { font-family: 'Playfair Display', serif; font-size: clamp(32px, 5vw, 48px); margin-bottom: 14px; }
@@ -271,11 +264,9 @@ async function serveHotelLanding(req, res) {
     }
     .prompt:hover { background: ${primaryColor}; color: white; border-color: ${primaryColor}; transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.13); }
 
-    /* Widget embedded in page — fills the widget-container div */
     .widget-container { margin-top: 8px; }
     #bodrless-chat.embedded { height: 620px; }
 
-    /* WHY */
     .why { padding: 0 20px 90px; }
     .why-card { max-width: 1200px; margin: 0 auto; }
     .why-card h3 { font-family: 'Playfair Display', serif; font-size: clamp(28px, 4vw, 42px); margin-bottom: 44px; text-align: center; }
@@ -284,7 +275,6 @@ async function serveHotelLanding(req, res) {
     .feature h4 { color: ${primaryColor}; margin-bottom: 10px; font-size: 15px; }
     .feature p  { color: #666; font-size: 14px; line-height: 1.6; }
 
-    /* FOOTER */
     footer { background: ${primaryColor}; color: white; padding: 70px 20px; }
     .footer-inner { max-width: 1100px; margin: 0 auto; text-align: center; }
     .footer-inner h3   { font-family: 'Playfair Display', serif; font-size: 38px; margin-bottom: 10px; }
@@ -373,7 +363,6 @@ ${propCardsHTML}
 </footer>
 
 <script>
-  // Inject conversation starters
   window.bodrlessStarters = [
     ${prompts.slice(0, 4).map(p => {
       const safe = p.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -391,7 +380,6 @@ ${propCardsHTML}
     }
   }
 
-  // "Start Planning" scrolls to concierge and focuses input
   document.querySelector('.hero-btn').addEventListener('click', function(e) {
     e.preventDefault();
     document.getElementById('concierge').scrollIntoView({ behavior: 'smooth' });
@@ -462,6 +450,14 @@ app.listen(PORT, '0.0.0.0', () => {
   // ── TRIP MONITORING WORKER ────────────────────────────────
   monitoringWorker.start();
   // ── END TRIP MONITORING WORKER ────────────────────────────
+
+  // ── RATEHAWK CONFIRM POLLER ───────────────────────────────
+  startPoller();
+  // ── END RATEHAWK CONFIRM POLLER ──────────────────────────
+});
+
+process.on('SIGTERM', () => {
+  require('./workers/ratehawkConfirmPoller').stopPoller();
 });
 
 if (process.env.NODE_ENV === 'production') {
@@ -477,14 +473,12 @@ if (process.env.NODE_ENV === 'production') {
 const cron = require('node-cron');
 const { runScraper } = require('./workers/rateScraper');
 
-// Run every 6 hours: midnight, 6am, noon, 6pm
 cron.schedule('0 0,6,12,18 * * *', async () => {
   logger.info('[Cron] Firing rate scraper');
   try { await runScraper(); }
   catch (err) { logger.error('[Cron] Scraper error:', { error: err.message }); }
 });
 
-// Run once on startup after 10 seconds
 setTimeout(async () => {
   logger.info('[Startup] Running initial rate scrape...');
   try { await runScraper(); }
