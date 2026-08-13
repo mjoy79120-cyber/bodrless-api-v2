@@ -35,7 +35,7 @@
 
 const supabase        = require('../utils/supabase');
 const { logger }      = require('../utils/logger');
-const ratehawkAdapter = require('../adapters/ratehawkAdapter');
+const ratehawkAdapter = require('../adapters/ratehawk');
 
 // ─────────────────────────────────────────────
 // CONFIG

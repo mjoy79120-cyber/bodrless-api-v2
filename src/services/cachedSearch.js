@@ -17,7 +17,7 @@ const { logger } = require('../utils/logger');
 function getDuffel()     { return require('../adapters/duffel');          }
 function getTravelDuqa() { return require('../adapters/travelduqa');      }
 function getHotelBeds()  { return require('../adapters/hotelbeds');       }
-function getRateHawk()   { return require('../adapters/ratehawkAdapter'); }
+function getRateHawk() { return require('../adapters/ratehawk'); }
 function getIabiri()     { return require('../adapters/travler');          }
 
 function _channel(params, sendWhatsApp) {

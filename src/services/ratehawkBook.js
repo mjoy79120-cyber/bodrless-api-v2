@@ -42,7 +42,7 @@
 const { v4: uuidv4 }   = require('uuid');
 const supabase          = require('../utils/supabase');
 const { logger }        = require('../utils/logger');
-const ratehawkAdapter   = require('../adapters/ratehawkAdapter');
+const ratehawkAdapter = require('../adapters/ratehawk');
 
 // ─────────────────────────────────────────────
 // CONSTANTS
