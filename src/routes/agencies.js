@@ -6,7 +6,7 @@
  * Public:             /register, /signup, /login, /forgot-password
  * Session-protected:  /me, /logout, /dashboard, /settings, /ask,
  *                     /trips, /trips/:id/events, /trips/:id/resolve,
- *                     /searches
+ *                     /searches, /conversations
  * API-key-protected:  /:agencyId/regenerate-key, /whatsapp/:agencyId
  * ─────────────────────────────────────────────
  */
@@ -206,7 +206,6 @@ async function _getDashboardData(req, res) {
       { data: activeTrips },
     ] = await Promise.all([
       supabase.from('bookings').select('*').eq('agency_id', agencyId).order('created_at', { ascending: false }).limit(200),
-      // Raised from 200 to 1000; full history available via GET /searches (paginated)
       supabase.from('trip_searches').select('*', { count: 'exact' }).eq('agency_id', agencyId).order('created_at', { ascending: false }).limit(1000),
       supabase.from('active_trips_dashboard').select('*').eq('agency_id', agencyId).limit(50)
         .then(r => r)
@@ -231,7 +230,6 @@ async function _getDashboardData(req, res) {
 
     const customers = Array.from(customerMap.values()).sort((a, b) => b.totalSpent - a.totalSpent);
 
-    // Trip monitoring summary
     const allTrips = activeTrips || [];
     const tripsSummary = {
       total:     allTrips.length,
@@ -240,7 +238,6 @@ async function _getDashboardData(req, res) {
       critical:  allTrips.filter(t => t.health === 'critical').length,
     };
 
-    // Use exact count from Supabase for totalSearches (not just the loaded slice)
     const totalSearchesCount = searchCount !== null ? searchCount : (searches || []).length;
 
     return res.json({
@@ -269,7 +266,6 @@ async function _getDashboardData(req, res) {
       })),
       customers,
       recentActivity: recentSearches.slice(0, 20),
-      // Full search list (most recent 1000). Use GET /searches for paginated access to full history.
       searches: (searches || []).map(s => ({
         id: s.id,
         destination: s.destination,
@@ -283,7 +279,6 @@ async function _getDashboardData(req, res) {
         packagesReturned: s.packages_returned,
         createdAt: s.created_at,
       })),
-      // ── Trip monitoring ─────────────────────────────────────
       trips: {
         summary: tripsSummary,
         active:  allTrips,
@@ -327,6 +322,79 @@ router.get('/searches', authenticateSession, async (req, res) => {
     });
   } catch (err) {
     logger.error('Agency searches fetch failed', { agencyId: req.agencyId, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────
+// SESSION-PROTECTED — CONVERSATIONS (paginated threads)
+// GET /api/agencies/conversations
+// ─────────────────────────────────────────────
+router.get('/conversations', authenticateSession, async (req, res) => {
+  try {
+    const { limit = 40, offset = 0, channel, converted, search } = req.query;
+
+    // Fetch a larger window of rows to group into threads.
+    // limit * 10 gives enough rows to assemble ~limit threads even for
+    // sessions with multiple turns. Increase multiplier if agencies have
+    // very long conversations.
+    const fetchLimit = Number(limit) * 10;
+
+    let query = supabase
+      .from('conversations')
+      .select('session_id, phone, channel, destination, origin, passengers, converted, created_at, user_message, engine_response, turn_index')
+      .eq('agency_id', req.agencyId)
+      .order('created_at', { ascending: false })
+      .range(Number(offset), Number(offset) + fetchLimit - 1);
+
+    if (channel)  query = query.eq('channel', channel);
+    if (converted !== undefined && converted !== '') query = query.eq('converted', converted === 'true');
+    if (search)   query = query.or(`phone.ilike.%${search}%,destination.ilike.%${search}%,origin.ilike.%${search}%,user_message.ilike.%${search}%`);
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    // Group individual rows into per-session threads
+    const threadMap = {};
+    for (const row of data || []) {
+      if (!threadMap[row.session_id]) {
+        threadMap[row.session_id] = {
+          session_id:    row.session_id,
+          phone:         row.phone,
+          channel:       row.channel,
+          destination:   row.destination,
+          origin:        row.origin,
+          passengers:    row.passengers,
+          converted:     row.converted,
+          started_at:    row.created_at,
+          last_activity: row.created_at,
+          turns: [],
+        };
+      }
+      const t = threadMap[row.session_id];
+      if (row.created_at > t.last_activity) t.last_activity = row.created_at;
+      if (row.created_at < t.started_at)    t.started_at    = row.created_at;
+      t.turns.push({
+        turn: row.turn_index,
+        user: row.user_message,
+        bot:  row.engine_response,
+        at:   row.created_at,
+      });
+    }
+
+    const threads = Object.values(threadMap)
+      .map(t => ({ ...t, turns: t.turns.sort((a, b) => a.turn - b.turn) }))
+      .sort((a, b) => new Date(b.last_activity) - new Date(a.last_activity));
+
+    res.json({
+      success: true,
+      threads,
+      total: threads.length,
+      offset: Number(offset),
+      limit:  Number(limit),
+    });
+  } catch (err) {
+    logger.error('Agency conversations fetch failed', { agencyId: req.agencyId, error: err.message });
     res.status(500).json({ success: false, error: err.message });
   }
 });

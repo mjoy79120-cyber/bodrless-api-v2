@@ -108,12 +108,12 @@ async function hotels(params, sendWhatsApp = null) {
   const channel     = _channel(params, sendWhatsApp);
 
   const cacheParams = {
-    destination:   params.destination,
-    departureDate: params.checkIn,
-    returnDate:    params.checkOut,
-    passengers:    params.adults || 1,
-    origin:        params.destination,
-  };
+  destination:   params.destination,
+  departureDate: params.checkIn  || params.departureDate,
+  returnDate:    params.checkOut || params.returnDate,
+  passengers:    params.adults   || params.passengers || 1,
+  origin:        params.destination,
+};
 
   const cached = await fareCache.get(cacheParams, contentType);
 
