@@ -367,12 +367,12 @@ class DestinationIntel {
 
     logger.info('DestinationIntel: cache miss, resolving via Groq', { destination: normalized });
 
-    const geminiResult = await this._resolveViaGemini(normalized);
-    if (!geminiResult) {
+    const groqResult = await this._resolveViaGroq(normalized);
+    if (!groqResult) {
       return { destination: normalized, validationStatus: 'needs_clarification', accessByMode: {} };
     }
 
-    const validated = await this._validate(geminiResult);
+    const validated = await this._validate(groqResult);
     await this._cacheResult(normalized, validated);
 
     return validated;
@@ -414,9 +414,9 @@ class DestinationIntel {
   }
 
   // ─────────────────────────────────────────────
-  // GROQ RESOLUTION (llama-3.1-8b-instant)
+  // GROQ RESOLUTION (openai/gpt-oss-120b)
   // ─────────────────────────────────────────────
-  async _resolveViaGemini(destinationName) {
+  async _resolveViaGroq(destinationName) {
     const prompt = `You are a travel logistics expert for East Africa and global routes. For the destination "${destinationName}", return ONLY a JSON object, no markdown fences, no preamble, in exactly this shape:
 
 {
@@ -443,7 +443,7 @@ Rules:
       const response = await axios.post(
         `https://api.groq.com/openai/v1/chat/completions`,
         {
-          model: 'llama-3.1-8b-instant',
+          model: 'openai/gpt-oss-120b',
           response_format: { type: 'json_object' },
           temperature: 0.1,
           max_completion_tokens: 800,
@@ -485,16 +485,16 @@ Rules:
   // ─────────────────────────────────────────────
   // VALIDATION CASCADE
   // ─────────────────────────────────────────────
-  async _validate(geminiResult) {
-    const result = { ...geminiResult, validationStatus: 'validated', validationSource: null };
+  async _validate(groqResult) {
+    const result = { ...groqResult, validationStatus: 'validated', validationSource: null };
 
-    if (geminiResult.isAirstripDestination) {
+    if (groqResult.isAirstripDestination) {
       result.requiresCharter = true;
       result.validationSource = 'manual';
       return result;
     }
 
-    const airHub = geminiResult.accessByMode?.air;
+    const airHub = groqResult.accessByMode?.air;
     if (airHub?.hubCode) {
       const cleanCode = airHub.hubCode.toUpperCase().trim();
 
@@ -545,10 +545,10 @@ Rules:
         is_airstrip_destination: result.isAirstripDestination || false,
         airstrip_codes:          result.airstripCodes || [],
         requires_charter:        result.requiresCharter || false,
-        resolved_by:             'gemini',
+        resolved_by:             'groq',
         validation_status:       result.validationStatus,
         validation_source:       result.validationSource,
-        raw_gemini_response:     result,
+        raw_groq_response:       result,
         last_validated_at:       new Date().toISOString(),
       }, { onConflict: 'destination_name' });
 
