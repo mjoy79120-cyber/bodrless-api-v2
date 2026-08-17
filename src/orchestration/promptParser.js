@@ -11,7 +11,7 @@
  *        and fixes impossible return legs (Mara → Washington).
  * Fixed: Retry logic on json_validate_failed.
  * Fixed: Washington DC normalization.
- * Fixed: Groq model corrected to llama-3.3-70b-versatile.
+ * Fixed: Groq model corrected to 'openai/gpt-oss-120b',.
  * Fixed: Markdown fence strip in Groq response catch block.
  * Fixed: Rule-based fallback now detects multi-stop trips and emits
  *        trips[] so Mombasa/Maasai Mara are never silently dropped.
@@ -856,7 +856,7 @@ children: count of children. childAges: array of ages if stated. needsChildAge: 
 async function _groqAttempt(prompt, systemPrompt) {
   try {
     const completion = await groqClient.chat.completions.create({
-      model:           'llama-3.3-70b-versatile',
+      model:           'openai/gpt-oss-120b',
       messages:        [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }],
       temperature:     0.1,
       max_tokens:      1000,
