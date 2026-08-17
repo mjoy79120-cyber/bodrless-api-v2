@@ -38,6 +38,10 @@
  * Fixed: _normalizeTripLegsFromSession — three-way match (origin +
  *        destination + date) prevents duplicate prepend when Groq
  *        already returns the full round-trip including the first leg.
+ * Added: Child age detection — needsChildAge flag set when a child is
+ *        mentioned but no age is given. childAges[] populated when
+ *        ages are stated inline. Webhooks.js intercepts needsChildAge
+ *        before running orchestration so fares are correct from search.
  */
 
 const Groq = require('groq-sdk');
@@ -122,6 +126,84 @@ function _extractActivities(text) {
     if (pattern.test(text) && !excursions.includes(label)) excursions.push(label);
   }
   return { hasSafari, excursions };
+}
+
+// ─────────────────────────────────────────────
+// CHILD DETECTION
+// ─────────────────────────────────────────────
+
+/**
+ * Detect whether the prompt mentions a child/infant traveling.
+ * Returns { hasChild, childAges, needsChildAge }
+ *
+ * hasChild      — true if any child mention detected
+ * childAges     — array of ages parsed from the prompt (may be empty)
+ * needsChildAge — true when a child is mentioned but no age is given
+ *
+ * Examples that set needsChildAge = true:
+ *   "travelling with a child"
+ *   "I have a kid with me"
+ *   "2 adults and 1 child"
+ *   "we are 3, one is a child"
+ *
+ * Examples that populate childAges directly:
+ *   "travelling with a 6-year-old"
+ *   "child aged 8"
+ *   "kid who is 3"
+ *   "2 adults and a child (5)"
+ */
+function _detectChildInfo(prompt) {
+  if (!prompt) return { hasChild: false, childAges: [], needsChildAge: false };
+
+  const lower = prompt.toLowerCase();
+
+  // ── Does this prompt mention a child at all? ──────────────
+  const CHILD_MENTION = /\b(child(?:ren)?|kid(?:s)?|minor(?:s)?|infant(?:s)?|baby|babies|toddler(?:s)?|junior)\b/i;
+  const hasChild = CHILD_MENTION.test(lower);
+  if (!hasChild) return { hasChild: false, childAges: [], needsChildAge: false };
+
+  // ── Try to extract age(s) from the prompt ─────────────────
+  const childAges = [];
+
+  // "6-year-old", "6 year old", "6yrs", "6yo"
+  const yearOldPattern = /(\d{1,2})\s*[-–]?\s*(?:year[s]?[-\s]?old|yr[s]?[-\s]?old|y\.?o\.?|yrs?)\b/gi;
+  let m;
+  while ((m = yearOldPattern.exec(lower)) !== null) {
+    const age = parseInt(m[1], 10);
+    if (age >= 0 && age < 18) childAges.push(age);
+  }
+
+  // "child aged 8", "kid aged 3", "infant aged 1"
+  const agedPattern = /(?:child|kid|minor|infant|baby|toddler|junior)\s+(?:aged?|who\s+is|of\s+age)\s+(\d{1,2})/gi;
+  while ((m = agedPattern.exec(lower)) !== null) {
+    const age = parseInt(m[1], 10);
+    if (age >= 0 && age < 18 && !childAges.includes(age)) childAges.push(age);
+  }
+
+  // "a child (5)", "kid (3)"
+  const bracketPattern = /(?:child|kid|minor|infant|toddler)\s*\((\d{1,2})\)/gi;
+  while ((m = bracketPattern.exec(lower)) !== null) {
+    const age = parseInt(m[1], 10);
+    if (age >= 0 && age < 18 && !childAges.includes(age)) childAges.push(age);
+  }
+
+  // "age 6", "ages 5 and 8" (more general — only if child was already detected)
+  const agePattern = /\bage[sd]?\s+(\d{1,2})(?:\s+and\s+(\d{1,2}))?\b/gi;
+  while ((m = agePattern.exec(lower)) !== null) {
+    [m[1], m[2]].filter(Boolean).forEach(n => {
+      const age = parseInt(n, 10);
+      if (age >= 0 && age < 18 && !childAges.includes(age)) childAges.push(age);
+    });
+  }
+
+  const needsChildAge = childAges.length === 0;
+
+  logger.info('PromptParser: child detection', {
+    hasChild, childAges, needsChildAge,
+    preview: prompt.slice(0, 80),
+  });
+
+  return { hasChild, childAges, needsChildAge };
 }
 
 // ─────────────────────────────────────────────
@@ -239,11 +321,6 @@ function _normalizeTripLegsFromSession(trips, topLevel) {
   const sessionDeparture = topLevel.departureDate;
   const sessionNights    = topLevel.nights;
 
-  // ── PATCH 1: Three-way match prevents duplicate prepend ───────────────────
-  // When Groq correctly returns the full round-trip (including the outbound
-  // leg), the old code would prepend a duplicate because it only checked
-  // destination. Now we match origin + destination + date — all three must
-  // differ before we prepend the missing first leg.
   const firstTripDest   = (trips[0]?.destination || '').toLowerCase().trim();
   const firstTripOrigin = (trips[0]?.origin       || '').toLowerCase().trim();
   const sessionDest     = (topLevel.destination   || '').toLowerCase().trim();
@@ -255,7 +332,6 @@ function _normalizeTripLegsFromSession(trips, topLevel) {
     (trips[0]?.departureDate || '') === (sessionDeparture || '');
 
   const needsPrepend = !firstLegMatchesSession && !!sessionOrigin && !!sessionDeparture && !!sessionDest;
-  // ─────────────────────────────────────────────────────────────────────────
 
   const fullTrips = needsPrepend
     ? [
@@ -272,7 +348,6 @@ function _normalizeTripLegsFromSession(trips, topLevel) {
       ]
     : trips;
 
-  // Sequentially derive dates for any leg that is missing them
   let cursor = sessionDeparture;
 
   const normalized = fullTrips.map((leg, i) => {
@@ -444,15 +519,12 @@ function _parseWithRules(prompt) {
   if (/\b(?:couple|two of us|2 of us)\b/i.test(lower)) passengers = Math.max(passengers, 2);
   if (/\bfamily\b/i.test(lower) && passengers < 2) passengers = 2;
 
+  // ── Child detection ───────────────────────────────────────
+  const { hasChild, childAges, needsChildAge } = _detectChildInfo(prompt);
   let children = 0;
-  let childAges = [];
   const childMatch = lower.match(/(\d+)\s*(?:child(?:ren)?|kid(?:s)?|minor(?:s)?)\b/i);
   if (childMatch) children = parseInt(childMatch[1], 10);
-  const ageMatches = lower.match(/(?:age(?:d)?|aged?)\s*(\d{1,2})(?:\s*(?:and|&|,)\s*(\d{1,2}))?/gi) || [];
-  ageMatches.forEach(m => {
-    const nums = m.match(/\d{1,2}/g) || [];
-    nums.forEach(n => { const age = parseInt(n, 10); if (age < 18 && age >= 0) childAges.push(age); });
-  });
+  else if (hasChild) children = childAges.length || 1;
 
   let departureDate = null;
   const months = {
@@ -567,7 +639,7 @@ function _parseWithRules(prompt) {
   const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only|find me a hotel|looking for a hotel|need a hotel|hotel in|hotels? near|where to stay)\b/i.test(lower);
   const needsOriginClarification = !origin && !isHotelOnly;
 
-  // ── Multi-stop detection ──────────────────────────────────────────────────
+  // ── Multi-stop detection ──────────────────────────────────
   const stopPattern = /(\d+)\s*nights?\s+(?:in\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/g;
   const stops = [];
   let stopMatch;
@@ -612,7 +684,9 @@ function _parseWithRules(prompt) {
       seatPreference, timePreference, needsOriginClarification: false,
       isMultiDestination: true, trips, legs: [],
       preferredTransportProvider: null, preferredHotel, propertyType,
-      activityRequests, safariDestination, _parsedBy: 'rules-multi',
+      activityRequests, safariDestination,
+      hasChild, needsChildAge,
+      _parsedBy: 'rules-multi',
     };
   }
 
@@ -621,7 +695,9 @@ function _parseWithRules(prompt) {
     departureDate, returnDate, outboundTransportMode, returnTransportMode: null, mealPlan,
     seatPreference, timePreference, needsOriginClarification, isMultiDestination: false, legs: [],
     preferredTransportProvider: null, preferredHotel, propertyType,
-    activityRequests, safariDestination, _parsedBy: 'rules',
+    activityRequests, safariDestination,
+    hasChild, needsChildAge,
+    _parsedBy: 'rules',
   };
 }
 
@@ -655,6 +731,11 @@ ORIGIN FIELD — STRICT RULES:
   NEVER include route text like "to Kampala" or "nairobi to kampala".
   Examples of correct values: "Nairobi", "Mombasa", null
   Examples of WRONG values: "nairobi to kampala", "nairobi. to kampala", "from nairobi"
+
+CHILD FIELDS:
+- children: count of children mentioned (0 if none)
+- childAges: array of ages explicitly stated (e.g. [6] or [3, 8]). Empty array [] if no ages given.
+- needsChildAge: true if children > 0 AND childAges is empty. false otherwise.
 
 Example: "Nairobi to Zanzibar on Aug 10, 4 nights, then Mombasa for 5 nights, fly back to Nairobi"
 CORRECT trips[]:
@@ -696,7 +777,7 @@ Rules:
 - nights: 0 and returnDate: null for transit/return-home legs.
 - The final leg destination must ALWAYS be an airport city.
 
-Return this shape for a SINGLE trip:
+Return this shape:
 {
   "trips": null,
   "destination": "city only",
@@ -705,6 +786,7 @@ Return this shape for a SINGLE trip:
   "passengers": number,
   "children": number,
   "childAges": [],
+  "needsChildAge": false,
   "budget": "low"|"mid"|"high"|"luxury"|null,
   "budgetKES": number|null,
   "departureDate": "YYYY-MM-DD",
@@ -720,37 +802,6 @@ Return this shape for a SINGLE trip:
   "preferredTransportProvider": null,
   "preferredHotel": null,
   "propertyType": "beachfront"|"oceanfront"|"lodge"|"tented camp"|"villa"|"boutique"|null,
-  "activityRequests": []
-}
-
-Return this shape for MULTIPLE TRIPS:
-{
-  "trips": [
-    { "destination": "Zanzibar",  "origin": "Nairobi",  "nights": 4, "departureDate": "2026-08-10", "returnDate": "2026-08-14", "needsOriginClarification": false },
-    { "destination": "Mombasa",   "origin": "Zanzibar", "nights": 5, "departureDate": "2026-08-14", "returnDate": "2026-08-19", "needsOriginClarification": false },
-    { "destination": "Nairobi",   "origin": "Mombasa",  "nights": 0, "departureDate": "2026-08-19", "returnDate": null,          "needsOriginClarification": false }
-  ],
-  "destination": "Zanzibar",
-  "origin": "Nairobi",
-  "nights": 9,
-  "passengers": 1,
-  "children": 0,
-  "childAges": [],
-  "budget": null,
-  "budgetKES": null,
-  "departureDate": "2026-08-10",
-  "returnDate": "2026-08-19",
-  "outboundTransportMode": null,
-  "returnTransportMode": null,
-  "mealPlan": null,
-  "seatPreference": null,
-  "timePreference": null,
-  "needsOriginClarification": false,
-  "isMultiDestination": false,
-  "legs": [],
-  "preferredTransportProvider": null,
-  "preferredHotel": null,
-  "propertyType": null,
   "activityRequests": []
 }`;
 
@@ -770,6 +821,7 @@ Never end trips[] on a safari park.
 "safari", "snorkelling" → activityRequests[].
 budget: tier only ("low"|"mid"|"high"|"luxury"|null).
 budgetKES: explicit KES amount as a raw number (e.g. 100000), or null.
+children: count of children. childAges: array of ages if stated. needsChildAge: true if children>0 and no ages.
 
 {
   "trips": null,
@@ -779,6 +831,7 @@ budgetKES: explicit KES amount as a raw number (e.g. 100000), or null.
   "passengers": 1,
   "children": 0,
   "childAges": [],
+  "needsChildAge": false,
   "budget": null,
   "budgetKES": null,
   "departureDate": "YYYY-MM-DD",
@@ -836,7 +889,7 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
     if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
 
-    // ── Sanitize destination ───────────────────────────────────────────────
+    // ── Sanitize destination ──────────────────────────────
     if (parsed.destination) {
       const clean = _sanitizeDestination(parsed.destination);
       if (!clean) {
@@ -849,7 +902,7 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
     }
 
-    // ── Sanitize origin — strip any route text ─────────────────────────────
+    // ── Sanitize origin ───────────────────────────────────
     if (parsed.origin) {
       const routeStripped = parsed.origin.split(/\s+to\s+/i)[0].trim();
       const fromStripped = routeStripped.replace(/^from\s+/i, '').trim();
@@ -865,7 +918,7 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
     }
 
-    // ── Normalize budgetKES ────────────────────────────────────────────────
+    // ── Normalize budgetKES ───────────────────────────────
     if (parsed.budgetKES !== null && parsed.budgetKES !== undefined) {
       const raw = parsed.budgetKES;
       if (typeof raw === 'string') {
@@ -879,6 +932,17 @@ async function _groqAttempt(prompt, systemPrompt) {
     } else {
       parsed.budgetKES = parsed.budgetKES ?? null;
     }
+
+    // ── Reconcile child fields from Groq with rule detection ─
+    const ruleChild = _detectChildInfo(prompt);
+    // Rule-based detection is ground truth for hasChild/needsChildAge
+    // since Groq may miss it; merge conservatively.
+    parsed.children     = parsed.children     || ruleChild.childAges.length || (ruleChild.hasChild ? 1 : 0);
+    parsed.childAges    = (parsed.childAges?.length > 0 ? parsed.childAges : ruleChild.childAges) || [];
+    parsed.needsChildAge = (parsed.children > 0 && parsed.childAges.length === 0)
+      ? true
+      : (parsed.needsChildAge ?? ruleChild.needsChildAge ?? false);
+    parsed.hasChild     = ruleChild.hasChild || parsed.children > 0;
 
     if (Array.isArray(parsed.trips)) {
       parsed.trips = parsed.trips.map(t => ({
@@ -897,7 +961,7 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
 
       if (parsed.trips.length === 1) {
-        const sole        = parsed.trips[0];
+        const sole           = parsed.trips[0];
         parsed.destination   = sole.destination;
         parsed.origin        = sole.origin || parsed.origin;
         parsed.departureDate = sole.departureDate || parsed.departureDate;
@@ -909,7 +973,6 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
     }
 
-    // Final plausibility check on destination
     if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) {
       logger.warn('Groq returned implausible destination', { returned: parsed.destination?.slice(0, 80) });
       parsed.destination = null;
@@ -937,7 +1000,7 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
     }
 
-    // Activity requests: merge Groq output with rule-based extraction
+    // Activity requests: merge Groq + rule-based
     const { hasSafari, excursions: ruleExcursions } = _extractActivities(prompt);
     const groqActivities = Array.isArray(parsed.activityRequests) ? parsed.activityRequests : [];
     parsed.activityRequests = [...new Set([...groqActivities, ...ruleExcursions])];
@@ -972,6 +1035,8 @@ async function _groqAttempt(prompt, systemPrompt) {
     parsed.children                   = parsed.children                   ?? 0;
     parsed.childAges                  = parsed.childAges                  ?? [];
     parsed.budgetKES                  = parsed.budgetKES                  ?? null;
+    parsed.needsChildAge              = parsed.needsChildAge              ?? false;
+    parsed.hasChild                   = parsed.hasChild                   ?? false;
     parsed._parsedBy = 'groq';
 
     return parsed;
@@ -1021,11 +1086,17 @@ async function parsePrompt(prompt, session = null) {
         destinations: groqResult.trips.map(t => t.destination).join(', '),
       });
     } else {
-      logger.info('Prompt parsed via Groq', { destination: groqResult.destination, origin: groqResult.origin });
+      logger.info('Prompt parsed via Groq', {
+        destination:  groqResult.destination,
+        origin:       groqResult.origin,
+        hasChild:     groqResult.hasChild,
+        needsChildAge: groqResult.needsChildAge,
+        childAges:    groqResult.childAges,
+      });
     }
   }
 
-  // ── Session inheritance ───────────────────────────────────────────────────
+  // ── Session inheritance ───────────────────────────────────
   if (session) {
     const INHERITABLE = [
       'destination', 'origin', 'nights', 'passengers', 'children', 'childAges',
@@ -1033,12 +1104,10 @@ async function parsePrompt(prompt, session = null) {
       'safariDestination', 'preferredHotel', 'preferredTransportProvider',
     ];
 
-    // If current parse produced trips[], it owns destination/origin/dates
     const currentParseHasTrips = Array.isArray(raw.trips) && raw.trips.length > 0;
     const TRIP_OWNED = new Set(['destination', 'origin', 'departureDate', 'returnDate', 'nights']);
 
     for (const key of INHERITABLE) {
-      // Never inherit trip-owned fields when current parse has its own trips[]
       if (currentParseHasTrips && TRIP_OWNED.has(key)) continue;
 
       const currentVal = raw[key];
@@ -1054,31 +1123,22 @@ async function parsePrompt(prompt, session = null) {
       }
     }
 
-    // ── Stale returnDate guard ────────────────────────────────────────────
+    // ── Stale returnDate guard ────────────────────────────
     if (raw.returnDate && raw.departureDate) {
       if (new Date(raw.returnDate) <= new Date(raw.departureDate)) {
         const staleReturn = raw.returnDate;
         if (raw.nights) {
           raw.returnDate = _addDays(raw.departureDate, raw.nights);
-          logger.warn('PromptParser: stale returnDate recalculated from departureDate + nights', {
-            staleReturn,
-            departureDate: raw.departureDate,
-            nights: raw.nights,
-            newReturn: raw.returnDate,
+          logger.warn('PromptParser: stale returnDate recalculated', {
+            staleReturn, departureDate: raw.departureDate, nights: raw.nights, newReturn: raw.returnDate,
           });
         } else {
           raw.returnDate = null;
-          logger.warn('PromptParser: stale returnDate cleared — predates new departureDate', {
-            staleReturn,
-            departureDate: raw.departureDate,
-          });
+          logger.warn('PromptParser: stale returnDate cleared', { staleReturn, departureDate: raw.departureDate });
         }
       }
     }
 
-    // Destination-specific: if sanitizer cleared a dirty destination
-    // but session has a good one, use it — but only if current parse
-    // doesn't already own its own trip structure.
     if (!raw.destination && session.destination && !currentParseHasTrips) {
       raw.destination = session.destination;
       logger.info('PromptParser: restored destination from session after sanitization', {
@@ -1086,15 +1146,18 @@ async function parsePrompt(prompt, session = null) {
       });
     }
 
-    // ── Trip leg normalization from session ───────────────────────────────
-    // If Groq returned trips[] but legs are missing origin/dates that exist
-    // in the session, propagate session context into each leg and prepend
-    // any missing first leg (e.g. Nairobi→Diani when the follow-up only
-    // describes Diani→Lamu→Nairobi).
+    // ── childAges — inherit from session only if no new ages detected
+    // and a child is already on the booking (e.g. user already gave age
+    // on a prior turn, now follow-up shouldn't clear it)
+    if ((!raw.childAges || raw.childAges.length === 0) && session.childAges?.length > 0) {
+      raw.childAges    = session.childAges;
+      raw.needsChildAge = false;
+      logger.info('PromptParser: inherited childAges from session', { childAges: session.childAges });
+    }
+
     if (Array.isArray(raw.trips) && raw.trips.length > 0 && raw.departureDate) {
       raw.trips = _normalizeTripLegsFromSession(raw.trips, raw);
     }
-    // ─────────────────────────────────────────────────────────────────────
   }
 
   return raw;

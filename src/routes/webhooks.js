@@ -3,6 +3,18 @@
  * ─────────────────────────────────────────────────────────────
  * Handles incoming messages from WhatsApp Business API.
  * Supports both phone-based (from/wa_id) and user_id-based identities.
+ *
+ * Added (2026-08-17): Child age interception before orchestration.
+ * When parsePrompt returns needsChildAge: true (a child is mentioned
+ * but no age was given), the webhook asks "How old is the child?"
+ * before running the search engine. The answer is stored in the
+ * conversation session so the follow-up turn inherits childAges[]
+ * and runs orchestration with the correct fare class from the start.
+ *
+ * State key: conversationMemory stores `pendingChildAgeCapture: true`
+ * in previousParams. On the next turn, if that flag is set and the
+ * message looks like an age answer, childAges is populated and
+ * orchestration runs with the completed params.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -19,8 +31,50 @@ const conversationMemory = require('../services/conversationMemoryService');
 const disruptionFlow = require('../services/disruptionFlow');
 const { logger } = require('../utils/logger');
 
-const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|phone|email|dob|date of birth)\s*:/im;
+const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|type|dob|date of birth|seat)\s*:/im;
 const _pendingResumeChoice = new Map();
+
+// ─────────────────────────────────────────────
+// CHILD AGE ANSWER PARSER
+// Tries to extract a child age from a short reply like:
+//   "6", "6 years old", "she's 8", "age 3", "3 and 7"
+// Returns array of ages, or null if it doesn't look like an age reply.
+// ─────────────────────────────────────────────
+function _parseChildAgeAnswer(text) {
+  const t = text.trim().toLowerCase();
+
+  // Must be a short reply — long messages are trip prompts, not age answers
+  if (t.split(/\s+/).length > 8) return null;
+
+  const ages = [];
+
+  // "6 years old", "6yo", "6yrs"
+  const yearOldPattern = /(\d{1,2})\s*[-–]?\s*(?:year[s]?[-\s]?old|yr[s]?[-\s]?old|y\.?o\.?|yrs?)\b/gi;
+  let m;
+  while ((m = yearOldPattern.exec(t)) !== null) {
+    const age = parseInt(m[1], 10);
+    if (age >= 0 && age < 18) ages.push(age);
+  }
+
+  // "age 6", "aged 3"
+  const agedPattern = /aged?\s+(\d{1,2})/gi;
+  while ((m = agedPattern.exec(t)) !== null) {
+    const age = parseInt(m[1], 10);
+    if (age >= 0 && age < 18 && !ages.includes(age)) ages.push(age);
+  }
+
+  // Plain numbers: "6", "3 and 7", "3, 7"
+  if (ages.length === 0) {
+    const nums = t.match(/\b(\d{1,2})\b/g) || [];
+    nums.forEach(n => {
+      const age = parseInt(n, 10);
+      // Only treat as age if plausible (0–17) and not a year
+      if (age >= 0 && age < 18) ages.push(age);
+    });
+  }
+
+  return ages.length > 0 ? ages : null;
+}
 
 // ─────────────────────────────────────────────
 // VERIFY WEBHOOK
@@ -246,21 +300,20 @@ router.post('/whatsapp', async (req, res) => {
     });
     if (handledByChange) return;
 
-// ── CONTROL WORD GUARD + MID-BOOKING CANCEL ────────────
-// Resolve booking session once — reused in both guards below.
-const CONTROL_WORDS = /^(stop|quit|exit|abort|nevermind|never mind|forget it|reset|clear|acha|hapana|no thanks)$/i;
-const isNakedCancel = /^cancel$/i.test(prompt.trim());
-const hasBookingSession = await whatsappBookingFlow.hasActiveSession(userKey);
+    // ── CONTROL WORD GUARD + MID-BOOKING CANCEL ────────────
+    const CONTROL_WORDS = /^(stop|quit|exit|abort|nevermind|never mind|forget it|reset|clear|acha|hapana|no thanks)$/i;
+    const isNakedCancel = /^cancel$/i.test(prompt.trim());
+    const hasBookingSession = await whatsappBookingFlow.hasActiveSession(userKey);
 
-if (CONTROL_WORDS.test(prompt.trim()) || (isNakedCancel && !hasBookingSession)) {
-  await conversationMemory.clearConversation(userKey, agencyId);
-  await conversationMemory.clearLegFlow(userKey, agencyId);
-  await whatsappBookingFlow.clearSession(userKey);
-  await whatsappService.sendText(phoneNumberId, recipient,
-    "Got it — cleared. Just send me a destination whenever you're ready! ✈️"
-  );
-  return;
-}
+    if (CONTROL_WORDS.test(prompt.trim()) || (isNakedCancel && !hasBookingSession)) {
+      await conversationMemory.clearConversation(userKey, agencyId);
+      await conversationMemory.clearLegFlow(userKey, agencyId);
+      await whatsappBookingFlow.clearSession(userKey);
+      await whatsappService.sendText(phoneNumberId, recipient,
+        "Got it — cleared. Just send me a destination whenever you're ready! ✈️"
+      );
+      return;
+    }
 
     if (isNakedCancel && hasBookingSession) {
       await conversationMemory.cancelMidBooking(userKey, agencyId);
@@ -370,6 +423,55 @@ if (CONTROL_WORDS.test(prompt.trim()) || (isNakedCancel && !hasBookingSession)) 
     // ── LOAD CONVERSATION CONTEXT ──────────────────────────
     const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
 
+    // ═══════════════════════════════════════════════════════
+    // CHILD AGE INTERCEPTION
+    // If the previous turn asked "how old is the child?" and this
+    // reply looks like an age answer, inject it into params and
+    // run orchestration with the completed config.
+    // ═══════════════════════════════════════════════════════
+    if (memCtx.previousParams?.pendingChildAgeCapture) {
+      const childAges = _parseChildAgeAnswer(prompt);
+      if (childAges) {
+        logger.info('Webhook: child age captured from reply', { userKey, childAges });
+
+        const resumedParams = {
+          ...memCtx.previousParams,
+          childAges,
+          children:            Math.max(memCtx.previousParams.children || 0, childAges.length),
+          needsChildAge:       false,
+          pendingChildAgeCapture: false,
+        };
+
+        await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
+
+        const result = await orchestrationEngine.orchestrate(null, agencyId, {
+          conversationHistory: memCtx.conversationHistory,
+          previousParams:      resumedParams,
+          skipParsing:         true,
+          channel:             'whatsapp',
+          phone:               phone || userKey,
+        });
+
+        await conversationMemory.saveTurn(userKey, agencyId, {
+          userMessage:    prompt,
+          engineResponse: result.text,
+          tripParams:     result.tripParams,
+          packages:       result.packages || [],
+          sessionId:      result.sessionId,
+        });
+
+        await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+        return;
+      }
+
+      // Reply didn't look like an age — could be a new trip prompt.
+      // Clear the pending flag and fall through to normal orchestration.
+      logger.info('Webhook: pendingChildAgeCapture set but reply was not an age — falling through', {
+        userKey, preview: prompt.slice(0, 60),
+      });
+      // Don't clear previousParams here — let normal orchestration handle it
+    }
+
     // ── ORIGIN CLARIFICATION RESUME ───────────────────────
     if (memCtx.previousParams?.needsOriginClarification && !memCtx.previousParams?.origin) {
       const candidateOrigin = prompt.trim();
@@ -466,7 +568,35 @@ if (CONTROL_WORDS.test(prompt.trim()) || (isNakedCancel && !hasBookingSession)) 
       tripResultsCount:   result.tripResults?.length,
       isClassifiedTrip:   result.isClassifiedTrip,
       needsClarification: result.needsClarification,
+      needsChildAge:      result.tripParams?.needsChildAge,
     });
+
+    // ── CHILD AGE INTERCEPTION — after orchestration parse ─
+    // If orchestration parsed the prompt and found a child mention
+    // with no age, intercept here before sending results.
+    if (result.tripParams?.needsChildAge && !result.tripParams?.childAges?.length) {
+      logger.info('Webhook: needsChildAge detected — asking before search', { userKey });
+
+      const childCount = result.tripParams.children || 1;
+      const question = childCount > 1
+        ? `How old are the children? (e.g. "6 and 8")`
+        : `How old is the child?`;
+
+      // Save params with pending flag so the next turn knows to inject the age
+      await conversationMemory.saveTurn(userKey, agencyId, {
+        userMessage:    prompt,
+        engineResponse: question,
+        tripParams: {
+          ...result.tripParams,
+          pendingChildAgeCapture: true,
+        },
+        packages:  [],
+        sessionId: result.sessionId,
+      });
+
+      await whatsappService.sendText(phoneNumberId, recipient, question);
+      return;
+    }
 
     // ── SEND RESULTS (fire-and-forget memory save) ─────────
     conversationMemory.saveTurn(userKey, agencyId, {
@@ -490,167 +620,166 @@ if (CONTROL_WORDS.test(prompt.trim()) || (isNakedCancel && !hasBookingSession)) 
       }
     }
 
-    // ── CLARIFICATION ──────────────────────────────────────
-    if (result.needsClarification) {
-      logger.info('Webhook: sending clarification', { userKey, textPreview: result.text?.slice(0, 60) });
-      await whatsappService.sendText(phoneNumberId, recipient, result.text);
-      return;
-    }
-
-    // ── CLASSIFIED TRIP → LEG FLOW ─────────────────────────
-if (result.isClassifiedTrip && result.tripResults?.length > 0) {
-  const actionableLegs = result.tripResults.filter(r => r.packages?.length > 0);
-  if (actionableLegs.length === 0) {
-    await whatsappService.sendText(phoneNumberId, recipient,
-      "I searched your whole trip but couldn't find options for any of the legs. Try adjusting your dates or destinations."
-    );
-    return;
-  }
-
-  // ── Detect independent trip groups by destination reset ──
-  // When the splitter fires, tripResults from different independent
-  // trips are concatenated. We detect boundaries by looking for
-  // legs where the role resets back to 'arrival' after a 'departure'.
-  const tripGroups = [];
-  let currentGroup = [];
-  for (const leg of actionableLegs) {
-    if (leg.role === 'arrival' && currentGroup.length > 0) {
-      tripGroups.push(currentGroup);
-      currentGroup = [leg];
-    } else {
-      currentGroup.push(leg);
-    }
-  }
-  if (currentGroup.length > 0) tripGroups.push(currentGroup);
-
-  // Multiple independent trips — handle each as its own leg flow
-  if (tripGroups.length > 1) {
-    for (let t = 0; t < tripGroups.length; t++) {
-      const group = tripGroups[t];
-      const dest = group[0]?.label?.split('→')[1]?.trim() || `Trip ${t + 1}`;
-      const groupPackages = group.flatMap(r => r.packages);
-
-      await whatsappService.sendText(phoneNumberId, recipient,
-        `✈️ *Trip ${t + 1} — ${_titleCase(dest)}*\n━━━━━━━━━━━━━━━━`
-      );
-
-      if (group.length === 1) {
-        // Single leg — just show options directly
-        await whatsappService.sendPackages(phoneNumberId, recipient, group[0].packages);
-        await packageCache.save(userKey, groupPackages, result.tripParams);
-        await whatsappService.sendText(phoneNumberId, recipient,
-          `Reply *1*${group[0].packages.length > 1 ? `–*${group[0].packages.length}*` : ''} to select your option for this trip.`
-        );
-      } else {
-        // Multi-leg — start a scoped leg flow for this trip only
-        const flow = await conversationMemory.startLegFlow(userKey, agencyId, {
-          legs: group, tripParams: result.tripParams,
-        });
-        if (flow) {
-          await whatsappService.sendText(phoneNumberId, recipient,
-            `I'll walk you through *${group.length} legs* for this trip. Pick an option for each leg.`
-          );
-          await _sendCurrentLeg(phoneNumberId, recipient, flow);
-        } else {
-          await whatsappService.sendPackages(phoneNumberId, recipient, groupPackages);
-          await packageCache.save(userKey, groupPackages, result.tripParams);
-        }
-      }
-
-      // Gap between trips
-      if (t < tripGroups.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await whatsappService.sendText(phoneNumberId, recipient,
-          `─────────────────\nNow let's sort *Trip ${t + 2}*:`
-        );
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-    }
-
-    // Save all packages to cache for selection
-    const allPackages = actionableLegs.flatMap(r => r.packages);
-    await packageCache.save(userKey, allPackages, result.tripParams);
-    return;
-  }
-
-  // Single trip — original leg flow logic unchanged
-  const allPackages = actionableLegs.flatMap(r => r.packages);
-  await packageCache.save(userKey, allPackages, result.tripParams);
-
-  if (actionableLegs.length === 1) {
-    await whatsappService.sendText(phoneNumberId, recipient, result.text);
-    await whatsappService.sendPackages(phoneNumberId, recipient, actionableLegs[0].packages);
-    await whatsappService.sendText(phoneNumberId, recipient,
-      `Reply with the option number (1-${actionableLegs[0].packages.length}) to book.`
-    );
-    return;
-  }
-
-  const flow = await conversationMemory.startLegFlow(userKey, agencyId, {
-    legs: actionableLegs, tripParams: result.tripParams,
-  });
-  if (!flow) {
-    await whatsappService.sendText(phoneNumberId, recipient, result.text);
-    await whatsappService.sendPackages(phoneNumberId, recipient, allPackages);
-    return;
-  }
-
-  const totalLegs = flow.legs.length;
-  const tripSummary = result.tripParams?.destination || 'your trip';
-  await whatsappService.sendText(phoneNumberId, recipient,
-    `✅ Found options for all *${totalLegs} legs* of your trip to *${_titleCase(tripSummary)}*.\n\nI'll walk you through one leg at a time.`
-  );
-  await _sendCurrentLeg(phoneNumberId, recipient, flow);
-  return;
-}
-
-    // ── MULTI-TRIP RESULTS ─────────────────────────────────
-    if (result.tripResults && result.tripResults.length > 1) {
-      logger.info('Webhook: sending multi-trip results', { userKey, tripCount: result.tripResults.length });
-      const allPackages = [];
-      for (let i = 0; i < result.tripResults.length; i++) {
-        const trip = result.tripResults[i];
-        const introLine = i === 0
-          ? `Here are options for *Trip 1 — ${trip.label}*:`
-          : `And here are options for *Trip ${i + 1} — ${trip.label}*:`;
-        await whatsappService.sendText(phoneNumberId, recipient, introLine);
-        if (trip.packages?.length > 0) {
-          await whatsappService.sendPackages(phoneNumberId, recipient, trip.packages);
-          allPackages.push(...trip.packages);
-        } else {
-          await whatsappService.sendText(phoneNumberId, recipient, `Sorry, I couldn't find any options for ${trip.label}.`);
-        }
-      }
-      if (allPackages.length > 0) {
-        await packageCache.save(userKey, allPackages, result.tripParams);
-        await whatsappService.sendText(phoneNumberId, recipient,
-          `Reply with the option number (1-${allPackages.length}) to book any of the above.`
-        );
-      }
-      return;
-    }
-
-    // ── SINGLE-TRIP RESULTS ────────────────────────────────
-    logger.info('Webhook: sending single-trip results', { userKey, hasText: !!result.text, packages: result.packages?.length });
-
-    const textToSend = result.text || "Here are some options I found for you:";
-    await whatsappService.sendText(phoneNumberId, recipient, textToSend);
-
-    if (result.packages?.length > 0) {
-      logger.info('Webhook: sending packages', { userKey, count: result.packages.length });
-      await whatsappService.sendPackages(phoneNumberId, recipient, result.packages);
-      await packageCache.save(userKey, result.packages, result.tripParams);
-      await whatsappService.sendText(phoneNumberId, recipient,
-        `Reply with the option number (1-${result.packages.length}) to book that option.`
-      );
-    } else {
-      logger.warn('Webhook: no packages to send', { userKey, resultKeys: Object.keys(result) });
-    }
+    await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
 
   } catch (error) {
     logger.error('WhatsApp webhook error', { error: error.message, stack: error.stack });
   }
 });
+
+// ─────────────────────────────────────────────
+// SEND ORCHESTRATION RESULT
+// Extracted so both the normal path and the child-age-resume
+// path can share the same send logic without duplication.
+// ─────────────────────────────────────────────
+async function _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result }) {
+
+  if (result.needsClarification) {
+    logger.info('Webhook: sending clarification', { userKey, textPreview: result.text?.slice(0, 60) });
+    await whatsappService.sendText(phoneNumberId, recipient, result.text);
+    return;
+  }
+
+  // ── CLASSIFIED TRIP → LEG FLOW ─────────────────────────
+  if (result.isClassifiedTrip && result.tripResults?.length > 0) {
+    const actionableLegs = result.tripResults.filter(r => r.packages?.length > 0);
+    if (actionableLegs.length === 0) {
+      await whatsappService.sendText(phoneNumberId, recipient,
+        "I searched your whole trip but couldn't find options for any of the legs. Try adjusting your dates or destinations."
+      );
+      return;
+    }
+
+    const tripGroups = [];
+    let currentGroup = [];
+    for (const leg of actionableLegs) {
+      if (leg.role === 'arrival' && currentGroup.length > 0) {
+        tripGroups.push(currentGroup);
+        currentGroup = [leg];
+      } else {
+        currentGroup.push(leg);
+      }
+    }
+    if (currentGroup.length > 0) tripGroups.push(currentGroup);
+
+    if (tripGroups.length > 1) {
+      for (let t = 0; t < tripGroups.length; t++) {
+        const group = tripGroups[t];
+        const dest = group[0]?.label?.split('→')[1]?.trim() || `Trip ${t + 1}`;
+        const groupPackages = group.flatMap(r => r.packages);
+
+        await whatsappService.sendText(phoneNumberId, recipient,
+          `✈️ *Trip ${t + 1} — ${_titleCase(dest)}*\n━━━━━━━━━━━━━━━━`
+        );
+
+        if (group.length === 1) {
+          await whatsappService.sendPackages(phoneNumberId, recipient, group[0].packages);
+          await packageCache.save(userKey, groupPackages, result.tripParams);
+          await whatsappService.sendText(phoneNumberId, recipient,
+            `Reply *1*${group[0].packages.length > 1 ? `–*${group[0].packages.length}*` : ''} to select your option for this trip.`
+          );
+        } else {
+          const flow = await conversationMemory.startLegFlow(userKey, result.agencyId || null, {
+            legs: group, tripParams: result.tripParams,
+          });
+          if (flow) {
+            await whatsappService.sendText(phoneNumberId, recipient,
+              `I'll walk you through *${group.length} legs* for this trip. Pick an option for each leg.`
+            );
+            await _sendCurrentLeg(phoneNumberId, recipient, flow);
+          } else {
+            await whatsappService.sendPackages(phoneNumberId, recipient, groupPackages);
+            await packageCache.save(userKey, groupPackages, result.tripParams);
+          }
+        }
+
+        if (t < tripGroups.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          await whatsappService.sendText(phoneNumberId, recipient,
+            `─────────────────\nNow let's sort *Trip ${t + 2}*:`
+          );
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+
+      const allPackages = actionableLegs.flatMap(r => r.packages);
+      await packageCache.save(userKey, allPackages, result.tripParams);
+      return;
+    }
+
+    const allPackages = actionableLegs.flatMap(r => r.packages);
+    await packageCache.save(userKey, allPackages, result.tripParams);
+
+    if (actionableLegs.length === 1) {
+      await whatsappService.sendText(phoneNumberId, recipient, result.text);
+      await whatsappService.sendPackages(phoneNumberId, recipient, actionableLegs[0].packages);
+      await whatsappService.sendText(phoneNumberId, recipient,
+        `Reply with the option number (1-${actionableLegs[0].packages.length}) to book.`
+      );
+      return;
+    }
+
+    const flow = await conversationMemory.startLegFlow(userKey, result.agencyId || null, {
+      legs: actionableLegs, tripParams: result.tripParams,
+    });
+    if (!flow) {
+      await whatsappService.sendText(phoneNumberId, recipient, result.text);
+      await whatsappService.sendPackages(phoneNumberId, recipient, allPackages);
+      return;
+    }
+
+    const totalLegs = flow.legs.length;
+    const tripSummary = result.tripParams?.destination || 'your trip';
+    await whatsappService.sendText(phoneNumberId, recipient,
+      `✅ Found options for all *${totalLegs} legs* of your trip to *${_titleCase(tripSummary)}*.\n\nI'll walk you through one leg at a time.`
+    );
+    await _sendCurrentLeg(phoneNumberId, recipient, flow);
+    return;
+  }
+
+  // ── MULTI-TRIP RESULTS ─────────────────────────────────
+  if (result.tripResults && result.tripResults.length > 1) {
+    logger.info('Webhook: sending multi-trip results', { userKey, tripCount: result.tripResults.length });
+    const allPackages = [];
+    for (let i = 0; i < result.tripResults.length; i++) {
+      const trip = result.tripResults[i];
+      const introLine = i === 0
+        ? `Here are options for *Trip 1 — ${trip.label}*:`
+        : `And here are options for *Trip ${i + 1} — ${trip.label}*:`;
+      await whatsappService.sendText(phoneNumberId, recipient, introLine);
+      if (trip.packages?.length > 0) {
+        await whatsappService.sendPackages(phoneNumberId, recipient, trip.packages);
+        allPackages.push(...trip.packages);
+      } else {
+        await whatsappService.sendText(phoneNumberId, recipient, `Sorry, I couldn't find any options for ${trip.label}.`);
+      }
+    }
+    if (allPackages.length > 0) {
+      await packageCache.save(userKey, allPackages, result.tripParams);
+      await whatsappService.sendText(phoneNumberId, recipient,
+        `Reply with the option number (1-${allPackages.length}) to book any of the above.`
+      );
+    }
+    return;
+  }
+
+  // ── SINGLE-TRIP RESULTS ────────────────────────────────
+  logger.info('Webhook: sending single-trip results', { userKey, hasText: !!result.text, packages: result.packages?.length });
+
+  const textToSend = result.text || "Here are some options I found for you:";
+  await whatsappService.sendText(phoneNumberId, recipient, textToSend);
+
+  if (result.packages?.length > 0) {
+    logger.info('Webhook: sending packages', { userKey, count: result.packages.length });
+    await whatsappService.sendPackages(phoneNumberId, recipient, result.packages);
+    await packageCache.save(userKey, result.packages, result.tripParams);
+    await whatsappService.sendText(phoneNumberId, recipient,
+      `Reply with the option number (1-${result.packages.length}) to book that option.`
+    );
+  } else {
+    logger.warn('Webhook: no packages to send', { userKey, resultKeys: Object.keys(result) });
+  }
+}
 
 // ═════════════════════════════════════════════════════════════
 // LEG FLOW MESSAGE HANDLER
