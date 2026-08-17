@@ -884,5 +884,4 @@ module.exports = {
   searchChannelManager,
   searchCustomRest,
   createReservation,
-  resolveUpsellTags: require('./hotel-direct-engine').resolveUpsellTags || (() => []),
-};
+  };
