@@ -42,6 +42,12 @@
  *        mentioned but no age is given. childAges[] populated when
  *        ages are stated inline. Webhooks.js intercepts needsChildAge
  *        before running orchestration so fares are correct from search.
+ * Fixed: Trip-aware session inheritance — trip-scoped fields (origin,
+ *        dates, nights) only inherit when continuing the SAME trip
+ *        (same destination + same departure month). New trips start
+ *        fresh and are asked for origin. Previously planned trips are
+ *        stored in _tripStore keyed by destination and restored when
+ *        the user returns to them.
  */
 
 const Groq = require('groq-sdk');
@@ -135,37 +141,18 @@ function _extractActivities(text) {
 /**
  * Detect whether the prompt mentions a child/infant traveling.
  * Returns { hasChild, childAges, needsChildAge }
- *
- * hasChild      — true if any child mention detected
- * childAges     — array of ages parsed from the prompt (may be empty)
- * needsChildAge — true when a child is mentioned but no age is given
- *
- * Examples that set needsChildAge = true:
- *   "travelling with a child"
- *   "I have a kid with me"
- *   "2 adults and 1 child"
- *   "we are 3, one is a child"
- *
- * Examples that populate childAges directly:
- *   "travelling with a 6-year-old"
- *   "child aged 8"
- *   "kid who is 3"
- *   "2 adults and a child (5)"
  */
 function _detectChildInfo(prompt) {
   if (!prompt) return { hasChild: false, childAges: [], needsChildAge: false };
 
   const lower = prompt.toLowerCase();
 
-  // ── Does this prompt mention a child at all? ──────────────
   const CHILD_MENTION = /\b(child(?:ren)?|kid(?:s)?|minor(?:s)?|infant(?:s)?|baby|babies|toddler(?:s)?|junior)\b/i;
   const hasChild = CHILD_MENTION.test(lower);
   if (!hasChild) return { hasChild: false, childAges: [], needsChildAge: false };
 
-  // ── Try to extract age(s) from the prompt ─────────────────
   const childAges = [];
 
-  // "6-year-old", "6 year old", "6yrs", "6yo"
   const yearOldPattern = /(\d{1,2})\s*[-–]?\s*(?:year[s]?[-\s]?old|yr[s]?[-\s]?old|y\.?o\.?|yrs?)\b/gi;
   let m;
   while ((m = yearOldPattern.exec(lower)) !== null) {
@@ -173,21 +160,18 @@ function _detectChildInfo(prompt) {
     if (age >= 0 && age < 18) childAges.push(age);
   }
 
-  // "child aged 8", "kid aged 3", "infant aged 1"
   const agedPattern = /(?:child|kid|minor|infant|baby|toddler|junior)\s+(?:aged?|who\s+is|of\s+age)\s+(\d{1,2})/gi;
   while ((m = agedPattern.exec(lower)) !== null) {
     const age = parseInt(m[1], 10);
     if (age >= 0 && age < 18 && !childAges.includes(age)) childAges.push(age);
   }
 
-  // "a child (5)", "kid (3)"
   const bracketPattern = /(?:child|kid|minor|infant|toddler)\s*\((\d{1,2})\)/gi;
   while ((m = bracketPattern.exec(lower)) !== null) {
     const age = parseInt(m[1], 10);
     if (age >= 0 && age < 18 && !childAges.includes(age)) childAges.push(age);
   }
 
-  // "age 6", "ages 5 and 8" (more general — only if child was already detected)
   const agePattern = /\bage[sd]?\s+(\d{1,2})(?:\s+and\s+(\d{1,2}))?\b/gi;
   while ((m = agePattern.exec(lower)) !== null) {
     [m[1], m[2]].filter(Boolean).forEach(n => {
@@ -377,6 +361,52 @@ function _normalizeTripLegsFromSession(trips, topLevel) {
   });
 
   return normalized;
+}
+
+// ─────────────────────────────────────────────
+// TRIP IDENTITY HELPERS
+// ─────────────────────────────────────────────
+
+/**
+ * Normalize a string for comparison — lowercase, trim, collapse spaces.
+ */
+function _normStr(s) {
+  return (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * Determine whether the current parse is continuing the same trip as
+ * the session, or is a brand-new trip.
+ *
+ * "Same trip" requires:
+ *   1. The parsed destination matches the session destination, AND
+ *   2. Either no departure month is known yet on one side, OR both
+ *      sides share the same YYYY-MM departure month.
+ *
+ * If destination is absent from either side we cannot confirm same-trip,
+ * so we return false (conservative — will ask for origin).
+ */
+function _isSameTrip(raw, session) {
+  const newDest      = _normStr(raw.destination);
+  const sessionDest  = _normStr(session.destination);
+
+  if (!newDest || !sessionDest) return false;
+  if (newDest !== sessionDest)  return false;
+
+  const newMonth     = raw.departureDate     ? raw.departureDate.slice(0, 7)     : null;
+  const sessionMonth = session.departureDate ? session.departureDate.slice(0, 7) : null;
+
+  // If both sides have a month they must match; otherwise we give benefit of the doubt
+  if (newMonth && sessionMonth && newMonth !== sessionMonth) return false;
+
+  return true;
+}
+
+/**
+ * Build the trip-store key for a destination.
+ */
+function _tripKey(destination) {
+  return _normStr(destination);
 }
 
 // ─────────────────────────────────────────────
@@ -935,8 +965,6 @@ async function _groqAttempt(prompt, systemPrompt) {
 
     // ── Reconcile child fields from Groq with rule detection ─
     const ruleChild = _detectChildInfo(prompt);
-    // Rule-based detection is ground truth for hasChild/needsChildAge
-    // since Groq may miss it; merge conservatively.
     parsed.children     = parsed.children     || ruleChild.childAges.length || (ruleChild.hasChild ? 1 : 0);
     parsed.childAges    = (parsed.childAges?.length > 0 ? parsed.childAges : ruleChild.childAges) || [];
     parsed.needsChildAge = (parsed.children > 0 && parsed.childAges.length === 0)
@@ -1065,11 +1093,22 @@ async function _parseWithGroq(prompt) {
 /**
  * parsePrompt — parse a single user message.
  *
- * @param {string} prompt       — the raw user message
- * @param {object} [session]    — optional previous session params.
- *                                When provided, any field that the
- *                                current parse leaves null/undefined
- *                                will inherit the session value.
+ * @param {string} prompt    — the raw user message
+ * @param {object} [session] — optional previous session params.
+ *
+ * Session inheritance is TRIP-AWARE:
+ *   - Trip-scoped fields (origin, destination, departureDate, returnDate,
+ *     nights) only inherit when the new parse is continuing the SAME trip
+ *     (same destination + compatible departure month).
+ *   - When a new destination is detected, the old trip is archived in
+ *     session._tripStore keyed by normalized destination name.
+ *   - If the user later returns to a previously stored destination, its
+ *     trip-scoped fields are restored from _tripStore automatically.
+ *   - Non-trip fields (passengers, budget, mealPlan, etc.) always inherit
+ *     regardless of destination change.
+ *   - needsOriginClarification is set to true whenever origin is absent
+ *     and cannot be restored from the trip store, ensuring the engine
+ *     always asks rather than assuming.
  */
 async function parsePrompt(prompt, session = null) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) return _parseWithRules('');
@@ -1087,28 +1126,59 @@ async function parsePrompt(prompt, session = null) {
       });
     } else {
       logger.info('Prompt parsed via Groq', {
-        destination:  groqResult.destination,
-        origin:       groqResult.origin,
-        hasChild:     groqResult.hasChild,
+        destination:   groqResult.destination,
+        origin:        groqResult.origin,
+        hasChild:      groqResult.hasChild,
         needsChildAge: groqResult.needsChildAge,
-        childAges:    groqResult.childAges,
+        childAges:     groqResult.childAges,
       });
     }
   }
 
-  // ── Session inheritance ───────────────────────────────────
+  // ── Session inheritance ───────────────────────────────────────────────────
   if (session) {
-    const INHERITABLE = [
-      'destination', 'origin', 'nights', 'passengers', 'children', 'childAges',
-      'budget', 'budgetKES', 'departureDate', 'returnDate', 'mealPlan', 'propertyType',
-      'safariDestination', 'preferredHotel', 'preferredTransportProvider',
+    // Fields that always inherit (not trip-scoped)
+    const ALWAYS_INHERIT = [
+      'passengers', 'children', 'childAges', 'budget', 'budgetKES',
+      'mealPlan', 'propertyType', 'safariDestination',
+      'preferredHotel', 'preferredTransportProvider',
     ];
 
-    const currentParseHasTrips = Array.isArray(raw.trips) && raw.trips.length > 0;
-    const TRIP_OWNED = new Set(['destination', 'origin', 'departureDate', 'returnDate', 'nights']);
+    // Fields that only inherit when continuing the SAME trip
+    const TRIP_SCOPED = new Set(['destination', 'origin', 'departureDate', 'returnDate', 'nights']);
 
-    for (const key of INHERITABLE) {
-      if (currentParseHasTrips && TRIP_OWNED.has(key)) continue;
+    const currentParseHasTrips = Array.isArray(raw.trips) && raw.trips.length > 0;
+
+    // ── Determine trip identity ─────────────────────────────────────────────
+    const sameTripContinuation = _isSameTrip(raw, session);
+
+    // ── Archive current session trip if switching to a new destination ──────
+    // This lets us restore it later if the user comes back to it.
+    const newDest     = _normStr(raw.destination);
+    const sessionDest = _normStr(session.destination);
+    const tripStore   = session._tripStore ? { ...session._tripStore } : {};
+
+    if (newDest && sessionDest && newDest !== sessionDest && session.origin) {
+      // Archive the session trip under its destination key
+      tripStore[sessionDest] = {
+        destination:   session.destination,
+        origin:        session.origin,
+        departureDate: session.departureDate   || null,
+        returnDate:    session.returnDate      || null,
+        nights:        session.nights          || null,
+      };
+      logger.info('PromptParser: archived session trip to _tripStore', {
+        archived: sessionDest,
+        incoming: newDest,
+      });
+    }
+
+    // Carry trip store forward regardless
+    raw._tripStore = tripStore;
+
+    // ── Always-inherit fields ───────────────────────────────────────────────
+    for (const key of ALWAYS_INHERIT) {
+      if (currentParseHasTrips && TRIP_SCOPED.has(key)) continue;
 
       const currentVal = raw[key];
       const sessionVal = session[key];
@@ -1117,13 +1187,55 @@ async function parsePrompt(prompt, session = null) {
                       (key === 'passengers' && (currentVal === 0 || currentVal < 1));
       const hasSession = sessionVal !== null && sessionVal !== undefined &&
                          !(Array.isArray(sessionVal) && sessionVal.length === 0);
+
       if (isEmpty && hasSession) {
         raw[key] = sessionVal;
         logger.info('PromptParser: inherited from session', { key, value: String(sessionVal).slice(0, 40) });
       }
     }
 
-    // ── Stale returnDate guard ────────────────────────────
+    // ── Trip-scoped inheritance (same trip only) ────────────────────────────
+    if (!currentParseHasTrips) {
+      if (sameTripContinuation) {
+        // Continuing the same trip — inherit trip-scoped fields normally
+        for (const key of TRIP_SCOPED) {
+          const currentVal = raw[key];
+          const sessionVal = session[key];
+          const isEmpty = currentVal === null || currentVal === undefined;
+          const hasSession = sessionVal !== null && sessionVal !== undefined;
+          if (isEmpty && hasSession) {
+            raw[key] = sessionVal;
+            logger.info('PromptParser: inherited from session', { key, value: String(sessionVal).slice(0, 40) });
+          }
+        }
+      } else if (newDest && tripStore[newDest]) {
+        // Returning to a previously stored trip — restore its context
+        const stored = tripStore[newDest];
+        for (const key of TRIP_SCOPED) {
+          const currentVal = raw[key];
+          const isEmpty = currentVal === null || currentVal === undefined;
+          if (isEmpty && stored[key]) {
+            raw[key] = stored[key];
+            logger.info('PromptParser: restored from _tripStore', {
+              key, dest: newDest, value: stored[key],
+            });
+          }
+        }
+        logger.info('PromptParser: restored trip context from _tripStore', { dest: newDest });
+      } else if (newDest && newDest !== sessionDest) {
+        // Brand-new destination with no stored context — must ask for origin
+        // Only force needsOriginClarification if origin is genuinely absent
+        // (rule-based parser may have extracted it from the prompt already)
+        if (!raw.origin) {
+          raw.needsOriginClarification = true;
+          logger.info('PromptParser: new trip, no stored origin — will ask user', {
+            newDest, sessionDest,
+          });
+        }
+      }
+    }
+
+    // ── Stale returnDate guard ──────────────────────────────────────────────
     if (raw.returnDate && raw.departureDate) {
       if (new Date(raw.returnDate) <= new Date(raw.departureDate)) {
         const staleReturn = raw.returnDate;
@@ -1139,22 +1251,22 @@ async function parsePrompt(prompt, session = null) {
       }
     }
 
-    if (!raw.destination && session.destination && !currentParseHasTrips) {
+    // ── Destination fallback — restore from session if sanitization wiped it ─
+    if (!raw.destination && session.destination && !currentParseHasTrips && sameTripContinuation) {
       raw.destination = session.destination;
       logger.info('PromptParser: restored destination from session after sanitization', {
         sessionDestination: session.destination,
       });
     }
 
-    // ── childAges — inherit from session only if no new ages detected
-    // and a child is already on the booking (e.g. user already gave age
-    // on a prior turn, now follow-up shouldn't clear it)
+    // ── childAges — inherit from session if no new ages detected ────────────
     if ((!raw.childAges || raw.childAges.length === 0) && session.childAges?.length > 0) {
       raw.childAges    = session.childAges;
       raw.needsChildAge = false;
       logger.info('PromptParser: inherited childAges from session', { childAges: session.childAges });
     }
 
+    // ── Normalize trip legs with session context ────────────────────────────
     if (Array.isArray(raw.trips) && raw.trips.length > 0 && raw.departureDate) {
       raw.trips = _normalizeTripLegsFromSession(raw.trips, raw);
     }

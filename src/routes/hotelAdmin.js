@@ -20,6 +20,7 @@
  *   /hotel-admin/properties/:id/ancillaries — ancillary services
  *   /hotel-admin/reservations   — all reservations, mark paid, cancel
  *   /hotel-admin/commission     — ledger + invoice history
+ *   /hotel-admin/revenue/*      — revenue manager dashboard (hotelRevenueAdmin.js)
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -29,10 +30,12 @@ const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 const hotelDirectBookingService = require('../services/hotelDirectBookingService');
 
+// Mount revenue dashboard
+const revenueRouter = require('./hotelRevenueAdmin');
+router.use('/revenue', revenueRouter);
+
 // ─────────────────────────────
 // AUTH MIDDLEWARE
-// Every /hotel-admin/* route (except /login) requires a valid
-// hotel token in the cookie. Sets req.hotelGroup on success.
 // ─────────────────────────────
 async function requireHotelAuth(req, res, next) {
   const token = req.cookies?.hotel_token;
@@ -56,8 +59,6 @@ async function requireHotelAuth(req, res, next) {
 
 // ─────────────────────────────
 // SHARED HTML SHELL
-// Every page wraps in this shell — consistent nav, branding,
-// no external framework needed.
 // ─────────────────────────────
 function shell(title, body, group = null) {
   const nav = group ? `
@@ -68,6 +69,7 @@ function shell(title, body, group = null) {
       </div>
       <div class="nav-links">
         <a href="/hotel-admin/dashboard">Dashboard</a>
+        <a href="/hotel-admin/revenue">Revenue</a>
         <a href="/hotel-admin/properties">Properties</a>
         <a href="/hotel-admin/reservations">Reservations</a>
         <a href="/hotel-admin/commission">Commission</a>
@@ -148,6 +150,7 @@ function shell(title, body, group = null) {
     .modal { background: white; border-radius: var(--radius); padding: 24px; width: 90%; max-width: 520px; max-height: 90vh; overflow-y: auto; }
     .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 18px; }
     .modal-actions { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end; }
+    .hint { font-size: 11px; color: var(--muted); margin-top: 3px; }
   </style>
 </head>
 <body>
@@ -207,7 +210,7 @@ router.post('/login', async (req, res) => {
   res.cookie('hotel_token', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    maxAge: 8 * 60 * 60 * 1000, // 8 hours
+    maxAge: 8 * 60 * 60 * 1000,
     sameSite: 'lax',
   });
   res.redirect('/hotel-admin/dashboard');
@@ -223,9 +226,8 @@ router.get('/logout', (req, res) => {
 // ─────────────────────────────
 router.get('/dashboard', requireHotelAuth, async (req, res) => {
   const groupId = req.hotelGroup.id;
-  const currency = 'KES';
+  const currency = req.hotelGroup.currency || 'KES';
 
-  // Fetch summary stats
   const [{ data: reservations }, { data: pending }, { data: ledger }] = await Promise.all([
     supabase.from('hotel_reservations').select('gross_amount, status, payment_status, created_at').eq('group_id', groupId),
     supabase.from('hotel_reservations').select('id').eq('group_id', groupId).eq('payment_status', 'pending').neq('status', 'cancelled'),
@@ -237,7 +239,6 @@ router.get('/dashboard', requireHotelAuth, async (req, res) => {
   const commissionOwed = (ledger || []).filter(l => l.status === 'pending').reduce((s, l) => s + Number(l.commission_amount), 0);
   const totalBookings  = (reservations || []).filter(r => r.status !== 'cancelled').length;
 
-  // Recent reservations
   const { data: recent } = await supabase
     .from('hotel_reservations')
     .select('reservation_ref, guest_name, guest_phone, check_in, check_out, nights, gross_amount, status, payment_status, channel, created_at, hotel_properties(name)')
@@ -267,7 +268,10 @@ router.get('/dashboard', requireHotelAuth, async (req, res) => {
   res.send(shell('Dashboard', `
     <div class="page-header">
       <h1 class="page-title">Dashboard</h1>
-      <span style="font-size:12px;color:var(--muted);">Welcome back, ${req.hotelGroup.name}</span>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span style="font-size:12px;color:var(--muted);">Welcome back, ${req.hotelGroup.name}</span>
+        <a href="/hotel-admin/revenue" class="btn btn-primary btn-sm">📊 Revenue Dashboard</a>
+      </div>
     </div>
 
     <div class="stat-grid">
@@ -314,12 +318,21 @@ router.get('/properties', requireHotelAuth, async (req, res) => {
     .eq('group_id', req.hotelGroup.id)
     .order('sort_order');
 
+  const success = req.query.success;
+
   const rows = (properties || []).map(p => `
     <tr>
-      <td><strong>${p.name}</strong><br><span style="color:var(--muted);font-size:11px;">${p.slug}</span></td>
+      <td>
+        <strong>${p.name}</strong><br>
+        <span style="color:var(--muted);font-size:11px;">${p.slug}</span>
+        ${p.property_type ? `<br><span style="font-size:10px;color:var(--muted);">${p.property_type}</span>` : ''}
+      </td>
       <td>${p.destination}</td>
       <td>${p.location || '—'}</td>
       <td>${p.stars ? '⭐'.repeat(p.stars) : '—'}</td>
+      <td>
+        ${p.features?.length ? `<span style="font-size:11px;color:var(--muted);">${p.features.slice(0,3).join(', ')}${p.features.length > 3 ? '…' : ''}</span>` : '—'}
+      </td>
       <td>${p.pms_type ? `<span class="badge badge-amber">${p.pms_type}</span>` : '<span class="badge badge-navy">Supabase</span>'}</td>
       <td>${p.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>'}</td>
       <td>
@@ -335,10 +348,12 @@ router.get('/properties', requireHotelAuth, async (req, res) => {
       <h1 class="page-title">Properties</h1>
       <a href="/hotel-admin/properties/new" class="btn btn-primary">+ Add Property</a>
     </div>
+    ${success === 'created' ? '<div class="alert alert-success">✓ Property created successfully.</div>' : ''}
+    ${success === 'updated' ? '<div class="alert alert-success">✓ Property updated successfully.</div>' : ''}
     <div class="card">
       ${rows.length ? `
         <table>
-          <thead><tr><th>Name</th><th>Destination</th><th>Location</th><th>Stars</th><th>Inventory</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Name</th><th>Destination</th><th>Location</th><th>Stars</th><th>Features</th><th>Inventory</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       ` : '<div class="empty">No properties yet. Add your first property to get started.</div>'}
@@ -361,59 +376,105 @@ router.get('/properties/:id/edit', requireHotelAuth, async (req, res) => {
 
 router.post('/properties/new', requireHotelAuth, async (req, res) => {
   const b = req.body;
-  await supabase.from('hotel_properties').insert({
-    group_id: req.hotelGroup.id,
-    name: b.name, slug: b.slug, destination: b.destination,
-    location: b.location, address: b.address,
-    stars: parseInt(b.stars) || null,
-    description: b.description,
-    currency: b.currency || 'KES',
-    check_in_time: b.check_in_time || '14:00',
+  const { error } = await supabase.from('hotel_properties').insert({
+    group_id:      req.hotelGroup.id,
+    name:          b.name,
+    slug:          b.slug,
+    destination:   b.destination,
+    location:      b.location,
+    address:       b.address,
+    stars:         parseInt(b.stars) || null,
+    description:   b.description,
+    currency:      b.currency || 'KES',
+    check_in_time:  b.check_in_time || '14:00',
     check_out_time: b.check_out_time || '11:00',
-    is_active: b.is_active === 'on',
+    property_type:  b.property_type || 'hotel',
+    features:       b.features ? b.features.split(',').map(s => s.trim()).filter(Boolean) : [],
+    location_tags:  b.location_tags ? b.location_tags.split(',').map(s => s.trim()).filter(Boolean) : [],
+    is_active:      b.is_active === 'on',
   });
+  if (error) {
+    logger.error('[HOTEL ADMIN] property insert failed', { error: error.message });
+    return res.redirect('/hotel-admin/properties/new?error=' + encodeURIComponent(error.message));
+  }
   res.redirect('/hotel-admin/properties?success=created');
 });
 
 router.post('/properties/:id/edit', requireHotelAuth, async (req, res) => {
   const b = req.body;
-  await supabase.from('hotel_properties').update({
-    name: b.name, destination: b.destination,
-    location: b.location, address: b.address,
-    stars: parseInt(b.stars) || null,
-    description: b.description,
-    currency: b.currency || 'KES',
-    check_in_time: b.check_in_time || '14:00',
+  const { error } = await supabase.from('hotel_properties').update({
+    name:           b.name,
+    destination:    b.destination,
+    location:       b.location,
+    address:        b.address,
+    stars:          parseInt(b.stars) || null,
+    description:    b.description,
+    currency:       b.currency || 'KES',
+    check_in_time:  b.check_in_time || '14:00',
     check_out_time: b.check_out_time || '11:00',
-    is_active: b.is_active === 'on',
+    property_type:  b.property_type || 'hotel',
+    features:       b.features ? b.features.split(',').map(s => s.trim()).filter(Boolean) : [],
+    location_tags:  b.location_tags ? b.location_tags.split(',').map(s => s.trim()).filter(Boolean) : [],
+    is_active:      b.is_active === 'on',
   }).eq('id', req.params.id).eq('group_id', req.hotelGroup.id);
+  if (error) {
+    logger.error('[HOTEL ADMIN] property update failed', { error: error.message });
+    return res.redirect(`/hotel-admin/properties/${req.params.id}/edit?error=` + encodeURIComponent(error.message));
+  }
   res.redirect('/hotel-admin/properties?success=updated');
 });
 
 function propertyForm(p, group) {
   const v = p || {};
+  const featuresVal = Array.isArray(v.features) ? v.features.join(', ') : (v.features || '');
+  const tagsVal     = Array.isArray(v.location_tags) ? v.location_tags.join(', ') : (v.location_tags || '');
+  const errorMsg    = '';
+
   return `
     <div class="breadcrumb"><a href="/hotel-admin/properties">Properties</a> › ${p ? 'Edit' : 'New Property'}</div>
     <div class="page-header"><h1 class="page-title">${p ? 'Edit Property' : 'Add Property'}</h1></div>
     <div class="card">
       <form method="POST" action="/hotel-admin/properties/${p ? p.id + '/edit' : 'new'}">
+
         <div class="form-row">
-          <div class="form-group"><label>Property Name</label><input name="name" value="${v.name || ''}" required placeholder="Sarova Stanley"></div>
-          <div class="form-group"><label>Slug (URL-safe ID)</label><input name="slug" value="${v.slug || ''}" ${p ? 'readonly' : 'required'} placeholder="sarova-stanley"></div>
+          <div class="form-group">
+            <label>Property Name</label>
+            <input name="name" value="${v.name || ''}" required placeholder="Sarova Stanley">
+          </div>
+          <div class="form-group">
+            <label>Slug (URL-safe ID)</label>
+            <input name="slug" value="${v.slug || ''}" ${p ? 'readonly style="opacity:0.6;"' : 'required'} placeholder="sarova-stanley">
+            <span class="hint">Lowercase, hyphens only. Cannot be changed after creation.</span>
+          </div>
         </div>
+
         <div class="form-row">
-          <div class="form-group"><label>Destination City</label><input name="destination" value="${v.destination || ''}" required placeholder="Nairobi"></div>
-          <div class="form-group"><label>Stars</label>
+          <div class="form-group">
+            <label>Destination City</label>
+            <input name="destination" value="${v.destination || ''}" required placeholder="Nairobi">
+          </div>
+          <div class="form-group">
+            <label>Stars</label>
             <select name="stars">
               ${[1,2,3,4,5].map(s => `<option value="${s}" ${v.stars == s ? 'selected' : ''}>${s} Star${s>1?'s':''}</option>`).join('')}
             </select>
           </div>
         </div>
-        <div class="form-group"><label>Location / Neighbourhood</label><input name="location" value="${v.location || ''}" placeholder="Corner of Kimathi St & Kenyatta Ave"></div>
-        <div class="form-group"><label>Full Address</label><input name="address" value="${v.address || ''}" placeholder="Harry Thuku Rd, Nairobi"></div>
-        <div class="form-group"><label>Description</label><textarea name="description">${v.description || ''}</textarea></div>
+
         <div class="form-row">
-          <div class="form-group"><label>Currency</label>
+          <div class="form-group">
+            <label>Property Type</label>
+            <select name="property_type">
+              <option value="hotel"      ${v.property_type === 'hotel'      || !v.property_type ? 'selected' : ''}>Hotel</option>
+              <option value="resort"     ${v.property_type === 'resort'     ? 'selected' : ''}>Resort</option>
+              <option value="lodge"      ${v.property_type === 'lodge'      ? 'selected' : ''}>Lodge</option>
+              <option value="camp"       ${v.property_type === 'camp'       ? 'selected' : ''}>Tented Camp</option>
+              <option value="aparthotel" ${v.property_type === 'aparthotel' ? 'selected' : ''}>Aparthotel</option>
+            </select>
+            <span class="hint">Used by the AI to match guests to the right property type.</span>
+          </div>
+          <div class="form-group">
+            <label>Currency</label>
             <select name="currency">
               <option value="KES" ${v.currency === 'KES' || !v.currency ? 'selected' : ''}>KES — Kenyan Shilling</option>
               <option value="USD" ${v.currency === 'USD' ? 'selected' : ''}>USD — US Dollar</option>
@@ -423,12 +484,50 @@ function propertyForm(p, group) {
               <option value="RWF" ${v.currency === 'RWF' ? 'selected' : ''}>RWF — Rwandan Franc</option>
             </select>
           </div>
-          <div class="form-group"><label>Check-in Time</label><input name="check_in_time" value="${v.check_in_time || '14:00'}" placeholder="14:00"></div>
-          <div class="form-group"><label>Check-out Time</label><input name="check_out_time" value="${v.check_out_time || '11:00'}" placeholder="11:00"></div>
         </div>
+
+        <div class="form-group">
+          <label>Features <span style="font-weight:400;text-transform:none;">(comma-separated)</span></label>
+          <input name="features" value="${featuresVal}" placeholder="beach, pool, spa, restaurant, gym, conference, watersports">
+          <span class="hint">The AI uses these to match guests asking for specific amenities e.g. "something with a pool".</span>
+        </div>
+
+        <div class="form-group">
+          <label>Location Tags <span style="font-weight:400;text-transform:none;">(comma-separated)</span></label>
+          <input name="location_tags" value="${tagsVal}" placeholder="mombasa, coast, beachfront, ocean, cbd, airport, lakeside">
+          <span class="hint">Helps guests find you by area e.g. "near the airport" or "beachfront".</span>
+        </div>
+
+        <div class="form-group">
+          <label>Location / Neighbourhood</label>
+          <input name="location" value="${v.location || ''}" placeholder="Corner of Kimathi St & Kenyatta Ave">
+        </div>
+
+        <div class="form-group">
+          <label>Full Address</label>
+          <input name="address" value="${v.address || ''}" placeholder="Harry Thuku Rd, Nairobi">
+        </div>
+
+        <div class="form-group">
+          <label>Description</label>
+          <textarea name="description">${v.description || ''}</textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Check-in Time</label>
+            <input name="check_in_time" value="${v.check_in_time || '14:00'}" placeholder="14:00">
+          </div>
+          <div class="form-group">
+            <label>Check-out Time</label>
+            <input name="check_out_time" value="${v.check_out_time || '11:00'}" placeholder="11:00">
+          </div>
+        </div>
+
         <div class="form-group">
           <label><input type="checkbox" name="is_active" ${v.is_active !== false ? 'checked' : ''}> &nbsp;Active (visible to guests)</label>
         </div>
+
         <div style="display:flex;gap:10px;">
           <button type="submit" class="btn btn-primary">${p ? 'Save Changes' : 'Create Property'}</button>
           <a href="/hotel-admin/properties" class="btn btn-outline">Cancel</a>
@@ -453,6 +552,7 @@ router.get('/properties/:id/rooms', requireHotelAuth, async (req, res) => {
       <td>${r.bed_type || '—'}</td>
       <td>${r.view || '—'}</td>
       <td>${r.max_adults} adults, ${r.max_children} children</td>
+      <td>${r.total_rooms || 1} room${(r.total_rooms || 1) !== 1 ? 's' : ''}</td>
       <td>${r.size_sqm ? r.size_sqm + ' m²' : '—'}</td>
       <td>${r.is_active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-red">Inactive</span>'}</td>
       <td>
@@ -468,11 +568,11 @@ router.get('/properties/:id/rooms', requireHotelAuth, async (req, res) => {
       <h1 class="page-title">Room Types — ${property.name}</h1>
       <button class="btn btn-primary" onclick="openModal('add-room-modal')">+ Add Room Type</button>
     </div>
-    ${success ? '<div class="alert alert-success">Room type saved successfully.</div>' : ''}
+    ${success ? '<div class="alert alert-success">✓ Room type saved successfully.</div>' : ''}
     <div class="card">
       ${rows.length ? `
         <table>
-          <thead><tr><th>Name</th><th>Bed Type</th><th>View</th><th>Capacity</th><th>Size</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Name</th><th>Bed Type</th><th>View</th><th>Capacity</th><th>Inventory</th><th>Size</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       ` : '<div class="empty">No room types yet. Add your first room type.</div>'}
@@ -496,6 +596,13 @@ router.get('/properties/:id/rooms', requireHotelAuth, async (req, res) => {
           <div class="form-row">
             <div class="form-group"><label>Max Adults</label><input name="max_adults" type="number" value="2" min="1"></div>
             <div class="form-group"><label>Max Children</label><input name="max_children" type="number" value="2" min="0"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Total Physical Rooms of This Type</label>
+              <input name="total_rooms" type="number" value="1" min="1" placeholder="e.g. 12">
+              <span class="hint" style="font-size:10px;color:var(--muted);">Used for occupancy calculations in revenue dashboard.</span>
+            </div>
             <div class="form-group"><label>Size (m²)</label><input name="size_sqm" type="number" placeholder="32"></div>
           </div>
           <div class="modal-actions">
@@ -511,14 +618,18 @@ router.get('/properties/:id/rooms', requireHotelAuth, async (req, res) => {
 router.post('/properties/:id/rooms/new', requireHotelAuth, async (req, res) => {
   const b = req.body;
   await supabase.from('room_types').insert({
-    property_id: req.params.id,
-    name: b.name, slug: b.slug, description: b.description,
-    bed_type: b.bed_type, view: b.view,
-    max_adults: parseInt(b.max_adults) || 2,
-    max_children: parseInt(b.max_children) || 2,
+    property_id:   req.params.id,
+    name:          b.name,
+    slug:          b.slug,
+    description:   b.description,
+    bed_type:      b.bed_type,
+    view:          b.view,
+    max_adults:    parseInt(b.max_adults) || 2,
+    max_children:  parseInt(b.max_children) || 2,
     max_occupancy: (parseInt(b.max_adults) || 2) + (parseInt(b.max_children) || 2),
-    size_sqm: parseFloat(b.size_sqm) || null,
-    is_active: true,
+    total_rooms:   parseInt(b.total_rooms) || 1,
+    size_sqm:      parseFloat(b.size_sqm) || null,
+    is_active:     true,
   });
   res.redirect(`/hotel-admin/properties/${req.params.id}/rooms?success=created`);
 });
@@ -533,6 +644,7 @@ router.get('/properties/:pid/rooms/:rid/rates', requireHotelAuth, async (req, re
   const { data: rates } = await supabase.from('rate_plans').select('*').eq('room_type_id', req.params.rid).order('sort_order');
 
   const mealLabels = { room_only: 'Room Only', bed_and_breakfast: 'Bed & Breakfast', half_board: 'Half Board', full_board: 'Full Board', all_inclusive: 'All Inclusive' };
+  const currencies = ['KES','USD','EUR','TZS','UGX','RWF'];
 
   const rows = (rates || []).map(r => `
     <tr>
@@ -545,8 +657,6 @@ router.get('/properties/:pid/rooms/:rid/rates', requireHotelAuth, async (req, re
     </tr>
   `).join('');
 
-  const currencies = ['KES','USD','EUR','TZS','UGX','RWF'];
-
   res.send(shell('Rate Plans', `
     <div class="breadcrumb">
       <a href="/hotel-admin/properties">Properties</a> ›
@@ -555,7 +665,10 @@ router.get('/properties/:pid/rooms/:rid/rates', requireHotelAuth, async (req, re
     </div>
     <div class="page-header">
       <h1 class="page-title">Rate Plans — ${room.name}</h1>
-      <button class="btn btn-primary" onclick="openModal('add-rate-modal')">+ Add Rate Plan</button>
+      <div class="section-actions">
+        <a href="/hotel-admin/revenue/rates?property=${req.params.pid}" class="btn btn-outline btn-sm">📊 Manage in Revenue</a>
+        <button class="btn btn-primary" onclick="openModal('add-rate-modal')">+ Add Rate Plan</button>
+      </div>
     </div>
     <div class="card">
       ${rows.length ? `
@@ -573,7 +686,7 @@ router.get('/properties/:pid/rooms/:rid/rates', requireHotelAuth, async (req, re
           <div class="form-group"><label>Rate Plan Name</label><input name="name" required placeholder="BB Peak Season, AI Low Season..."></div>
           <div class="form-row">
             <div class="form-group"><label>Meal Plan</label>
-              <select name="meal_plan" id="meal-plan-select">
+              <select name="meal_plan">
                 <option value="room_only">Room Only</option>
                 <option value="bed_and_breakfast">Bed & Breakfast</option>
                 <option value="half_board">Half Board</option>
@@ -734,7 +847,7 @@ router.get('/properties/:id/ancillaries', requireHotelAuth, async (req, res) => 
   const { data: services } = await supabase.from('ancillary_services').select('*').eq('property_id', req.params.id).order('sort_order');
 
   const categoryIcons = { spa: '💆', transfer: '🚗', dining: '🍽️', activity: '🏄', upgrade: '⬆️', wellness: '🧘', other: '✨' };
-  const basisLabels = { flat: 'flat', per_person: 'per person', per_night: 'per night' };
+  const basisLabels   = { flat: 'flat', per_person: 'per person', per_night: 'per night' };
 
   const rows = (services || []).map(s => `
     <tr>
@@ -796,7 +909,7 @@ router.get('/properties/:id/ancillaries', requireHotelAuth, async (req, res) => 
           <div class="form-group">
             <label>Upsell Tags — who to show this to</label>
             <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;">
-              ${['honeymoon','family','business','spa','transfer','adventure','wellness'].map(tag =>
+              ${['honeymoon','family','business','spa','transfer','adventure','wellness','upgrade','romantic'].map(tag =>
                 `<label style="display:flex;align-items:center;gap:4px;font-size:12px;text-transform:none;letter-spacing:0;">
                   <input type="checkbox" name="tags" value="${tag}"> ${tag}
                 </label>`
@@ -850,6 +963,7 @@ router.get('/reservations', requireHotelAuth, async (req, res) => {
   if (status !== 'all') query = query.eq(status === 'unpaid' ? 'payment_status' : 'status', status === 'unpaid' ? 'pending' : status);
 
   const { data: reservations } = await query;
+  const currency = req.hotelGroup.currency || 'KES';
 
   const filterBtns = ['all','confirmed','paid','cancelled'].map(s =>
     `<a href="/hotel-admin/reservations?status=${s}" class="btn ${status === s ? 'btn-primary' : 'btn-outline'} btn-sm">${s.charAt(0).toUpperCase() + s.slice(1)}</a>`
@@ -861,7 +975,7 @@ router.get('/reservations', requireHotelAuth, async (req, res) => {
       <td>${r.guest_name}<br><span style="font-size:11px;color:var(--muted);">${r.guest_phone || ''}</span></td>
       <td>${r.hotel_properties?.name || ''}<br><span style="font-size:11px;color:var(--muted);">${r.room_types?.name || ''}</span></td>
       <td>${r.check_in}<br><span style="font-size:11px;color:var(--muted);">${r.nights} night(s)</span></td>
-      <td><strong>${r.currency} ${Number(r.gross_amount).toLocaleString()}</strong></td>
+      <td><strong>${r.currency || currency} ${Number(r.gross_amount).toLocaleString()}</strong></td>
       <td>${statusBadge(r.status)}</td>
       <td>${paymentBadge(r.payment_status)}</td>
       <td>
@@ -915,7 +1029,7 @@ router.get('/reservations/:ref', requireHotelAuth, async (req, res) => {
       <div class="section-actions">
         ${r.payment_status === 'pending' && r.status !== 'cancelled' ? `
           <form method="POST" action="/hotel-admin/reservations/${r.reservation_ref}/mark-paid">
-            <input name="payment_reference" placeholder="M-Pesa / card ref (optional)" class="name-input" style="display:inline;width:200px;">
+            <input name="payment_reference" placeholder="M-Pesa / card ref (optional)" style="display:inline;width:200px;">
             <button class="btn btn-green">✓ Mark as Paid</button>
           </form>` : ''}
         ${r.status !== 'cancelled' ? `
@@ -999,6 +1113,7 @@ router.get('/commission', requireHotelAuth, async (req, res) => {
 
   const pendingTotal = (ledger || []).filter(l => l.status === 'pending').reduce((s, l) => s + Number(l.commission_amount), 0);
   const currency = req.hotelGroup.currency || 'KES';
+  const commissionRate = req.hotelGroup.commission_rate || 0.05;
 
   const ledgerRows = (ledger || []).map(l => `
     <tr>
@@ -1030,7 +1145,7 @@ router.get('/commission', requireHotelAuth, async (req, res) => {
         <div class="stat-label">Commission Owed (pending invoices)</div>
       </div>
       <div class="stat">
-        <div class="stat-value">5%</div>
+        <div class="stat-value">${(commissionRate * 100).toFixed(1)}%</div>
         <div class="stat-label">Current Commission Rate</div>
       </div>
     </div>

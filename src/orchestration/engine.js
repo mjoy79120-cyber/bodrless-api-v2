@@ -292,6 +292,11 @@ class OrchestrationEngine {
   tripParams.agencyId = agencyId;
   if (tripParams.destination) tripParams.destination = resolveCountryToCity(tripParams.destination);
   if (tripParams.origin)      tripParams.origin      = resolveCountryToCity(tripParams.origin);
+
+  // Carry _tripStore forward on follow-up turns
+  if (previousParams?._tripStore) {
+    tripParams._tripStore = previousParams._tripStore;
+  }
   console.log("FOLLOW-UP DETECTED — adjusted params:", tripParams);
 
   // ── MULTI-TRIP OVERRIDE ───────────────────────────────────────────────
@@ -315,8 +320,15 @@ class OrchestrationEngine {
   // ── END MULTI-TRIP OVERRIDE ───────────────────────────────────────────
 
 } else {
-  tripParams = await parsePrompt(prompt, previousParams);
+  // Ensure _tripStore exists so parser can archive/restore trips across destinations
+  const sessionWithStore = previousParams
+    ? { ...previousParams, _tripStore: previousParams._tripStore || {} }
+    : null;
+  tripParams = await parsePrompt(prompt, sessionWithStore);
   tripParams.agencyId = agencyId;
+
+  // Carry _tripStore forward so it persists across turns
+  tripParams._tripStore = tripParams._tripStore || sessionWithStore?._tripStore || {};
   console.log("FRESH SEARCH — parsed params:", tripParams);
 }
 
