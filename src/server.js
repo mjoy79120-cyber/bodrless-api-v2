@@ -49,6 +49,8 @@ app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); },
 }));
 
+app.use(express.urlencoded({ extended: true }));
+
 app.use(cookieParser());
 app.set('trust proxy', 1);
 
