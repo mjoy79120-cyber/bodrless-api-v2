@@ -58,108 +58,351 @@ async function requireHotelAuth(req, res, next) {
 }
 
 // ─────────────────────────────
-// SHARED HTML SHELL
+// SHARED HTML SHELL — premium sidebar layout
 // ─────────────────────────────
-function shell(title, body, group = null) {
-  const nav = group ? `
-    <nav class="nav">
-      <div class="nav-brand">
-        <span class="nav-logo">🏨</span>
-        <span>${group.name}</span>
+function shell(title, body, group = null, activePage = '') {
+  const currentPath = activePage;
+
+  const sidebarLinks = group ? [
+    { href: '/hotel-admin/dashboard',    icon: '▦',  label: 'Dashboard'    },
+    { href: '/hotel-admin/revenue',      icon: '↗',  label: 'Revenue'      },
+    { href: '/hotel-admin/reservations', icon: '⊟',  label: 'Reservations' },
+    { href: '/hotel-admin/properties',   icon: '⊞',  label: 'Properties'   },
+    { href: '/hotel-admin/commission',   icon: '◈',  label: 'Commission'   },
+  ] : [];
+
+  const sidebar = group ? `
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon">B</div>
+      <div class="brand-text">
+        <div class="brand-name">${group.name}</div>
+        <div class="brand-sub">Hotel Portal</div>
       </div>
-      <div class="nav-links">
-        <a href="/hotel-admin/dashboard">Dashboard</a>
-        <a href="/hotel-admin/revenue">Revenue</a>
-        <a href="/hotel-admin/properties">Properties</a>
-        <a href="/hotel-admin/reservations">Reservations</a>
-        <a href="/hotel-admin/commission">Commission</a>
-        <a href="/hotel-admin/logout" class="nav-logout">Logout</a>
+    </div>
+    <nav class="sidebar-nav">
+      ${sidebarLinks.map(l => `
+      <a href="${l.href}" class="nav-item ${currentPath === l.href || (currentPath === '' && l.href.includes('dashboard')) ? 'active' : ''}">
+        <span class="nav-icon">${l.icon}</span>
+        <span>${l.label}</span>
+      </a>`).join('')}
+    </nav>
+    <div class="sidebar-footer">
+      <div class="sidebar-user">
+        <div class="user-avatar">${(group.name || 'H')[0].toUpperCase()}</div>
+        <div class="user-info">
+          <div class="user-name">${group.name}</div>
+          <div class="user-role">Administrator</div>
+        </div>
       </div>
-    </nav>` : '';
+      <a href="/hotel-admin/logout" class="logout-btn" title="Sign out">⏻</a>
+    </div>
+  </aside>` : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title} — Bodrless Hotels</title>
+  <title>${title} — ${group ? group.name : 'Bodrless'} Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --navy: #1E2A5E; --red: #C0392B; --white: #fff;
-      --cream: #F8F9FC; --border: #E4E8F0; --muted: #8892A4;
-      --green: #27ae60; --amber: #f0ad4e; --radius: 10px;
+      --ink:    #0F1117;
+      --dark:   #161B2E;
+      --panel:  #1E253C;
+      --rail:   #252D45;
+      --gold:   #C9A84C;
+      --gold-lt:#E8C96A;
+      --cream:  #F7F5F0;
+      --white:  #FFFFFF;
+      --border: #E8E4DC;
+      --muted:  #9099B2;
+      --green:  #22C55E;
+      --amber:  #F59E0B;
+      --red:    #EF4444;
+      --teal:   #0EA5E9;
+      --radius: 12px;
+      --sidebar-w: 220px;
     }
-    body { font-family: Arial, sans-serif; background: var(--cream); color: var(--navy); min-height: 100vh; }
-    .nav { background: var(--navy); padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; border-bottom: 3px solid var(--red); }
-    .nav-brand { display: flex; align-items: center; gap: 10px; color: white; font-weight: 700; font-size: 15px; }
-    .nav-logo { font-size: 20px; }
-    .nav-links { display: flex; align-items: center; gap: 20px; }
-    .nav-links a { color: rgba(255,255,255,0.8); text-decoration: none; font-size: 13px; }
-    .nav-links a:hover { color: white; }
-    .nav-logout { background: var(--red) !important; color: white !important; padding: 6px 14px; border-radius: 20px; font-size: 12px !important; }
-    .page { max-width: 1100px; margin: 0 auto; padding: 28px 20px; }
-    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-    .page-title { font-size: 22px; font-weight: 700; color: var(--navy); }
-    .card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
-    .card-title { font-size: 14px; font-weight: 700; color: var(--navy); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
-    .stat { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; border-top: 3px solid var(--navy); }
-    .stat-value { font-size: 26px; font-weight: 700; color: var(--navy); }
-    .stat-label { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat.green { border-top-color: var(--green); }
-    .stat.red   { border-top-color: var(--red); }
-    .stat.amber { border-top-color: var(--amber); }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--cream);
+      color: var(--ink);
+      min-height: 100vh;
+      display: flex;
+    }
+
+    /* ── SIDEBAR ── */
+    .sidebar {
+      width: var(--sidebar-w);
+      min-height: 100vh;
+      background: var(--dark);
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      z-index: 100;
+    }
+    .sidebar-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 24px 20px 20px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .brand-icon {
+      width: 36px; height: 36px;
+      background: var(--gold);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Playfair Display', serif;
+      font-size: 18px; font-weight: 600;
+      color: var(--dark);
+      flex-shrink: 0;
+    }
+    .brand-name { font-size: 13px; font-weight: 600; color: white; line-height: 1.2; }
+    .brand-sub  { font-size: 10px; color: var(--muted); letter-spacing: 0.5px; margin-top: 2px; }
+    .sidebar-nav { flex: 1; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px; font-weight: 500;
+      color: var(--muted);
+      transition: all 0.15s;
+    }
+    .nav-item:hover { background: rgba(255,255,255,0.06); color: white; }
+    .nav-item.active { background: rgba(201,168,76,0.15); color: var(--gold); }
+    .nav-icon { font-size: 15px; width: 18px; text-align: center; }
+    .sidebar-footer {
+      padding: 16px 12px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .user-avatar {
+      width: 32px; height: 32px;
+      background: var(--panel);
+      border: 1.5px solid var(--gold);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700; color: var(--gold);
+      flex-shrink: 0;
+    }
+    .user-info { flex: 1; min-width: 0; }
+    .user-name { font-size: 12px; font-weight: 600; color: white; truncate: ellipsis; }
+    .user-role { font-size: 10px; color: var(--muted); }
+    .logout-btn {
+      color: var(--muted); text-decoration: none;
+      font-size: 16px; padding: 4px;
+      transition: color 0.15s;
+    }
+    .logout-btn:hover { color: var(--red); }
+
+    /* ── MAIN CONTENT ── */
+    .main {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .topbar {
+      background: white;
+      border-bottom: 1px solid var(--border);
+      padding: 0 32px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky; top: 0; z-index: 50;
+    }
+    .topbar-title { font-size: 15px; font-weight: 600; color: var(--ink); }
+    .topbar-right { display: flex; align-items: center; gap: 12px; }
+    .topbar-date { font-size: 12px; color: var(--muted); }
+    .page { padding: 28px 32px; flex: 1; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+    .page-title { font-size: 20px; font-weight: 700; color: var(--ink); }
+
+    /* ── STAT CARDS ── */
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 22px;
+      position: relative;
+      overflow: hidden;
+    }
+    .stat::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--dark);
+    }
+    .stat.gold::before  { background: var(--gold); }
+    .stat.green::before { background: var(--green); }
+    .stat.amber::before { background: var(--amber); }
+    .stat.red::before   { background: var(--red); }
+    .stat.teal::before  { background: var(--teal); }
+    .stat-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 8px;
+    }
+    .stat-value { font-size: 28px; font-weight: 700; color: var(--ink); line-height: 1; }
+    .stat-sub   { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+    /* ── CARDS ── */
+    .card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+    .card-body { padding: 20px; }
+
+    /* ── TABLES ── */
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th { text-align: left; padding: 10px 12px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid var(--border); }
-    td { padding: 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: var(--cream); }
-    .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
-    .badge-green  { background: #E8F8EE; color: #1B7A3D; }
-    .badge-amber  { background: #FFF3E0; color: #B05A00; }
-    .badge-red    { background: #FDECEA; color: var(--red); }
-    .badge-navy   { background: #EEF1F8; color: var(--navy); }
-    .btn { display: inline-block; padding: 9px 18px; border-radius: 20px; border: none; cursor: pointer; font-size: 12px; font-weight: 700; text-decoration: none; }
-    .btn-primary   { background: var(--navy); color: white; }
-    .btn-red       { background: var(--red); color: white; }
-    .btn-green     { background: var(--green); color: white; }
-    .btn-outline   { background: white; color: var(--navy); border: 1.5px solid var(--border); }
-    .btn-sm        { padding: 5px 12px; font-size: 11px; }
-    .btn:hover     { opacity: 0.88; }
-    form { display: flex; flex-direction: column; gap: 14px; }
-    .form-group { display: flex; flex-direction: column; gap: 5px; }
-    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-    label { font-size: 11px; font-weight: 700; color: var(--navy); text-transform: uppercase; letter-spacing: 0.4px; }
-    input, select, textarea {
-      padding: 10px 12px; border: 1.5px solid var(--border); border-radius: 8px;
-      font-size: 13px; color: var(--navy); background: var(--cream); outline: none;
+    th {
+      text-align: left;
+      padding: 11px 16px;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      background: #FAFAF8;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
     }
-    input:focus, select:focus, textarea:focus { border-color: var(--navy); }
+    td { padding: 13px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: #FAFAF8; }
+    .td-primary { font-weight: 600; color: var(--ink); font-size: 13px; }
+    .td-sub     { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* ── BADGES ── */
+    .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+    .badge::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.7; }
+    .badge-green { background: #DCFCE7; color: #16A34A; }
+    .badge-amber { background: #FEF3C7; color: #D97706; }
+    .badge-red   { background: #FEE2E2; color: #DC2626; }
+    .badge-navy  { background: #EEF2FF; color: #4338CA; }
+    .badge-muted { background: #F1F5F9; color: #64748B; }
+
+    /* ── BUTTONS ── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 16px; border-radius: 8px; border: none;
+      cursor: pointer; font-size: 12px; font-weight: 600;
+      text-decoration: none; font-family: 'Inter', sans-serif;
+      transition: all 0.15s; white-space: nowrap;
+    }
+    .btn-primary { background: var(--dark); color: white; }
+    .btn-primary:hover { background: var(--panel); }
+    .btn-gold    { background: var(--gold); color: var(--dark); }
+    .btn-gold:hover { background: var(--gold-lt); }
+    .btn-green   { background: #22C55E; color: white; }
+    .btn-green:hover { background: #16A34A; }
+    .btn-red     { background: var(--red); color: white; }
+    .btn-red:hover { background: #DC2626; }
+    .btn-outline { background: white; color: var(--ink); border: 1.5px solid var(--border); }
+    .btn-outline:hover { border-color: #CBD5E1; background: #F8FAFC; }
+    .btn-sm      { padding: 5px 12px; font-size: 11px; border-radius: 6px; }
+
+    /* ── FORMS ── */
+    form { display: flex; flex-direction: column; gap: 16px; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    label { font-size: 11px; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: 0.5px; }
+    input, select, textarea {
+      padding: 10px 13px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--ink);
+      background: white;
+      outline: none;
+      font-family: 'Inter', sans-serif;
+      transition: border-color 0.15s;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(201,168,76,0.1); }
     textarea { min-height: 80px; resize: vertical; }
-    .alert { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; }
-    .alert-success { background: #E8F8EE; color: #1B7A3D; border: 1px solid #B2DFCA; }
-    .alert-error   { background: #FDECEA; color: var(--red); border: 1px solid #F5C6C2; }
-    .empty { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
-    .breadcrumb { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
-    .breadcrumb a { color: var(--navy); text-decoration: none; }
-    .breadcrumb a:hover { text-decoration: underline; }
-    .section-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
-    .modal-overlay.open { display: flex; }
-    .modal { background: white; border-radius: var(--radius); padding: 24px; width: 90%; max-width: 520px; max-height: 90vh; overflow-y: auto; }
-    .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 18px; }
-    .modal-actions { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end; }
     .hint { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+    /* ── ALERTS ── */
+    .alert { padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+    .alert-success { background: #DCFCE7; color: #15803D; border: 1px solid #BBF7D0; }
+    .alert-error   { background: #FEE2E2; color: #B91C1C; border: 1px solid #FECACA; }
+
+    /* ── MISC ── */
+    .empty { text-align: center; padding: 48px; color: var(--muted); font-size: 13px; }
+    .breadcrumb { font-size: 12px; color: var(--muted); margin-bottom: 16px; display: flex; align-items: center; gap: 6px; }
+    .breadcrumb a { color: var(--ink); text-decoration: none; }
+    .breadcrumb a:hover { color: var(--gold); }
+    .breadcrumb-sep { color: var(--border); }
+    .section-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* ── MODALS ── */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(15,17,23,0.6); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: white; border-radius: 16px; padding: 28px; width: 90%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 64px rgba(0,0,0,0.18); }
+    .modal-title { font-size: 17px; font-weight: 700; margin-bottom: 20px; }
+    .modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end; }
+
+    /* ── NO SIDEBAR (login) ── */
+    body.no-sidebar { display: block; }
+    body.no-sidebar .main { margin-left: 0; }
+
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .main { margin-left: 0; }
+      .form-row { grid-template-columns: 1fr; }
+      .page { padding: 20px 16px; }
+    }
   </style>
 </head>
-<body>
-${nav}
-<div class="page">
-${body}
+<body${!group ? ' class="no-sidebar"' : ''}>
+${sidebar}
+<div class="main">
+  ${group ? `
+  <div class="topbar">
+    <span class="topbar-title">${title}</span>
+    <div class="topbar-right">
+      <span class="topbar-date">${new Date().toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric' })}</span>
+      <a href="/hotel-admin/revenue" class="btn btn-gold btn-sm">↗ Revenue</a>
+    </div>
+  </div>` : ''}
+  <div class="page">
+  ${body}
+  </div>
 </div>
 <script>
-function openModal(id) { document.getElementById(id).classList.add('open'); }
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 </script>
 </body>
@@ -171,28 +414,165 @@ function closeModal(id) { document.getElementById(id).classList.remove('open'); 
 // ─────────────────────────────
 router.get('/login', (req, res) => {
   const error = req.query.error;
-  res.send(shell('Login', `
-    <div style="max-width:400px;margin:80px auto;">
-      <div style="text-align:center;margin-bottom:28px;">
-        <div style="font-size:40px;">🏨</div>
-        <h2 style="color:var(--navy);margin-top:8px;">Bodrless Hotel Portal</h2>
-        <p style="color:var(--muted);font-size:13px;margin-top:6px;">Sign in with your hotel access key</p>
-      </div>
-      ${error ? '<div class="alert alert-error">Invalid access key. Please try again or contact Bodrless support.</div>' : ''}
-      <div class="card">
-        <form method="POST" action="/hotel-admin/login">
-          <div class="form-group">
-            <label>Hotel Access Key</label>
-            <input type="password" name="token" placeholder="Your hotel access key" required autofocus>
-          </div>
-          <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;">Sign In</button>
-        </form>
-      </div>
-      <p style="text-align:center;font-size:11px;color:var(--muted);margin-top:16px;">
-        Need access? Contact <a href="mailto:support@bodrless.com" style="color:var(--navy);">support@bodrless.com</a>
-      </p>
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In — Bodrless Hotel Portal</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --gold: #C9A84C; --dark: #161B2E; --ink: #0F1117; --border: #E8E4DC; --muted: #9099B2; --red: #EF4444; }
+    body {
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      background: #F7F5F0;
+    }
+    .login-left {
+      background: var(--dark);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 48px;
+      position: relative;
+      overflow: hidden;
+    }
+    .login-left::before {
+      content: '';
+      position: absolute;
+      bottom: -80px; right: -80px;
+      width: 320px; height: 320px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(201,168,76,0.18) 0%, transparent 70%);
+    }
+    .login-logo {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .logo-mark {
+      width: 40px; height: 40px;
+      background: var(--gold);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Playfair Display', serif;
+      font-size: 20px; color: var(--dark); font-weight: 600;
+    }
+    .logo-text { font-size: 18px; font-weight: 700; color: white; letter-spacing: -0.3px; }
+    .login-headline {
+      position: relative; z-index: 1;
+    }
+    .login-headline h1 {
+      font-family: 'Playfair Display', serif;
+      font-size: 42px;
+      color: white;
+      line-height: 1.15;
+      margin-bottom: 16px;
+    }
+    .login-headline p { font-size: 15px; color: rgba(255,255,255,0.5); line-height: 1.7; }
+    .login-hotels {
+      display: flex; gap: 8px; flex-wrap: wrap;
+      position: relative; z-index: 1;
+    }
+    .hotel-chip {
+      padding: 5px 12px;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 20px;
+      font-size: 11px; color: rgba(255,255,255,0.5);
+    }
+    .login-right {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px;
+    }
+    .login-form-wrap { width: 100%; max-width: 360px; }
+    .login-form-wrap h2 { font-size: 22px; font-weight: 700; color: var(--ink); margin-bottom: 6px; }
+    .login-form-wrap p  { font-size: 14px; color: var(--muted); margin-bottom: 32px; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+    label { font-size: 11px; font-weight: 600; color: #374151; text-transform: uppercase; letter-spacing: 0.5px; }
+    input {
+      padding: 12px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      font-size: 14px;
+      color: var(--ink);
+      background: white;
+      outline: none;
+      font-family: 'Inter', sans-serif;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      width: 100%;
+    }
+    input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(201,168,76,0.12); }
+    .sign-in-btn {
+      width: 100%;
+      padding: 13px;
+      background: var(--dark);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-top: 8px;
+    }
+    .sign-in-btn:hover { background: #252D45; }
+    .error-msg {
+      background: #FEE2E2;
+      color: #B91C1C;
+      border: 1px solid #FECACA;
+      border-radius: 8px;
+      padding: 11px 14px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .support-link { font-size: 12px; color: var(--muted); text-align: center; margin-top: 24px; }
+    .support-link a { color: var(--ink); }
+    @media (max-width: 700px) {
+      body { grid-template-columns: 1fr; }
+      .login-left { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-left">
+    <div class="login-logo">
+      <div class="logo-mark">B</div>
+      <span class="logo-text">Bodrless</span>
     </div>
-  `));
+    <div class="login-headline">
+      <h1>Your hotel,<br>your portal.</h1>
+      <p>Manage reservations, rates, and revenue<br>across all your properties in one place.</p>
+    </div>
+    <div class="login-hotels">
+      <span class="hotel-chip">Sarova Hotels</span>
+      <span class="hotel-chip">PrideInn Hotels</span>
+      <span class="hotel-chip">Serena Hotels</span>
+    </div>
+  </div>
+  <div class="login-right">
+    <div class="login-form-wrap">
+      <h2>Welcome back</h2>
+      <p>Sign in with your hotel access key</p>
+      ${error ? '<div class="error-msg">⚠ Invalid access key. Please try again or contact support.</div>' : ''}
+      <form method="POST" action="/hotel-admin/login">
+        <div class="form-group">
+          <label>Hotel Access Key</label>
+          <input type="password" name="token" placeholder="Enter your access key" required autofocus>
+        </div>
+        <button type="submit" class="sign-in-btn">Sign in →</button>
+      </form>
+      <div class="support-link">
+        Need access? <a href="mailto:support@bodrless.com">support@bodrless.com</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`);
 });
 
 router.post('/login', async (req, res) => {
@@ -248,64 +628,79 @@ router.get('/dashboard', requireHotelAuth, async (req, res) => {
 
   const recentRows = (recent || []).map(r => `
     <tr>
-      <td><strong>${r.reservation_ref}</strong></td>
-      <td>${r.guest_name}<br><span style="color:var(--muted);font-size:11px;">${r.guest_phone || ''}</span></td>
-      <td>${r.hotel_properties?.name || ''}</td>
-      <td>${r.check_in} → ${r.check_out}<br><span style="color:var(--muted);font-size:11px;">${r.nights} night(s)</span></td>
-      <td><strong>${currency} ${Number(r.gross_amount).toLocaleString()}</strong></td>
+      <td><span class="td-primary">${r.reservation_ref}</span></td>
+      <td>
+        <div class="td-primary">${r.guest_name}</div>
+        <div class="td-sub">${r.guest_phone || ''}</div>
+      </td>
+      <td><div class="td-primary">${r.hotel_properties?.name || ''}</div></td>
+      <td>
+        <div class="td-primary">${r.check_in} → ${r.check_out}</div>
+        <div class="td-sub">${r.nights} night${r.nights !== 1 ? 's' : ''}</div>
+      </td>
+      <td><span class="td-primary">${currency} ${Number(r.gross_amount).toLocaleString()}</span></td>
       <td>${statusBadge(r.status)}</td>
       <td>${paymentBadge(r.payment_status)}</td>
       <td>
-        <a href="/hotel-admin/reservations/${r.reservation_ref}" class="btn btn-outline btn-sm">View</a>
-        ${r.payment_status === 'pending' && r.status !== 'cancelled' ? `
-          <form method="POST" action="/hotel-admin/reservations/${r.reservation_ref}/mark-paid" style="display:inline;">
-            <button class="btn btn-green btn-sm">Mark Paid</button>
-          </form>` : ''}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <a href="/hotel-admin/reservations/${r.reservation_ref}" class="btn btn-outline btn-sm">View</a>
+          ${r.payment_status === 'pending' && r.status !== 'cancelled' ? `
+            <form method="POST" action="/hotel-admin/reservations/${r.reservation_ref}/mark-paid" style="display:inline;">
+              <button class="btn btn-green btn-sm">Mark Paid</button>
+            </form>` : ''}
+        </div>
       </td>
     </tr>
   `).join('');
 
   res.send(shell('Dashboard', `
     <div class="page-header">
-      <h1 class="page-title">Dashboard</h1>
-      <div style="display:flex;align-items:center;gap:12px;">
-        <span style="font-size:12px;color:var(--muted);">Welcome back, ${req.hotelGroup.name}</span>
-        <a href="/hotel-admin/revenue" class="btn btn-primary btn-sm">📊 Revenue Dashboard</a>
+      <div>
+        <div class="page-title">Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'} 👋</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:4px;">Here's what's happening at ${req.hotelGroup.name}</div>
       </div>
+      <a href="/hotel-admin/reservations" class="btn btn-primary">View all reservations</a>
     </div>
 
     <div class="stat-grid">
-      <div class="stat">
-        <div class="stat-value">${totalBookings}</div>
+      <div class="stat gold">
         <div class="stat-label">Total Bookings</div>
+        <div class="stat-value">${totalBookings}</div>
+        <div class="stat-sub">All time, excl. cancelled</div>
       </div>
       <div class="stat green">
+        <div class="stat-label">Revenue Collected</div>
         <div class="stat-value">${currency} ${Math.round(totalRevenue).toLocaleString()}</div>
-        <div class="stat-label">Total Revenue</div>
+        <div class="stat-sub">Paid reservations only</div>
       </div>
       <div class="stat amber">
-        <div class="stat-value">${pendingCount}</div>
         <div class="stat-label">Awaiting Payment</div>
+        <div class="stat-value">${pendingCount}</div>
+        <div class="stat-sub">Confirmed but unpaid</div>
       </div>
       <div class="stat red">
-        <div class="stat-value">${currency} ${Math.round(commissionOwed).toLocaleString()}</div>
         <div class="stat-label">Commission Owed</div>
+        <div class="stat-value">${currency} ${Math.round(commissionOwed).toLocaleString()}</div>
+        <div class="stat-sub">Pending invoices</div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title">Recent Reservations</div>
+      <div class="card-header">
+        <span class="card-title">Recent Reservations</span>
+        <a href="/hotel-admin/reservations" class="btn btn-outline btn-sm">View all</a>
+      </div>
       ${recentRows.length ? `
         <table>
           <thead><tr>
             <th>Ref</th><th>Guest</th><th>Property</th>
-            <th>Dates</th><th>Amount</th><th>Status</th><th>Payment</th><th>Action</th>
+            <th>Dates</th><th>Amount</th><th>Status</th><th>Payment</th><th>Actions</th>
           </tr></thead>
           <tbody>${recentRows}</tbody>
         </table>
-      ` : '<div class="empty">No reservations yet.</div>'}
+      ` : '<div class="empty">No reservations yet. Bookings made via your widget will appear here.</div>'}
     </div>
-  `, req.hotelGroup));
+  `, req.hotelGroup, '/hotel-admin/dashboard'));
 });
 
 // ─────────────────────────────
