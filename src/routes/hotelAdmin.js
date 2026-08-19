@@ -604,14 +604,26 @@ router.get('/logout', (req, res) => {
 // ─────────────────────────────
 // DASHBOARD
 // ─────────────────────────────
+const hotelTracking = (() => {
+  try { return require('./hotelTracking'); }
+  catch(e) { return { getLiveStats: async () => ({ activePlanners:0, activeDetails:[], todayVisits:0, weekVisits:0, todaySessions:0, convRate:0, hourlyVisits:Array(24).fill(0) }) }; }
+})();
+
 router.get('/dashboard', requireHotelAuth, async (req, res) => {
-  const groupId = req.hotelGroup.id;
+  const groupId  = req.hotelGroup.id;
+  const groupSlug = req.hotelGroup.slug;
   const currency = req.hotelGroup.currency || 'KES';
 
-  const [{ data: reservations }, { data: pending }, { data: ledger }] = await Promise.all([
+  const [
+    { data: reservations },
+    { data: pending },
+    { data: ledger },
+    liveStats,
+  ] = await Promise.all([
     supabase.from('hotel_reservations').select('gross_amount, status, payment_status, created_at').eq('group_id', groupId),
     supabase.from('hotel_reservations').select('id').eq('group_id', groupId).eq('payment_status', 'pending').neq('status', 'cancelled'),
     supabase.from('commission_ledger').select('commission_amount, status').eq('group_id', groupId),
+    hotelTracking.getLiveStats(groupSlug),
   ]);
 
   const totalRevenue   = (reservations || []).filter(r => r.payment_status === 'paid').reduce((s, r) => s + Number(r.gross_amount), 0);
@@ -625,6 +637,27 @@ router.get('/dashboard', requireHotelAuth, async (req, res) => {
     .eq('group_id', groupId)
     .order('created_at', { ascending: false })
     .limit(10);
+
+  // ── Live stats HTML ──────────────────────────────────────
+  const maxHourly   = Math.max(...liveStats.hourlyVisits, 1);
+  const sparkBars   = liveStats.hourlyVisits.map((v, h) => {
+    const pct = Math.round((v / maxHourly) * 100);
+    const isNow = h === new Date().getHours();
+    return `<div title="${h}:00 — ${v} visit${v!==1?'s':''}" style="flex:1;height:${Math.max(pct,4)}%;background:${isNow?'var(--gold)':'rgba(201,168,76,0.3)'};border-radius:2px 2px 0 0;transition:height 0.3s;"></div>`;
+  }).join('');
+
+  const activePlannerRows = liveStats.activeDetails.length
+    ? liveStats.activeDetails.map(d => {
+        const ago = Math.round((Date.now() - new Date(d.lastSeen)) / 60000);
+        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);">
+          <div style="width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0;box-shadow:0 0 0 3px rgba(34,197,94,0.2);"></div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:12px;font-weight:500;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.intent || 'Browsing…'}</div>
+            <div style="font-size:10px;color:var(--muted);">${ago === 0 ? 'Just now' : ago + ' min ago'}</div>
+          </div>
+        </div>`;
+      }).join('')
+    : `<div style="text-align:center;padding:20px 0;color:var(--muted);font-size:12px;">No active planners right now</div>`;
 
   const recentRows = (recent || []).map(r => `
     <tr>
