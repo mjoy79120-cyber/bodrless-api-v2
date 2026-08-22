@@ -6,7 +6,7 @@
  *
  * Handles two distinct package shapes:
  *   - Single-destination packages (pkg.transport/hotel/transfers
- *     as flat fields) -> _sendPackageCard (unchanged)
+ *     as flat fields) -> _sendPackageCard
  *   - Multi-destination itineraries (pkg.isMultiDestination,
  *     pkg.legs[], pkg.returnTransport) -> _sendItineraryCard
  *
@@ -24,27 +24,143 @@
  *   is the last message sent and therefore sits at the bottom
  *   of the screen — right where the user's thumb already is.
  *   Display numbers are preserved correctly (i+1).
+ *
+ * VISA INTEL:
+ *   Visa notes are pulled from visaIntel.js and appended to
+ *   package cards when the origin→destination corridor is known.
+ *   Falls back to a generic advisory for unknown corridors.
  * ─────────────────────────────────────────────────────────────
  */
 
 const axios = require('axios');
 const { logger } = require('../utils/logger');
+const { getVisaNote } = require('./visaIntel');
 
 // v21.0 required for BSUID send support (v18.0 does not support it)
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0';
 
+// ─────────────────────────────────────────────
+// SAFE HELPERS — used throughout to avoid
+// crashes when engine sends partial/null data
+// ─────────────────────────────────────────────
+
+/**
+ * Safe number formatter. Returns 'TBC' if value is missing/NaN.
+ * @param {*} value
+ * @param {string} [currency='KES']
+ */
+function _fmtPrice(value, currency = 'KES') {
+  const n = Number(value);
+  if (value == null || isNaN(n)) return 'TBC';
+  return `${currency} ${n.toLocaleString()}`;
+}
+
+/**
+ * Safe integer — returns fallback if value is missing/NaN.
+ * @param {*} value
+ * @param {*} fallback
+ */
+function _safeInt(value, fallback = 0) {
+  const n = parseInt(value, 10);
+  return isNaN(n) ? fallback : n;
+}
+
+/**
+ * Safe string — trims and returns fallback if falsy.
+ * @param {*} value
+ * @param {string} [fallback='TBC']
+ */
+function _safeStr(value, fallback = 'TBC') {
+  if (value == null) return fallback;
+  const s = String(value).trim();
+  return s.length > 0 ? s : fallback;
+}
+
+/**
+ * Clamp a string to maxLen chars (WhatsApp field limits).
+ * @param {string} str
+ * @param {number} maxLen
+ */
+function _clamp(str, maxLen) {
+  const s = _safeStr(str, '');
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
+}
+
+/**
+ * Build a ⭐ star string, safely clamped to 0–5.
+ * @param {*} stars
+ */
+function _starStr(stars) {
+  const n = Math.min(Math.max(_safeInt(stars, 0), 0), 5);
+  return n > 0 ? '⭐'.repeat(n) : '';
+}
+
+/**
+ * Format an ISO datetime to HH:MM (en-KE locale).
+ * Accepts raw "HH:MM" strings and passes them through.
+ * @param {string} value
+ */
+function _formatTime(value) {
+  if (!value) return 'TBC';
+  if (/^\d{1,2}:\d{2}$/.test(String(value))) return value;
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return _safeStr(value, 'TBC');
+  return date.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * Format a schedule time value (SGR uses raw "HH:MM" strings).
+ * @param {string} value
+ */
+function _formatScheduleTime(value) {
+  if (!value) return 'TBC';
+  if (/^\d{1,2}:\d{2}$/.test(String(value))) return value;
+  return _formatTime(value);
+}
+
+/**
+ * Title-case a string.
+ * @param {string} str
+ */
+function _titleCase(str) {
+  if (!str) return '';
+  return String(str).replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/**
+ * Visa note line for a package, derived from summary.route or
+ * explicit origin/destination fields. Always returns a string
+ * (generic advisory if corridor not found).
+ * @param {Object} summary  — pkg.summary
+ * @param {Object} [transport] — outbound transport object
+ */
+function _visaLine(summary = {}, transport = null) {
+  // Try to extract origin + destination from multiple sources
+  const origin      = _safeStr(transport?.origin || summary?.origin || '', '');
+  const destination = _safeStr(transport?.destination || summary?.destination || '', '');
+
+  if (!origin || !destination) return null;
+
+  const note = getVisaNote(origin, destination);
+  if (note) return `📋 *Visa:* ${note}`;
+
+  // Unknown corridor — surface a generic advisory rather than silence
+  return `📋 *Visa:* Requirements may apply — verify before travel`;
+}
+
 class WhatsAppService {
 
-  /**
-   * Send a plain text message
-   */
+  // ─────────────────────────────────────────────
+  // SEND TEXT
+  // ─────────────────────────────────────────────
   async sendText(phoneNumberId, to, text) {
+    if (!text) return null;
     return this._send(phoneNumberId, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to,
       type: 'text',
-      text: { body: text },
+      text: { body: _clamp(text, 4096) },
     });
   }
 
@@ -61,7 +177,7 @@ class WhatsAppService {
         type: 'image',
         image: {
           link: imageUrl,
-          ...(caption ? { caption: caption.slice(0, 1024) } : {}),
+          ...(caption ? { caption: _clamp(caption, 1024) } : {}),
         },
       });
     } catch (err) {
@@ -72,11 +188,11 @@ class WhatsAppService {
 
   // ─────────────────────────────────────────────
   // SEND REPLY BUTTONS
-  // Up to 3 quick-reply buttons. Title hard-limited to 20 chars
-  // by WhatsApp — enforced here so long titles don't get rejected.
+  // Up to 3 quick-reply buttons. Title hard-limited to 20 chars.
   // ─────────────────────────────────────────────
   async sendButtons(phoneNumberId, to, bodyText, buttons) {
     if (!Array.isArray(buttons) || buttons.length === 0) return null;
+    if (!bodyText) return null;
     try {
       return await this._send(phoneNumberId, {
         messaging_product: 'whatsapp',
@@ -85,11 +201,14 @@ class WhatsAppService {
         type: 'interactive',
         interactive: {
           type: 'button',
-          body: { text: String(bodyText || '').slice(0, 1024) },
+          body: { text: _clamp(bodyText, 1024) },
           action: {
             buttons: buttons.slice(0, 3).map(b => ({
               type: 'reply',
-              reply: { id: b.id, title: String(b.title || '').slice(0, 20) },
+              reply: {
+                id:    _clamp(b.id    || '', 256),
+                title: _clamp(b.title || '', 20),
+              },
             })),
           },
         },
@@ -102,11 +221,11 @@ class WhatsAppService {
 
   // ─────────────────────────────────────────────
   // SEND LIST MESSAGE
-  // Up to 10 tappable options in a scrollable menu.
-  // Title max 24 chars, description max 72 chars.
+  // Up to 10 tappable options. Title max 24 chars, desc max 72.
   // ─────────────────────────────────────────────
   async sendList(phoneNumberId, to, bodyText, buttonLabel, options) {
     if (!Array.isArray(options) || options.length === 0) return null;
+    if (!bodyText) return null;
     try {
       return await this._send(phoneNumberId, {
         messaging_product: 'whatsapp',
@@ -115,14 +234,14 @@ class WhatsAppService {
         type: 'interactive',
         interactive: {
           type: 'list',
-          body: { text: String(bodyText || '').slice(0, 1024) },
+          body: { text: _clamp(bodyText, 1024) },
           action: {
-            button: String(buttonLabel || 'Select').slice(0, 20),
+            button: _clamp(buttonLabel || 'Select', 20),
             sections: [{
               rows: options.slice(0, 10).map(o => ({
-                id:          o.id,
-                title:       String(o.title || '').slice(0, 24),
-                ...(o.description ? { description: String(o.description).slice(0, 72) } : {}),
+                id:    _safeStr(o.id, ''),
+                title: _clamp(o.title || '', 24),
+                ...(o.description ? { description: _clamp(o.description, 72) } : {}),
               })),
             }],
           },
@@ -136,24 +255,9 @@ class WhatsAppService {
 
   // ─────────────────────────────────────────────
   // SEND PACKAGES
-  // ─────────────────────────────────────────────
-  // Packages are sent in REVERSE ORDER (highest index first) so
-  // that Option 1 is the LAST message delivered and therefore
-  // appears at the BOTTOM of the traveler's screen — right where
-  // the traveler's thumb is resting. They scroll UP to compare 2/3/4.
   //
-  // Display numbers (i+1) are preserved correctly regardless of
-  // send order — the loop uses the original index.
-  //
-  // The intro "I found N options" header is still sent FIRST so
-  // it appears above all cards as context, then the cards stack
-  // below it in reverse, then the "reply with option number"
-  // footer arrives last — just before Option 1 — so the reading
-  // order from bottom is: Option 1 → footer → Option 2 → ...
-  //
-  // Wait — footer must arrive AFTER Option 1 (after the last
-  // card) so it sits at the very bottom for easy tapping.
-  // Send order: header → cards reversed (4,3,2,1) → footer.
+  // Send order: header → cards reversed (N…1) → footer.
+  // Option 1 lands at the bottom of the screen (thumb position).
   // ─────────────────────────────────────────────
   async sendPackages(phoneNumberId, to, packages, { legHeader = null } = {}) {
     if (!packages || packages.length === 0) return;
@@ -172,14 +276,40 @@ class WhatsAppService {
     }
 
     // ── Cards in reverse order ───────────────────────────────
-    for (let i = 0; i < packages.length; i++) {
-      const pkg = packages[i];
-      if (pkg.isMultiDestination) {
-        await this._sendItineraryCard(phoneNumberId, to, pkg);
-      } else {
-        await this._sendPackageCard(phoneNumberId, to, pkg, i + 1);
+    const reversed = [...packages].reverse();
+    for (let ri = 0; ri < reversed.length; ri++) {
+      const pkg = reversed[ri];
+      // Original display index (1-based) relative to the un-reversed list
+      const displayIndex = packages.length - ri;
+      try {
+        if (pkg.isMultiDestination) {
+          await this._sendItineraryCard(phoneNumberId, to, pkg);
+        } else {
+          await this._sendPackageCard(phoneNumberId, to, pkg, displayIndex);
+        }
+      } catch (cardErr) {
+        // Don't let one broken card kill the whole batch
+        logger.error('Package card render error — skipping card', {
+          displayIndex,
+          error: cardErr.message,
+          pkg: JSON.stringify(pkg).slice(0, 200),
+        });
+        await this.sendText(phoneNumberId, to,
+          `⚠️ Option ${displayIndex} could not be displayed — please try again or contact support.`
+        );
       }
       await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // ── Footer ───────────────────────────────────────────────
+    if (!isItinerary && packages.length > 1) {
+      await this.sendText(phoneNumberId, to,
+        `Reply with *1*–*${packages.length}* to choose an option, or ask me to filter by price, airline, or hotel.`
+      );
+    } else if (!isItinerary) {
+      await this.sendText(phoneNumberId, to,
+        `Reply *1* to go ahead with this option, or tell me if you'd like changes.`
+      );
     }
   }
 
@@ -188,49 +318,126 @@ class WhatsAppService {
   // ─────────────────────────────────────────────
   async sendLegPackages(phoneNumberId, to, { leg, legIndex, totalLegs, runningTotalKES }) {
     const legNum     = legIndex + 1;
-    const currency   = 'KES';
     const hasRunning = runningTotalKES > 0;
 
     const progressLine = `*Leg ${legNum} of ${totalLegs}*`;
     const runningLine  = hasRunning
-      ? `💰 Running total so far: *${currency} ${runningTotalKES.toLocaleString()}*\n`
+      ? `💰 Running total so far: *KES ${Number(runningTotalKES).toLocaleString()}*\n`
       : '';
+
+    const legText = _safeStr(leg?.text, '');
+    const legPackages = leg?.packages || [];
 
     const header = [
       progressLine,
       '━━━━━━━━━━━━━━━━',
-      runningLine + leg.text,
+      runningLine + legText,
       '',
-      `Reply *1*${leg.packages.length > 1 ? `–*${leg.packages.length}*` : ''} to choose an option for this leg.`,
+      legPackages.length > 1
+        ? `Reply *1*–*${legPackages.length}* to choose an option for this leg.`
+        : `Reply *1* to go ahead with this leg.`,
     ].filter(Boolean).join('\n');
 
-    await this.sendPackages(phoneNumberId, to, leg.packages, { legHeader: header });
+    await this.sendPackages(phoneNumberId, to, legPackages, { legHeader: header });
   }
 
   // ─────────────────────────────────────────────
   // TRANSPORT MODE META
   // ─────────────────────────────────────────────
   _transportMeta(transportType) {
-    const type = (transportType || 'flight').toLowerCase();
+    const type = _safeStr(transportType, 'flight').toLowerCase();
     if (type === 'bus')   return { type, icon: '🚌', label: 'Bus',   operatorWord: 'Operator' };
-    if (type === 'train') return { type, icon: '🚆', label: 'Train', operatorWord: 'Service' };
+    if (type === 'train') return { type, icon: '🚆', label: 'Train', operatorWord: 'Service'  };
     return { type: 'flight', icon: '✈️', label: 'Flight', operatorWord: 'Airline' };
   }
 
   // ─────────────────────────────────────────────
-  // FORMAT A TRANSPORT PRICE LINE
+  // FORMAT PRICE LINE
   // ─────────────────────────────────────────────
   _formatPriceLine(transport) {
-    const currency = transport.currency || 'KES';
-    if (transport.priceOnRequest) {
-      return `  Price: Contact operator to confirm`;
-    }
-    return `  Price: ${currency} ${(transport.price || 0).toLocaleString()}`;
+    if (!transport) return '  Price: TBC';
+    const currency = _safeStr(transport.currency, 'KES');
+    if (transport.priceOnRequest) return '  Price: Contact operator to confirm';
+    return `  Price: ${_fmtPrice(transport.price, currency)}`;
   }
 
-  /**
-   * Format a single package as a WhatsApp message.
-   */
+  // ─────────────────────────────────────────────
+  // FORMAT REFUNDABILITY ICON + LINE
+  // ─────────────────────────────────────────────
+  _refundLine(item, fallbackText = 'Confirmed at booking') {
+    const policy = _safeStr(item?.policySummary || item?.cancellationPolicy, '');
+    if (!policy && item?.isRefundable == null) return null;
+    const icon = item?.isRefundable === true  ? '✅'
+               : item?.isRefundable === false ? '❌'
+               : 'ℹ️';
+    return `  ${icon} *${policy || fallbackText}*`;
+  }
+
+  // ─────────────────────────────────────────────
+  // RENDER OUTBOUND / RETURN TRANSPORT BLOCK
+  // Shared between single-destination and itinerary cards.
+  // @param {Object} transport
+  // @param {string} label — "Outbound Flight", "Return Bus" etc.
+  // @returns {string[]} lines to push
+  // ─────────────────────────────────────────────
+  _transportBlock(transport, label) {
+    if (!transport) return [];
+    const meta  = this._transportMeta(transport.transportType);
+    const lines = [];
+
+    lines.push(`*${meta.icon} ${label || `${meta.label}`}*`);
+
+    if (meta.type === 'train') {
+      const service = _safeStr(
+        transport.serviceName || transport.provider,
+        'SGR'
+      );
+      const cls = transport.trainClass
+        ? ' · ' + String(transport.trainClass).replace('_', ' ')
+        : '';
+      lines.push(`  Service: ${service}${cls}`);
+      lines.push(`  From: ${_safeStr(transport.origin)} → ${_safeStr(transport.destination)}`);
+      if (transport.departureTime) {
+        lines.push(`  Departs: ${_formatScheduleTime(transport.departureTime)}`);
+      }
+      if (transport.stopsNote) lines.push(`  Stops: ${transport.stopsNote}`);
+      const trainPolicy = transport.policySummary
+        || (transport.canBook ? 'Bookable via SGR' : 'Not yet bookable through Bodrless — purchase directly via SGR');
+      lines.push(`  ${trainPolicy}`);
+    } else {
+      // flight or bus
+      const operator = _safeStr(
+        transport.airline || transport.provider,
+        'TBC'
+      );
+      const busType = transport.busType ? ` · ${transport.busType}` : '';
+      lines.push(`  ${meta.operatorWord}: ${operator}${busType}`);
+      lines.push(`  From: ${_safeStr(transport.origin)} → ${_safeStr(transport.destination)}`);
+
+      const dep = _formatTime(transport.departureTime);
+      const arr = _formatTime(transport.arrivalTime);
+      lines.push(`  Departs: ${dep} · Arrives: ${arr}`);
+
+      if (transport.stops)      lines.push(`  Stops: ${transport.stops}`);
+      if (transport.cabinClass) lines.push(`  Class: ${transport.cabinClass}`);
+
+      // Baggage only on flights
+      if (meta.type === 'flight' && transport.baggageSummary) {
+        lines.push(`  Baggage: ${transport.baggageSummary}`);
+      }
+
+      const refund = this._refundLine(transport);
+      if (refund) lines.push(refund);
+    }
+
+    if (transport.routeNote) lines.push(`  ℹ️ ${transport.routeNote}`);
+    lines.push(this._formatPriceLine(transport));
+    return lines;
+  }
+
+  // ─────────────────────────────────────────────
+  // SEND PACKAGE CARD (single-destination)
+  // ─────────────────────────────────────────────
   async _sendPackageCard(phoneNumberId, to, pkg, index) {
     const transport       = pkg.transport       || null;
     const returnTransport = pkg.returnTransport || null;
@@ -238,110 +445,83 @@ class WhatsAppService {
     const transfers       = pkg.transfers       || null;
     const summary         = pkg.summary         || {};
 
-    const totalCurrency = summary.currency || 'KES';
+    const totalCurrency = _safeStr(summary.currency, 'KES');
+    const passengers    = _safeInt(summary.passengers, 1);
+    const nights        = _safeInt(summary.nights, 0);
 
     const lines = [
       `*Option ${index}*`,
       `━━━━━━━━━━━━━━━━`,
-      `*Route:* ${summary.route || 'N/A'}`,
-      `*Travelers:* ${summary.passengers || 1}`,
+      `*Route:* ${_safeStr(summary.route)}`,
+      `*Travelers:* ${passengers}`,
     ];
 
-    if (summary.nights > 0) {
-      lines.push(`*Nights:* ${summary.nights}`);
-    }
+    if (nights > 0) lines.push(`*Nights:* ${nights}`);
+
+    // ── Visa note ──────────────────────────────────
+    const visa = _visaLine(summary, transport);
+    if (visa) lines.push(visa);
 
     // ── Outbound transport ──────────────────────────
     if (transport) {
       const meta = this._transportMeta(transport.transportType);
       lines.push('');
-      lines.push(`*${meta.icon} Outbound ${meta.label}*`);
-
-      if (meta.type === 'train') {
-        lines.push(`  Service: ${transport.serviceName || transport.provider || 'SGR'}${transport.trainClass ? ' · ' + transport.trainClass.replace('_', ' ') : ''}`);
-        lines.push(`  From: ${transport.origin || 'TBC'} → ${transport.destination || 'TBC'}`);
-        if (transport.departureTime) lines.push(`  Departs: ${this._formatScheduleTime(transport.departureTime)}`);
-        if (transport.stopsNote) lines.push(`  Stops: ${transport.stopsNote}`);
-        lines.push(`  ${transport.policySummary || (transport.canBook ? 'Bookable via SGR' : 'Not yet bookable through Bodrless — purchase directly via SGR')}`);
-      } else {
-        lines.push(`  ${meta.operatorWord}: ${transport.airline || transport.provider || 'TBC'}${transport.busType ? ' · ' + transport.busType : ''}`);
-        lines.push(`  From: ${transport.origin || 'TBC'} → ${transport.destination || 'TBC'}`);
-        lines.push(`  Departs: ${this._formatTime(transport.departureTime)} · Arrives: ${this._formatTime(transport.arrivalTime)}`);
-        if (transport.stops) lines.push(`  Stops: ${transport.stops}`);
-        if (transport.cabinClass) lines.push(`  Class: ${transport.cabinClass}`);
-        if (meta.type === 'flight' && transport.baggageSummary) lines.push(`  Baggage: ${transport.baggageSummary}`);
-        if (transport.policySummary || transport.cancellationPolicy) {
-          const icon = transport.isRefundable === true ? '✅' : transport.isRefundable === false ? '❌' : 'ℹ️';
-          lines.push(`  ${icon} *${transport.policySummary || (meta.type === 'bus' ? transport.cancellationPolicy : null) || 'Confirmed at booking'}*`);
-        }
-      }
-
-      if (transport.routeNote) lines.push(`  ℹ️ ${transport.routeNote}`);
-      lines.push(this._formatPriceLine(transport));
+      lines.push(...this._transportBlock(transport, `Outbound ${meta.label}`));
     }
 
     // ── Return transport ────────────────────────────
     if (returnTransport) {
       const meta = this._transportMeta(returnTransport.transportType);
       lines.push('');
-      lines.push(`*${meta.icon} Return ${meta.label}*`);
-
-      if (meta.type === 'train') {
-        lines.push(`  Service: ${returnTransport.serviceName || returnTransport.provider || 'SGR'}${returnTransport.trainClass ? ' · ' + returnTransport.trainClass.replace('_', ' ') : ''}`);
-        lines.push(`  From: ${returnTransport.origin || 'TBC'} → ${returnTransport.destination || 'TBC'}`);
-        if (returnTransport.departureTime) lines.push(`  Departs: ${this._formatScheduleTime(returnTransport.departureTime)}`);
-        if (returnTransport.stopsNote) lines.push(`  Stops: ${returnTransport.stopsNote}`);
-        lines.push(`  ${returnTransport.policySummary || (returnTransport.canBook ? 'Bookable via SGR' : 'Not yet bookable through Bodrless — purchase directly via SGR')}`);
-      } else {
-        lines.push(`  ${meta.operatorWord}: ${returnTransport.airline || returnTransport.provider || 'TBC'}${returnTransport.busType ? ' · ' + returnTransport.busType : ''}`);
-        lines.push(`  From: ${returnTransport.origin || 'TBC'} → ${returnTransport.destination || 'TBC'}`);
-        lines.push(`  Departs: ${this._formatTime(returnTransport.departureTime)} · Arrives: ${this._formatTime(returnTransport.arrivalTime)}`);
-        if (returnTransport.stops) lines.push(`  Stops: ${returnTransport.stops}`);
-        if (meta.type === 'flight' && returnTransport.baggageSummary) lines.push(`  Baggage: ${returnTransport.baggageSummary}`);
-        if (returnTransport.policySummary || returnTransport.cancellationPolicy) {
-          const rtIcon = returnTransport.isRefundable === true ? '✅' : returnTransport.isRefundable === false ? '❌' : 'ℹ️';
-          lines.push(`  ${rtIcon} *${returnTransport.policySummary || (meta.type === 'bus' ? returnTransport.cancellationPolicy : null) || 'Confirmed at booking'}*`);
-        }
-      }
-
-      if (returnTransport.routeNote) lines.push(`  ℹ️ ${returnTransport.routeNote}`);
-      lines.push(this._formatPriceLine(returnTransport));
+      lines.push(...this._transportBlock(returnTransport, `Return ${meta.label}`));
     }
 
     // ── Hotel ───────────────────────────────────────
     if (hotel) {
-      const stars = hotel.stars ? '⭐'.repeat(Math.min(Number(hotel.stars) || 0, 5)) : '';
-      const hCurrency = hotel.currency || 'KES';
+      const stars     = _starStr(hotel.stars);
+      const hCurrency = _safeStr(hotel.currency, 'KES');
+      const hNights   = nights || _safeInt(hotel.nights, 1);
+
       lines.push('');
       lines.push('*🏨 Hotel*');
-      lines.push(`  ${hotel.name || 'TBC'} ${stars}`.trim());
+      lines.push(`  ${_safeStr(hotel.name)} ${stars}`.trimEnd());
       if (hotel.location) lines.push(`  Location: ${hotel.location}`);
-      if (hotel.rating)   lines.push(`  Rating: ${hotel.rating}/5`);
+      if (hotel.rating)   lines.push(`  Rating: ${Number(hotel.rating).toFixed(1)}/5`);
       if (hotel.mealPlan) lines.push(`  🍽️ *Board: ${hotel.mealPlan}*`);
-      const hIcon = hotel.isRefundable === false ? '❌' : '✅';
-      lines.push(`  ${hIcon} *${hotel.policySummary || (hotel.isRefundable === false ? 'Non-refundable rate' : 'Refundable — confirmed at booking')}*`);
-      lines.push(`  ${hCurrency} ${(hotel.pricePerNight || 0).toLocaleString()}/night × ${summary.nights || 1} nights`);
+
+      const hRefund = this._refundLine(hotel, hotel.isRefundable === false ? 'Non-refundable rate' : 'Refundable — confirmed at booking');
+      if (hRefund) lines.push(hRefund);
+
+      const pricePer = hotel.pricePerNight != null
+        ? `${_fmtPrice(hotel.pricePerNight, hCurrency)}/night × ${hNights} nights`
+        : _fmtPrice(hotel.totalPrice || hotel.price, hCurrency);
+      lines.push(`  ${pricePer}`);
     }
 
     // ── Transfers ───────────────────────────────────
-    const transferList = Array.isArray(transfers) ? transfers : (transfers ? [transfers] : []);
+    const transferList = Array.isArray(transfers)
+      ? transfers
+      : (transfers ? [transfers] : []);
+
     if (transferList.length > 0) {
       lines.push('');
       lines.push('*🚗 Transfer*');
       transferList.forEach(t => {
-        const trCurrency = t.currency || 'KES';
-        const legLabel = t.legType === 'departure' ? 'Departure' : t.legType === 'arrival' ? 'Arrival' : (t.provider || 'TBC');
-        lines.push(`  ${legLabel}: ${t.description || t.location || 'TBC'} — ${trCurrency} ${(t.price || 0).toLocaleString()}`);
+        if (!t) return;
+        const trCurrency = _safeStr(t.currency, 'KES');
+        const legLabel   = t.legType === 'departure' ? 'Departure'
+                         : t.legType === 'arrival'   ? 'Arrival'
+                         : _safeStr(t.provider, 'Transfer');
+        const desc       = _safeStr(t.description || t.location, 'TBC');
+        lines.push(`  ${legLabel}: ${desc} — ${_fmtPrice(t.price, trCurrency)}`);
       });
     }
 
-    // ── Connection advisory ─────────────────────────
+    // ── Advisories ──────────────────────────────────
     if (pkg.connectionAdvisory) {
       lines.push('');
       lines.push(`⚠️ ${pkg.connectionAdvisory}`);
     }
-
-    // ── Hub transfer note ───────────────────────────
     if (pkg.hubTransferNote) {
       lines.push('');
       lines.push(`ℹ️ ${pkg.hubTransferNote}`);
@@ -349,9 +529,9 @@ class WhatsAppService {
 
     // ── Total ───────────────────────────────────────
     lines.push('');
-    lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
+    lines.push(`*Total: ${_fmtPrice(summary.totalPrice, totalCurrency)}* for ${passengers} traveler(s)`);
     if (summary.pricePerPerson) {
-      lines.push(`_(${totalCurrency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
+      lines.push(`_(${_fmtPrice(summary.pricePerPerson, totalCurrency)} per person)_`);
     }
     if (summary.priceCaveat) {
       lines.push(`⚠️ _${summary.priceCaveat}_`);
@@ -362,105 +542,135 @@ class WhatsAppService {
       recipient_type: 'individual',
       to,
       type: 'text',
-      text: { body: lines.join('\n') },
+      text: { body: _clamp(lines.join('\n'), 4096) },
     });
 
     // Tap-to-reveal photo button
-    if (hotel?.images?.length > 0) {
+    if (Array.isArray(hotel?.images) && hotel.images.length > 0) {
       await this.sendButtons(phoneNumberId, to,
-        `Want to see a photo of ${hotel.name || 'this hotel'}?`,
+        `Want to see a photo of ${_safeStr(hotel.name, 'this hotel')}?`,
         [{ id: `photo_${index - 1}`, title: '📷 View Photo' }]
-      );
+      ).catch(err => {
+        logger.warn('Photo button send failed — continuing', { error: err.message });
+      });
     }
 
     return result;
   }
 
-  /**
-   * Format a multi-destination itinerary as a WhatsApp message.
-   */
+  // ─────────────────────────────────────────────
+  // SEND ITINERARY CARD (multi-destination)
+  // ─────────────────────────────────────────────
   async _sendItineraryCard(phoneNumberId, to, pkg) {
     const summary = pkg.summary || {};
-    const legs    = pkg.legs    || [];
-    const totalCurrency = summary.currency || 'KES';
+    const legs    = Array.isArray(pkg.legs) ? pkg.legs : [];
+    const totalCurrency = _safeStr(summary.currency, 'KES');
+    const passengers    = _safeInt(summary.passengers, 1);
 
     const lines = [
-      `*🗺️ ${summary.route || 'Your Itinerary'}*`,
+      `*🗺️ ${_safeStr(summary.route, 'Your Itinerary')}*`,
       `━━━━━━━━━━━━━━━━`,
-      `*Travelers:* ${summary.passengers || 1}`,
-      `*Total nights:* ${summary.totalNights || 0}`,
+      `*Travelers:* ${passengers}`,
+      `*Total nights:* ${_safeInt(summary.totalNights, 0)}`,
     ];
 
+    // ── Visa note (origin of first non-buffer leg → last destination) ──
+    const firstRealLeg = legs.find(l => !l.isBufferLeg);
+    const lastLeg      = [...legs].reverse().find(l => !l.isBufferLeg);
+    if (firstRealLeg && lastLeg) {
+      const visa = _visaLine(summary, firstRealLeg.transportIn);
+      if (visa) {
+        lines.push('');
+        lines.push(visa);
+      }
+    }
+
     legs.forEach((leg, i) => {
+      if (!leg) return;
       const stopNumber = i + 1;
-      const isBuffer = leg.isBufferLeg;
+      const isBuffer   = Boolean(leg.isBufferLeg);
+      const destination = _titleCase(_safeStr(leg.destination, 'TBC'));
+      const legNights   = _safeInt(leg.nights, isBuffer ? 1 : 0);
 
       lines.push('');
 
       if (isBuffer) {
-        lines.push(`*— Connection: overnight in ${this._titleCase(leg.destination)} —*`);
+        lines.push(`*— Connection: overnight in ${destination} —*`);
         lines.push(`  Connecting between destinations · 1 night`);
       } else {
-        lines.push(`*Stop ${stopNumber}: ${this._titleCase(leg.destination)}* (${leg.nights} night${leg.nights === 1 ? '' : 's'})`);
+        lines.push(`*Stop ${stopNumber}: ${destination}* (${legNights} night${legNights === 1 ? '' : 's'})`);
       }
 
+      // Transport in
       const t = leg.transportIn;
       if (t) {
         const meta = this._transportMeta(t.transportType);
-        lines.push(`  ${meta.icon} ${t.origin || 'TBC'} → ${t.destination || 'TBC'}`);
+        lines.push(`  ${meta.icon} ${_safeStr(t.origin)} → ${_safeStr(t.destination)}`);
+
         if (meta.type === 'train') {
-          lines.push(`    Service: ${t.serviceName || t.provider || 'SGR'}${t.trainClass ? ' · ' + t.trainClass.replace('_', ' ') : ''} · ${this._formatScheduleTime(t.departureTime)}`);
+          const service = _safeStr(t.serviceName || t.provider, 'SGR');
+          const cls     = t.trainClass ? ` · ${String(t.trainClass).replace('_', ' ')}` : '';
+          lines.push(`    Service: ${service}${cls} · ${_formatScheduleTime(t.departureTime)}`);
         } else {
-          lines.push(`    ${meta.operatorWord}: ${t.airline || t.provider || 'TBC'} · ${this._formatTime(t.departureTime)}–${this._formatTime(t.arrivalTime)}`);
+          const operator = _safeStr(t.airline || t.provider);
+          lines.push(`    ${meta.operatorWord}: ${operator} · ${_formatTime(t.departureTime)}–${_formatTime(t.arrivalTime)}`);
         }
+
         if (leg.connectsVia && !isBuffer) {
-          lines.push(`    _Connects via ${this._titleCase(leg.connectsVia)}_`);
+          lines.push(`    _Connects via ${_titleCase(leg.connectsVia)}_`);
         }
-        lines.push(`    ${t.priceOnRequest ? 'Price: Contact operator to confirm' : `Price: ${t.currency || 'KES'} ${(t.price || 0).toLocaleString()}`}`);
+        lines.push(`    ${t.priceOnRequest ? 'Price: Contact operator to confirm' : `Price: ${_fmtPrice(t.price, _safeStr(t.currency, 'KES'))}`}`);
       } else if (!isBuffer) {
         lines.push(`  ⚠️ Transport for this leg still to be confirmed`);
       }
 
+      // Hotel
       if (leg.hotel) {
-        const h = leg.hotel;
-        const stars = h.stars ? '⭐'.repeat(Math.min(Number(h.stars) || 0, 5)) : '';
-        const hCurrency = h.currency || 'KES';
-        const hotelLine = `  🏨 ${h.name || 'TBC'} ${stars}`.replace(/\s+$/, '');
+        const h        = leg.hotel;
+        const stars    = _starStr(h.stars);
+        const hCurr    = _safeStr(h.currency, 'KES');
+        const hotelLine = `  🏨 ${_safeStr(h.name)} ${stars}`.trimEnd();
         lines.push(hotelLine);
-        if (h.location) lines.push(`    ${h.location}`);
-        lines.push(`    ${hCurrency} ${(h.pricePerNight || 0).toLocaleString()}/night × ${leg.nights} night${leg.nights === 1 ? '' : 's'}`);
+        if (h.location)      lines.push(`    ${h.location}`);
+        if (h.mealPlan)      lines.push(`    🍽️ ${h.mealPlan}`);
+        lines.push(`    ${_fmtPrice(h.pricePerNight, hCurr)}/night × ${legNights} night${legNights === 1 ? '' : 's'}`);
       } else if (!isBuffer) {
         lines.push(`  ⚠️ Hotel for this stop still to be confirmed`);
       }
 
+      // Transfers
       if (leg.transfers) {
-        const tr = leg.transfers;
-        const trCurrency = tr.currency || 'KES';
-        lines.push(`  🚗 ${tr.provider || 'Transfer'}: ${trCurrency} ${(tr.price || 0).toLocaleString()}`);
+        const tr     = leg.transfers;
+        const trCurr = _safeStr(tr.currency, 'KES');
+        lines.push(`  🚗 ${_safeStr(tr.provider, 'Transfer')}: ${_fmtPrice(tr.price, trCurr)}`);
+      }
+
+      // Connection advisory per leg
+      if (leg.connectionAdvisory) {
+        lines.push(`  ⚠️ ${leg.connectionAdvisory}`);
       }
     });
 
+    // ── Return transport ────────────────────────────
     if (pkg.returnTransport) {
-      const rt = pkg.returnTransport;
+      const rt   = pkg.returnTransport;
       const meta = this._transportMeta(rt.transportType);
       lines.push('');
       lines.push(`*Return*`);
-      lines.push(`  ${meta.icon} ${rt.origin || 'TBC'} → ${rt.destination || 'TBC'}`);
-      if (meta.type === 'train') {
-        lines.push(`    ${this._formatScheduleTime(rt.departureTime)} · ${rt.serviceName || rt.provider || 'SGR'}${rt.trainClass ? ' · ' + rt.trainClass.replace('_', ' ') : ''}`);
-      } else {
-        lines.push(`    ${this._formatTime(rt.departureTime)}–${this._formatTime(rt.arrivalTime)}`);
-      }
-      lines.push(`    ${rt.priceOnRequest ? 'Price: Contact operator to confirm' : `${rt.currency || 'KES'} ${(rt.price || 0).toLocaleString()}`}`);
+      lines.push(...this._transportBlock(rt, `Return ${meta.label}`).map(l => `  ${l.trim()}`));
     }
 
+    // ── Total ───────────────────────────────────────
     lines.push('');
-    lines.push(`*Total: ${totalCurrency} ${(summary.totalPrice || 0).toLocaleString()}* for ${summary.passengers || 1} traveler(s)`);
+    lines.push(`*Total: ${_fmtPrice(summary.totalPrice, totalCurrency)}* for ${passengers} traveler(s)`);
     if (summary.pricePerPerson) {
-      lines.push(`_(${totalCurrency} ${summary.pricePerPerson.toLocaleString()} per person)_`);
+      lines.push(`_(${_fmtPrice(summary.pricePerPerson, totalCurrency)} per person)_`);
     }
     if (summary.priceCaveat) {
       lines.push(`⚠️ _${summary.priceCaveat}_`);
+    }
+    if (summary.bookingNote) {
+      lines.push(`ℹ️ _${summary.bookingNote}_`);
     }
 
     return this._send(phoneNumberId, {
@@ -468,24 +678,26 @@ class WhatsAppService {
       recipient_type: 'individual',
       to,
       type: 'text',
-      text: { body: lines.join('\n') },
+      text: { body: _clamp(lines.join('\n'), 4096) },
     });
   }
 
-  /**
-   * Core send function.
-   *
-   * BSUID detection: if `to` matches the pattern "XX." or "XX.ENT."
-   * (country-code prefix), it's a BSUID. Meta requires these to be
-   * sent via the `recipient` field, not `to`.
-   */
+  // ─────────────────────────────────────────────
+  // CORE SEND
+  //
+  // BSUID detection: "KE.xxx", "US.xxx", "US.ENT.xxx" etc.
+  // — these must use `recipient` field, not `to`.
+  // ─────────────────────────────────────────────
   async _send(phoneNumberId, payload) {
-    // Detect BSUID: "KE.xxx", "US.xxx", "US.ENT.xxx" etc.
+    if (!phoneNumberId || !payload) {
+      logger.error('_send called with missing phoneNumberId or payload');
+      return null;
+    }
+
     const isBsuid = payload.to && /^[A-Z]{2,}\./.test(String(payload.to));
 
     let finalPayload;
     if (isBsuid) {
-      // Strip `to`, add `recipient` with the full BSUID (prefix intact)
       const { to, ...rest } = payload;
       finalPayload = { ...rest, recipient: to };
     } else {
@@ -499,7 +711,10 @@ class WhatsAppService {
       to: recipientValue,
       isBsuid,
       messageType: finalPayload.type,
-      textPreview: finalPayload.text?.body?.slice(0, 60) || finalPayload.image?.link || finalPayload.interactive?.type || null,
+      textPreview: finalPayload.text?.body?.slice(0, 80)
+                || finalPayload.image?.link
+                || finalPayload.interactive?.type
+                || null,
     });
 
     try {
@@ -523,33 +738,16 @@ class WhatsAppService {
 
       return response.data;
     } catch (error) {
+      const errBody = error.response?.data;
       logger.error('WhatsApp send failed', {
         to: recipientValue,
         isBsuid,
         status: error.response?.status,
-        errorBody: error.response?.data,
+        errorBody: errBody,
         message: error.message,
       });
       throw error;
     }
-  }
-
-  _formatTime(isoString) {
-    if (!isoString) return 'TBC';
-    const date = new Date(isoString);
-    if (isNaN(date)) return isoString;
-    return date.toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' });
-  }
-
-  _formatScheduleTime(value) {
-    if (!value) return 'TBC';
-    if (/^\d{1,2}:\d{2}$/.test(value)) return value;
-    return this._formatTime(value);
-  }
-
-  _titleCase(str) {
-    if (!str) return '';
-    return str.replace(/\b\w/g, c => c.toUpperCase());
   }
 }
 
