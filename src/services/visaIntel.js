@@ -4,117 +4,22 @@
  * Returns a short visa note for a given origin → destination
  * corridor. Shown inline on WhatsApp package cards.
  *
- * Format: "origin_destination" (both lowercased)
+ * Data lives in the Supabase `visa_rules` table — update rows
+ * there directly; no code changes or deploys needed.
  *
- * Coverage: Kenya outbound (primary market) + Uganda, Tanzania,
- * Rwanda outbound corridors. Expand as agency network grows.
+ * Lookup cascade (same as before):
+ *   1. exact city  → exact city
+ *   2. origin country → destination city
+ *   3. origin city  → destination country
+ *   4. origin country → destination country
  * ─────────────────────────────────────────────────────────────
  */
 
-const VISA_NOTES = {
+const { supabase } = require('../supabase');
+const { logger }   = require('../utils/logger');
 
-  // ── KENYA OUTBOUND ────────────────────────────────────────────
-  'kenya_tanzania':           'Visa-free for Kenyans',
-  'kenya_zanzibar':           'Visa-free for Kenyans',
-  'kenya_uganda':             'Visa-free for Kenyans',
-  'kenya_rwanda':             'Visa-free for Kenyans',
-  'kenya_ethiopia':           'Visa on arrival — USD 52',
-  'kenya_south africa':       'Visa-free for Kenyans — up to 30 days',
-  'kenya_cape town':          'Visa-free for Kenyans — up to 30 days',
-  'kenya_johannesburg':       'Visa-free for Kenyans — up to 30 days',
-  'kenya_mozambique':         'Visa on arrival — USD 50',
-  'kenya_maputo':             'Visa on arrival — USD 50',
-  'kenya_zimbabwe':           'Visa on arrival — USD 55',
-  'kenya_harare':             'Visa on arrival — USD 55',
-  'kenya_zambia':             'Visa on arrival — USD 50',
-  'kenya_lusaka':             'Visa on arrival — USD 50',
-  'kenya_malawi':             'Visa on arrival — free',
-  'kenya_botswana':           'Visa-free for Kenyans — up to 90 days',
-  'kenya_namibia':            'Visa-free for Kenyans — up to 90 days',
-  'kenya_windhoek':           'Visa-free for Kenyans — up to 90 days',
-  'kenya_nigeria':            'Visa required — apply at Nigerian High Commission, Nairobi',
-  'kenya_lagos':              'Visa required — apply at Nigerian High Commission, Nairobi',
-  'kenya_ghana':              'Visa on arrival — free',
-  'kenya_accra':              'Visa on arrival — free',
-  'kenya_senegal':            'Visa-free for Kenyans — up to 90 days',
-  'kenya_dakar':              'Visa-free for Kenyans — up to 90 days',
-  'kenya_egypt':              'Visa on arrival — USD 25',
-  'kenya_cairo':              'Visa on arrival — USD 25',
-  'kenya_morocco':            'Visa required — apply in advance',
-  'kenya_casablanca':         'Visa required — apply in advance',
-  'kenya_marrakech':          'Visa required — apply in advance',
-  'kenya_seychelles':         'Visa-free for Kenyans — visitor\'s permit on arrival',
-  'kenya_mauritius':          'Visa-free for Kenyans — up to 90 days',
-  'kenya_madagascar':         'Visa on arrival — USD 35',
-  'kenya_antananarivo':       'Visa on arrival — USD 35',
-  'kenya_dubai':              'Visa required — apply online at uaevisa.ae (free for Kenyans)',
-  'kenya_abu dhabi':          'Visa required — apply online at uaevisa.ae (free for Kenyans)',
-  'kenya_qatar':              'Visa on arrival — free for Kenyans',
-  'kenya_doha':               'Visa on arrival — free for Kenyans',
-  'kenya_oman':               'Visa on arrival — OMR 6',
-  'kenya_muscat':             'Visa on arrival — OMR 6',
-  'kenya_india':              'e-Visa required — apply at indianvisaonline.gov.in',
-  'kenya_delhi':              'e-Visa required — apply at indianvisaonline.gov.in',
-  'kenya_mumbai':             'e-Visa required — apply at indianvisaonline.gov.in',
-  'kenya_thailand':           'Visa-free for Kenyans — up to 30 days',
-  'kenya_bangkok':            'Visa-free for Kenyans — up to 30 days',
-  'kenya_phuket':             'Visa-free for Kenyans — up to 30 days',
-  'kenya_bali':               'Visa on arrival — USD 35',
-  'kenya_indonesia':          'Visa on arrival — USD 35',
-  'kenya_turkey':             'e-Visa required — apply at evisa.gov.tr (USD 60)',
-  'kenya_istanbul':           'e-Visa required — apply at evisa.gov.tr (USD 60)',
-  'kenya_united kingdom':     'Visa required — apply at gov.uk/apply-uk-visa',
-  'kenya_london':             'Visa required — apply at gov.uk/apply-uk-visa',
-  'kenya_france':             'Schengen visa required — apply at French Embassy, Nairobi',
-  'kenya_paris':              'Schengen visa required — apply at French Embassy, Nairobi',
-  'kenya_germany':            'Schengen visa required — apply at German Embassy, Nairobi',
-  'kenya_berlin':             'Schengen visa required — apply at German Embassy, Nairobi',
-  'kenya_netherlands':        'Schengen visa required — apply at Dutch Embassy, Nairobi',
-  'kenya_amsterdam':          'Schengen visa required — apply at Dutch Embassy, Nairobi',
-  'kenya_spain':              'Schengen visa required — apply at Spanish Embassy, Nairobi',
-  'kenya_barcelona':          'Schengen visa required — apply at Spanish Embassy, Nairobi',
-  'kenya_italy':              'Schengen visa required — apply at Italian Embassy, Nairobi',
-  'kenya_rome':               'Schengen visa required — apply at Italian Embassy, Nairobi',
-  'kenya_united states':      'Visa required — apply at ustraveldocs.com',
-  'kenya_new york':           'Visa required — apply at ustraveldocs.com',
-  'kenya_los angeles':        'Visa required — apply at ustraveldocs.com',
-  'kenya_canada':             'eTA or visa required — apply at canada.ca/eta',
-  'kenya_toronto':            'eTA or visa required — apply at canada.ca/eta',
-  'kenya_australia':          'Visa required — apply at immi.homeaffairs.gov.au',
-  'kenya_sydney':             'Visa required — apply at immi.homeaffairs.gov.au',
-  'kenya_melbourne':          'Visa required — apply at immi.homeaffairs.gov.au',
-  'kenya_china':              'Visa required — apply at Chinese Embassy, Nairobi',
-  'kenya_beijing':            'Visa required — apply at Chinese Embassy, Nairobi',
-  'kenya_shanghai':           'Visa required — apply at Chinese Embassy, Nairobi',
-  'kenya_japan':              'Visa required — apply at Japanese Embassy, Nairobi',
-  'kenya_tokyo':              'Visa required — apply at Japanese Embassy, Nairobi',
-
-  // ── UGANDA OUTBOUND ───────────────────────────────────────────
-  'uganda_kenya':             'Visa-free for Ugandans',
-  'uganda_tanzania':          'Visa-free for Ugandans',
-  'uganda_rwanda':            'Visa-free for Ugandans',
-  'uganda_south africa':      'Visa-free for Ugandans — up to 30 days',
-  'uganda_dubai':             'Visa required — apply online at uaevisa.ae',
-  'uganda_united kingdom':    'Visa required — apply at gov.uk/apply-uk-visa',
-
-  // ── TANZANIA OUTBOUND ─────────────────────────────────────────
-  'tanzania_kenya':           'Visa-free for Tanzanians',
-  'tanzania_uganda':          'Visa-free for Tanzanians',
-  'tanzania_rwanda':          'Visa-free for Tanzanians',
-  'tanzania_south africa':    'Visa-free for Tanzanians — up to 30 days',
-  'tanzania_dubai':           'Visa required — apply online at uaevisa.ae',
-  'tanzania_united kingdom':  'Visa required — apply at gov.uk/apply-uk-visa',
-
-  // ── RWANDA OUTBOUND ───────────────────────────────────────────
-  'rwanda_kenya':             'Visa-free for Rwandans',
-  'rwanda_uganda':            'Visa-free for Rwandans',
-  'rwanda_tanzania':          'Visa-free for Rwandans',
-  'rwanda_south africa':      'Visa-free for Rwandans — up to 30 days',
-  'rwanda_dubai':             'Visa required — apply online at uaevisa.ae',
-  'rwanda_united kingdom':    'Visa required — apply at gov.uk/apply-uk-visa',
-};
-
-// City → country map for normalizing destination names
+// City → country normalisation map (stays in code — structural,
+// not data that changes with visa policy).
 const CITY_TO_COUNTRY = {
   'nairobi': 'kenya', 'mombasa': 'kenya', 'diani': 'kenya', 'malindi': 'kenya',
   'kampala': 'uganda', 'entebbe': 'uganda',
@@ -153,39 +58,57 @@ const CITY_TO_COUNTRY = {
 };
 
 /**
+ * Look up a single origin→destination pair in visa_rules.
+ * Returns the note string or null.
+ * @param {string} origin
+ * @param {string} destination
+ */
+async function _lookup(origin, destination) {
+  const { data, error } = await supabase
+    .from('visa_rules')
+    .select('note')
+    .eq('origin', origin)
+    .eq('destination', destination)
+    .single();
+
+  if (error && error.code !== 'PGRST116') {
+    // PGRST116 = no rows found — that's fine, anything else is worth logging
+    logger.warn('visa_rules lookup error', { origin, destination, error: error.message });
+  }
+
+  return data?.note || null;
+}
+
+/**
  * Get a visa note for a given origin → destination pair.
  *
- * Tries exact city match first, then falls back to country-level
- * lookup so "Nairobi → Cape Town" hits the same entry as
- * "Kenya → South Africa".
+ * Tries exact city match first, then falls back through country
+ * combinations. Returns null if no corridor is found.
  *
  * @param {string} origin      — e.g. "Nairobi"
  * @param {string} destination — e.g. "Cape Town"
- * @returns {string|null}      — e.g. "Visa-free for Kenyans — up to 30 days"
+ * @returns {Promise<string|null>}
  */
-function getVisaNote(origin, destination) {
+async function getVisaNote(origin, destination) {
   if (!origin || !destination) return null;
 
   const o = origin.toLowerCase().trim();
   const d = destination.toLowerCase().trim();
 
-  // 1. Try exact city → city
-  const exactKey = `${o}_${d}`;
-  if (VISA_NOTES[exactKey]) return VISA_NOTES[exactKey];
-
-  // 2. Try origin country → destination city
   const oCountry = CITY_TO_COUNTRY[o] || o;
-  const dCity    = `${oCountry}_${d}`;
-  if (VISA_NOTES[dCity]) return VISA_NOTES[dCity];
-
-  // 3. Try origin city → destination country
   const dCountry = CITY_TO_COUNTRY[d] || d;
-  const oCity    = `${o}_${dCountry}`;
-  if (VISA_NOTES[oCity]) return VISA_NOTES[oCity];
 
-  // 4. Try origin country → destination country
-  const countryKey = `${oCountry}_${dCountry}`;
-  if (VISA_NOTES[countryKey]) return VISA_NOTES[countryKey];
+  const candidates = [
+    [o,        d       ],   // 1. exact city → exact city
+    [oCountry, d       ],   // 2. origin country → destination city
+    [o,        dCountry],   // 3. origin city → destination country
+    [oCountry, dCountry],   // 4. origin country → destination country
+  ];
+
+  for (const [from, to] of candidates) {
+    const note = await _lookup(from, to);
+    if (note) return note;
+  }
 
   return null;
 }
