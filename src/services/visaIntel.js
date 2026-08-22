@@ -15,7 +15,7 @@
  * ─────────────────────────────────────────────────────────────
  */
 
-const { supabase } = require('../supabase');
+const supabase = require('../utils/supabase');
 const { logger }   = require('../utils/logger');
 
 // City → country normalisation map (stays in code — structural,
