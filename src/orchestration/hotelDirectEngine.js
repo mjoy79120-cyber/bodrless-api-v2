@@ -1,5 +1,6 @@
 // HOTEL DIRECT ENGINE — v9.1
 // Changes from v9.0:
+// - MODEL: llama3-70b-8192 decommissioned by Groq → openai/gpt-oss-120b
 // - Added isValidDate guard to prevent crashes from malformed LLM dates
 // - Added prompt length cap (1500 chars) to prevent token/cost spikes
 // - Added room selection validation to catch hallucinated room names/indexes
@@ -14,6 +15,9 @@ const { logger }      = require('../utils/logger');
 const pmsIntegrations = require('../integrations/pmsIntegrations');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+// Groq model — swap via env var without redeploying code next time
+const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
 const MEAL_LABELS = {
   room_only:         'Room Only',
@@ -367,7 +371,7 @@ class HotelDirectEngine {
       let groqResult;
       try {
         const response = await groq.chat.completions.create({
-          model:           'llama3-70b-8192',
+          model:           GROQ_MODEL,
           response_format: { type: 'json_object' },
           max_tokens:      700,
           temperature:     0.2,
