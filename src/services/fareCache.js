@@ -79,8 +79,8 @@ function getCacheTTLms(departureDateStr, origin = '', destination = '') {
     ? Math.ceil((new Date(departureDateStr) - new Date()) / 86400000)
     : 30;
 
-  const isVolatile = VOLATILE_AIRPORTS.has(origin.toUpperCase()) ||
-                     VOLATILE_AIRPORTS.has(destination.toUpperCase());
+  const isVolatile = VOLATILE_AIRPORTS.has((origin || '').toUpperCase()) ||
+                   VOLATILE_AIRPORTS.has((destination || '').toUpperCase());
 
   // Base TTL by departure proximity
   let baseTTLms;
@@ -95,8 +95,8 @@ function getCacheTTLms(departureDateStr, origin = '', destination = '') {
 }
 
 function isVolatileRoute(origin = '', destination = '') {
-  return VOLATILE_AIRPORTS.has(origin.toUpperCase()) ||
-         VOLATILE_AIRPORTS.has(destination.toUpperCase());
+  return VOLATILE_AIRPORTS.has((origin || '').toUpperCase()) ||
+       VOLATILE_AIRPORTS.has((destination || '').toUpperCase());
 }
 
 // ─────────────────────────────────────────────
@@ -141,6 +141,11 @@ function buildHotelRouteKey(params) {
 // ─────────────────────────────────────────────────────────────
 async function get(params, contentType = 'flight') {
   try {
+    if (!params.origin && !params.destination) {
+      logger.warn('FareCache.get: skipping — both origin and destination are null');
+      return { hit: false, volatile: false };
+    }
+
     const routeKey = contentType === 'hotel'
       ? buildHotelRouteKey(params)
       : buildRouteKey(params);
