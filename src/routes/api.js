@@ -17,10 +17,10 @@
  *   SUPABASE_URL
  *   SUPABASE_SERVICE_ROLE_KEY
  *   REDIS_URL
- *   BODRLESS_LLM_ENDPOINT
- *   BODRLESS_LLM_KEY
- *   ALLOWED_ORIGINS        (comma-separated, e.g. https://wakanow.com,https://api.wakanow.com)
- *   ADAPTER_ENCRYPTION_KEY (32-byte hex — generate: openssl rand -hex 32)
+ *   BODRLESS_LLM_ENDPOINT       (Groq endpoint — default LLM)
+ *   BODRLESS_LLM_KEY            (Groq API key — default LLM)
+ *   ALLOWED_ORIGINS             (comma-separated, e.g. https://wakanow.com,https://api.wakanow.com)
+ *   ADAPTER_ENCRYPTION_KEY      (32-byte hex — generate: openssl rand -hex 32)
  *
  * Render setup — two services:
  *   Web:    node api_v2.js
@@ -80,17 +80,23 @@ const CONFIG = {
   supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   redisUrl:    process.env.REDIS_URL || 'redis://localhost:6379',
 
+  // Default LLM is Groq. Partners can override per-request with any
+  // OpenAI-compatible provider (ChatGPT, Anthropic, Gemini, etc.)
+  // The partner's api_key is used in-flight only — never stored or logged.
   defaultLlm: {
-    provider: 'bodrless',
-    model:    'bodrless-v2',
-    endpoint: process.env.BODRLESS_LLM_ENDPOINT || 'https://llm.bodrless.com/v1/chat',
+    provider: 'groq',
+    model:    process.env.BODRLESS_LLM_MODEL || 'llama-3.3-70b-versatile',
+    endpoint: process.env.BODRLESS_LLM_ENDPOINT || 'https://api.groq.com/openai/v1/chat/completions',
     apiKey:   process.env.BODRLESS_LLM_KEY,
   },
 
-  // FIX: auth_config encryption key — 32-byte hex string
+  // auth_config encryption key — 32-byte hex string
   // Generate: openssl rand -hex 32
   // Set in Render env vars as ADAPTER_ENCRYPTION_KEY
   adapterEncryptionKey: process.env.ADAPTER_ENCRYPTION_KEY || null,
+
+  // Agency portal — where new agencies sign up
+  agencyPortalUrl: 'https://bodrless-agency-portal.vercel.app/dashboard',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -117,11 +123,33 @@ function getRequestLogger(req) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SUPABASE
+// STARTUP CHECKS
 // ═══════════════════════════════════════════════════════════════════════════
+
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
   throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
 }
+
+if (!CONFIG.defaultLlm.apiKey || !CONFIG.defaultLlm.endpoint) {
+  logger.warn(
+    'BODRLESS_LLM_KEY or BODRLESS_LLM_ENDPOINT not set — ' +
+    'default Groq LLM is not configured. ' +
+    'All search requests must include a per-request llm override, ' +
+    'otherwise searches will return clarifying questions with low confidence.'
+  );
+}
+
+if (!CONFIG.adapterEncryptionKey) {
+  logger.warn(
+    'ADAPTER_ENCRYPTION_KEY not set — ' +
+    'live inventory adapter auth_config will be stored unencrypted. ' +
+    'Generate with: openssl rand -hex 32'
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUPABASE
+// ═══════════════════════════════════════════════════════════════════════════
 
 const supabase = createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey, {
   auth: { persistSession: false },
@@ -135,7 +163,8 @@ async function dbHealthCheck() {
 // ═══════════════════════════════════════════════════════════════════════════
 // REDIS
 // ═══════════════════════════════════════════════════════════════════════════
-const redis = new Redis({
+
+const redis = new Redis(CONFIG.redisUrl, {
   maxRetriesPerRequest: 3,
   enableReadyCheck: true,
   retryStrategy: (times) => {
@@ -144,13 +173,36 @@ const redis = new Redis({
   },
 });
 
-redis.on('error', (err) => console.error('Redis error:', err.message));
-redis.on('connect', () => console.log('Redis connected'));
+redis.on('error', (err) => logger.error('Redis error', { error: err.message }));
+redis.on('connect', () => logger.info('Redis connected'));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // JOB QUEUES
+// FIX: Parse REDIS_URL properly so queues work on Render managed Redis,
+// Upstash, or any remote Redis — not just localhost:6379.
 // ═══════════════════════════════════════════════════════════════════════════
-const redisConfig = { redis: { port: 6379, host: 'localhost' } };
+
+function buildBullRedisConfig(redisUrl) {
+  try {
+    const url = new URL(redisUrl);
+    const config = {
+      host:     url.hostname,
+      port:     parseInt(url.port, 10) || 6379,
+      password: url.password || undefined,
+    };
+    // rediss:// means TLS — required for Upstash and some managed Redis providers
+    if (url.protocol === 'rediss:') {
+      config.tls = {};
+    }
+    return { redis: config };
+  } catch {
+    // Fallback to localhost if URL is malformed
+    logger.warn('Could not parse REDIS_URL — falling back to localhost:6379');
+    return { redis: { host: 'localhost', port: 6379 } };
+  }
+}
+
+const redisConfig = buildBullRedisConfig(CONFIG.redisUrl);
 
 const searchQueue       = new Queue('search',       redisConfig);
 const inventoryQueue    = new Queue('inventory',    redisConfig);
@@ -164,7 +216,7 @@ const notificationQueue = new Queue('notification', redisConfig);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// AUTH CONFIG ENCRYPTION — FIX 2
+// AUTH CONFIG ENCRYPTION
 // Adapter credentials (OAuth tokens, API keys, HMAC secrets) are encrypted
 // at rest using AES-256-CBC before being written to Supabase.
 // The plaintext key never leaves memory and is never logged.
@@ -187,7 +239,7 @@ function encryptAuthConfig(authConfig) {
     };
   } catch (err) {
     logger.error('auth_config encryption failed', { error: err.message });
-    return authConfig; // fail open so adapter config still saves, just unencrypted
+    return authConfig;
   }
 }
 
@@ -203,11 +255,10 @@ function decryptAuthConfig(stored) {
     return JSON.parse(decrypted.toString('utf8'));
   } catch (err) {
     logger.error('auth_config decryption failed', { error: err.message });
-    return null; // fail closed — don't send a broken token to the adapter
+    return null;
   }
 }
 
-// Encrypt auth_config on each adapter component before persisting
 function encryptAdapterConfig(adapterConfig) {
   if (!adapterConfig) return adapterConfig;
   const encrypted = {};
@@ -221,7 +272,6 @@ function encryptAdapterConfig(adapterConfig) {
   return encrypted;
 }
 
-// Decrypt auth_config on each adapter component after loading from DB
 function decryptAdapterConfig(adapterConfig) {
   if (!adapterConfig) return adapterConfig;
   const decrypted = {};
@@ -417,13 +467,21 @@ const webhookConfigSchema = Joi.object({
   secret: Joi.string().max(200).optional(),
 });
 
+const bookingsQuerySchema = Joi.object({
+  status:    Joi.string().valid('confirmed', 'failed', 'cancelled').optional(),
+  from_date: Joi.string().isoDate().optional(),
+  to_date:   Joi.string().isoDate().optional(),
+  limit:     Joi.number().integer().min(1).max(100).default(100),
+  offset:    Joi.number().integer().min(0).default(0),
+});
+
 const liveComponentAdapterSchema = Joi.object({
   search_url:  Joi.string().uri().max(500).required(),
   hold_url:    Joi.string().uri().max(500).required(),
   confirm_url: Joi.string().uri().max(500).required(),
   cancel_url:  Joi.string().uri().max(500).required(),
   auth_type:   Joi.string().valid('bearer', 'hmac', 'api_key', 'none').default('bearer'),
-  auth_config: Joi.object().optional(), // encrypted before storage
+  auth_config: Joi.object().optional(),
   timeout_ms:  Joi.number().integer().min(1000).max(30000).default(10000),
   version:     Joi.string().valid('v1').default('v1'),
 }).optional();
@@ -639,7 +697,9 @@ async function authenticate(req, res, next) {
   try {
     const agency = await resolveApiKey(req);
     if (!agency) {
-      const err = new Error('Invalid or missing API key. Get yours at POST /api/agencies/signup');
+      const err = new Error(
+        `Invalid or missing API key. Sign up at ${CONFIG.agencyPortalUrl}`
+      );
       err.code = 'AUTH_REQUIRED';
       err.statusCode = 401;
       return next(err);
@@ -716,7 +776,7 @@ function errorHandler(err, req, res, next) {
   const messageMap = {
     VALIDATION_ERROR:           err.message,
     RATE_LIMIT_EXCEEDED:        'Rate limit exceeded. Please retry later.',
-    AUTH_REQUIRED:              'Authentication required. Pass a valid x-api-key header.',
+    AUTH_REQUIRED:              `Authentication required. Pass a valid x-api-key header. Sign up at ${CONFIG.agencyPortalUrl}`,
     IP_NOT_ALLOWED:             'Request origin IP is not allowlisted for this API key.',
     SIGNATURE_INVALID:          'Request signature invalid or timestamp expired. Check X-Bodrless-Timestamp and X-Bodrless-Signature headers.',
     NOT_FOUND:                  err.message || 'Resource not found',
@@ -742,6 +802,10 @@ function errorHandler(err, req, res, next) {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LLM SERVICE
+// Default: Groq (llama-3.3-70b-versatile) — fast, cheap, great for parsing.
+// Partners can override per-request with any OpenAI-compatible provider:
+// ChatGPT, Anthropic, Gemini, Azure, or a custom endpoint.
+// The partner's api_key is used in-flight only — never written to DB or logs.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const SYSTEM_PROMPT = `You are a travel orchestration assistant. Extract structured trip parameters from the user's request.
@@ -782,25 +846,31 @@ async function parsePrompt(prompt, agency, conversationHistory = [], llmOverride
 
   let llmEndpoint, llmModel, llmApiKey, providerLabel;
 
+  // Priority 1: per-request partner LLM override (ChatGPT, Anthropic, Gemini, etc.)
+  // The partner's api_key is used here and nowhere else — never stored.
   if (llmOverride?.endpoint && llmOverride?.api_key) {
     llmEndpoint   = llmOverride.endpoint;
     llmModel      = llmOverride.model || 'default';
     llmApiKey     = llmOverride.api_key;
-    providerLabel = `ota:${llmOverride.provider || 'custom'}`;
+    providerLabel = `partner:${llmOverride.provider || 'custom'}`;
+
+  // Priority 2: agency-level LLM config (set in their portal settings)
   } else if (agency.llm_config?.endpoint) {
     llmEndpoint   = agency.llm_config.endpoint;
     llmModel      = agency.llm_config.model || 'default';
-    llmApiKey     = llmOverride?.api_key || CONFIG.defaultLlm.apiKey;
-    providerLabel = `ota:${agency.llm_config.provider || 'custom'}`;
+    llmApiKey     = agency.llm_config.api_key || CONFIG.defaultLlm.apiKey;
+    providerLabel = `agency:${agency.llm_config.provider || 'custom'}`;
+
+  // Priority 3: Bodrless default — Groq / llama-3.3-70b-versatile
   } else {
     llmEndpoint   = CONFIG.defaultLlm.endpoint;
     llmModel      = CONFIG.defaultLlm.model;
     llmApiKey     = CONFIG.defaultLlm.apiKey;
-    providerLabel = 'bodrless';
+    providerLabel = 'bodrless:groq';
   }
 
   try {
-    logger.info('Calling LLM', { agencyId: agency.id, provider: providerLabel });
+    logger.info('Calling LLM', { agencyId: agency.id, provider: providerLabel, model: llmModel });
 
     const response = await axios.post(llmEndpoint, {
       model: llmModel, messages, temperature: 0.1, max_tokens: 1500,
@@ -837,12 +907,9 @@ async function parsePrompt(prompt, agency, conversationHistory = [], llmOverride
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LIVE ADAPTER CLIENT
-// Single egress point for all outbound calls to agency live inventory.
-// auth_config is decrypted before use — never logged, never passed externally.
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function resolveAdapterAuth(adapter) {
-  // auth_config is already decrypted in-memory by this point (decryptAdapterConfig runs on load)
   const cfg = adapter.auth_config || {};
   if (adapter.auth_type === 'bearer')  return cfg.token  || '';
   if (adapter.auth_type === 'hmac')    return cfg.secret || '';
@@ -867,11 +934,6 @@ function buildAdapterHeaders(agency, adapter, payloadBody, authToken) {
   return headers;
 }
 
-/**
- * callLiveAdapter — single egress point to agency live inventory.
- * Receives the full agency object so it always uses real decrypted adapter config.
- * Returns null on failure so callers fall back to static/Bodrless inventory.
- */
 async function callLiveAdapter(agency, component, action, payload) {
   const adapter = agency.inventory_adapters?.[component];
   if (!adapter) return null;
@@ -904,7 +966,7 @@ async function callLiveAdapter(agency, component, action, payload) {
     logger.error('Live adapter call failed', {
       agencyId: agency.id, component, action, url, error: err.message,
     });
-    return null; // fail open — caller falls back
+    return null;
   }
 }
 
@@ -938,7 +1000,6 @@ function normalizeAdapterResponse(component, action, raw, adapter) {
                        : component === 'buses'     ? 'bus'
                        : component === 'trains'    ? 'train'
                        : component,
-        // Saga routing metadata — travels through buildPackages into holdComponent
         _source:  'ota_live',
         _adapter: {
           component,
@@ -948,7 +1009,6 @@ function normalizeAdapterResponse(component, action, raw, adapter) {
             confirm: adapter.confirm_url,
             cancel:  adapter.cancel_url,
           },
-          // NOTE: auth_config NOT included here — saga re-reads from agency object
         },
         metadata: item.metadata || { raw_id: item.id },
       })).filter(i => i.price > 0 && i.external_id),
@@ -986,7 +1046,6 @@ function normalizeAdapterResponse(component, action, raw, adapter) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function searchAgencyInventory(agency, component, tripParams) {
-  // 1. LIVE ADAPTER PATH
   if (agency.inventory_adapters?.[component]) {
     const liveResult = await callLiveAdapter(agency, component, 'search', {
       origin:         tripParams.origin,
@@ -1003,7 +1062,6 @@ async function searchAgencyInventory(agency, component, tripParams) {
     }
   }
 
-  // 2. STATIC UPLOAD FALLBACK
   const table = component;
   let query = supabase.from(table).select('*')
     .eq('agency_id', agency.id)
@@ -1039,7 +1097,6 @@ async function searchInventory(agency, tripParams, options = {}) {
   const results = { flights: [], hotels: [], transfers: [], buses: [], trains: [], sources: [] };
 
   try {
-    // Flights
     if (control.flights !== 'bodrless') {
       const r = await searchAgencyInventory(agency, 'flights', tripParams);
       results.flights.push(...r);
@@ -1051,7 +1108,6 @@ async function searchInventory(agency, tripParams, options = {}) {
       if (r.length) results.sources.push('bodrless:flights');
     }
 
-    // Hotels
     if (control.hotels !== 'bodrless') {
       const r = await searchAgencyInventory(agency, 'hotels', tripParams);
       results.hotels.push(...r);
@@ -1063,7 +1119,6 @@ async function searchInventory(agency, tripParams, options = {}) {
       if (r.length) results.sources.push('bodrless:hotels');
     }
 
-    // Transfers
     if (control.transfers !== 'bodrless') {
       const r = await searchAgencyInventory(agency, 'transfers', tripParams);
       results.transfers.push(...r);
@@ -1075,7 +1130,6 @@ async function searchInventory(agency, tripParams, options = {}) {
       if (r.length) results.sources.push('bodrless:transfers');
     }
 
-    // Buses
     if (transportMode === 'bus' || transportMode === 'any') {
       if (control.buses !== 'bodrless') {
         const r = await searchAgencyInventory(agency, 'buses', tripParams);
@@ -1089,7 +1143,6 @@ async function searchInventory(agency, tripParams, options = {}) {
       }
     }
 
-    // Trains
     if (transportMode === 'train' || transportMode === 'any') {
       if (control.trains !== 'bodrless') {
         const r = await searchAgencyInventory(agency, 'trains', tripParams);
@@ -1171,7 +1224,6 @@ async function orchestrate(searchPrompt, agency, options = {}) {
     });
   }
 
-  // Pass full agency object — searchInventory needs it for live adapter calls
   const inventory = await searchInventory(agency, tripParams, {
     inventoryControl,
     maxResults,
@@ -1206,8 +1258,6 @@ async function orchestrate(searchPrompt, agency, options = {}) {
   };
 }
 
-// Packages carry _source/_adapter metadata for saga routing.
-// NOTE: _adapter does NOT carry auth_config — saga re-reads from the real agency object.
 function buildPackages(inventory, tripParams, options) {
   const { maxResults, currency } = options;
   const packages   = [];
@@ -1245,7 +1295,7 @@ function buildPackages(inventory, tripParams, options) {
         ...transport,
         transportType: transport.transport_type || 'flight',
         _source:       transport.source || 'bodrless',
-        _adapter:      transport._adapter || null, // adapter URL metadata only — no credentials
+        _adapter:      transport._adapter || null,
       },
       hotel: hotel ? {
         name:          hotel.name,
@@ -1280,9 +1330,6 @@ function buildPackages(inventory, tripParams, options) {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BOOKING SAGA
-// FIX 1: holdComponent/cancelComponent receive the real agency object so
-// callLiveAdapter always uses decrypted credentials from agency.inventory_adapters,
-// not a reconstructed stub.
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function executeBookingSaga(bookingData, agency, options = {}) {
@@ -1302,7 +1349,6 @@ async function executeBookingSaga(bookingData, agency, options = {}) {
   });
 
   try {
-    // Pass agency into every saga step so live adapter calls use real credentials
     sagaState.steps.hold_transport = await holdComponent('flights', bookingData.transport, agency, sandbox);
     await updateSagaStep(sagaId, 'hold_transport', sagaState.steps.hold_transport);
 
@@ -1342,16 +1388,10 @@ async function executeBookingSaga(bookingData, agency, options = {}) {
   }
 }
 
-// ── Component Router ───────────────────────────────────────────────────────
-// Routes hold/confirm/cancel to live adapter OR Bodrless suppliers.
-// FIX 1: always receives real agency object — uses agency.inventory_adapters
-// for decrypted credentials, not the stale _adapter stub on the item.
-
 async function holdComponent(type, item, agency, sandbox) {
   if (!item || (!item.external_id && !item._source)) return { status: 'skipped' };
   if (sandbox) return { status: 'held', holdRef: `HOLD-SANDBOX-${nanoid(6)}`, sandbox: true };
 
-  // LIVE ADAPTER PATH — use real agency object (credentials already decrypted in memory)
   if (item._source === 'ota_live') {
     const result = await callLiveAdapter(agency, type, 'hold', {
       item,
@@ -1361,7 +1401,6 @@ async function holdComponent(type, item, agency, sandbox) {
     throw Object.assign(new Error(`Live ${type} hold failed`), { step: type });
   }
 
-  // BODRLESS SUPPLIER PATH — wire real adapters here
   if (type === 'flights' || type === 'buses' || type === 'trains') {
     return { status: 'held', holdRef: `HOLD-${(item.airline || item.operator || type).toString().replace(/\s+/g, '-')}-${nanoid(8)}` };
   }
@@ -1374,14 +1413,12 @@ async function confirmComponent(type, step, agency, sandbox) {
   if (sandbox) return { status: 'confirmed', sandbox: true };
   if (!step || step.status !== 'held') return { status: 'skipped' };
 
-  // LIVE ADAPTER PATH
   if (step._source === 'ota_live') {
     const result = await callLiveAdapter(agency, type, 'confirm', { hold_ref: step.holdRef });
     if (result) return result;
     throw Object.assign(new Error(`Live ${type} confirm failed`), { step: type });
   }
 
-  // BODRLESS PATH — wire real confirm calls here
   return { status: 'confirmed' };
 }
 
@@ -1389,13 +1426,11 @@ async function cancelComponent(type, step, agency) {
   if (!step || step.status !== 'held') return;
   if (step.sandbox) { logger.info('Sandbox: skipping live cancel'); return; }
 
-  // LIVE ADAPTER PATH
   if (step._source === 'ota_live') {
     await callLiveAdapter(agency, type, 'cancel', { hold_ref: step.holdRef });
     return;
   }
 
-  // BODRLESS PATH — wire real cancel calls here
   logger.info(`Cancelling ${type} hold`, { holdRef: step.holdRef });
 }
 
@@ -1555,7 +1590,12 @@ app.use(requestContext);
 
 app.get('/health', async (req, res) => {
   const dbHealthy = await dbHealthCheck();
-  res.status(dbHealthy ? 200 : 503).json({ status: dbHealthy ? 'healthy' : 'unhealthy', version: CONFIG.apiVersion, timestamp: new Date().toISOString() });
+  res.status(dbHealthy ? 200 : 503).json({
+    status:    dbHealthy ? 'healthy' : 'unhealthy',
+    version:   CONFIG.apiVersion,
+    llm:       CONFIG.defaultLlm.apiKey ? 'groq:configured' : 'not_configured',
+    timestamp: new Date().toISOString(),
+  });
 });
 
 const apiV1 = express.Router();
@@ -1567,7 +1607,7 @@ apiV1.get('/', (req, res) => {
     name: 'Bodrless API', version: CONFIG.apiVersion,
     description: 'Single endpoint. BYO LLM. BYO Inventory. Live Adapters. Saga bookings. Webhooks. Sandbox. Zero breaking changes.',
     what_you_get: [
-      'Natural language parsing — any language, your LLM or ours',
+      'Natural language parsing — any language, your LLM or ours (Groq / llama-3.3-70b-versatile)',
       'Trip orchestration: flights + hotels + buses + trains + transfers',
       'Live inventory adapters — plug in Booking.com, Expedia, any GDS via 4 endpoints',
       'Inventory control per-request: yours first, Bodrless fills gaps',
@@ -1594,8 +1634,9 @@ apiV1.get('/', (req, res) => {
       'POST /api/v1/webhooks/configure':       'Configure webhook delivery',
     },
     authentication: 'x-api-key: your_key',
-    sandbox: 'X-Sandbox: true — no real charges, no real holds',
-    contact: 'hello@bodrless.com',
+    signup:         CONFIG.agencyPortalUrl,
+    sandbox:        'X-Sandbox: true — no real charges, no real holds',
+    contact:        'hello@bodrless.com',
   });
 });
 
@@ -1613,6 +1654,12 @@ apiV1.get('/capabilities', (req, res) => {
     booking_modes: {
       bodrless_fills: { description: 'You book flights/hotels; Bodrless confirms gap components only.', use_case: 'Wakanow, TravelStart', components: ['bus', 'train', 'transfer'] },
       bodrless_full:  { description: 'Bodrless runs full saga — hold, payment, confirm, notify.',        use_case: 'Agencies without a booking stack', components: ['flight', 'hotel', 'bus', 'train', 'transfer'] },
+    },
+    llm: {
+      default:     'Groq / llama-3.3-70b-versatile',
+      bring_your_own: true,
+      providers:   ['openai', 'anthropic', 'gemini', 'groq', 'azure', 'custom'],
+      note:        'Pass llm.endpoint + llm.api_key per search request. Your key is used in-flight only — never stored.',
     },
     features: {
       natural_language: true, languages: ['en', 'sw', 'fr', 'ar', 'any'],
@@ -1659,8 +1706,7 @@ apiV1.post('/search', createRateLimiter('search'), validate(searchSchema), async
 
     const job = await searchQueue.add('search', {
       searchPrompt,
-      agencyId: req.context.agency.id,
-      agency:   req.context.agency,
+      agencyId: req.context.agency.id,   // FIX: pass agencyId only — worker fetches fresh from DB
       options: {
         conversationHistory: req.body.conversation_history || [],
         previousParams:      req.body.previous_params || null,
@@ -1768,7 +1814,9 @@ apiV1.post('/book', createRateLimiter('book'), validate(bookSchema), async (req,
     }
 
     const job = await bookingQueue.add('book', {
-      bookingData, agency: req.context.agency, requestId: req.context.requestId,
+      bookingData,
+      agencyId: req.context.agency.id,  // FIX: pass agencyId only — worker fetches fresh from DB
+      requestId: req.context.requestId,
     }, { attempts: 1, timeout: 60000 });
 
     getRequestLogger(req).info('Full booking saga queued', { jobId: job.id });
@@ -1839,17 +1887,32 @@ apiV1.get('/inventory/upload/:job_id', async (req, res, next) => {
 
 apiV1.get('/bookings', async (req, res, next) => {
   try {
-    const { status, from_date, to_date, limit = 100, offset = 0 } = req.query;
+    // Validate query params to prevent malformed date strings reaching Supabase
+    const { error: qError, value: qValue } = bookingsQuerySchema.validate(req.query, { stripUnknown: true });
+    if (qError) {
+      const err = new Error(qError.details.map(d => d.message).join('; '));
+      err.code = 'VALIDATION_ERROR'; err.statusCode = 400; throw err;
+    }
+
+    const { status, from_date, to_date, limit, offset } = qValue;
+
     let query = supabase.from('bookings').select('*')
       .eq('agency_id', req.context.agency.id)
       .order('created_at', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+      .range(offset, offset + limit - 1);
+
     if (status)    query = query.eq('status', status);
     if (from_date) query = query.gte('created_at', from_date);
     if (to_date)   query = query.lte('created_at', to_date);
+
     const { data, error } = await query;
     if (error) throw error;
-    res.json({ success: true, bookings: data || [], count: (data || []).length, pagination: { limit: parseInt(limit), offset: parseInt(offset) }, api_version: CONFIG.apiVersion, request_id: req.context.requestId });
+
+    res.json({
+      success: true, bookings: data || [], count: (data || []).length,
+      pagination: { limit, offset },
+      api_version: CONFIG.apiVersion, request_id: req.context.requestId,
+    });
   } catch (err) { next(err); }
 });
 
@@ -1885,13 +1948,8 @@ apiV1.post('/webhooks/configure', validate(webhookConfigSchema), async (req, res
   } catch (err) { next(err); }
 });
 
-// ── LIVE ADAPTER CONFIG ────────────────────────────────────────────────────
-// FIX 2: auth_config is encrypted (AES-256-CBC) before writing to Supabase.
-// FIX 3: GET /agency/adapters strips credentials from response.
-
 apiV1.post('/agency/adapters', validate(agencyAdapterConfigSchema), async (req, res, next) => {
   try {
-    // Encrypt auth_config on every component before persisting
     const encryptedConfig = encryptAdapterConfig(req.body);
 
     const { error } = await supabase.from('agencies').update({
@@ -1901,7 +1959,6 @@ apiV1.post('/agency/adapters', validate(agencyAdapterConfigSchema), async (req, 
 
     if (error) throw error;
 
-    // Bust cache so next request re-loads and decrypts fresh config
     await redis.del(`agency:key:${req.headers['x-api-key']?.substring(0, 16)}`);
 
     getRequestLogger(req).info('Agency adapters configured', {
@@ -1924,7 +1981,7 @@ apiV1.get('/agency/adapters', async (req, res, next) => {
   try {
     const adapters = req.context.agency.inventory_adapters || {};
 
-    // FIX 3: Strip credentials before returning — never expose auth_config in API responses
+    // Strip credentials before returning — never expose auth_config in API responses
     const safeAdapters = {};
     Object.entries(adapters).forEach(([component, adapter]) => {
       if (!adapter) return;
@@ -1958,25 +2015,55 @@ apiV1.get('/agency/adapters', async (req, res, next) => {
 app.use('/api/v1', apiV1);
 app.use(errorHandler);
 app.use((req, res) => {
-  res.status(404).json({ success: false, error: { message: 'Endpoint not found', code: 'NOT_FOUND', request_id: req.context?.requestId }, api_version: CONFIG.apiVersion });
+  res.status(404).json({
+    success: false,
+    error: { message: 'Endpoint not found', code: 'NOT_FOUND', request_id: req.context?.requestId },
+    api_version: CONFIG.apiVersion,
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WORKERS
+// FIX: Workers now fetch the agency fresh from DB using agencyId.
+// This avoids the encrypt/decrypt mismatch that occurred when the full
+// agency object (already decrypted in memory) was serialised into Bull
+// and then decrypted again in the worker — silently corrupting adapter config.
 // ═══════════════════════════════════════════════════════════════════════════
+
+async function fetchAgencyForWorker(agencyId) {
+  const { data: agency, error } = await supabase
+    .from('agencies')
+    .select('id, name, plan, status, webhook_url, llm_config, inventory_config, rate_limits, allowed_ips, signing_secret, created_at, inventory_adapters')
+    .eq('id', agencyId)
+    .single();
+
+  if (error || !agency) throw new Error(`Worker could not load agency ${agencyId}: ${error?.message}`);
+
+  // Parse JSON fields stored as strings
+  ['llm_config', 'inventory_config', 'rate_limits', 'allowed_ips', 'inventory_adapters'].forEach(field => {
+    if (agency[field] && typeof agency[field] === 'string') {
+      try { agency[field] = JSON.parse(agency[field]); } catch { agency[field] = null; }
+    }
+  });
+
+  // Decrypt adapter config fresh from DB — always encrypted at rest
+  if (agency.inventory_adapters) {
+    agency.inventory_adapters = decryptAdapterConfig(agency.inventory_adapters);
+  }
+
+  return agency;
+}
 
 if (process.argv.includes('--worker')) {
 
   searchQueue.process(async (job) => {
-    const { searchPrompt, agency, options } = job.data;
-    logger.info('Processing search', { jobId: job.id, agencyId: agency.id });
+    const { agencyId, options, requestId } = job.data;
+    logger.info('Processing search', { jobId: job.id, agencyId });
 
-    // Decrypt adapter config after deserialising from Bull job payload
-    if (agency.inventory_adapters) {
-      agency.inventory_adapters = decryptAdapterConfig(agency.inventory_adapters);
-    }
+    // FIX: fetch agency fresh from DB — credentials decrypted cleanly here
+    const agency = await fetchAgencyForWorker(agencyId);
 
-    const result = await orchestrate(searchPrompt, agency, {
+    const result = await orchestrate(job.data.searchPrompt, agency, {
       conversationHistory: options.conversationHistory,
       previousParams:      options.previousParams,
       inventoryControl:    options.inventoryControl || {},
@@ -1986,8 +2073,8 @@ if (process.argv.includes('--worker')) {
     });
 
     await supabase.from('trip_searches').insert({
-      agency_id: agency.id, session_id: options.sessionId || result.sessionId,
-      prompt: searchPrompt, destination: result.tripParams?.destination || null,
+      agency_id: agencyId, session_id: options.sessionId || result.sessionId,
+      prompt: job.data.searchPrompt, destination: result.tripParams?.destination || null,
       origin: result.tripParams?.origin || null, passengers: result.tripParams?.passengers || 1,
       budget: result.tripParams?.budget || null, nights: result.tripParams?.nights || null,
       packages_returned: result.packages?.length || 0, channel: 'api', converted: false,
@@ -1996,7 +2083,7 @@ if (process.argv.includes('--worker')) {
 
     if (agency.webhook_url) {
       await webhookQueue.add('webhook', {
-        agencyId: agency.id, event: 'search.completed',
+        agencyId, event: 'search.completed',
         payload: { job_id: job.id, session_id: result.sessionId, package_count: result.packages?.length || 0, trip_params: result.tripParams, sources: result.sources },
       });
     }
@@ -2010,13 +2097,11 @@ if (process.argv.includes('--worker')) {
   });
 
   bookingQueue.process(async (job) => {
-    const { bookingData, agency } = job.data;
-    logger.info('Processing booking saga', { jobId: job.id, agencyId: agency.id });
+    const { bookingData, agencyId } = job.data;
+    logger.info('Processing booking saga', { jobId: job.id, agencyId });
 
-    // Decrypt adapter config after deserialising from Bull job payload
-    if (agency.inventory_adapters) {
-      agency.inventory_adapters = decryptAdapterConfig(agency.inventory_adapters);
-    }
+    // FIX: fetch agency fresh from DB — credentials decrypted cleanly here
+    const agency = await fetchAgencyForWorker(agencyId);
 
     const result = await executeBookingSaga(bookingData, agency, { sandbox: bookingData.sandbox });
 
@@ -2024,7 +2109,7 @@ if (process.argv.includes('--worker')) {
       await notifyBookingConfirmed({
         booking: {
           bookingRef: result.bookingRef, guestName: bookingData.guest.name, guestPhone: bookingData.guest.phone,
-          passengers: bookingData.passengers, agencyId: agency.id, totalPrice: bookingData.totalPrice,
+          passengers: bookingData.passengers, agencyId, totalPrice: bookingData.totalPrice,
           checkIn: bookingData.summary?.departureDate, specialRequests: bookingData.specialRequests,
         },
         flight:   bookingData.transport?.airline ? bookingData.transport : null,
@@ -2046,7 +2131,7 @@ if (process.argv.includes('--worker')) {
     return await deliverWebhook(agencyId, event, payload);
   });
 
-  console.log('Bodrless workers running...');
+  logger.info('Bodrless workers running...');
 
 } else {
 
