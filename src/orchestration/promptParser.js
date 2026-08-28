@@ -28,6 +28,11 @@
  *
  *  6. TRIP IDENTITY — unchanged from v2 but exposed as `_tripId` on the
  *     result so the engine can compare without re-computing.
+ *
+ *  FIX (origin fallback) — _resolveOriginFallback now only inherits
+ *  session origin when it's genuinely the same trip continuing
+ *  (same destination + low fresh score). Fresh prompts and greetings
+ *  no longer silently inherit a stale origin from a previous session.
  */
 
 const Groq = require('groq-sdk');
@@ -135,8 +140,6 @@ const DESTINATION_FIXES = {
   'washingtondc': 'Washington', 'dc': 'Washington',
 };
 
-// EA hubs we can use as default origin when the agency is Kenya-based
-// and the user doesn't specify.
 const EA_DEFAULT_ORIGINS = ['Nairobi', 'Mombasa', 'Kampala', 'Dar es Salaam'];
 const DEFAULT_ORIGIN = 'Nairobi';
 
@@ -199,8 +202,6 @@ function resolveSafariDestination(primaryCity) {
 // ─────────────────────────────────────────────
 // FRESH-PROMPT vs CLARIFICATION-ANSWER SCORER
 // ─────────────────────────────────────────────
-// Returns a score 0–1. > 0.5 = treat as a fresh trip prompt.
-// This replaces the brittle `wordCount > 10` heuristic.
 
 const TRIP_INTENT_SIGNALS = [
   /\bplan\s+(?:me\s+)?a\s+trip\b/i,
@@ -222,7 +223,7 @@ const TRIP_INTENT_SIGNALS = [
 
 const CLARIFICATION_SIGNALS = [
   /^(?:yes|no|y|n|ok|okay|sure|nope|yeah|yep|nah)$/i,
-  /^(?:nairobi|mombasa|kampala|dar|addis|kigali|entebbe)$/i, // single city answer
+  /^(?:nairobi|mombasa|kampala|dar|addis|kigali|entebbe)$/i,
   /^(?:january|february|march|april|may|june|july|august|september|october|november|december)$/i,
   /^\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
   /^(?:next\s+week|this\s+weekend|tomorrow|in\s+\d+\s+(?:days?|weeks?))$/i,
@@ -234,7 +235,6 @@ function _scoreFreshPrompt(prompt) {
   const lower = prompt.toLowerCase().trim();
   const words = lower.split(/\s+/).filter(Boolean).length;
 
-  // Very short responses are almost certainly clarification answers
   if (words <= 3) {
     const isClarif = CLARIFICATION_SIGNALS.some(p => p.test(lower));
     return isClarif ? 0.05 : 0.3;
@@ -246,21 +246,19 @@ function _scoreFreshPrompt(prompt) {
     if (signal.test(lower)) { score += 0.15; hits++; }
   }
 
-  // Word count contribution (8+ words strongly suggests a trip prompt)
   if (words >= 20) score += 0.3;
   else if (words >= 12) score += 0.2;
   else if (words >= 8) score += 0.1;
 
-  // Budget mention is a very strong trip signal
   if (/\b(?:kes|ksh|\d+k)\b/i.test(lower) && /\d/.test(lower)) score += 0.25;
+
+  // Greetings are strong fresh signals — "hi", "hello", "help me" etc.
+  if (/^(?:hi|hello|hey|hii|good\s+(?:morning|afternoon|evening))\b/i.test(lower)) score += 0.4;
+  if (/\bhelp\s+me\b|\bcan\s+you\s+help\b|\bi\s+need\s+help\b/i.test(lower)) score += 0.3;
 
   return Math.min(score, 1.0);
 }
 
-/**
- * isFreshTripPrompt — exported so the webhook can use it directly
- * instead of the old word-count heuristic.
- */
 function isFreshTripPrompt(prompt) {
   return _scoreFreshPrompt(prompt) >= 0.45;
 }
@@ -268,8 +266,6 @@ function isFreshTripPrompt(prompt) {
 // ─────────────────────────────────────────────
 // CONFIDENCE SCORER
 // ─────────────────────────────────────────────
-// Scores how complete a parsed result is (0–1).
-// Engine uses this to decide whether to proceed or ask.
 
 function _scoreConfidence(parsed) {
   let score = 0;
@@ -282,7 +278,6 @@ function _scoreConfidence(parsed) {
   if (parsed.budget)         score += w.budget;
   if (parsed.returnDate)     score += w.returnDate;
 
-  // Multi-trip: if trips[] is present and non-empty, confidence is high
   if (Array.isArray(parsed.trips) && parsed.trips.length > 1) score = Math.max(score, 0.75);
 
   return Math.min(score, 1.0);
@@ -291,8 +286,6 @@ function _scoreConfidence(parsed) {
 // ─────────────────────────────────────────────
 // MISSING FIELDS DETECTOR
 // ─────────────────────────────────────────────
-// Returns an ordered list of fields the engine should ask about.
-// Ordered by importance: destination > origin > departureDate.
 
 function _detectMissingFields(parsed) {
   const missing = [];
@@ -492,7 +485,6 @@ function _normalizeTripLegsFromSession(trips, topLevel) {
 function _parseWithRules(prompt) {
   const lower = prompt.toLowerCase().trim();
 
-  // ── Destination ────────────────────────────────────────────────────────
   let destination = null;
   const simpleRoute = lower.match(/^([a-z][a-z\s]{1,20}?)\s+to\s+([a-z][a-z\s]{1,25}?)(?=\s+(?:from|for|on|in|with|and|\d)|[,.]|$)/i);
   if (simpleRoute) destination = simpleRoute[2].trim();
@@ -509,7 +501,6 @@ function _parseWithRules(prompt) {
     destination = _sanitizeDestination(destination) || _sanitizeDestination(resolveCountryToCity(destination.trim()));
   }
 
-  // ── Origin ─────────────────────────────────────────────────────────────
   let origin = null;
   if (simpleRoute) origin = simpleRoute[1].trim();
   if (!origin) {
@@ -522,18 +513,15 @@ function _parseWithRules(prompt) {
   if (origin) origin = resolveCountryToCity(origin.trim());
   if (origin && destination && _normStr(origin) === _normStr(destination)) origin = null;
 
-  // ── Nights / Dates ──────────────────────────────────────────────────────
   let nights = null;
   const nightsMatch = lower.match(/(\d+)\s*(?:night|nights|nts?|days?)\b/i);
   if (nightsMatch) {
     nights = parseInt(nightsMatch[1], 10);
-    // "5 days" = 4 nights
     if (/days?\b/i.test(nightsMatch[0]) && !(/nights?\b/i.test(nightsMatch[0]))) {
       nights = Math.max(1, nights - 1);
     }
   }
 
-  // ── Passengers ──────────────────────────────────────────────────────────
   let passengers = 1;
   const passMatch = lower.match(/(\d+)\s*(?:people|persons|pax|adults?|travelers?|of us|guests?|passengers?)\b/i);
   if (passMatch) passengers = Math.max(1, parseInt(passMatch[1], 10));
@@ -541,14 +529,12 @@ function _parseWithRules(prompt) {
   if (/\bfamily\b/i.test(lower) && passengers < 2) passengers = 2;
   if (/\bmy wife\b|\bmy husband\b|\bmy partner\b/i.test(lower)) passengers = Math.max(passengers, 2);
 
-  // ── Children ────────────────────────────────────────────────────────────
   const { hasChild, childAges, needsChildAge } = _detectChildInfo(prompt);
   let children = 0;
   const childMatch = lower.match(/(\d+)\s*(?:child(?:ren)?|kid(?:s)?|minor(?:s)?)\b/i);
   if (childMatch) children = parseInt(childMatch[1], 10);
   else if (hasChild) children = childAges.length || 1;
 
-  // ── Departure date ──────────────────────────────────────────────────────
   const months = {
     jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
     january:1,february:2,march:3,april:4,june:6,july:7,august:8,
@@ -580,7 +566,6 @@ function _parseWithRules(prompt) {
     if (isoMatch) departureDate = isoMatch[1];
   }
 
-  // Month-only date ("in October", "October")
   if (!departureDate) {
     const monthOnlyMatch = lower.match(/\b(?:in\s+|around\s+|during\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i);
     if (monthOnlyMatch) {
@@ -602,7 +587,6 @@ function _parseWithRules(prompt) {
     else if (/tomorrow/i.test(lower)) { today.setDate(today.getDate() + 1); departureDate = today.toISOString().split('T')[0]; }
   }
 
-  // ── Return date ─────────────────────────────────────────────────────────
   let returnDate = null;
   const returnDateMatch = lower.match(/\b(?:return(?:ing)?|back|fly\s+back)\s+(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i);
   if (returnDateMatch) {
@@ -618,14 +602,12 @@ function _parseWithRules(prompt) {
     returnDate = dep.toISOString().split('T')[0];
   }
 
-  // ── Budget ──────────────────────────────────────────────────────────────
   let budget = null;
   if (/\b(luxury|premium|high.?end|5.?star|five.?star|splurge|lavish)\b/i.test(lower)) budget = 'luxury';
   else if (/\b(cheap(?:est)?|budget|affordable|low.?cost|economic|value|bei nafuu)\b/i.test(lower)) budget = 'low';
   else if (/\b(mid|moderate|reasonable|standard|normal|average)\b/i.test(lower)) budget = 'mid';
   else if (/\b(high|upscale|4.?star|four.?star|nice|good|quality)\b/i.test(lower)) budget = 'high';
 
-  // ── BudgetKES ───────────────────────────────────────────────────────────
   let budgetKES = null;
   const kesMatch = lower.match(/(\d[\d,]*(?:\.\d+)?)\s*k?\s*(?:ksh|kes|shillings?|bob)\b/i)
     || lower.match(/(?:ksh|kes)\s*(\d[\d,]*(?:\.\d+)?)\b/i);
@@ -634,7 +616,6 @@ function _parseWithRules(prompt) {
     budgetKES = parseFloat(raw);
   }
   if (!budgetKES) {
-    // "150k" with context of budget
     const kMatch = lower.match(/\b(\d+)k\b/i);
     if (kMatch) {
       const num = parseInt(kMatch[1], 10);
@@ -642,13 +623,11 @@ function _parseWithRules(prompt) {
     }
   }
 
-  // ── Transport mode ──────────────────────────────────────────────────────
   let outboundTransportMode = null;
   if (/\bflight|fly|flying\b/i.test(lower)) outboundTransportMode = 'flight';
   else if (/\bbus|coach\b/i.test(lower)) outboundTransportMode = 'bus';
   else if (/\btrain|sgr|madaraka\b/i.test(lower)) outboundTransportMode = 'train';
 
-  // ── Meal plan ───────────────────────────────────────────────────────────
   let mealPlan = null;
   if (/\ball.?inclusive\b/i.test(lower)) mealPlan = 'all_inclusive';
   else if (/\bfull.?board\b/i.test(lower)) mealPlan = 'full_board';
@@ -657,7 +636,6 @@ function _parseWithRules(prompt) {
   else if (/\broom.?only|self.?catering\b/i.test(lower)) mealPlan = 'room_only';
   else if (/\bbreakfast\b/i.test(lower)) mealPlan = 'bed_and_breakfast';
 
-  // ── Property type / hotel ───────────────────────────────────────────────
   const propertyType = _extractPropertyType(prompt);
   let preferredHotel = null;
   const hotelNameMatch = lower.match(/\b(?:at|in|stay(?:ing)?\s+at|book(?:ing)?\s+at|hotel)\s+([a-z][a-z\s]{2,30}?)(?:\s+hotel)?\b/i);
@@ -666,11 +644,9 @@ function _parseWithRules(prompt) {
     if (!_extractPropertyType(candidate)) preferredHotel = candidate;
   }
 
-  // ── Activities ──────────────────────────────────────────────────────────
   const { hasSafari, excursions } = _extractActivities(prompt);
   const safariDestination = hasSafari ? resolveSafariDestination(destination || origin) : null;
 
-  // ── Hotel-only detection ────────────────────────────────────────────────
   const isHotelOnly = /\b(hotel only|just a hotel|only hotel|accommodation only|stay only|find me a hotel|looking for a hotel|need a hotel|hotel in|hotels? near|where to stay)\b/i.test(lower);
 
   const needsOriginClarification = !origin && !isHotelOnly;
@@ -720,6 +696,7 @@ destination: Real place name only, 1–4 words. Strip everything after a comma o
 origin: Single departure city only. null if not mentioned. NEVER guess.
   NEVER include route text like "to Kampala" in origin.
   CORRECT: "Nairobi" | WRONG: "nairobi to kampala"
+  For greetings like "Hi can you help me plan a trip to Nairobi" → origin: null
 
 nights: For "5 days" → 4 nights. For "5 nights" → 5. For "a week" → 7.
 
@@ -743,6 +720,7 @@ _missingFields: Array of fields the engine must ask about before searching.
   For "5 days in October going to Zanzibar" → _missingFields: ["origin"] (date is implicit from month)
   For "I want to go to Zanzibar" → _missingFields: ["origin", "departureDate"]
   For "Nairobi to Zanzibar October" → _missingFields: [] (proceed with Oct 1 as default)
+  For "Hi can you help me plan a trip to Nairobi" → _missingFields: ["origin", "departureDate"]
 
 ═══ MULTI-LEG RULES ═══
 
@@ -860,13 +838,11 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
     if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
 
-    // Sanitize destination
     if (parsed.destination) {
       const clean = _sanitizeDestination(parsed.destination);
       parsed.destination = clean || null;
     }
 
-    // Sanitize origin — never allow route text
     if (parsed.origin) {
       const routeStripped = parsed.origin.split(/\s+to\s+/i)[0].trim();
       const fromStripped  = routeStripped.replace(/^from\s+/i, '').trim();
@@ -879,7 +855,6 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
     }
 
-    // Normalize budgetKES
     if (parsed.budgetKES !== null && parsed.budgetKES !== undefined) {
       const raw = parsed.budgetKES;
       if (typeof raw === 'string') {
@@ -892,14 +867,12 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
     }
 
-    // Reconcile child fields
     const ruleChild = _detectChildInfo(prompt);
     parsed.children     = parsed.children     || (ruleChild.hasChild ? (ruleChild.childAges.length || 1) : 0);
     parsed.childAges    = (parsed.childAges?.length > 0 ? parsed.childAges : ruleChild.childAges) || [];
     parsed.needsChildAge = (parsed.children > 0 && parsed.childAges.length === 0);
     parsed.hasChild     = ruleChild.hasChild || parsed.children > 0;
 
-    // Trips[] cleanup
     if (Array.isArray(parsed.trips)) {
       parsed.trips = parsed.trips
         .map(t => ({
@@ -929,7 +902,6 @@ async function _groqAttempt(prompt, systemPrompt) {
       }
     }
 
-    // Destination plausibility check
     if (parsed.destination && !_isPlausiblePlaceName(parsed.destination)) {
       parsed.destination = null;
     }
@@ -937,7 +909,6 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (parsed.destination) parsed.destination = resolveCountryToCity(parsed.destination);
     if (parsed.origin)      parsed.origin      = resolveCountryToCity(parsed.origin);
 
-    // Fill gaps from rule-based
     const rule = _parseWithRules(prompt);
     if (!parsed.origin)      parsed.origin      = rule.origin      || null;
     if (!parsed.destination && !Array.isArray(parsed.trips)) parsed.destination = rule.destination || null;
@@ -946,13 +917,11 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (!parsed.passengers || parsed.passengers < 1) parsed.passengers = rule.passengers || 1;
     if (!parsed.departureDate) parsed.departureDate = rule.departureDate || null;
 
-    // Property type safety net
     if (parsed.preferredHotel) {
       const pt = _extractPropertyType(parsed.preferredHotel);
       if (pt) { parsed.propertyType = parsed.propertyType || pt; parsed.preferredHotel = null; }
     }
 
-    // Activity merge
     const { hasSafari, excursions: ruleExcursions } = _extractActivities(prompt);
     const groqActivities = Array.isArray(parsed.activityRequests) ? parsed.activityRequests : [];
     const groqSaidSafari = groqActivities.some(a => a === 'safari' || a === 'game_drive');
@@ -962,12 +931,10 @@ async function _groqAttempt(prompt, systemPrompt) {
       parsed.safariDestination = parsed.safariDestination || resolveSafariDestination(parsed.destination || parsed.origin);
     }
 
-    // Ensure _missingFields is populated
     if (!Array.isArray(parsed._missingFields)) {
       parsed._missingFields = _detectMissingFields(parsed);
     }
 
-    // Defaults
     parsed.preferredTransportProvider = parsed.preferredTransportProvider ?? null;
     parsed.preferredHotel             = parsed.preferredHotel             ?? null;
     parsed.propertyType               = parsed.propertyType               ?? null;
@@ -1001,33 +968,56 @@ async function _parseWithGroq(prompt) {
 }
 
 // ─────────────────────────────────────────────
-// NULL-ORIGIN RESOLVER
+// NULL-ORIGIN RESOLVER — FIXED
 // ─────────────────────────────────────────────
-// Applied as the LAST step before returning from parsePrompt.
-// If origin is still null and the trip requires transport, and the
-// destination is NOT an EA hub itself, we apply the EA default.
-// This prevents null→Destination supplier calls.
+// Only inherits session origin when it's genuinely the SAME trip
+// continuing (same destination + low fresh score).
+//
+// Previously this silently filled origin from any prior session,
+// meaning a greeting like "Hi can you help me plan a trip to Nairobi"
+// would inherit "Cape Town" from the last search and never ask.
+// Now greetings and fresh prompts always flow through to the engine's
+// clarification question.
 
 function _resolveOriginFallback(parsed, session) {
   if (parsed.origin) return parsed;
   if (parsed.isHotelOnly) return parsed;
-  if (Array.isArray(parsed.trips) && parsed.trips.length > 0) {
-    // Let the engine handle individual leg origins via session context
-    return parsed;
-  }
+  if (Array.isArray(parsed.trips) && parsed.trips.length > 0) return parsed;
 
-  // If the destination IS an EA hub, asking for origin is correct.
-  // But if we already know from session, use it.
-  if (session?.origin) {
+  // Only inherit session origin when ALL THREE conditions are true:
+  // 1. Session has an origin
+  // 2. The destination matches the previous session (same trip continuing)
+  // 3. The fresh score is low (this is a follow-up, not a new request)
+  const freshScore = parsed._freshScore || 0;
+  const sameDestination = session?.origin &&
+    session?.destination &&
+    parsed.destination &&
+    _normStr(parsed.destination) === _normStr(session.destination);
+
+  const isSameTripContinuation = sameDestination && freshScore < 0.3;
+
+  if (isSameTripContinuation) {
     parsed.origin = session.origin;
     parsed.needsOriginClarification = false;
-    logger.info('PromptParser: origin filled from session fallback', { origin: parsed.origin });
+    logger.info('PromptParser: origin filled from session fallback — same trip continuation', {
+      origin: parsed.origin,
+      freshScore: freshScore.toFixed(2),
+    });
     return parsed;
   }
 
-  // Keep needsOriginClarification = true so engine asks.
-  // Do NOT silently default to Nairobi — let the engine ask once,
-  // then remember for future turns.
+  // For anything else (new destination, greeting, fresh prompt) —
+  // keep needsOriginClarification = true so the engine asks properly.
+  // Never silently use a stale origin from a different trip.
+  if (!parsed.isHotelOnly) {
+    parsed.needsOriginClarification = true;
+    logger.info('PromptParser: origin not inherited — fresh prompt or new destination', {
+      freshScore: freshScore.toFixed(2),
+      sessionDest: session?.destination || null,
+      parsedDest:  parsed.destination   || null,
+    });
+  }
+
   return parsed;
 }
 
@@ -1035,17 +1025,6 @@ function _resolveOriginFallback(parsed, session) {
 // MAIN EXPORT
 // ─────────────────────────────────────────────
 
-/**
- * parsePrompt — parse a user message into structured trip params.
- *
- * Now includes:
- *  - _confidence score (0–1) so engine knows how complete the parse is
- *  - _missingFields[] so engine knows exactly what to ask
- *  - isFreshTripPrompt() signal baked into result as _freshScore
- *  - Null-origin resolution applied before return
- *  - Stale returnDate guard
- *  - Trip-aware session inheritance (unchanged from v2)
- */
 async function parsePrompt(prompt, session = null) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     const empty = _parseWithRules('');
@@ -1097,7 +1076,6 @@ async function parsePrompt(prompt, session = null) {
     const sessionDest = _normStr(session.destination);
     const tripStore   = session._tripStore ? { ...session._tripStore } : {};
 
-    // Archive current session trip when switching destination
     if (newDest && sessionDest && newDest !== sessionDest && session.origin) {
       tripStore[sessionDest] = {
         destination:   session.destination,
@@ -1109,7 +1087,6 @@ async function parsePrompt(prompt, session = null) {
     }
     raw._tripStore = tripStore;
 
-    // Always-inherit fields
     for (const key of ALWAYS_INHERIT) {
       if (currentParseHasTrips && TRIP_SCOPED.has(key)) continue;
       const currentVal = raw[key];
@@ -1124,7 +1101,6 @@ async function parsePrompt(prompt, session = null) {
       }
     }
 
-    // Trip-scoped inheritance
     if (!currentParseHasTrips) {
       if (sameTripContinuation) {
         for (const key of TRIP_SCOPED) {
@@ -1146,7 +1122,6 @@ async function parsePrompt(prompt, session = null) {
       }
     }
 
-    // Stale returnDate guard
     if (raw.returnDate && raw.departureDate) {
       if (new Date(raw.returnDate) <= new Date(raw.departureDate)) {
         if (raw.nights) {
@@ -1157,18 +1132,15 @@ async function parsePrompt(prompt, session = null) {
       }
     }
 
-    // Destination fallback from session
     if (!raw.destination && session.destination && !currentParseHasTrips && sameTripContinuation) {
       raw.destination = session.destination;
     }
 
-    // childAges inheritance
     if ((!raw.childAges || raw.childAges.length === 0) && session.childAges?.length > 0) {
       raw.childAges     = session.childAges;
       raw.needsChildAge = false;
     }
 
-    // Normalize trip legs
     if (Array.isArray(raw.trips) && raw.trips.length > 0 && raw.departureDate) {
       raw.trips = _normalizeTripLegsFromSession(raw.trips, raw);
     }
