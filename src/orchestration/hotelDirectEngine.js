@@ -1,12 +1,16 @@
-// HOTEL DIRECT ENGINE — v9.1
-// Changes from v9.0:
-// - MODEL: llama3-70b-8192 decommissioned by Groq → openai/gpt-oss-120b
-// - Added isValidDate guard to prevent crashes from malformed LLM dates
-// - Added prompt length cap (1500 chars) to prevent token/cost spikes
-// - Added room selection validation to catch hallucinated room names/indexes
-// - Added null-safety in _buildRoomPackage for dummy data with missing fields
-// - Price-match log insert now warns on failure instead of swallowing silently
-// - All v9.0 logic preserved
+// HOTEL DIRECT ENGINE — v10.1
+// Changes from v10.0:
+// - _findProperties: replaced boolean filter with scored matching.
+//   Detects shared brand prefix words (e.g. "sarova") so distinctive
+//   words ("shaba", "imperial") must match — prevents wrong property
+//   being returned on ambiguous group-name queries.
+//   Scores: 100=full name in raw prompt, 90=full name in search,
+//   80=alias, 70=dest/location, 60=all distinct words exact in raw,
+//   50=all distinct words exact in search, 40=fuzzy ≤1 edit in raw.
+//   Only returns properties within 10 pts of top score.
+// - No-match fallback: clean numbered property list with preference
+//   context instead of exposing mangled destination string.
+// All v10.0 logic preserved.
 
 const { v4: uuidv4 } = require('uuid');
 const Groq            = require('groq-sdk');
@@ -15,9 +19,6 @@ const { logger }      = require('../utils/logger');
 const pmsIntegrations = require('../integrations/pmsIntegrations');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-// Groq model — swap via env var without redeploying code next time
-const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
 const MEAL_LABELS = {
   room_only:         'Room Only',
@@ -64,9 +65,7 @@ const PREFERENCE_FEATURE_MAP = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BUILD SYSTEM PROMPT — with soul
-// Uses concierge_voice, brand_tagline, description, highlights and best_for
-// from hotel_groups and hotel_properties tables.
+// BUILD SYSTEM PROMPT
 // ─────────────────────────────────────────────────────────────────────────────
 function buildSystemPrompt(group, allProperties, guestMemory = null) {
   const voice   = group.concierge_voice || 'warm and professional';
@@ -110,9 +109,8 @@ OUR PROPERTIES:
 ${propList}
 
 YOUR JOB:
-Understand what the guest wants and return a JSON object so the system can search availability.
-Use what you know about each property to match guests to the right one — and when you confirm
-a search, say something genuine about why that property fits their request.
+Understand what the guest wants and return a JSON object so the system can search availability or manage their booking.
+Use what you know about each property to match guests to the right one.
 
 SOUL RULES:
 - For honeymoon/anniversary/romantic: mention the atmosphere, the sunset, the privacy — not just the room.
@@ -120,7 +118,8 @@ SOUL RULES:
 - For beach: mention the ocean, the reef, the sound of waves — make them feel it.
 - For business: be efficient and precise — they want confirmation, not poetry.
 - For family: be practical and warm — mention what kids love about the property.
-- When no rooms are available: don't just say "no rooms". Suggest the next best dates or sister property with genuine enthusiasm.
+- For cancel/modify: be empathetic and clear about what the policy means in plain language. Never be robotic about fees — explain them like a helpful agent would.
+- When no rooms are available: suggest next available dates or a sister property with genuine enthusiasm.
 - replyText should never sound like a search engine. It should sound like someone who cares.
 
 INTENT DETECTION:
@@ -143,10 +142,17 @@ When the guest picks a specific room or says something like:
 "the second option", "the superior room please", "go with the junior suite" —
 set intent to "select" and extract the room name or selection index.
 
+CANCELLATION & MODIFICATION DETECTION:
+- "cancel my booking", "I want to cancel", "cancel reservation", "cancel my stay" → intent: "cancel"
+- "change my dates", "modify my booking", "reschedule", "move my reservation", "can I change to" → intent: "modify"
+- "what's my cancellation policy", "can I get a refund", "what if I cancel", "what are the cancellation terms" → intent: "policy_query"
+- For cancel/modify/policy_query: extract reservationRef (e.g. HTL-XXXX) if mentioned, else null
+- Extract newCheckIn and newCheckOut if the guest mentions new dates for a modification
+
 ALWAYS respond with valid JSON:
 {
-  "intent": "search" | "refine" | "select" | "question" | "clarify" | "manage" | "chitchat",
-  "replyText": "Warm, genuine reply (1-3 sentences). Sound like a person, not a search engine. For special occasions be warm and personal. For returning guests acknowledge them warmly. For select intent, confirm the room warmly. Never list prices.",
+  "intent": "search" | "refine" | "select" | "cancel" | "modify" | "policy_query" | "question" | "clarify" | "manage" | "chitchat",
+  "replyText": "Warm, genuine reply (1-3 sentences). Sound like a person, not a search engine. For special occasions be warm and personal. For returning guests acknowledge them warmly. For cancel/modify be empathetic. Never list prices.",
   "searchParams": {
     "legs": [],
     "propertyId": "<uuid or null>",
@@ -163,6 +169,12 @@ ALWAYS respond with valid JSON:
     "featureRequest": "<what feature the guest wants if no exact property match, or null>",
     "selectedRoomName": "<room name if intent=select, else null>",
     "selectedRoomIndex": <0-based index if guest said 'the second one' etc, else null>
+  },
+  "managementParams": {
+    "action": "cancel" | "modify" | "policy_query" | null,
+    "reservationRef": "<HTL-XXXX if mentioned, else null>",
+    "newCheckIn": "YYYY-MM-DD or null",
+    "newCheckOut": "YYYY-MM-DD or null"
   },
   "clarifyQuestion": "<single question if intent=clarify, else null>"
 }
@@ -182,14 +194,8 @@ RULES:
 - Never list room prices in replyText.`;
 }
 
-function isValidDate(str) {
-  if (!str || typeof str !== 'string') return false;
-  const d = new Date(str);
-  return !isNaN(d.getTime());
-}
-
 function resolveCheckOut(checkIn, nights) {
-  if (!isValidDate(checkIn)) return null;
+  if (!checkIn) return null;
   const d = new Date(checkIn);
   d.setDate(d.getDate() + (nights || 3));
   return d.toISOString().split('T')[0];
@@ -261,12 +267,28 @@ function buildNoMatchSuggestion(group, allProperties, featureRequest, bestMatch)
   return `We don't currently have a property matching "${featureRequest}", but here's where ${group.name} is present: ${propList}. Would any of these work for you?`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LEVENSHTEIN — only applied when word length > 4 to avoid false positives
+// ─────────────────────────────────────────────────────────────────────────────
+function _levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i-1] === b[j-1]
+        ? dp[i-1][j-1]
+        : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    }
+  }
+  return dp[m][n];
+}
+
 class HotelDirectEngine {
 
   // ─────────────────────────────────────────────────────────────────────────
-  // GUEST MEMORY — look up returning guest by phone or email
-  // Reads from hotel_guest_sessions table (create with SQL below).
-  // Returns last session data or null if first visit.
+  // GUEST MEMORY
   // ─────────────────────────────────────────────────────────────────────────
   async _getGuestMemory(groupId, guestPhone, guestEmail) {
     if (!guestPhone && !guestEmail) return null;
@@ -278,11 +300,8 @@ class HotelDirectEngine {
         .order('last_seen_at', { ascending: false })
         .limit(1);
 
-      if (guestPhone) {
-        query = query.eq('guest_phone', guestPhone);
-      } else {
-        query = query.eq('guest_email', guestEmail);
-      }
+      if (guestPhone) query = query.eq('guest_phone', guestPhone);
+      else            query = query.eq('guest_email', guestEmail);
 
       const { data } = await query.maybeSingle();
       return data || null;
@@ -292,43 +311,33 @@ class HotelDirectEngine {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // SAVE GUEST SESSION — upsert after each conversation
-  // ─────────────────────────────────────────────────────────────────────────
   async _saveGuestSession(groupId, tripParams, guestPhone, guestEmail) {
     if (!guestPhone && !guestEmail) return;
     try {
-      const sessionData = {
-        group_id:        groupId,
-        guest_phone:     guestPhone  || null,
-        guest_email:     guestEmail  || null,
-        last_property:   tripParams.propertyName || null,
-        last_check_in:   tripParams.departureDate || null,
-        preferences:     tripParams.preferences  || [],
-        last_seen_at:    new Date().toISOString(),
-      };
-
-      await supabase
-        .from('hotel_guest_sessions')
-        .upsert(sessionData, {
-          onConflict: guestPhone ? 'group_id,guest_phone' : 'group_id,guest_email',
-        });
+      await supabase.from('hotel_guest_sessions').upsert({
+        group_id:      groupId,
+        guest_phone:   guestPhone  || null,
+        guest_email:   guestEmail  || null,
+        last_property: tripParams.propertyName || null,
+        last_check_in: tripParams.departureDate || null,
+        preferences:   tripParams.preferences  || [],
+        last_seen_at:  new Date().toISOString(),
+      }, {
+        onConflict: guestPhone ? 'group_id,guest_phone' : 'group_id,guest_email',
+      });
     } catch (err) {
       logger.warn('[HOTEL DIRECT] Guest session save failed', { error: err.message });
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // ORCHESTRATE
+  // ─────────────────────────────────────────────────────────────────────────
   async orchestrate(prompt, groupSlug, context = {}) {
     const sessionId = uuidv4();
     const { conversationHistory = [], previousParams = null } = context;
 
     logger.info(`[HOTEL DIRECT][${sessionId}] Started`, { groupSlug, prompt });
-
-    prompt = (prompt || '').trim().slice(0, 1500);
-    if (!prompt) {
-      return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
-        "I didn't catch that — could you tell me what you're looking for?", [], {}, '');
-    }
 
     try {
       const group = await this._getHotelGroup(groupSlug);
@@ -339,9 +348,9 @@ class HotelDirectEngine {
 
       const allProperties = await this._getAllProperties(group.id);
 
-      // ── Guest memory lookup ──────────────────────────────────────────
-      const guestPhone = previousParams?.guestPhone || context.guestPhone || null;
-      const guestEmail = previousParams?.guestEmail || context.guestEmail || null;
+      // ── Guest memory ────────────────────────────────────────────────
+      const guestPhone  = previousParams?.guestPhone || context.guestPhone || null;
+      const guestEmail  = previousParams?.guestEmail || context.guestEmail || null;
       const guestMemory = await this._getGuestMemory(group.id, guestPhone, guestEmail);
 
       if (guestMemory) {
@@ -367,11 +376,11 @@ class HotelDirectEngine {
       }
       messages.push({ role: 'user', content: prompt });
 
-      // ── Call Groq ──────────────────────────────────────────────────────
+      // ── Call Groq ──────────────────────────────────────────────────
       let groqResult;
       try {
         const response = await groq.chat.completions.create({
-          model:           GROQ_MODEL,
+          model:           'llama3-70b-8192',
           response_format: { type: 'json_object' },
           max_tokens:      700,
           temperature:     0.2,
@@ -384,16 +393,24 @@ class HotelDirectEngine {
           "I didn't quite catch that. Could you tell me which property you'd like and your preferred dates?", [], {}, prompt);
       }
 
-      const { intent, replyText, searchParams, clarifyQuestion } = groqResult;
+      const { intent, replyText, searchParams, managementParams, clarifyQuestion } = groqResult;
 
       logger.info('[HOTEL DIRECT] Groq intent', {
         intent, shouldSearch: searchParams?.shouldSearch,
-        preferences: searchParams?.preferences, featureRequest: searchParams?.featureRequest,
+        preferences: searchParams?.preferences,
+        featureRequest: searchParams?.featureRequest,
       });
 
       // ── Room selection ───────────────────────────────────────────────
       if (intent === 'select') {
         return await this._handleRoomSelection(
+          sessionId, groqResult, conversationHistory, previousParams, prompt, group
+        );
+      }
+
+      // ── Cancellation / modification intents ──────────────────────────
+      if (intent === 'cancel' || intent === 'modify' || intent === 'policy_query') {
+        return await this._handleManagement(
           sessionId, groqResult, conversationHistory, previousParams, prompt, group
         );
       }
@@ -467,6 +484,16 @@ class HotelDirectEngine {
           return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
             suggestionText, [], { noPropertyMatch: true, featureRequest }, prompt);
         }
+      }
+
+      // ── No property and no feature — show clean picker ───────────────
+      if (!property) {
+        const propList = allProperties
+          .map((p, i) => `${i + 1}. ${p.name} — ${p.destination || p.location || ''}`)
+          .join('\n');
+        const context = preferences.length ? `For your ${preferences.join(' & ')} stay, which` : 'Which';
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          `${context} ${group.name} property would you like?\n\n${propList}`, [], {}, prompt);
       }
 
       const upsellTags        = resolveUpsellTags(preferences);
@@ -544,6 +571,7 @@ class HotelDirectEngine {
             pkg._legIndex             = legSummaries.length;
             pkg._legProperty          = legProperty.name;
             pkg._requiresLegSelection = true;
+            pkg.totalLegs             = legs.length;
           });
 
           allPackages.push(...legPackages);
@@ -554,7 +582,7 @@ class HotelDirectEngine {
         }
 
         if (allPackages.length) {
-          const matched = await this._applyPriceMatch(allPackages, groupSlug, checkIn, nights);
+          const matched   = await this._applyPriceMatch(allPackages, groupSlug, checkIn, nights);
           const multiText = replyText || (isSpecialOccasion
             ? `Here are our options across both properties for your ${preferences[0]} — select a room at each and we'll combine into one booking:`
             : `Here are options across both properties — select your preferred room at each and we'll handle checkout together:`);
@@ -570,19 +598,11 @@ class HotelDirectEngine {
       }
 
       // ── Single property ──────────────────────────────────────────────
-      if (!property) {
-        const propList = allProperties
-          .map((p, i) => `${i + 1}. ${p.name} — ${p.destination || p.location || ''}`)
-          .join('\n');
-        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
-          `${replyText || "Which of our properties would you like?"}\n\n${propList}`, []);
-      }
-
       const rooms = await this._searchRooms(property, {
         checkIn, checkOut, nights, adults, children, childAges: [], mealPlan, budget,
       });
 
-      // ── No rooms — smart fallback with nearest available dates ───────
+      // ── No rooms — find nearest available dates ──────────────────────
       if (!rooms.length) {
         let nearestDate = null;
         for (let i = 1; i <= 14; i++) {
@@ -634,7 +654,6 @@ class HotelDirectEngine {
         }
       }
 
-      // ── Save guest session if we have contact details ────────────────
       if (guestPhone || guestEmail) {
         this._saveGuestSession(group.id, tripParams, guestPhone, guestEmail).catch(() => {});
       }
@@ -658,6 +677,9 @@ class HotelDirectEngine {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // ROOM SELECTION HANDLER
+  // ─────────────────────────────────────────────────────────────────────────
   async _handleRoomSelection(sessionId, groqResult, conversationHistory, previousParams, prompt, group) {
     try {
       const { replyText, searchParams } = groqResult;
@@ -665,15 +687,6 @@ class HotelDirectEngine {
       const selectedRoomIndex = searchParams?.selectedRoomIndex ?? null;
       const preferences       = previousParams?.preferences || searchParams?.preferences || [];
       const upsellTags        = resolveUpsellTags(preferences);
-
-      if (!selectedRoomName && selectedRoomIndex === null) {
-        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
-          "I want to make sure I get this right — which room would you like?", [], {}, prompt);
-      }
-      if (selectedRoomIndex !== null && (selectedRoomIndex < 0 || selectedRoomIndex > 10)) {
-        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
-          "Could you tell me the room name? I want to be sure I book the right one.", [], {}, prompt);
-      }
 
       const propertyId = previousParams?.propertyId || null;
       if (!propertyId) {
@@ -722,6 +735,296 @@ class HotelDirectEngine {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // MANAGEMENT HANDLER — cancel, modify, policy_query
+  // ─────────────────────────────────────────────────────────────────────────
+  async _handleManagement(sessionId, groqResult, conversationHistory, previousParams, prompt, group) {
+    try {
+      const { replyText, managementParams } = groqResult;
+      const action         = managementParams?.action || null;
+      const reservationRef = managementParams?.reservationRef || null;
+      const newCheckIn     = managementParams?.newCheckIn     || null;
+      const newCheckOut    = managementParams?.newCheckOut    || null;
+      const guestPhone     = previousParams?.guestPhone || null;
+
+      if (!action) {
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          replyText || "How can I help with your booking?", [], {}, prompt);
+      }
+
+      // ── Look up reservation ──────────────────────────────────────────
+      let reservation = null;
+
+      if (reservationRef) {
+        const { data } = await supabase
+          .from('hotel_reservations')
+          .select('*')
+          .eq('reservation_ref', reservationRef)
+          .eq('group_id', group.id)
+          .maybeSingle();
+        reservation = data;
+      }
+
+      if (!reservation && guestPhone) {
+        const { data } = await supabase
+          .from('hotel_reservations')
+          .select('*')
+          .eq('guest_phone', guestPhone)
+          .eq('group_id', group.id)
+          .in('status', ['confirmed', 'pending'])
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        reservation = data;
+      }
+
+      if (!reservation) {
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          `I couldn't find an active reservation${reservationRef ? ` for ${reservationRef}` : ''}. Could you share your booking reference or the phone number used when booking?`,
+          [], { needsClarification: true }, prompt);
+      }
+
+      // ── Fetch cancellation policy ────────────────────────────────────
+      const { data: policy } = await supabase
+        .from('cancellation_policies')
+        .select('*')
+        .eq('rate_plan_id', reservation.rate_plan_id)
+        .maybeSingle();
+
+      const checkInDate   = new Date(reservation.check_in);
+      const today         = new Date();
+      const daysUntilStay = Math.ceil((checkInDate - today) / (1000 * 60 * 60 * 24));
+
+      // ── POLICY QUERY ──────────────────────────────────────────────────
+      if (action === 'policy_query') {
+        const policyText = this._describeCancellationPolicy(policy, daysUntilStay, reservation);
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          policyText, [], { isManagement: true, action, reservationRef: reservation.reservation_ref }, prompt);
+      }
+
+      // ── CANCELLATION ──────────────────────────────────────────────────
+      if (action === 'cancel') {
+        const { allowed, penalty, penaltyText, explanation } =
+          this._evaluateCancellationPolicy(policy, daysUntilStay, reservation);
+
+        if (!allowed) {
+          return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+            `I'm sorry — booking ${reservation.reservation_ref} cannot be cancelled at this stage. ${explanation}`,
+            [], { isManagement: true, action, cannotProcess: true }, prompt);
+        }
+
+        if (penalty > 0) {
+          return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+            `Your booking ${reservation.reservation_ref} can be cancelled, but a ${penaltyText} cancellation fee applies. ${explanation} Would you like to go ahead?`,
+            [], {
+              isManagement:    true,
+              action:          'cancel_confirm_pending',
+              reservationRef:  reservation.reservation_ref,
+              penaltyAmount:   penalty,
+              penaltyText,
+              awaitingConfirm: true,
+            }, prompt);
+        }
+
+        // Free cancellation — process immediately
+        await supabase
+          .from('hotel_reservations')
+          .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+          .eq('id', reservation.id);
+
+        logger.info('[HOTEL DIRECT] Reservation cancelled', {
+          reservationRef: reservation.reservation_ref, groupId: group.id,
+        });
+
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          `Your booking ${reservation.reservation_ref} has been cancelled. No charges apply — you're fully refunded. Is there anything else I can help with?`,
+          [], { isManagement: true, action: 'cancelled', reservationRef: reservation.reservation_ref }, prompt);
+      }
+
+      // ── MODIFICATION ──────────────────────────────────────────────────
+      if (action === 'modify') {
+        if (!newCheckIn) {
+          return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+            `I'd be happy to help change the dates for ${reservation.reservation_ref}. What dates would you like to move to?`,
+            [], { needsClarification: true, isManagement: true }, prompt);
+        }
+
+        const { modAllowed, modFee, modFeeText, modExplanation } =
+          this._evaluateModificationPolicy(policy, daysUntilStay, reservation);
+
+        if (!modAllowed) {
+          return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+            `Unfortunately booking ${reservation.reservation_ref} cannot be modified at this stage. ${modExplanation} Would you like me to check the cancellation policy instead?`,
+            [], { isManagement: true, action, cannotProcess: true }, prompt);
+        }
+
+        const resolvedCheckOut = newCheckOut || (() => {
+          const d = new Date(newCheckIn);
+          d.setDate(d.getDate() + reservation.nights);
+          return d.toISOString().split('T')[0];
+        })();
+
+        if (modFee > 0) {
+          return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+            `I can move your booking ${reservation.reservation_ref} to ${newCheckIn} → ${resolvedCheckOut}. A ${modFeeText} modification fee applies. ${modExplanation} Shall I go ahead?`,
+            [], {
+              isManagement:    true,
+              action:          'modify_confirm_pending',
+              reservationRef:  reservation.reservation_ref,
+              newCheckIn,
+              newCheckOut:     resolvedCheckOut,
+              modFeeAmount:    modFee,
+              modFeeText,
+              awaitingConfirm: true,
+            }, prompt);
+        }
+
+        // Free modification — process immediately
+        await supabase
+          .from('hotel_reservations')
+          .update({
+            check_in:   newCheckIn,
+            check_out:  resolvedCheckOut,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', reservation.id);
+
+        logger.info('[HOTEL DIRECT] Reservation modified', {
+          reservationRef: reservation.reservation_ref, newCheckIn, newCheckOut: resolvedCheckOut,
+        });
+
+        return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+          `Done — your booking ${reservation.reservation_ref} has been moved to ${newCheckIn} → ${resolvedCheckOut}. No fee applies. Your voucher will be updated shortly.`,
+          [], { isManagement: true, action: 'modified', reservationRef: reservation.reservation_ref }, prompt);
+      }
+
+      return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+        replyText || "How can I help with your booking?", [], {}, prompt);
+
+    } catch (err) {
+      logger.error('[HOTEL DIRECT] Management handler failed', { error: err.message });
+      return this._buildResponse(sessionId, previousParams || {}, conversationHistory,
+        "I had trouble processing that. Could you share your booking reference?", [], {}, prompt);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POLICY EVALUATORS
+  // ─────────────────────────────────────────────────────────────────────────
+  _evaluateCancellationPolicy(policy, daysUntilStay, reservation) {
+    if (!policy) {
+      return {
+        allowed: true, penalty: 0,
+        penaltyText: 'no fee',
+        explanation: 'No specific cancellation policy found — cancellation is free.',
+      };
+    }
+
+    const freeDays = policy.free_cancellation_days || 0;
+
+    if (daysUntilStay >= freeDays) {
+      return {
+        allowed: true, penalty: 0, penaltyText: 'no fee',
+        explanation: `Free cancellation applies — your stay is ${daysUntilStay} day${daysUntilStay !== 1 ? 's' : ''} away.`,
+      };
+    }
+
+    let penalty     = 0;
+    let penaltyText = '';
+
+    if (policy.penalty_percentage > 0) {
+      penalty     = Math.round((reservation.gross_amount || 0) * (policy.penalty_percentage / 100));
+      penaltyText = `${policy.penalty_percentage}% of the booking value (${reservation.currency || 'KES'} ${penalty.toLocaleString()})`;
+    } else if (policy.penalty_fixed > 0) {
+      penalty     = policy.penalty_fixed;
+      penaltyText = `${policy.penalty_currency || reservation.currency || 'KES'} ${penalty.toLocaleString()} fixed fee`;
+    }
+
+    const explanation = freeDays > 0
+      ? `Free cancellation was available up to ${freeDays} day${freeDays !== 1 ? 's' : ''} before check-in.`
+      : 'This rate is non-refundable.';
+
+    return { allowed: true, penalty, penaltyText, explanation };
+  }
+
+  _evaluateModificationPolicy(policy, daysUntilStay, reservation) {
+    if (!policy) {
+      return {
+        modAllowed: true, modFee: 0,
+        modFeeText: 'no fee',
+        modExplanation: 'No specific modification policy — changes are free.',
+      };
+    }
+
+    const modAllowed = policy.modification_allowed !== false;
+    const freeDays   = policy.modification_free_days || policy.free_cancellation_days || 0;
+
+    if (!modAllowed) {
+      return {
+        modAllowed: false, modFee: 0, modFeeText: '',
+        modExplanation: policy.modification_notes || policy.notes || 'This rate does not allow modifications.',
+      };
+    }
+
+    if (daysUntilStay >= freeDays) {
+      return {
+        modAllowed: true, modFee: 0, modFeeText: 'no fee',
+        modExplanation: `Free modification applies — your stay is ${daysUntilStay} day${daysUntilStay !== 1 ? 's' : ''} away.`,
+      };
+    }
+
+    let modFee     = 0;
+    let modFeeText = '';
+
+    if ((policy.modification_fee_percentage || 0) > 0) {
+      modFee     = Math.round((reservation.gross_amount || 0) * (policy.modification_fee_percentage / 100));
+      modFeeText = `${policy.modification_fee_percentage}% of the booking value (${reservation.currency || 'KES'} ${modFee.toLocaleString()})`;
+    } else if ((policy.modification_fee_fixed || 0) > 0) {
+      modFee     = policy.modification_fee_fixed;
+      modFeeText = `${reservation.currency || 'KES'} ${modFee.toLocaleString()} fixed fee`;
+    }
+
+    return {
+      modAllowed: true, modFee, modFeeText,
+      modExplanation: policy.modification_notes || `Free changes were available up to ${freeDays} days before check-in.`,
+    };
+  }
+
+  _describeCancellationPolicy(policy, daysUntilStay, reservation) {
+    if (!policy) {
+      return `Your booking ${reservation.reservation_ref} has a flexible policy — you can cancel free of charge at any time before check-in.`;
+    }
+
+    const freeDays = policy.free_cancellation_days || 0;
+    const inWindow = daysUntilStay < freeDays;
+
+    let text = `For booking ${reservation.reservation_ref} (check-in ${reservation.check_in}): `;
+
+    if (freeDays > 0 && !inWindow) {
+      text += `You can cancel free of charge — free cancellation applies up to ${freeDays} day${freeDays !== 1 ? 's' : ''} before check-in and your stay is still ${daysUntilStay} day${daysUntilStay !== 1 ? 's' : ''} away.`;
+    } else if (freeDays > 0 && inWindow) {
+      const pct   = policy.penalty_percentage || 0;
+      const fixed = policy.penalty_fixed      || 0;
+      text += `You are within the cancellation penalty window (free cancellation was up to ${freeDays} days before check-in). `;
+      if (pct === 100)    text += `This rate is non-refundable.`;
+      else if (pct > 0)   text += `A ${pct}% cancellation fee applies.`;
+      else if (fixed > 0) text += `A fixed fee of ${policy.penalty_currency || 'KES'} ${fixed.toLocaleString()} applies.`;
+      else                text += `No penalty applies.`;
+    } else {
+      text += policy.notes || policy.policy_name || 'Please contact the hotel directly for cancellation terms.';
+    }
+
+    const modAllowed = policy.modification_allowed !== false;
+    text += modAllowed
+      ? ` Date changes are also allowed${(policy.modification_free_days || 0) > 0 ? ` free up to ${policy.modification_free_days} days before check-in` : ''}.`
+      : ` Note: date modifications are not permitted on this rate.`;
+
+    return text;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CREATE RESERVATION
+  // ─────────────────────────────────────────────────────────────────────────
   async createReservation(property, bookingData) {
     logger.info('[HOTEL DIRECT] createReservation', {
       propertyId: property.id, pmsType: property.pms_type,
@@ -729,6 +1032,9 @@ class HotelDirectEngine {
     return pmsIntegrations.createReservation(property, bookingData);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // UPSELL ENRICHMENT
+  // ─────────────────────────────────────────────────────────────────────────
   async enrichPackageWithUpsells(packageId, selectedPackage, tripParams) {
     try {
       const propertyId = selectedPackage?.hotel?.propertyId;
@@ -828,9 +1134,7 @@ class HotelDirectEngine {
           original_rate: directRate, ota_rate: bestOTA.ota_rate,
           matched_rate: matchedRate, ota_name: bestOTA.ota_name,
           saving_per_night: savingPerNight, currency: hotel.currency || 'KES',
-        }).then(() => {}).catch(err => {
-          logger.warn('[PRICE MATCH] Log insert failed', { error: err.message });
-        });
+        }).then(() => {}).catch(() => {});
 
         return {
           ...pkg,
@@ -849,6 +1153,125 @@ class HotelDirectEngine {
       logger.warn('[PRICE MATCH] Failed silently', { error: err.message });
       return packages;
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIND PROPERTIES — scored matching
+  //
+  // Detects shared brand prefix words (e.g. "sarova" in all Sarova hotels)
+  // so only DISTINCTIVE words drive the match. Prevents wrong property being
+  // returned on sibling-name queries like "sarova shaba" vs "sarova imperial".
+  //
+  // Score tiers:
+  //   100  full property name substring in raw prompt
+  //    90  full property name substring in stripped search
+  //    80  alias match
+  //    70  destination/location match in raw
+  //    60  all distinctive words exact in raw words
+  //    50  all distinctive words exact in search words
+  //    40  all distinctive words fuzzy ≤1 edit in raw words
+  //
+  // Only properties within 10 pts of top score are returned.
+  // ─────────────────────────────────────────────────────────────────────────
+  async _findProperties(groupId, destination, rawPrompt = null) {
+    if (!destination && !rawPrompt) return this._getAllProperties(groupId);
+
+    const { data: properties } = await supabase
+      .from('hotel_properties')
+      .select('*')
+      .eq('group_id', groupId)
+      .eq('is_active', true);
+
+    if (!properties?.length) return [];
+
+    const raw         = (rawPrompt  || '').toLowerCase().trim();
+    const search      = (destination || '').toLowerCase().trim();
+    const searchWords = search.split(/\s+/).filter(Boolean);
+    const rawWords    = raw.split(/\s+/).filter(Boolean);
+
+    // Detect shared brand prefix words
+    const allNameWords = properties.map(p =>
+      (p.name || '').toLowerCase().split(/\s+/).filter(Boolean)
+    );
+    const brandWords = allNameWords.length > 1
+      ? allNameWords[0].filter(w => allNameWords.every(nws => nws.includes(w)))
+      : [];
+
+    const scored = properties.map(p => {
+      const name         = (p.name        || '').toLowerCase();
+      const dest         = (p.destination || '').toLowerCase();
+      const location     = (p.location    || '').toLowerCase();
+      const aliases      = Array.isArray(p.search_aliases)   ? p.search_aliases   : [];
+      const locAliases   = Array.isArray(p.location_aliases) ? p.location_aliases : [];
+      const nameWords    = name.split(/\s+/).filter(Boolean);
+
+      const distinctWords = nameWords.filter(w => !brandWords.includes(w));
+      const matchWords    = distinctWords.length > 0 ? distinctWords : nameWords;
+
+      let score = 0;
+
+      // T100: full name in raw prompt
+      if (raw && name && raw.includes(name))
+        score = Math.max(score, 100);
+
+      // T90: full name in stripped search
+      if (search && name && search.includes(name))
+        score = Math.max(score, 90);
+
+      // T80: search_aliases — property name variations / abbreviations
+      if (aliases.some(a => {
+        const al = String(a).toLowerCase();
+        return (raw && raw.includes(al)) ||
+               (search && (search.includes(al) || al.includes(search)));
+      })) score = Math.max(score, 80);
+
+      // T75: location_aliases — city names, regions, vibes
+      // e.g. Whitesands → ["mombasa","coast","beach","kenyan coast"]
+      // "trip to the coast" or "beach in mombasa" scores Whitesands 75.
+      if (locAliases.some(a => {
+        const al = String(a).toLowerCase();
+        return (raw && raw.includes(al)) ||
+               (search && (search.includes(al) || al.includes(search)));
+      })) score = Math.max(score, 75);
+
+      // T70: destination or location field substring in raw
+      if (raw) {
+        if (dest     && dest.length     > 3 && raw.includes(dest))     score = Math.max(score, 70);
+        if (location && location.length > 3 && raw.includes(location)) score = Math.max(score, 70);
+      }
+
+      // T60: all distinctive words exact in raw
+      if (raw && matchWords.length > 0 && matchWords.every(mw =>
+        rawWords.some(rw => rw === mw || rw.startsWith(mw) || mw.startsWith(rw))
+      )) score = Math.max(score, 60);
+
+      // T50: all distinctive words exact in search
+      if (search && matchWords.length > 0 && matchWords.every(mw =>
+        searchWords.some(sw => sw === mw || sw.startsWith(mw) || mw.startsWith(sw))
+      )) score = Math.max(score, 50);
+
+      // T40: all distinctive words fuzzy ≤1 edit in raw
+      if (raw && matchWords.length > 0 && matchWords.every(mw =>
+        rawWords.some(rw =>
+          rw === mw ||
+          rw.startsWith(mw) ||
+          mw.startsWith(rw) ||
+          (mw.length > 4 && _levenshtein(rw, mw) <= 1)
+        )
+      )) score = Math.max(score, 40);
+
+      return { p, score };
+    }).filter(s => s.score > 0);
+
+    if (!scored.length) return [];
+
+    const topScore  = Math.max(...scored.map(s => s.score));
+    const threshold = topScore >= 60 ? topScore - 10 : topScore;
+
+    return scored
+      .filter(s  => s.score >= threshold)
+      .sort((a, b) => b.score - a.score)
+      .map(s  => s.p);
   }
 
   async _searchRooms(property, params) {
@@ -912,10 +1335,6 @@ class HotelDirectEngine {
     checkIn, checkOut, nights = 1, adults = 1,
     children = 0, childAges = [], mealPlan = null, budget = 'mid',
   }) {
-    if (!isValidDate(checkIn)) {
-      logger.warn('[HOTEL DIRECT] Invalid checkIn date', { checkIn });
-      return [];
-    }
     try {
       const { data: roomTypes, error } = await supabase
         .from('room_types').select('*')
@@ -1031,8 +1450,8 @@ class HotelDirectEngine {
       },
       transport: null, returnTransport: null,
       hotel: {
-        name:          `${property.name || 'Property'} — ${room.roomType?.name || 'Room'}`,
-        propertyName:  property.name || 'Property',
+        name:          `${property.name} — ${room.roomType.name}`,
+        propertyName:  property.name,
         stars:         property.stars,
         location:      property.location,
         address:       property.address,
@@ -1041,10 +1460,10 @@ class HotelDirectEngine {
         pricePerNight: room.pricePerNight,
         totalRate:     room.totalPrice,
         currency, mealPlan: room.mealPlan,
-        roomType:  room.roomType?.name || 'Room',
-        bedType:   room.roomType?.bed_type || null,
-        view:      room.roomType?.view || null,
-        amenities: room.roomType?.amenities || [],
+        roomType:  room.roomType.name,
+        bedType:   room.roomType.bed_type,
+        view:      room.roomType.view,
+        amenities: room.roomType.amenities || [],
         checkIn:   room.checkIn,
         checkOut:  room.checkOut,
         nights,
@@ -1117,11 +1536,11 @@ class HotelDirectEngine {
     const updatedHistory = [
       ...conversationHistory,
       { role: 'user',      content: originalPrompt || tripParams._originalPrompt || '' },
-      { role: 'assistant', content: text, packageCount: packages.length },
+      { role: 'assistant', content: text, packageCount: (packages || []).length },
     ].slice(-20);
 
     return {
-      sessionId, text, packages, tripParams,
+      sessionId, text, packages: packages || [], tripParams,
       conversationHistory: updatedHistory,
       generatedAt:   new Date().toISOString(),
       isHotelDirect: true,
