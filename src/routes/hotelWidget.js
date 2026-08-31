@@ -253,14 +253,6 @@ router.get('/:slug', (req, res) => {
   display:flex;align-items:center;gap:5px;
 }
 
-/* Best price guarantee banner */
-.bd-price-guarantee{
-  font-size:10.5px;font-weight:600;color:var(--bd-gold);
-  background:#FBF5EA;
-  border-radius:7px;padding:5px 9px;margin-top:6px;
-  display:flex;align-items:center;gap:5px;
-}
-
 /* Card footer */
 .bd-pkg-footer{
   padding:10px 14px;background:#F4F2EE;
@@ -591,10 +583,6 @@ function initHotelWidget(){
       var pm = document.createElement('div'); pm.className = 'bd-price-match';
       pm.innerHTML = '\u2713 Saving '+currency+' '+Math.round(hotel.priceMatchSaving).toLocaleString()+'/night vs '+hotel.priceMatchOta;
       body.appendChild(pm);
-    } else {
-      var pg = document.createElement('div'); pg.className = 'bd-price-guarantee';
-      pg.innerHTML = '\uD83C\uDFF7\uFE0F Best price guaranteed \u2014 cheaper elsewhere? We\'ll match it.';
-      body.appendChild(pg);
     }
 
     // Alternate rates switcher
