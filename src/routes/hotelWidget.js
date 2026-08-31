@@ -2,7 +2,7 @@ const express = require('express');
 const router  = express.Router();
 
 router.get('/:slug', (req, res) => {
-  const groupSlug   = req.params.slug || 'sarova';
+  const groupSlug = req.params.slug || 'sarova';
   const hotelName   = req.query.name  || 'Sarova Hotels';
   const embedTarget = req.query.embed || null;
   const apiBase     = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
@@ -59,9 +59,7 @@ router.get('/:slug', (req, res) => {
 #bd-hotel-chat.open{display:flex;}
 #bd-hotel-chat.floating{
   position:fixed;bottom:88px;right:24px;
-  width:400px;
-  height:700px;
-  max-height:calc(100vh - 112px);
+  width:400px;height:660px;
 }
 #bd-hotel-chat.embedded{
   position:relative;width:100%;height:100vh;max-height:100vh;
@@ -95,19 +93,6 @@ router.get('/:slug', (req, res) => {
   transition:background .15s;
 }
 #bd-hotel-header .bd-close:hover{background:rgba(255,255,255,.15);}
-
-/* ── Trust bar ── */
-.bd-trust-bar{
-  display:flex;justify-content:center;gap:12px;
-  padding:7px 12px;background:#F0EDE8;
-  border-bottom:1px solid var(--bd-border);
-  flex-shrink:0;flex-wrap:wrap;
-}
-.bd-trust-item{
-  font-size:9.5px;font-weight:600;color:var(--bd-muted);
-  display:flex;align-items:center;gap:4px;letter-spacing:.2px;
-}
-.bd-trust-icon{font-size:11px;}
 
 /* ── Messages ── */
 #bd-hotel-messages{
@@ -261,13 +246,15 @@ router.get('/:slug', (req, res) => {
 .bd-cancel-neutral{background:#F0EDE8;color:#5A4A3A;}
 .bd-cancel-icon{font-size:12px;flex-shrink:0;}
 
-/* Price match / best price banner */
+/* Price match banner */
 .bd-price-match{
   font-size:10.5px;font-weight:600;color:var(--bd-green);
   background:var(--bd-green-bg);
   border-radius:7px;padding:5px 9px;margin-top:6px;
   display:flex;align-items:center;gap:5px;
 }
+
+/* Best price guarantee banner */
 .bd-price-guarantee{
   font-size:10.5px;font-weight:600;color:var(--bd-gold);
   background:#FBF5EA;
@@ -335,7 +322,7 @@ router.get('/:slug', (req, res) => {
 .bd-confirm-btn:disabled{opacity:.6;cursor:not-allowed;}
 .bd-err{color:#A03030;font-size:11px;margin-bottom:8px;display:none;}
 
-/* ── Upsell cards ── */
+/* ── Upsell cards (shown post-selection) ── */
 .bd-upsell-section{margin-top:4px;}
 .bd-upsell-label{
   font-size:9px;font-weight:700;letter-spacing:2px;
@@ -434,13 +421,6 @@ function initHotelWidget(){
   if(embedTarget) closeBtn.style.display = 'none';
   hdr.appendChild(hdrLeft); hdr.appendChild(closeBtn);
 
-  // Trust bar
-  var trustBar = document.createElement('div'); trustBar.className = 'bd-trust-bar';
-  trustBar.innerHTML =
-    '<div class="bd-trust-item"><span class="bd-trust-icon">\uD83C\uDFF7\uFE0F</span>Best Price Guaranteed</div>' +
-    '<div class="bd-trust-item"><span class="bd-trust-icon">\u2713</span>Book Direct &amp; Save</div>' +
-    '<div class="bd-trust-item"><span class="bd-trust-icon">\uD83D\uDD12</span>Secure Booking</div>';
-
   // Messages
   var msgs = document.createElement('div'); msgs.id = 'bd-hotel-messages';
 
@@ -458,7 +438,6 @@ function initHotelWidget(){
   inputArea.appendChild(input); inputArea.appendChild(sendBtn);
 
   chat.appendChild(hdr);
-  chat.appendChild(trustBar);
   chat.appendChild(msgs);
   chat.appendChild(powered);
   chat.appendChild(inputArea);
@@ -560,7 +539,6 @@ function initHotelWidget(){
       imgZone.appendChild(phn);
     }
 
-    // Badge — price matched takes priority, else best price guaranteed on all cards
     if(hotel.priceMatchApplied){
       var badge = document.createElement('div'); badge.className = 'bd-pkg-badge';
       badge.innerText = '\u2713 Price matched'; imgZone.appendChild(badge);
@@ -582,7 +560,7 @@ function initHotelWidget(){
 
     body.appendChild(nameEl); body.appendChild(meta);
 
-    // Tags
+    // Tags (bed type, view, amenities)
     var tags = [];
     if(hotel.bedType)  tags.push(hotel.bedType);
     if(hotel.view)     tags.push(hotel.view+' view');
@@ -613,7 +591,7 @@ function initHotelWidget(){
     var priceEl = document.createElement('div');
     if(hotel.priceMatchApplied && hotel.priceMatchSaving){
       priceEl.className = 'bd-price-match';
-      priceEl.innerHTML = '\u2713 Price matched \u2014 saving '+currency+' '+Math.round(hotel.priceMatchSaving).toLocaleString()+'/night vs '+hotel.priceMatchOta+'. Cheapest available.';
+      priceEl.innerHTML = '\u2713 Saving '+currency+' '+Math.round(hotel.priceMatchSaving).toLocaleString()+'/night vs '+hotel.priceMatchOta;
     } else {
       priceEl.className = 'bd-price-guarantee';
       priceEl.innerHTML = '\uD83C\uDFF7\uFE0F Best price guaranteed \u2014 cheaper elsewhere? We\'ll match it.';
