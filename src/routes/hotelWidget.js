@@ -59,7 +59,9 @@ router.get('/:slug', (req, res) => {
 #bd-hotel-chat.open{display:flex;}
 #bd-hotel-chat.floating{
   position:fixed;bottom:88px;right:24px;
-  width:400px;height:660px;
+  width:400px;
+  height:700px;
+  max-height:calc(100vh - 112px);
 }
 #bd-hotel-chat.embedded{
   position:relative;width:100%;min-height:600px;
@@ -111,7 +113,7 @@ router.get('/:slug', (req, res) => {
 #bd-hotel-messages{
   flex:1;padding:14px 12px;overflow-y:auto;
   display:flex;flex-direction:column;gap:10px;
-  background:var(--bd-cream);min-height:300px;
+  background:var(--bd-cream);min-height:0;
 }
 
 /* ── Input area ── */
