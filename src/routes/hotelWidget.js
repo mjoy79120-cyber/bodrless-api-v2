@@ -215,6 +215,11 @@ router.get('/:slug', (req, res) => {
   font-size:9px;font-weight:700;letter-spacing:1px;
   text-transform:uppercase;padding:4px 10px;border-radius:20px;
 }
+.bd-pkg-badge-bpg{
+  top:auto;bottom:10px;left:10px;
+  background:var(--bd-green);
+  font-size:9px;
+}
 
 /* Card body */
 .bd-pkg-body{padding:13px 14px 10px;}
@@ -537,6 +542,11 @@ function initHotelWidget(){
       var badge = document.createElement('div'); badge.className = 'bd-pkg-badge';
       badge.innerText = 'Best value'; imgZone.appendChild(badge);
     }
+
+    // Best Price Guaranteed badge — always shown on every card
+    var bpgBadge = document.createElement('div'); bpgBadge.className = 'bd-pkg-badge bd-pkg-badge-bpg';
+    bpgBadge.innerHTML = '\uD83D\uDD12 Best Price Guaranteed'; imgZone.appendChild(bpgBadge);
+
     wrap.appendChild(imgZone);
 
     // ── Card body
