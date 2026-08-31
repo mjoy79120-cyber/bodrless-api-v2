@@ -62,7 +62,7 @@ router.get('/:slug', (req, res) => {
   width:400px;height:660px;
 }
 #bd-hotel-chat.embedded{
-  position:relative;width:100%;height:100vh;max-height:100vh;
+  position:relative;width:100%;min-height:600px;
   display:flex;flex-direction:column;border-radius:0;border:none;
 }
 
@@ -98,7 +98,7 @@ router.get('/:slug', (req, res) => {
 #bd-hotel-messages{
   flex:1;padding:14px 12px;overflow-y:auto;
   display:flex;flex-direction:column;gap:10px;
-  background:var(--bd-cream);min-height:0;
+  background:var(--bd-cream);min-height:300px;
 }
 
 /* ── Input area ── */
@@ -215,7 +215,6 @@ router.get('/:slug', (req, res) => {
   font-size:9px;font-weight:700;letter-spacing:1px;
   text-transform:uppercase;padding:4px 10px;border-radius:20px;
 }
-.bd-pkg-badge.bd-badge-green{background:var(--bd-green);}
 
 /* Card body */
 .bd-pkg-body{padding:13px 14px 10px;}
@@ -541,10 +540,10 @@ function initHotelWidget(){
 
     if(hotel.priceMatchApplied){
       var badge = document.createElement('div'); badge.className = 'bd-pkg-badge';
-      badge.innerText = '\u2713 Price matched'; imgZone.appendChild(badge);
-    } else {
-      var badge = document.createElement('div'); badge.className = 'bd-pkg-badge bd-badge-green';
-      badge.innerText = '\uD83C\uDFF7\uFE0F Best price'; imgZone.appendChild(badge);
+      badge.innerText = 'Price matched'; imgZone.appendChild(badge);
+    } else if(idx===0){
+      var badge = document.createElement('div'); badge.className = 'bd-pkg-badge';
+      badge.innerText = 'Best value'; imgZone.appendChild(badge);
     }
     wrap.appendChild(imgZone);
 
@@ -587,16 +586,16 @@ function initHotelWidget(){
     else{ canEl.className='bd-cancel bd-cancel-neutral'; canEl.innerText = hotel.policySummary||'Cancellation policy confirmed at booking'; }
     body.appendChild(canEl);
 
-    // Price match saving OR best price guarantee
-    var priceEl = document.createElement('div');
+    // Price match saving
     if(hotel.priceMatchApplied && hotel.priceMatchSaving){
-      priceEl.className = 'bd-price-match';
-      priceEl.innerHTML = '\u2713 Saving '+currency+' '+Math.round(hotel.priceMatchSaving).toLocaleString()+'/night vs '+hotel.priceMatchOta;
+      var pm = document.createElement('div'); pm.className = 'bd-price-match';
+      pm.innerHTML = '\u2713 Saving '+currency+' '+Math.round(hotel.priceMatchSaving).toLocaleString()+'/night vs '+hotel.priceMatchOta;
+      body.appendChild(pm);
     } else {
-      priceEl.className = 'bd-price-guarantee';
-      priceEl.innerHTML = '\uD83C\uDFF7\uFE0F Best price guaranteed \u2014 cheaper elsewhere? We\'ll match it.';
+      var pg = document.createElement('div'); pg.className = 'bd-price-guarantee';
+      pg.innerHTML = '\uD83C\uDFF7\uFE0F Best price guaranteed \u2014 cheaper elsewhere? We\'ll match it.';
+      body.appendChild(pg);
     }
-    body.appendChild(priceEl);
 
     // Alternate rates switcher
     var availRates = hotel.availableRates||[];
