@@ -183,10 +183,9 @@ class WhatsAppService {
       );
     }
 
-    const reversed = [...packages].reverse();
-    for (let ri = 0; ri < reversed.length; ri++) {
-      const pkg = reversed[ri];
-      const displayIndex = packages.length - ri;
+    for (let i = 0; i < packages.length; i++) {
+      const pkg = packages[i];
+      const displayIndex = i + 1;
       try {
         if (pkg.isMultiDestination) {
           await this._sendItineraryCard(phoneNumberId, to, pkg);
