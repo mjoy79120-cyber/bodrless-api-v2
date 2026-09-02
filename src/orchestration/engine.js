@@ -11,6 +11,13 @@ const tripMonitoringService = require("../services/tripMonitoringService");
 
 const cachedSearch = require('../services/cachedSearch');
 
+let scorePackages = null;
+try {
+  scorePackages = require('../services/recommendationScorer').scorePackages;
+} catch (e) {
+  logger.warn('recommendationScorer not loaded — using rankPackages only', { error: e.message });
+}
+
 let routeLearning = null;
 try {
   routeLearning = require("../services/routeLearningService");
@@ -543,7 +550,16 @@ class OrchestrationEngine {
       logger.warn('TravelerIntelligence.analyzeAndLearn failed — ranking without a profile', { error: err.message });
     }
 
-    const rankedPackages = rankPackages(packages, tripParams, travelerProfile).slice(0, 4);
+    let rankedPackages = rankPackages(packages, tripParams, travelerProfile).slice(0, 4);
+
+if (scorePackages && context?.phone) {
+  try {
+    const scored = await scorePackages(rankedPackages, context.phone, supabase, sessionId);
+    if (scored.rankedPackages?.length > 0) rankedPackages = scored.rankedPackages;
+  } catch (err) {
+    logger.warn('recommendationScorer failed — using rankPackages result', { error: err.message });
+  }
+}
 
     const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
 
