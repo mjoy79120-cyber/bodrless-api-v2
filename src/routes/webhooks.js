@@ -15,6 +15,11 @@
  * in previousParams. On the next turn, if that flag is set and the
  * message looks like an age answer, childAges is populated and
  * orchestration runs with the completed params.
+ *
+ * v3.1 — Recommendation engine event capture added (fire-and-forget).
+ * logEvent: package_viewed, asked_for_cheaper
+ * logFeedback: package_viewed on selection, package_rejected on control-word clear
+ * writeProfile: triggered after every orchestration result (non-blocking)
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -31,24 +36,36 @@ const conversationMemory = require('../services/conversationMemoryService');
 const disruptionFlow = require('../services/disruptionFlow');
 const { logger } = require('../utils/logger');
 
+// ── Recommendation engine (fire-and-forget — never throws) ────────────────
+let _logEvent, _logFeedback, _writeProfile;
+try {
+  const rec = require('../services/travelerProfileWriter');
+  _logEvent    = rec.logEvent;
+  _logFeedback = rec.logFeedback;
+  _writeProfile = rec.writeProfile;
+} catch (e) {
+  _logEvent    = async () => {};
+  _logFeedback = async () => {};
+  _writeProfile = async () => {};
+  logger.warn('travelerProfileWriter not loaded — recommendation logging disabled', { error: e.message });
+}
+
+// Safe wrappers — never block the main flow
+const recLog = (fn, ...args) => {
+  try { fn(...args).catch(() => {}); } catch (_) {}
+};
+
 const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|type|dob|date of birth|seat)\s*:/im;
 const _pendingResumeChoice = new Map();
 
 // ─────────────────────────────────────────────
 // CHILD AGE ANSWER PARSER
-// Tries to extract a child age from a short reply like:
-//   "6", "6 years old", "she's 8", "age 3", "3 and 7"
-// Returns array of ages, or null if it doesn't look like an age reply.
 // ─────────────────────────────────────────────
 function _parseChildAgeAnswer(text) {
   const t = text.trim().toLowerCase();
-
-  // Must be a short reply — long messages are trip prompts, not age answers
   if (t.split(/\s+/).length > 8) return null;
 
   const ages = [];
-
-  // "6 years old", "6yo", "6yrs"
   const yearOldPattern = /(\d{1,2})\s*[-–]?\s*(?:year[s]?[-\s]?old|yr[s]?[-\s]?old|y\.?o\.?|yrs?)\b/gi;
   let m;
   while ((m = yearOldPattern.exec(t)) !== null) {
@@ -56,19 +73,16 @@ function _parseChildAgeAnswer(text) {
     if (age >= 0 && age < 18) ages.push(age);
   }
 
-  // "age 6", "aged 3"
   const agedPattern = /aged?\s+(\d{1,2})/gi;
   while ((m = agedPattern.exec(t)) !== null) {
     const age = parseInt(m[1], 10);
     if (age >= 0 && age < 18 && !ages.includes(age)) ages.push(age);
   }
 
-  // Plain numbers: "6", "3 and 7", "3, 7"
   if (ages.length === 0) {
     const nums = t.match(/\b(\d{1,2})\b/g) || [];
     nums.forEach(n => {
       const age = parseInt(n, 10);
-      // Only treat as age if plausible (0–17) and not a year
       if (age >= 0 && age < 18) ages.push(age);
     });
   }
@@ -101,7 +115,6 @@ router.post('/whatsapp', async (req, res) => {
   try {
     const body = req.body;
 
-    // ── TOP GUARD: unexpected payload shape ────────────────
     if (!body?.entry?.[0]?.changes?.[0]?.value?.messages) {
       const value = body?.entry?.[0]?.changes?.[0]?.value;
       if (value?.statuses) {
@@ -117,7 +130,6 @@ router.post('/whatsapp', async (req, res) => {
     const message       = body.entry[0].changes[0].value.messages[0];
     const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
 
-    // ── RESOLVE IDENTITY (phone vs user_id) ────────────────
     const identity = _resolveIdentity(body, message);
 
     if (!identity.userKey) {
@@ -141,13 +153,12 @@ router.post('/whatsapp', async (req, res) => {
 
     const { userKey, phone, userId, username, recipient } = identity;
 
-    // ── INTERACTIVE REPLIES (button/list taps) ─────────────
+    // ── INTERACTIVE REPLIES ────────────────────────────────
     if (message.type === 'interactive') {
       const buttonId = message.interactive?.button_reply?.id
         || message.interactive?.list_reply?.id
         || null;
 
-      // ── DISRUPTION TAP ─────────────────────────────────
       if (buttonId && (
         buttonId.startsWith('disruption_alt_') ||
         buttonId.startsWith('disruption_keep_')
@@ -159,7 +170,6 @@ router.post('/whatsapp', async (req, res) => {
         return;
       }
 
-      // ── TAP-TO-REVEAL PHOTO ────────────────────────────
       if (buttonId) {
         const photoMatch = buttonId.match(/^photo_(\d+)$/);
         if (photoMatch) {
@@ -178,7 +188,6 @@ router.post('/whatsapp', async (req, res) => {
         }
       }
 
-      // Booking flow interactive (gender/type list taps etc.)
       const handledByBooking = await whatsappBookingFlow.handleMessage({
         phoneNumberId, from: userKey, text: null, interactive: message.interactive,
       });
@@ -188,7 +197,7 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    // ── CONTACTS WEBHOOK (user shared phone via REQUEST_CONTACT_INFO) ──
+    // ── CONTACTS WEBHOOK ───────────────────────────────────
     if (message.type === 'contacts') {
       const sharedPhone = message.contacts?.[0]?.phones?.[0]?.phone;
       if (sharedPhone && userId) {
@@ -268,7 +277,6 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    // Only check drop-off if the user isn't clearly asking for a new trip
     if (!_looksLikeFreshTripRequest(prompt)) {
       const dropOff = await conversationMemory.checkDropOff(userKey, agencyId);
       if (dropOff.isDropOff) {
@@ -372,6 +380,17 @@ router.post('/whatsapp', async (req, res) => {
         const idx = parseInt(selectionMatch[1], 10) - 1;
         const selectedPackage = cached.packages[idx];
         if (selectedPackage) {
+          // ── REC: log package_viewed feedback ──────────────
+          recLog(_logFeedback, supabase, {
+            sessionId:   cached.previousParams?.sessionId || userKey,
+            phone:       phone || userKey,
+            agencyId,
+            packageId:   selectedPackage.packageId || `pkg_${idx}`,
+            outcome:     'clicked',
+            priceKes:    selectedPackage.summary?.totalPrice,
+            destination: selectedPackage.summary?.route?.split(' to ')?.[1] || cached.previousParams?.destination,
+          });
+
           if (cached.isStale) {
             await whatsappService.sendText(phoneNumberId, recipient,
               "One moment — just double-checking that's still available before we begin..."
@@ -423,11 +442,20 @@ router.post('/whatsapp', async (req, res) => {
     // ── LOAD CONVERSATION CONTEXT ──────────────────────────
     const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
 
+    // ── ASKED FOR CHEAPER DETECTION ────────────────────────
+    // Log before orchestration so the signal is captured even if search fails
+    const { detectCheaperRequest } = require('../orchestration/promptParser');
+    if (detectCheaperRequest(prompt)) {
+      const cached = await packageCache.get(userKey);
+      recLog(_logEvent, supabase, phone || userKey, agencyId, userKey, 'asked_for_cheaper', {
+        current_price_kes: cached?.packages?.[0]?.summary?.totalPrice || null,
+        destination:       memCtx.previousParams?.destination || null,
+        raw_text:          prompt.slice(0, 200),
+      });
+    }
+
     // ═══════════════════════════════════════════════════════
     // CHILD AGE INTERCEPTION
-    // If the previous turn asked "how old is the child?" and this
-    // reply looks like an age answer, inject it into params and
-    // run orchestration with the completed config.
     // ═══════════════════════════════════════════════════════
     if (memCtx.previousParams?.pendingChildAgeCapture) {
       const childAges = _parseChildAgeAnswer(prompt);
@@ -437,8 +465,8 @@ router.post('/whatsapp', async (req, res) => {
         const resumedParams = {
           ...memCtx.previousParams,
           childAges,
-          children:            Math.max(memCtx.previousParams.children || 0, childAges.length),
-          needsChildAge:       false,
+          children:               Math.max(memCtx.previousParams.children || 0, childAges.length),
+          needsChildAge:          false,
           pendingChildAgeCapture: false,
         };
 
@@ -460,16 +488,16 @@ router.post('/whatsapp', async (req, res) => {
           sessionId:      result.sessionId,
         });
 
+        // ── REC: write profile after child-age resume ──────
+        recLog(_writeProfile, phone || userKey, agencyId, supabase);
+
         await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
         return;
       }
 
-      // Reply didn't look like an age — could be a new trip prompt.
-      // Clear the pending flag and fall through to normal orchestration.
       logger.info('Webhook: pendingChildAgeCapture set but reply was not an age — falling through', {
         userKey, preview: prompt.slice(0, 60),
       });
-      // Don't clear previousParams here — let normal orchestration handle it
     }
 
     // ── ORIGIN CLARIFICATION RESUME ───────────────────────
@@ -505,6 +533,9 @@ router.post('/whatsapp', async (req, res) => {
           userMessage: prompt, engineResponse: result.text, tripParams: result.tripParams,
           packages: result.packages || [], sessionId: result.sessionId,
         });
+
+        // ── REC: write profile after clarification resume ──
+        recLog(_writeProfile, phone || userKey, agencyId, supabase);
 
         if (result.needsClarification) {
           await whatsappService.sendText(phoneNumberId, recipient, result.text);
@@ -572,8 +603,6 @@ router.post('/whatsapp', async (req, res) => {
     });
 
     // ── CHILD AGE INTERCEPTION — after orchestration parse ─
-    // If orchestration parsed the prompt and found a child mention
-    // with no age, intercept here before sending results.
     if (result.tripParams?.needsChildAge && !result.tripParams?.childAges?.length) {
       logger.info('Webhook: needsChildAge detected — asking before search', { userKey });
 
@@ -582,7 +611,6 @@ router.post('/whatsapp', async (req, res) => {
         ? `How old are the children? (e.g. "6 and 8")`
         : `How old is the child?`;
 
-      // Save params with pending flag so the next turn knows to inject the age
       await conversationMemory.saveTurn(userKey, agencyId, {
         userMessage:    prompt,
         engineResponse: question,
@@ -607,6 +635,9 @@ router.post('/whatsapp', async (req, res) => {
       sessionId:      result.sessionId,
     }).catch(err => logger.error('Webhook: saveTurn failed (non-blocking)', { error: err.message, userKey }));
 
+    // ── REC: write profile after every orchestration ───────
+    recLog(_writeProfile, phone || userKey, agencyId, supabase);
+
     // ── TRAIN WARM-UP ──────────────────────────────────────
     if (result.packages?.length > 0) {
       const hasTrain = result.packages.some(p =>
@@ -629,8 +660,6 @@ router.post('/whatsapp', async (req, res) => {
 
 // ─────────────────────────────────────────────
 // SEND ORCHESTRATION RESULT
-// Extracted so both the normal path and the child-age-resume
-// path can share the same send logic without duplication.
 // ─────────────────────────────────────────────
 async function _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result }) {
 

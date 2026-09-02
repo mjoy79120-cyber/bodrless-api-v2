@@ -33,6 +33,13 @@
  *  session origin when it's genuinely the same trip continuing
  *  (same destination + low fresh score). Fresh prompts and greetings
  *  no longer silently inherit a stale origin from a previous session.
+ *
+ *  v3.1 — Recommendation engine event logging added.
+ *  logEvent() is called at parse time for:
+ *    - destination_mentioned
+ *    - budget_stated
+ *    - search_ran (on every successful parse with a destination)
+ *  All calls are fire-and-forget. No parsing logic changed.
  */
 
 const Groq = require('groq-sdk');
@@ -144,6 +151,31 @@ const EA_DEFAULT_ORIGINS = ['Nairobi', 'Mombasa', 'Kampala', 'Dar es Salaam'];
 const DEFAULT_ORIGIN = 'Nairobi';
 
 // ─────────────────────────────────────────────
+// CHEAPER REQUEST DETECTION
+// Used by recommendation engine event logging
+// ─────────────────────────────────────────────
+
+const CHEAPER_PATTERNS = [
+  /something cheaper/i,
+  /more affordable/i,
+  /less expensive/i,
+  /lower (?:my )?budget/i,
+  /too expensive/i,
+  /can.{0,10}find.{0,10}cheaper/i,
+  /budget option/i,
+  /kitu cheaper/i,       // Sheng
+  /bei nafuu/i,          // Swahili
+  /punguza/i,            // Swahili — "reduce"
+  /ngapi cheaper/i,
+  /cheaper (?:one|option|package|hotel|flight)/i,
+];
+
+function detectCheaperRequest(text) {
+  if (!text) return false;
+  return CHEAPER_PATTERNS.some(p => p.test(text));
+}
+
+// ─────────────────────────────────────────────
 // UTILITY HELPERS
 // ─────────────────────────────────────────────
 
@@ -252,7 +284,6 @@ function _scoreFreshPrompt(prompt) {
 
   if (/\b(?:kes|ksh|\d+k)\b/i.test(lower) && /\d/.test(lower)) score += 0.25;
 
-  // Greetings are strong fresh signals — "hi", "hello", "help me" etc.
   if (/^(?:hi|hello|hey|hii|good\s+(?:morning|afternoon|evening))\b/i.test(lower)) score += 0.4;
   if (/\bhelp\s+me\b|\bcan\s+you\s+help\b|\bi\s+need\s+help\b/i.test(lower)) score += 0.3;
 
@@ -970,24 +1001,12 @@ async function _parseWithGroq(prompt) {
 // ─────────────────────────────────────────────
 // NULL-ORIGIN RESOLVER — FIXED
 // ─────────────────────────────────────────────
-// Only inherits session origin when it's genuinely the SAME trip
-// continuing (same destination + low fresh score).
-//
-// Previously this silently filled origin from any prior session,
-// meaning a greeting like "Hi can you help me plan a trip to Nairobi"
-// would inherit "Cape Town" from the last search and never ask.
-// Now greetings and fresh prompts always flow through to the engine's
-// clarification question.
 
 function _resolveOriginFallback(parsed, session) {
   if (parsed.origin) return parsed;
   if (parsed.isHotelOnly) return parsed;
   if (Array.isArray(parsed.trips) && parsed.trips.length > 0) return parsed;
 
-  // Only inherit session origin when ALL THREE conditions are true:
-  // 1. Session has an origin
-  // 2. The destination matches the previous session (same trip continuing)
-  // 3. The fresh score is low (this is a follow-up, not a new request)
   const freshScore = parsed._freshScore || 0;
   const sameDestination = session?.origin &&
     session?.destination &&
@@ -1006,9 +1025,6 @@ function _resolveOriginFallback(parsed, session) {
     return parsed;
   }
 
-  // For anything else (new destination, greeting, fresh prompt) —
-  // keep needsOriginClarification = true so the engine asks properly.
-  // Never silently use a stale origin from a different trip.
   if (!parsed.isHotelOnly) {
     parsed.needsOriginClarification = true;
     logger.info('PromptParser: origin not inherited — fresh prompt or new destination', {
@@ -1022,10 +1038,85 @@ function _resolveOriginFallback(parsed, session) {
 }
 
 // ─────────────────────────────────────────────
+// RECOMMENDATION EVENT LOGGER
+// Fire-and-forget — never throws, never blocks parsing
+// ─────────────────────────────────────────────
+
+function _logParseEvents(parsed, prompt, { phone, agencyId, sessionId, supabase } = {}) {
+  if (!supabase || !phone || !agencyId) return;
+
+  // Lazy-load to avoid circular dependency issues
+  let logEvent;
+  try {
+    logEvent = require('./travelerProfileWriter').logEvent;
+  } catch (e) {
+    return; // travelerProfileWriter not available yet — skip silently
+  }
+
+  const channel = 'whatsapp'; // parsePrompt is always called from whatsapp or widget context
+
+  // 1. destination_mentioned — every time a destination is parsed
+  if (parsed.destination) {
+    logEvent(supabase, phone, agencyId, sessionId, 'destination_mentioned', {
+      destination: parsed.destination,
+      context:     'prompt_parsed',
+      confidence:  parsed._confidence,
+    }, channel).catch(() => {});
+  }
+
+  // For multi-leg trips, log each destination
+  if (Array.isArray(parsed.trips)) {
+    for (const leg of parsed.trips) {
+      if (leg.destination && !leg._returnLeg && !leg._transitLeg) {
+        logEvent(supabase, phone, agencyId, sessionId, 'destination_mentioned', {
+          destination: leg.destination,
+          context:     'multi_leg',
+        }, channel).catch(() => {});
+      }
+    }
+  }
+
+  // 2. budget_stated — when an explicit KES amount is parsed
+  if (parsed.budgetKES) {
+    logEvent(supabase, phone, agencyId, sessionId, 'budget_stated', {
+      amount_kes: parsed.budgetKES,
+      budget_tier: parsed.budget,
+      raw_text:   prompt.slice(0, 200),
+    }, channel).catch(() => {});
+  }
+
+  // 3. asked_for_cheaper — detect in the raw prompt
+  if (detectCheaperRequest(prompt)) {
+    logEvent(supabase, phone, agencyId, sessionId, 'asked_for_cheaper', {
+      destination: parsed.destination,
+      raw_text:    prompt.slice(0, 200),
+    }, channel).catch(() => {});
+  }
+
+  // 4. search_ran — every parse with a resolvable destination
+  if (parsed.destination && !parsed._missingFields?.includes('destination')) {
+    logEvent(supabase, phone, agencyId, sessionId, 'search_ran', {
+      destination:    parsed.destination,
+      origin:         parsed.origin,
+      nights:         parsed.nights,
+      passengers:     parsed.passengers,
+      budget_kes:     parsed.budgetKES,
+      travel_window:  parsed.departureDate ? parsed.departureDate.slice(0, 7) : null,
+      has_safari:     parsed.activityRequests?.includes('safari') || !!parsed.safariDestination,
+      parsed_by:      parsed._parsedBy,
+      confidence:     parsed._confidence,
+    }, channel).catch(() => {});
+  }
+}
+
+// ─────────────────────────────────────────────
 // MAIN EXPORT
 // ─────────────────────────────────────────────
 
-async function parsePrompt(prompt, session = null) {
+// ctx is optional: { phone, agencyId, sessionId, supabase }
+// Pass it from your webhook/engine handler to enable event logging.
+// Omitting it is safe — parser works identically without it.
+async function parsePrompt(prompt, session = null, ctx = null) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     const empty = _parseWithRules('');
     empty._freshScore = 0;
@@ -1153,6 +1244,9 @@ async function parsePrompt(prompt, session = null) {
   raw._confidence    = _scoreConfidence(raw);
   raw._missingFields = _detectMissingFields(raw);
 
+  // ── Recommendation engine event logging (fire-and-forget) ─────────────
+  if (ctx) _logParseEvents(raw, prompt, ctx);
+
   return raw;
 }
 
@@ -1163,4 +1257,5 @@ module.exports = {
   resolveSafariDestination,
   isFreshTripPrompt,
   scoreFreshPrompt: _scoreFreshPrompt,
+  detectCheaperRequest,
 };
