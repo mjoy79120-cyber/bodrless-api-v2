@@ -40,6 +40,9 @@
  *    - budget_stated
  *    - search_ran (on every successful parse with a destination)
  *  All calls are fire-and-forget. No parsing logic changed.
+ *
+ *  v3.2 — Origin sanitizer tightened: filler phrases like "book me a flight"
+ *  no longer slip through as origin. wordCount guard lowered to >= 3.
  */
 
 const Groq = require('groq-sdk');
@@ -152,7 +155,6 @@ const DEFAULT_ORIGIN = 'Nairobi';
 
 // ─────────────────────────────────────────────
 // CHEAPER REQUEST DETECTION
-// Used by recommendation engine event logging
 // ─────────────────────────────────────────────
 
 const CHEAPER_PATTERNS = [
@@ -163,9 +165,9 @@ const CHEAPER_PATTERNS = [
   /too expensive/i,
   /can.{0,10}find.{0,10}cheaper/i,
   /budget option/i,
-  /kitu cheaper/i,       // Sheng
-  /bei nafuu/i,          // Swahili
-  /punguza/i,            // Swahili — "reduce"
+  /kitu cheaper/i,
+  /bei nafuu/i,
+  /punguza/i,
   /ngapi cheaper/i,
   /cheaper (?:one|option|package|hotel|flight)/i,
 ];
@@ -517,8 +519,9 @@ function _parseWithRules(prompt) {
   const lower = prompt.toLowerCase().trim();
 
   let destination = null;
-  const simpleRoute = lower.match(/^([a-z][a-z\s]{1,20}?)\s+to\s+([a-z][a-z\s]{1,25}?)(?=\s+(?:from|for|on|in|with|and|\d)|[,.]|$)/i);
-  if (simpleRoute) destination = simpleRoute[2].trim();
+ const ACTION_WORDS = /\b(book|plan|find|get|arrange|help|show|give|fly|flight|travel|search|take|want|need)\b/i;
+const simpleRoute = lower.match(/^([a-z][a-z\s]{1,20}?)\s+to\s+([a-z][a-z\s]{1,25}?)(?=\s+(?:from|for|on|in|with|and|\d)|[,.]|$)/i);
+if (simpleRoute) destination = simpleRoute[2].trim();
 
   if (!destination) {
     const toMatch = lower.match(/\bto\s+([a-z][a-z\s]{1,25}?)(?=\s+(?:from|for|on|in|with|and|\d)|[,.]|$)/i);
@@ -533,7 +536,7 @@ function _parseWithRules(prompt) {
   }
 
   let origin = null;
-  if (simpleRoute) origin = simpleRoute[1].trim();
+  if (simpleRoute && !ACTION_WORDS.test(simpleRoute[1])) origin = simpleRoute[1].trim();
   if (!origin) {
     const fromMatch = lower.match(/\bfrom\s+((?:[a-z]+(?:\s+[a-z]+){0,2}?))(?=\s+(?:to|on|for|in|with|and|\d)|[,.]|$)/i);
     if (fromMatch) {
@@ -728,6 +731,8 @@ origin: Single departure city only. null if not mentioned. NEVER guess.
   NEVER include route text like "to Kampala" in origin.
   CORRECT: "Nairobi" | WRONG: "nairobi to kampala"
   For greetings like "Hi can you help me plan a trip to Nairobi" → origin: null
+  For "book me a flight to X" with no from city stated → origin: null
+  NEVER set origin to filler words like "book me a flight", "find me", "get me" etc.
 
 nights: For "5 days" → 4 nights. For "5 nights" → 5. For "a week" → 7.
 
@@ -806,7 +811,7 @@ needsChildAge: true if children>0 AND childAges is empty
 const GROQ_SYSTEM_PROMPT_SIMPLE = `Extract travel info. Return ONLY valid JSON. Current year is 2026.
 
 destination: real place name only (1-4 words). null if none.
-origin: single departure city. null if not mentioned. NEVER guess.
+origin: single departure city. null if not mentioned. NEVER guess. NEVER use filler phrases like "book me a flight" as origin.
 nights: for "5 days" → 4. for "a week" → 7.
 passengers: 2 for couple/wife/husband/two of us.
 budgetKES: explicit KES/KSH amount as raw number or null.
@@ -874,17 +879,21 @@ async function _groqAttempt(prompt, systemPrompt) {
       parsed.destination = clean || null;
     }
 
+    // ── FIX: tightened origin sanitizer ──────────────────────────────────
+    // Catches filler phrases like "book me a flight" slipping through as origin
     if (parsed.origin) {
       const routeStripped = parsed.origin.split(/\s+to\s+/i)[0].trim();
       const fromStripped  = routeStripped.replace(/^from\s+/i, '').trim();
       const wordCount     = fromStripped.split(/\s+/).length;
-      if (!fromStripped || wordCount > 3 || /[.,;]/.test(fromStripped)) {
-        logger.warn('PromptParser: Groq origin looked like route text — clearing', { original: parsed.origin?.slice(0, 80) });
+      const FILLER_ORIGIN = /^(book|plan|help|find|get|arrange|take|show|tell|use|same|previous|any|i|we|me|us|a|the|just|please|can|could)\b/i;
+      if (!fromStripped || wordCount >= 3 || /[.,;]/.test(fromStripped) || FILLER_ORIGIN.test(fromStripped)) {
+        logger.warn('PromptParser: Groq origin looked like route text or filler — clearing', { original: parsed.origin?.slice(0, 80) });
         parsed.origin = null;
       } else {
         parsed.origin = resolveCountryToCity(fromStripped);
       }
     }
+    // ── END FIX ───────────────────────────────────────────────────────────
 
     if (parsed.budgetKES !== null && parsed.budgetKES !== undefined) {
       const raw = parsed.budgetKES;
@@ -1039,23 +1048,20 @@ function _resolveOriginFallback(parsed, session) {
 
 // ─────────────────────────────────────────────
 // RECOMMENDATION EVENT LOGGER
-// Fire-and-forget — never throws, never blocks parsing
 // ─────────────────────────────────────────────
 
 function _logParseEvents(parsed, prompt, { phone, agencyId, sessionId, supabase } = {}) {
   if (!supabase || !phone || !agencyId) return;
 
-  // Lazy-load to avoid circular dependency issues
   let logEvent;
   try {
     logEvent = require('./travelerProfileWriter').logEvent;
   } catch (e) {
-    return; // travelerProfileWriter not available yet — skip silently
+    return;
   }
 
-  const channel = 'whatsapp'; // parsePrompt is always called from whatsapp or widget context
+  const channel = 'whatsapp';
 
-  // 1. destination_mentioned — every time a destination is parsed
   if (parsed.destination) {
     logEvent(supabase, phone, agencyId, sessionId, 'destination_mentioned', {
       destination: parsed.destination,
@@ -1064,7 +1070,6 @@ function _logParseEvents(parsed, prompt, { phone, agencyId, sessionId, supabase 
     }, channel).catch(() => {});
   }
 
-  // For multi-leg trips, log each destination
   if (Array.isArray(parsed.trips)) {
     for (const leg of parsed.trips) {
       if (leg.destination && !leg._returnLeg && !leg._transitLeg) {
@@ -1076,7 +1081,6 @@ function _logParseEvents(parsed, prompt, { phone, agencyId, sessionId, supabase 
     }
   }
 
-  // 2. budget_stated — when an explicit KES amount is parsed
   if (parsed.budgetKES) {
     logEvent(supabase, phone, agencyId, sessionId, 'budget_stated', {
       amount_kes: parsed.budgetKES,
@@ -1085,7 +1089,6 @@ function _logParseEvents(parsed, prompt, { phone, agencyId, sessionId, supabase 
     }, channel).catch(() => {});
   }
 
-  // 3. asked_for_cheaper — detect in the raw prompt
   if (detectCheaperRequest(prompt)) {
     logEvent(supabase, phone, agencyId, sessionId, 'asked_for_cheaper', {
       destination: parsed.destination,
@@ -1093,7 +1096,6 @@ function _logParseEvents(parsed, prompt, { phone, agencyId, sessionId, supabase 
     }, channel).catch(() => {});
   }
 
-  // 4. search_ran — every parse with a resolvable destination
   if (parsed.destination && !parsed._missingFields?.includes('destination')) {
     logEvent(supabase, phone, agencyId, sessionId, 'search_ran', {
       destination:    parsed.destination,
@@ -1113,9 +1115,6 @@ function _logParseEvents(parsed, prompt, { phone, agencyId, sessionId, supabase 
 // MAIN EXPORT
 // ─────────────────────────────────────────────
 
-// ctx is optional: { phone, agencyId, sessionId, supabase }
-// Pass it from your webhook/engine handler to enable event logging.
-// Omitting it is safe — parser works identically without it.
 async function parsePrompt(prompt, session = null, ctx = null) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     const empty = _parseWithRules('');

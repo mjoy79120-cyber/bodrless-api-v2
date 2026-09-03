@@ -578,9 +578,11 @@ if (scorePackages && context?.phone) {
       const isFlightOnlySearch = rankedPackages.length > 0 && rankedPackages.every(p => p._flightOnly);
       responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
 
-      if (isFlightOnlySearch && tripParams.nights > 0) {
-        responseText += `\n\nWould you also like me to find hotels in ${dest} for your ${tripParams.nights} night${tripParams.nights > 1 ? 's' : ''}? Reply *yes* to add a hotel, or *no* to book just the flight.`;
-      }
+      const hasReturnDate = !!(tripParams.returnDate);
+if (isFlightOnlySearch && hasReturnDate) {
+  const nights = tripParams.nights || Math.round((new Date(tripParams.returnDate) - new Date(tripParams.departureDate)) / 86400000);
+  responseText += `\n\nWould you also like me to find hotels in ${dest} for your ${nights} night${nights !== 1 ? 's' : ''}? Reply *yes* to add a hotel, or *no* to book just the flight.`;
+}
 
       const excursionNote = this._buildExcursionNote(tripParams.activityRequests);
       if (excursionNote) responseText += `\n\n${excursionNote}`;
@@ -1705,14 +1707,25 @@ if (scorePackages && context?.phone) {
 
       const parsedDate = this._parseDateAnswer(answer);
       if (parsedDate) {
-        tripParams.departureDate = parsedDate;
-        if (tripParams.nights && !tripParams.returnDate) {
-          const dep = new Date(parsedDate);
-          dep.setDate(dep.getDate() + tripParams.nights);
-          tripParams.returnDate = dep.toISOString().split('T')[0];
-        }
-        return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
-      }
+  tripParams.departureDate = parsedDate;
+  if (tripParams.nights && !tripParams.returnDate) {
+    const dep = new Date(parsedDate);
+    dep.setDate(dep.getDate() + tripParams.nights);
+    tripParams.returnDate = dep.toISOString().split('T')[0];
+  }
+  if (!tripParams.origin && !tripParams.isHotelOnly) {
+    const dest = tripParams.destination ? this._titleCase(tripParams.destination) : 'your destination';
+    return this._buildClarificationResponse({
+      sessionId, prompt,
+      question: `Got it — and where will you be departing from for ${dest}?`,
+      tripParams: { ...tripParams },
+      intent: neutralIntent,
+      conversationHistory,
+      awaitingClarification: { type: 'single_origin' },
+    });
+  }
+  return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
+}
 
       const flexibleAnswer = this._detectFlexibleDateAnswer(answer);
       if (flexibleAnswer) {
@@ -2079,9 +2092,9 @@ if (scorePackages && context?.phone) {
     }
 
     const isFlightOnly = singleResult.packages.length > 0 && singleResult.packages.every(p => p._flightOnly);
-    const taggedParams  = isFlightOnly && tripParams.nights > 0
-      ? { ...tripParams, _awaitingHotelFollowUp: true, _lastFlightPackages: singleResult.packages }
-      : tripParams;
+const taggedParams  = isFlightOnly && !!(tripParams.returnDate)
+  ? { ...tripParams, _awaitingHotelFollowUp: true, _lastFlightPackages: singleResult.packages }
+  : tripParams;
 
     return {
       sessionId,
@@ -2256,7 +2269,10 @@ if (scorePackages && context?.phone) {
     const wantsAffordableSort = /\bcheap\b|cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/i.test(lower);
 
     const hasHotelInSamePrompt = /\b(hotel|stay|lodge|put me in|book me into|staying at|at the)\b/i.test(lower);
-    const flightExclusive = !hasHotelInSamePrompt && lower.match(/\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only|\bcheapest\s+flight(s)?\b|\bcheapest\s+fare\b|\bfind\s+me\s+(a\s+|the\s+)?(cheapest|affordable|best|most\s+affordable)?\s*flight(s)?\b|\bflight(s)?\s+from\b|\bfly(?:ing)?\s+from\b/i);
+    const flightExclusive = !hasHotelInSamePrompt && !!(
+  lower.match(/\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only|\bcheapest\s+flight(s)?\b|\bcheapest\s+fare\b|\bfind\s+me\s+(a\s+|the\s+)?(cheapest|affordable|best|most\s+affordable)?\s*flight(s)?\b|\bflight(s)?\s+from\b|\bfly(?:ing)?\s+from\b/i) ||
+  lower.match(/\b(?:book|get|find|search|check)\s+(?:me\s+)?(?:a\s+)?flights?\s+to\b/i)
+);
     const busExclusive   = lower.match(/\bonly\s+(a\s+)?(?<![a-z])bus(?:es)?\b|(?<![a-z])bus(?:es)?\s+only|just\s+(a\s+)?(?<![a-z])bus(?:es)?\b/i);
     const hotelExclusive = lower.match(/\bonly\s+(a\s+)?hotel\b|hotel\s+only|just\s+(a\s+)?hotel\b|stay\s+only|accommodation\s+only/i);
     const hotelIntent    = !flightExclusive && !busExclusive && lower.match(/\b(find\s+(me\s+)?a\s+hotel|looking\s+for\s+(a\s+)?hotel|need\s+(a\s+)?hotel|hotel\s+in|hotels?\s+near|where\s+to\s+stay|accommodation\s+in)\b/i);
@@ -2267,11 +2283,20 @@ if (scorePackages && context?.phone) {
       productScope.needsHotel = false; productScope.needsTransfers = false; adjustments.transportMode = 'bus';
     } else if (hotelExclusive || hotelIntent) {
       productScope.needsTransport = false; productScope.needsTransfers = false;
-    } else {
+        } else {
       const additivePhrase = /\b(include|also|add|as well|too|alongside)\b/i.test(lower);
       if (!additivePhrase) {
         if (lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)) adjustments.transportMode = 'flight';
         else if (lower.match(/(?<![a-z])bus(?:es)?\b/i)) adjustments.transportMode = 'bus';
+      }
+      // Prevent hotel search when user said "book me a flight to X" with no hotel mention
+      if (
+        !hasHotelInSamePrompt &&
+        (previousParams?.outboundTransportMode === 'flight' || previousParams?.outboundTransportMode === 'air') &&
+        lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)
+      ) {
+        productScope.needsHotel = false;
+        productScope.needsTransfers = false;
       }
     }
 
