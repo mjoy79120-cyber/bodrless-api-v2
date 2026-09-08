@@ -151,8 +151,35 @@ class OrchestrationEngine {
       // ── FLIGHT-ONLY HOTEL FOLLOW-UP ───────────────────────────────────────
       if (previousParams?._awaitingHotelFollowUp) {
         const lower = (prompt || '').toLowerCase().trim();
+
+        // ── CORRECTION DETECTION ───────────────────────────────
+        const correctionMatch =
+          lower.match(/i\s+said\s+([a-z][a-z\s]{1,25}?)(?:\s+no[t]?\s+\w+)?$/i) ||
+          lower.match(/^([a-z][a-z\s]{1,25}?)\s+not?\s+\w+/i);
+
+        if (correctionMatch) {
+          const correctedDest = correctionMatch[1].trim();
+          if (correctedDest.length >= 3) {
+            logger.info('Engine: destination correction in hotel follow-up — re-routing', {
+              correctedDest, wasDest: previousParams.destination,
+            });
+            const { parsePrompt, resolveCountryToCity } = require('./promptParser');
+            const freshParams = await parsePrompt(prompt, null);
+            freshParams.destination = resolveCountryToCity(correctedDest);
+            freshParams.agencyId = agencyId;
+            freshParams._awaitingHotelFollowUp = undefined;
+            const freshIntent = this._detectIntent(prompt, null);
+            freshIntent.productScope = { needsTransport: true, needsHotel: true, needsTransfers: true };
+            return await this._continueOrchestration(
+              freshParams, agencyId, prompt, conversationHistory, sessionId, freshIntent, context.channel, context.phone
+            );
+          }
+        }
+        // ── END CORRECTION DETECTION ────────────────────────────
+
         const isYes = /^(yes|y|sure|ok|okay|yep|yeah|yah|add|include|ndio|sawa)$/i.test(lower);
-        const isNo  = /^(no|n|nope|nah|skip|just the flight|flight only|hapana|book it)$/i.test(lower);
+        const isNo  = /^(no|n|nope|nah|skip|just the flight|flight only|hapana|book it)$/i.test(lower)
+          || (/\b(no|not|just\s+(?:the\s+)?flight)\b/i.test(lower) && lower.length < 50);
 
         if (isYes) {
           const hotelParams = {

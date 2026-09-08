@@ -442,6 +442,23 @@ router.post('/whatsapp', async (req, res) => {
     // ── LOAD CONVERSATION CONTEXT ──────────────────────────
     const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
 
+    // ── STALE PARAMS GUARD ─────────────────────────────────
+    if (memCtx.previousParams?.destination) {
+      const { isFreshTripPrompt, parsePrompt } = require('../orchestration/promptParser');
+      if (isFreshTripPrompt(prompt)) {
+        const quickParse = await parsePrompt(prompt, null);
+        const newDest = (quickParse.destination || '').toLowerCase();
+        const oldDest = (memCtx.previousParams.destination || '').toLowerCase();
+        if (newDest && newDest !== oldDest) {
+          logger.info('Webhook: new destination detected — clearing stale previousParams', {
+            userKey, newDest, oldDest,
+          });
+          memCtx.previousParams = null;
+        }
+      }
+    }
+    // ── END STALE PARAMS GUARD ─────────────────────────────
+
     // ── ASKED FOR CHEAPER DETECTION ────────────────────────
     // Log before orchestration so the signal is captured even if search fails
     const { detectCheaperRequest } = require('../orchestration/promptParser');

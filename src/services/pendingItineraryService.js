@@ -47,8 +47,8 @@ function _priceCheckInterval(departureDateStr) {
 // ─────────────────────────────────────────────────────────────
 // MESSAGE CLASSIFIER
 // ─────────────────────────────────────────────────────────────
-const GREETING_PATTERN = /^(hi|hey|hello|hujambo|habari|sasa|niaje|good\s*(morning|afternoon|evening)|howdy|sup|what'?s\s*up|yo|greetings|salaam|jambo)[\s!?.]*$/i;
-const RESUME_PATTERN   = /\b(my\s*(saved|previous|last)\s*trip|the\s*trip\s*(i|we)\s*(was|were)\s*planning|continue|pick\s*up\s*where|resume|saved\s*itinerary|my\s*itinerary)\b/i;
+const GREETING_PATTERN = /^(hi(\s+there)?|hey(\s+there)?|hello|hujambo|habari|sasa|niaje|good\s*(morning|afternoon|evening)|howdy|sup|what'?s\s*up|yo|greetings|salaam|jambo)[\s!?.]*$/i;
+const RESUME_PATTERN   = /\b(my\s*(saved|previous|last)\s*trip|the\s*trip\s*(i|we)\s*(was|were)\s*planning|continue|pick\s*up\s*where|resume|saved\s*itinerary|my\s*itinerary|where\s*(did\s*we|were\s*we)\s*(leave\s*off|stop)|what\s*(were|was)\s*(those|the)\s*options|show\s*me\s*(those|the)\s*options\s*again|back\s*to\s*(my|the|that)\s*trip|let'?s\s*continue|still\s*(interested|want\s*to\s*book)|what\s*did\s*(you|we)\s*find|those\s*(options|results|flights|packages))\b/i;
 const NEW_TRIP_PATTERN = /\b(to|from|nairobi|mombasa|zanzibar|kigali|dubai|london|safari|fly|flight|hotel|nights?|travel|trip\s+to)\b/i;
 
 function classifyMessage(text) {
@@ -111,7 +111,7 @@ async function save({
       passengers:                 tripParams?.passengers || 1,
       status,
       updated_at:                 new Date().toISOString(),
-      expires_at:                 new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+      expires_at: null,
     };
 
     if (itineraryId) {
