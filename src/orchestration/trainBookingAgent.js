@@ -19,8 +19,8 @@
  * First run: npx playwright install chromium
  */
 
-let playwright = null;
-try { playwright = require('playwright'); } catch(e) {}
+let chromium = null;
+try { chromium = require('playwright-chromium').chromium; } catch(e) {}
 const supabase      = require('../utils/supabase');
 const { logger }    = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
@@ -132,6 +132,10 @@ async function _getPassengerFromSupabase(bookingRef, agencyId) {
  * @returns {Promise<string>} sessionId
  */
 async function warmUp(params) {
+  if (!chromium) {
+    logger.warn('TrainAgent: playwright-chromium not available — skipping warm-up');
+    return null;
+  }
   _cleanExpired();
 
   if (sessions.size >= MAX_SESSIONS) {

@@ -98,7 +98,7 @@ async function book({ bookingRef, agencyId, tripParams }) {
   // ── Complete booking (warm or cold) ──────────────────────
   const result = sessionId
     ? await agent.complete({ sessionId, bookingRef, agencyId })
-    : await agent.coldBook({ bookingRef, agencyId, params: _buildParams(tripParams) });
+    : await agent.coldBook({ bookingRef, agencyId, passengers: tripParams?.passengers || 1, params: _buildParams(tripParams) });
 
   // ── Update booking record ─────────────────────────────────
   if (result.success && result.krcRef) {

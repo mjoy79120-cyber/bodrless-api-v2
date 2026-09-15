@@ -1,5 +1,5 @@
-let playwright = null;
-try { playwright = require('playwright'); } catch(e) {}
+let chromium = null;
+try { chromium = require('playwright-chromium').chromium; } catch(e) {}
 const supabase = require('../utils/supabase');
 const PROPERTIES = [
   {

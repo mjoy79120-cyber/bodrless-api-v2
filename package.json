@@ -30,6 +30,7 @@
     "multer": "^2.1.1",
     "nanoid": "^6.0.1",
     "node-cron": "^4.6.0",
+    "playwright-chromium": "^1.63.0",
     "rate-limit-redis": "^6.0.1",
     "redis": "^4.6.10",
     "resend": "^6.16.0",
@@ -38,9 +39,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-  "jest": "^29.7.0",
-  "nodemon": "^3.0.2",
-  "playwright": "^1.61.1"
-}
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.2"
   }
-
+}
