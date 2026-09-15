@@ -103,6 +103,11 @@ async function scrapeBookingRate(page, property, checkIn, checkOut) {
 async function runScraper() {
   console.log('\n[RateScraper] Starting run at', new Date().toISOString());
 
+  if (!chromium) {
+    console.log('[RateScraper] Chromium not available — skipping run');
+    return;
+  }
+
   const browser = await chromium.launch({
     headless: true,
     args: [
