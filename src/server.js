@@ -472,19 +472,20 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // ── Rate Scraper Cron ─────────────────────────────────────────
-const cron = require('node-cron');
-const { runScraper } = require('./workers/rateScraper');
+// DISABLED — Playwright uses 200-400MB on 400MB Render instance
+// const cron = require('node-cron');
+// const { runScraper } = require('./workers/rateScraper');
 
-cron.schedule('0 0,6,12,18 * * *', async () => {
-  logger.info('[Cron] Firing rate scraper');
-  try { await runScraper(); }
-  catch (err) { logger.error('[Cron] Scraper error:', { error: err.message }); }
-});
+// cron.schedule('0 0,6,12,18 * * *', async () => {
+//   logger.info('[Cron] Firing rate scraper');
+//   try { await runScraper(); }
+//   catch (err) { logger.error('[Cron] Scraper error:', { error: err.message }); }
+// });
 
-setTimeout(async () => {
-  logger.info('[Startup] Running initial rate scrape...');
-  try { await runScraper(); }
-  catch (err) { logger.error('[Startup scraper] Error:', { error: err.message }); }
-}, 10000);
+// setTimeout(async () => {
+//   logger.info('[Startup] Running initial rate scrape...');
+//   try { await runScraper(); }
+//   catch (err) { logger.error('[Startup scraper] Error:', { error: err.message }); }
+// }, 10000);
 
 module.exports = app;
