@@ -518,13 +518,16 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── ORIGIN CLARIFICATION RESUME ───────────────────────
-    if (memCtx.previousParams?.needsOriginClarification && !memCtx.previousParams?.origin) {
+    if (!memCtx.previousParams?._awaitingClarification && memCtx.previousParams?.needsOriginClarification && !memCtx.previousParams?.origin) {
       const candidateOrigin = prompt.trim();
       const looksLikePlace =
         candidateOrigin.split(/\s+/).length <= 3 &&
         !/\d+\s*nights?\b/i.test(candidateOrigin) &&
         !/\bto\b.{3,}/i.test(candidateOrigin) &&
-        !/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(candidateOrigin);
+    !/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(candidateOrigin) &&
+    !/\b(next\s+(week|month|year)|this\s+(week|month|weekend)|tomorrow|today)\b/i.test(candidateOrigin) &&
+    !/^\d{1,2}[\/-]\d{1,2}([\/-]\d{2,4})?$/.test(candidateOrigin) &&
+    !/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(candidateOrigin);
 
       if (looksLikePlace) {
         logger.info('Clarification resume: injecting origin from reply', {
