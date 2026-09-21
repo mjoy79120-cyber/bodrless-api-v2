@@ -1246,6 +1246,14 @@ async function parsePrompt(prompt, session = null, ctx = null) {
   // ── Recommendation engine event logging (fire-and-forget) ─────────────
   if (ctx) _logParseEvents(raw, prompt, ctx);
 
+    // ── Accessibility intent detection ────────────────────────────────────
+  raw.accessibilityIntent = detectAccessibilityIntent(prompt);
+  if (raw.accessibilityIntent) {
+    raw.accessibleHotelOnly         = raw.isHotelOnly;
+    raw.includeAccessibleTransfer   = !raw.isHotelOnly;
+    raw.useAccessibleHotelInventory = true;
+  }
+
   return raw;
 }
 

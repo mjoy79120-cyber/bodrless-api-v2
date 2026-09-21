@@ -10,6 +10,7 @@ const travelerIntelligence = require("../services/travelerIntelligence");
 const tripMonitoringService = require("../services/tripMonitoringService");
 
 const cachedSearch = require('../services/cachedSearch');
+const { getAccessibleOptions, formatAccessibilityResponse } = require('../services/accessibilityService');
 
 let scorePackages = null;
 try {
@@ -419,11 +420,34 @@ class OrchestrationEngine {
       console.log(`[DATE FALLBACK] No returnDate — using ${tripParams.returnDate} (${nights} nights${!tripParams.nights ? ' default' : ''})`);
     }
 
-    tripParams._datesWereAssumed = datesWereAssumed;
+       tripParams._datesWereAssumed = datesWereAssumed;
 
     const resolvedIntent = intent || this._detectIntent(prompt, null);
     tripParams.wantsCheapest = !!resolvedIntent.wantsCheapest;
     tripParams.wantsAffordableSort = !!resolvedIntent.wantsAffordableSort;
+
+    // ── ACCESSIBILITY BRANCH ──────────────────────────────────────────────
+    if (tripParams.useAccessibleHotelInventory) {
+      const dest = (tripParams.destination || '').toLowerCase();
+      const accessibleResults = await getAccessibleOptions(dest, {
+        types: tripParams.accessibleHotelOnly
+          ? ['hotel']
+          : ['hotel', 'transfer', 'airport_assistance'],
+      });
+
+      // Hotel-only: return the accessible list directly, no flights
+      if (tripParams.accessibleHotelOnly) {
+        return {
+          text: formatAccessibilityResponse(dest, accessibleResults),
+          packages: [],
+        };
+      }
+
+      // Full package: run flights normally, swap hotel for accessible inventory
+      // We'll override _searchHotels result after the parallel search below
+      tripParams._accessibleResults = accessibleResults;
+    }
+    // ── END ACCESSIBILITY BRANCH ──────────────────────────────────────────
 
     // ── ROUTE GRAPH HINTS ─────────────────────────────────────────────────
     let routeHints = null;
@@ -506,9 +530,30 @@ class OrchestrationEngine {
       ]).catch(err => logger.warn('RouteLearning: logOutcome failed', { error: err.message }));
     }
 
-    let outboundTransport = [...outboundResult.results, ...outboundBuses, ...outboundTrains];
+        let outboundTransport = [...outboundResult.results, ...outboundBuses, ...outboundTrains];
     let returnTransport   = [...returnResult.results,   ...returnBuses,   ...returnTrains];
     let hotels = hotelResults;
+
+    // Swap HotelBeds results for accessible inventory if flagged
+    if (tripParams._accessibleResults) {
+      const { hotels: accessHotels, transfers: accessTransfers, airportAssistance } = tripParams._accessibleResults;
+      if (accessHotels.length > 0) {
+        hotels = accessHotels.map(h => ({
+          name:         h.name,
+          location:     h.location,
+          pricePerNight: h.price_from || 0,
+          currency:     h.currency || 'KES',
+          accessibilityFeatures: h.accessibility_features || [],
+          accessibleRooms: h.accessible_rooms || null,
+          notes:        h.notes || null,
+          source:       'accessible_travel',
+          _isAccessible: true,
+        }));
+      }
+      // Append accessible transfer as a note on the response (handled in text below)
+      tripParams._accessibleTransfers = accessTransfers || [];
+      tripParams._accessibleAirportAssistance = airportAssistance || [];
+    }
 
     outboundTransport = this._dedupeEquivalentFlights(outboundTransport);
     returnTransport    = this._dedupeEquivalentFlights(returnTransport);
@@ -603,7 +648,16 @@ if (scorePackages && context?.phone) {
         ? ` — ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''}`
         : '';
       const isFlightOnlySearch = rankedPackages.length > 0 && rankedPackages.every(p => p._flightOnly);
-      responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
+           responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
+
+      // Append accessible transfer note if present
+      if (tripParams._accessibleTransfers?.length > 0) {
+        const t = tripParams._accessibleTransfers[0];
+        responseText += `\n\n♿ *Accessible Transfer included:* ${t.name} — KES ${Number(t.price_from).toLocaleString()} ${t.price_unit}. Powered by Accessible Travel Kenya.`;
+      }
+      if (tripParams._accessibleAirportAssistance?.length > 0) {
+        responseText += `\n✈️ *Airport assistance available* from Accessible Travel Kenya — reply ASSIST for details.`;
+      }
 
       const hasReturnDate = !!(tripParams.returnDate);
 if (isFlightOnlySearch && hasReturnDate) {
