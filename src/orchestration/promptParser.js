@@ -47,6 +47,7 @@
 
 const Groq = require('groq-sdk');
 const { logger } = require('../utils/logger');
+const { detectAccessibilityIntent } = require('./services/accessibilityService');
 
 // ─────────────────────────────────────────────
 // CONSTANTS
