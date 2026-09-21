@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
-const orchestrationEngine = require('./orchestrationEngine');
+const engine = require('../orchestration/engine');
 
 class TriplyConversationManager {
 
