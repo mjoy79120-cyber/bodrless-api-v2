@@ -332,7 +332,7 @@ class WhatsAppService {
       const hCurrency = _safeStr(hotel.currency, 'KES');
       const hNights   = nights || _safeInt(hotel.nights, 1);
       lines.push('');
-      lines.push('*🏨 Hotel*');
+      lines.push(hotel._isAccessible ? '*♿ Accessible Hotel*' : '*🏨 Hotel*');
       lines.push(`  ${_safeStr(hotel.name)} ${stars}`.trimEnd());
       if (hotel.location) lines.push(`  Location: ${hotel.location}`);
       if (hotel.rating)   lines.push(`  Rating: ${Number(hotel.rating).toFixed(1)}/5`);
@@ -348,7 +348,7 @@ class WhatsAppService {
     const transferList = Array.isArray(transfers) ? transfers : (transfers ? [transfers] : []);
     if (transferList.length > 0) {
       lines.push('');
-      lines.push('*🚗 Transfer*');
+      lines.push(hotel?._isAccessible ? '*♿ Wheelchair Accessible Vehicle*' : '*🚗 Transfer*');
       transferList.forEach(t => {
         if (!t) return;
         const trCurrency = _safeStr(t.currency, 'KES');

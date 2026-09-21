@@ -740,13 +740,13 @@ closeBtn.onclick = function() {
       var stars = h.stars ? Array(Math.min(Math.round(h.stars),5)+1).join('★') : '';
       var hsub = (h.location||'TBC'); if (nights > 0) hsub += ' · '+nights+' nights · '+fmtPrice(h.pricePerNight,h.currency)+'/night';
       if (h.images && h.images.length > 0) { var hi = document.createElement('img'); hi.src = h.images[0]; hi.alt = h.name||'Hotel'; hi.style.cssText = 'width:100%;height:140px;object-fit:cover;border-radius:10px;margin-bottom:8px;display:block;'; hi.onerror = function(){ this.style.display='none'; }; pb.appendChild(hi); }
-      pb.appendChild(makeRow('Hotel',(h.name||'TBC')+(stars?' '+stars:''),hsub));
+      pb.appendChild(makeRow(h._isAccessible ? '♿ Accessible Hotel' : 'Hotel',(h.name||'TBC')+(stars?' '+stars:''),hsub));
       if (h.mealPlan) pb.appendChild(makeHL('🍽️ '+h.mealPlan.replace(/_/g,' '),'neutral'));
       pb.appendChild(makeHL(h.policySummary||(h.isRefundable===false?'⚠️ Non-refundable':'Refund terms confirmed at booking'),h.isRefundable===false?'warn':h.isRefundable===true||h.policySummary?'good':'neutral'));
       if (h.priceMatchApplied) { pb.appendChild(makeHL('🏷️ Price matched — saving KES '+Math.round(h.priceMatchSaving||0).toLocaleString()+'/night vs '+h.priceMatchOta,'good')); }
     }
     var trl = Array.isArray(tr) ? tr : (tr ? [tr] : []);
-    if (trl.length > 0) { var tsub = trl.map(function(x){ return (x.legType==='departure'?'Departure':'Arrival')+': '+(x.description||x.location||'TBC')+' ('+fmtPrice(x.price,x.currency)+')'; }).join(' · '); pb.appendChild(makeRow('Transfer',trl[0].provider||'Bodrless Transfer',tsub)); }
+    if (trl.length > 0) { var tsub = trl.map(function(x){ return (x.legType==='departure'?'Departure':'Arrival')+': '+(x.description||x.location||'TBC')+' ('+fmtPrice(x.price,x.currency)+')'; }).join(' · ');       pb.appendChild(makeRow(h && h._isAccessible ? '♿ Wheelchair Accessible Vehicle' : 'Transfer', trl[0].provider||'Bodrless Transfer', tsub));
     var pf = document.createElement('div'); pf.className = 'pkg-footer';
     var ppd = document.createElement('div'); ppd.className = 'pkg-price'; ppd.innerText = fmtPrice(total,cur);
     var pps = document.createElement('small'); pps.innerText = fmtPrice(ppp,cur)+'/person · '+pax+' traveller(s)'; ppd.appendChild(pps);
