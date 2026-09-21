@@ -2,7 +2,7 @@
 // Partner: Accessible Travel Kenya
 // Handles all accessible property + transfer queries triggered by accessibility intent
 
-const supabase = require('../supabase');
+const supabase = require('../utils/supabase');
 
 // Keywords that trigger accessibility mode in promptParser
 const ACCESSIBILITY_KEYWORDS = [
