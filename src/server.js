@@ -59,6 +59,10 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/webhooks', intasendWebhookRoutes);
 app.use('/api/webhooks', duffelWebhookRoutes);
 
+// ── Triply Partner API ────────────────────────────────────────
+const { router: triplyRouter } = require('./routes/triply');
+app.use('/api/partners/triply', triplyRouter);
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 100,
   message: { error: 'Too many requests, please try again later.' },
@@ -486,6 +490,6 @@ if (process.env.NODE_ENV === 'production') {
 //   logger.info('[Startup] Running initial rate scrape...');
 //   try { await runScraper(); }
 //   catch (err) { logger.error('[Startup scraper] Error:', { error: err.message }); }
-// }, 10000);
+// }, 10000)
 
 module.exports = app;

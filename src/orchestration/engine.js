@@ -2118,8 +2118,11 @@ if (isFlightOnlySearch && hasReturnDate) {
       tracking.alert({ type: 'zero_results', severity: 'warning', title: `No results for "${tripParams.destination || 'unknown destination'}"`, detail: `Prompt: "${prompt.slice(0, 200)}"`, context: { prompt, destination: tripParams.destination, origin: tripParams.origin, tripParams }, agencyId, sessionId, channel: channel || 'widget' });
     }
 
-    const isFlightOnly = singleResult.packages.length > 0 && singleResult.packages.every(p => p._flightOnly);
-const taggedParams  = isFlightOnly && !!(tripParams.returnDate)
+    const isTransportOnly = singleResult.packages.length > 0 && singleResult.packages.every(p => p._flightOnly);
+const isTrainOnly = singleResult.packages.length > 0 && singleResult.packages.every(p =>
+  p.transport?.transportType === 'train' && !p.hotel
+);
+const taggedParams = (isTransportOnly || isTrainOnly)
   ? { ...tripParams, _awaitingHotelFollowUp: true, _lastFlightPackages: singleResult.packages }
   : tripParams;
 
@@ -2304,10 +2307,14 @@ const taggedParams  = isFlightOnly && !!(tripParams.returnDate)
     const hotelExclusive = lower.match(/\bonly\s+(a\s+)?hotel\b|hotel\s+only|just\s+(a\s+)?hotel\b|stay\s+only|accommodation\s+only/i);
     const hotelIntent    = !flightExclusive && !busExclusive && lower.match(/\b(find\s+(me\s+)?a\s+hotel|looking\s+for\s+(a\s+)?hotel|need\s+(a\s+)?hotel|hotel\s+in|hotels?\s+near|where\s+to\s+stay|accommodation\s+in)\b/i);
 
+        const trainExclusive = /\b(train|sgr|madaraka)\b/i.test(lower) && !hasHotelInSamePrompt;
+
     if (flightExclusive) {
       productScope.needsHotel = false; productScope.needsTransfers = false; adjustments.transportMode = 'flight';
     } else if (busExclusive) {
       productScope.needsHotel = false; productScope.needsTransfers = false; adjustments.transportMode = 'bus';
+    } else if (trainExclusive) {
+      productScope.needsHotel = false; productScope.needsTransfers = false; adjustments.transportMode = 'train';
     } else if (hotelExclusive || hotelIntent) {
       productScope.needsTransport = false; productScope.needsTransfers = false;
         } else {

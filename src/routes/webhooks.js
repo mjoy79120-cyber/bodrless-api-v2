@@ -596,20 +596,62 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── NORMAL ORCHESTRATION ───────────────────────────────
-    if (activeLegFlow) {
-      logger.info('LegFlow: user sent fresh search — clearing active flow', { userKey });
-      await conversationMemory.clearLegFlow(userKey, agencyId);
-    }
+if (activeLegFlow) {
+  logger.info('LegFlow: user sent fresh search — clearing active flow', { userKey });
+  await conversationMemory.clearLegFlow(userKey, agencyId);
+}
 
-    await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
-    logger.info('Webhook: calling orchestrationEngine...', { userKey, prompt: prompt.slice(0, 80) });
+await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
+logger.info('Webhook: calling orchestrationEngine...', { userKey, prompt: prompt.slice(0, 80) });
 
-    const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
-      conversationHistory: memCtx.conversationHistory,
-      previousParams:      memCtx.previousParams,
-      channel:             'whatsapp',
-      phone:               phone || userKey,
-    });
+// ── TRIPLY ROUTING ─────────────────────────────────────
+const { data: agencyRow } = await supabase
+  .from('agencies')
+  .select('integration_type, approval_mode')
+  .eq('id', agencyId)
+  .single();
+
+let result;
+
+if (agencyRow?.integration_type === 'triply') {
+  // Triply agency — goes through approval flow
+  const triplyConversationManager = require('../services/triplyConversationManager');
+  result = await triplyConversationManager.handle(prompt, agencyId, {
+    conversationHistory: memCtx.conversationHistory,
+    previousParams:      memCtx.previousParams,
+    channel:             'whatsapp',
+    phone:               phone || userKey,
+    sendWhatsApp:        (to, msg) => whatsappService.sendText(phoneNumberId, to, msg),
+  });
+
+  // If auto approval — result already delivered to traveler inside the manager
+  // If manual approval — result is held, agent must approve in Triply dashboard
+  // Either way we save the turn and return — do not send packages here
+  conversationMemory.saveTurn(userKey, agencyId, {
+    userMessage:    prompt,
+    engineResponse: result.text,
+    tripParams:     result.tripParams,
+    packages:       result.packages || [],
+    sessionId:      result.sessionId,
+  }).catch(err => logger.error('Webhook: saveTurn failed (non-blocking)', { error: err.message, userKey }));
+
+  // Only send text response to traveler if manual approval
+  // The package itself will be sent after agent approves
+  if (agencyRow?.approval_mode === 'manual' && result.needsClarification) {
+    await whatsappService.sendText(phoneNumberId, recipient, result.text);
+  }
+
+  return;
+
+} else {
+  // All other agencies — existing flow completely unchanged
+  result = await orchestrationEngine.orchestrate(prompt, agencyId, {
+    conversationHistory: memCtx.conversationHistory,
+    previousParams:      memCtx.previousParams,
+    channel:             'whatsapp',
+    phone:               phone || userKey,
+  });
+}
 
     logger.info('Webhook: orchestration returned', {
       userKey,
