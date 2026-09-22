@@ -68,18 +68,19 @@ router.post('/agencies', validateTriplyKey, async (req, res) => {
     // Create agency record
     const agencyId = uuidv4();
     const { error: agencyError } = await supabase
-      .from('agencies')
-      .insert({
-        id:               agencyId,
-        name:             agency_name,
-        whatsapp_number:  whatsapp_number || null,
-        website:          website_url     || null,
-        integration_type: 'triply',
-        partner_id:       req.partner.id,
-        onboarded_via:    'partner_api',
-        approval_mode:    approval_mode,
-        created_at:       new Date().toISOString(),
-      });
+  .from('agencies')
+  .insert({
+    id:               agencyId,
+    name:             agency_name,
+    email:            req.body.email || `${triply_agency_id}@triply.partner`,
+    whatsapp_number:  whatsapp_number || null,
+    website:          website_url     || null,
+    integration_type: 'triply',
+    partner_id:       req.partner.id,
+    onboarded_via:    'partner_api',
+    approval_mode:    approval_mode,
+    created_at:       new Date().toISOString(),
+  });
 
     if (agencyError) throw new Error(agencyError.message);
 
