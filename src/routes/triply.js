@@ -42,6 +42,7 @@ router.post('/agencies', validateTriplyKey, async (req, res) => {
     website_url,
     triply_agency_id,
     approval_mode = 'manual',
+    email,
   } = req.body;
 
   if (!agency_name || !triply_agency_id) {
