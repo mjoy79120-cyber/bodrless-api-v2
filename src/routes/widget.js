@@ -747,6 +747,7 @@ closeBtn.onclick = function() {
     }
     var trl = Array.isArray(tr) ? tr : (tr ? [tr] : []);
     if (trl.length > 0) { var tsub = trl.map(function(x){ return (x.legType==='departure'?'Departure':'Arrival')+': '+(x.description||x.location||'TBC')+' ('+fmtPrice(x.price,x.currency)+')'; }).join(' · ');       pb.appendChild(makeRow(h && h._isAccessible ? '♿ Wheelchair Accessible Vehicle' : 'Transfer', trl[0].provider||'Bodrless Transfer', tsub));
+    }
     var pf = document.createElement('div'); pf.className = 'pkg-footer';
     var ppd = document.createElement('div'); ppd.className = 'pkg-price'; ppd.innerText = fmtPrice(total,cur);
     var pps = document.createElement('small'); pps.innerText = fmtPrice(ppp,cur)+'/person · '+pax+' traveller(s)'; ppd.appendChild(pps);
