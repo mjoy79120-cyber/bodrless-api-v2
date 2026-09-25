@@ -267,6 +267,7 @@ this.baseUrl   = this.isSandbox
 
   async _post(path, body, timeoutMs) {
     const url = `${this.baseUrl}${path}`;
+    console.log('RateHawk request URL:', url);
     try {
       const res = await axios.post(url, body, {
         headers: this._headers(),
