@@ -333,21 +333,25 @@ class OrchestrationEngine {
         }
         console.log("FOLLOW-UP DETECTED — adjusted params:", tripParams);
 
-        // ── MULTI-TRIP OVERRIDE ─────────────────────────────────────────────
+        // ── DESTINATION CHANGE + MULTI-TRIP OVERRIDE ────────────────────────
         const freshParse = await parsePrompt(prompt, null);
-        if (Array.isArray(freshParse.trips) && freshParse.trips.length > 1) {
-          const freshDests    = freshParse.trips.map(t => (t.destination || '').toLowerCase());
-          const adjustedDest  = (tripParams.destination || '').toLowerCase();
-          const tripsAreDifferent = !freshDests.some(d => d === adjustedDest);
-          if (tripsAreDifferent) {
-            logger.info('Engine: multi-trip fresh parse overrides follow-up classification', {
-              freshDests, adjustedDest,
-            });
-            tripParams = { ...freshParse, agencyId };
-            intent.isFollowUp = false;
-            console.log('INTENT OVERRIDE: multi-trip fresh parse — forcing fresh search');
-          }
+        const freshDest  = (freshParse.destination || '').toLowerCase().trim();
+        const prevDest   = (tripParams.destination  || '').toLowerCase().trim();
+
+        const destinationChanged = freshDest && prevDest && freshDest !== prevDest;
+        const isMultiTripOverride = Array.isArray(freshParse.trips) && freshParse.trips.length > 1 &&
+          !freshParse.trips.some(t => (t.destination || '').toLowerCase() === prevDest);
+
+        if (destinationChanged || isMultiTripOverride) {
+          logger.info('Engine: follow-up override — destination changed or multi-trip detected', {
+            previous: prevDest,
+            new:      freshDest,
+            reason:   destinationChanged ? 'destination_changed' : 'multi_trip',
+          });
+          tripParams = { ...freshParse, agencyId };
+          intent.isFollowUp = false;
         }
+        // ── END OVERRIDE ────────────────────────────────────────────────────
 
       } else {
         const sessionWithStore = previousParams
