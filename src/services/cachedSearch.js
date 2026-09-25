@@ -180,6 +180,14 @@ async function _liveHotel(params, cacheParams, contentType) {
   const combined     = [...hbResults, ...rhResults];
   const deduped      = _dedupeHotels(combined);
   const hotelResults = _sortHotelsCheapest(deduped);
+  logger.info('CachedSearch.hotels: supplier breakdown after dedupe', {
+  destination: params.destination,
+  ratehawk:    hotelResults.filter(h => h.supplier === 'ratehawk').length,
+  hotelbeds:   hotelResults.filter(h => h.supplier === 'hotelbeds').length,
+  topResult:   hotelResults[0]
+    ? `${hotelResults[0].name} [${hotelResults[0].supplier}] @ ${hotelResults[0].totalRate} ${hotelResults[0].currency}`
+    : 'none',
+});
 
   logger.info('CachedSearch.hotels: merged results', {
     destination: params.destination,
