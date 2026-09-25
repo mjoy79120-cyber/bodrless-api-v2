@@ -237,10 +237,10 @@ class RateHawkAdapter {
   constructor() {
     this.keyId          = process.env.RATEHAWK_KEY_ID;
     this.token          = process.env.RATEHAWK_TOKEN;
-    this.isSandbox      = process.env.RATEHAWK_SANDBOX !== 'false';
-    this.baseUrl        = this.isSandbox
-      ? 'https://api-sandbox.ratehawk.com/api/b2b/v3'
-      : 'https://api.worldota.net/api/b2b/v3';
+    this.isSandbox = process.env.RATEHAWK_SANDBOX === 'true';
+this.baseUrl   = this.isSandbox
+  ? 'https://api-sandbox.ratehawk.com/api/b2b/v3'
+  : 'https://api.ratehawk.com/api/b2b/v3';
     this.timeout        = Number(process.env.RATEHAWK_TIMEOUT_MS)         || 20000;
     this.searchTimeout  = Number(process.env.RATEHAWK_SEARCH_TIMEOUT_MS)  || 18000;
     this.prebookTimeout = Number(process.env.RATEHAWK_PREBOOK_TIMEOUT_MS) || 60000;
