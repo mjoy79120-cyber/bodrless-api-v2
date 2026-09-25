@@ -125,7 +125,10 @@ function buildRouteKey(params) {
 // Separate key space from flights.
 // ─────────────────────────────────────────────
 function buildHotelRouteKey(params) {
-  const { destination, checkIn, checkOut, passengers, rooms } = params;
+  const { destination, passengers, rooms } = params;
+  // FIX: accept both naming conventions
+  const checkIn  = params.checkIn  || params.departureDate || '';
+  const checkOut = params.checkOut || params.returnDate    || '';
   const d   = (destination || '').toLowerCase().trim().replace(/\s+/g, '_');
   const r   = rooms      || 1;
   const pax = passengers || 1;
