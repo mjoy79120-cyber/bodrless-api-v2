@@ -4,60 +4,45 @@
  * Passenger detail collection — one compact block per traveler,
  * contact details asked once at the end.
  *
- * REDESIGNED (2026-08-17):
- * Previous version used a free-text block where Gender and Type
- * were either typed (typo-prone) or collected via a separate
- * WhatsApp list tap per passenger (extra round trips while the
- * flight hold clock ticks). New version puts everything into one
- * short block per passenger, with very lenient field parsers so
- * "m", "male", "M" all resolve correctly.
+ * PASSENGER MAPPER:
+ * Raw WhatsApp passenger objects (type/dateOfBirth/etc.) are kept
+ * in the session as-is. The passengerMapper utility converts them
+ * into supplier-specific shapes (RateHawk rooms, HotelBeds paxes,
+ * TravelDuqa passengers) inside bookingService, not here.
  *
  * BLOCK FORMAT (per passenger, blank line between blocks):
  *   Name: John Doe
- *   DOB: 21 May 1990          ← any format accepted
- *   Gender: Male              ← m / f / male / female
- *   Type: Adult               ← adult / child / a / c / kid
- *   Seat: Window              ← optional; window/aisle/exit row/any/skip
+ *   DOB: 21 May 1990
+ *   Gender: Male
+ *   Type: Adult
+ *   Seat: Window          ← optional
  *
- * CONTACT DETAILS (once, after all passenger blocks):
+ * CONTACT DETAILS (once, after all blocks):
  *   Phone: 0712345678
  *   Email: john@example.com
  *
- * CHILD AGE CROSS-CHECK:
- * Child status is confirmed against DOB + travel date from the
- * package snapshot. If the DOB puts the traveler at 18+ on the
- * travel date, we reject "Type: Child" — they can't get a child
- * fare. If DOB says under 18 but Type says Adult, we flag it and
- * ask the user to confirm (parent may be enrolling an older teen
- * as adult intentionally). Infants (under 2) are flagged
- * separately since some suppliers handle them differently.
- *
- * MID-BOOKING PIVOT (carried over from previous version):
- * Detects "actually, can I get a different flight" style messages
- * before step handlers run, cancels session, re-shows cached
- * package list.
- *
- * WELCOME-BACK RESUME (carried over):
- * 20-minute gap triggers a short "welcome back" note before
- * continuing normal step handling.
- *
- * MIGRATION REQUIRED (same as before):
- *   alter table whatsapp_booking_sessions
- *     add column if not exists last_activity_at timestamptz;
+ * CHANGES FROM PREVIOUS VERSION:
+ *   - passengerMapper integration documented (mapping happens in bookingService)
+ *   - guestsByRoom construction delegated to passengerMapper.toRateHawkRooms()
+ *   - HotelBeds paxes delegated to passengerMapper.toHotelBedsPaxes()
+ *   - bookingRef collision risk reduced (timestamp + random suffix)
+ *   - _handlePriceApproval retry correctly tells user to search again on failure
+ *   - needsEmail now also defaults email to corporate for hotel-only RateHawk
+ *   - orphaned passenger-detail detection exported for webhooks.js safety net
  * ─────────────────────────────────────────────────────────────
  */
 
-const supabase = require('../utils/supabase');
-const bookingService = require('./bookingService');
+const supabase        = require('../utils/supabase');
+const bookingService  = require('./bookingService');
 const whatsappService = require('./whatsapp');
-const packageCache = require('./packageCache');
-const { logger } = require('../utils/logger');
+const packageCache    = require('./packageCache');
+const { logger }      = require('../utils/logger');
 
 // ─────────────────────────────────────────────
-// PROMPT TEMPLATE
+// PROMPT TEMPLATES
 // ─────────────────────────────────────────────
 const FORMAT_TEMPLATE =
-`⚠️ *Important:* Please make sure the name on your booking matches the name on your passport or ID exactly.
+`⚠️ *Important:* Make sure the name on your booking matches your passport or ID exactly.
 
 Send your traveler details like this:
 
@@ -67,37 +52,36 @@ Gender: Male
 Type: Adult
 Seat: Window
 
-*Seat is optional* — leave it out, or write: window / aisle / exit row / any
+*Seat is optional* — leave it out or write: window / aisle / exit row / any
 *Type* is Adult or Child
 
-If booking for more than one traveler, add each person as a separate block with a blank line between them.
+For more than one traveler, add each person as a separate block with a blank line between them.
 
 Reply *cancel* at any time to stop.`;
 
 const CONTACT_TEMPLATE =
-`Almost there! Last step — reply with the best phone number and email to reach you on:
+`Almost there! Last step — reply with the best phone and email to reach you:
 
 Phone: 0712345678
 Email: john@example.com`;
 
 // ─────────────────────────────────────────────
-// MID-BOOKING PIVOT DETECTION
+// DETECTION PATTERNS
 // ─────────────────────────────────────────────
 const WANTS_SOMETHING_DIFFERENT = /\b(actually|change (my|the)?\s*(flight|hotel|option|mind)|different (flight|hotel|option)|start over|restart|pick (a )?different|go back|never ?mind|not this one|wait,? (actually|i)|can i (get|have) a different)\b/i;
 
-const PASSENGER_DETAIL_LINE_LOCAL = /^(name|dob|date of birth|gender|type|seat)\s*:/im;
-
-const RESUME_GAP_MS = 20 * 60 * 1000; // 20 minutes
-
-// ─────────────────────────────────────────────
-// FIELD PARSERS — all very lenient
-// ─────────────────────────────────────────────
-
 /**
- * Parse gender from a loose string.
- * Accepts: male/female, m/f, M/F, man/woman, boy/girl
- * Returns: 'male' | 'female' | null
+ * Exported — used by webhooks.js safety net to detect orphaned
+ * passenger-detail messages that arrive with no active session.
  */
+const PASSENGER_DETAIL_PATTERN = /^(name|dob|date of birth|gender|type|seat)\s*:/im;
+module.exports.PASSENGER_DETAIL_PATTERN = PASSENGER_DETAIL_PATTERN;
+
+const RESUME_GAP_MS = 20 * 60 * 1000;
+
+// ─────────────────────────────────────────────
+// FIELD PARSERS
+// ─────────────────────────────────────────────
 function _parseGender(raw) {
   if (!raw) return null;
   const t = raw.trim().toLowerCase();
@@ -108,11 +92,6 @@ function _parseGender(raw) {
   return null;
 }
 
-/**
- * Parse traveler type from a loose string.
- * Accepts: adult/child/kid/minor, a/c
- * Returns: 'adult' | 'child' | null
- */
 function _parseType(raw) {
   if (!raw) return null;
   const t = raw.trim().toLowerCase();
@@ -121,10 +100,6 @@ function _parseType(raw) {
   return null;
 }
 
-/**
- * Parse seat preference from a loose string.
- * Returns: 'window' | 'aisle' | 'exit_row' | null
- */
 function _parseSeat(raw) {
   if (!raw) return null;
   const t = raw.trim().toLowerCase();
@@ -135,12 +110,6 @@ function _parseSeat(raw) {
   return null;
 }
 
-/**
- * Parse a flexible date into YYYY-MM-DD.
- * Accepts natural language, DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD.
- * Day-first is assumed for ambiguous numeric dates (Kenyan market).
- * Returns null if nothing parseable.
- */
 function _parseFlexibleDate(raw) {
   const text = String(raw || '').trim();
   if (!text) return null;
@@ -174,7 +143,7 @@ function _parseFlexibleDate(raw) {
     let day, month;
     if (a > 12 && b <= 12) { day = a; month = b; }
     else if (b > 12 && a <= 12) { day = b; month = a; }
-    else { day = a; month = b; } // default day-first
+    else { day = a; month = b; }
     const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     return _isValidCalendarDate(dateStr) ? dateStr : null;
   }
@@ -195,9 +164,6 @@ function _isValidCalendarDate(dateStr) {
   );
 }
 
-/**
- * Calculate age in years at a given reference date.
- */
 function _ageAt(dobStr, referenceDate) {
   const dob = new Date(dobStr + 'T00:00:00Z');
   const ref = new Date(referenceDate + 'T00:00:00Z');
@@ -205,6 +171,15 @@ function _ageAt(dobStr, referenceDate) {
   const m = ref.getUTCMonth() - dob.getUTCMonth();
   if (m < 0 || (m === 0 && ref.getUTCDate() < dob.getUTCDate())) age--;
   return age;
+}
+
+/**
+ * Generate a collision-resistant booking reference.
+ * Timestamp + 4-char random suffix.
+ */
+function _generateBookingRef() {
+  const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `BDR-${Date.now()}-${suffix}`;
 }
 
 // ─────────────────────────────────────────────
@@ -216,13 +191,13 @@ class WhatsAppBookingFlow {
     await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
 
     await supabase.from('whatsapp_booking_sessions').insert({
-      phone: from,
-      agency_id: agencyId,
-      package_snapshot: selectedPackage,
-      passenger_count: selectedPackage.summary?.passengers || 1,
-      current_step: 'awaiting_details_message',
+      phone:                from,
+      agency_id:            agencyId,
+      package_snapshot:     selectedPackage,
+      passenger_count:      selectedPackage.summary?.passengers || 1,
+      current_step:         'awaiting_details_message',
       passengers_collected: [],
-      last_activity_at: new Date().toISOString(),
+      last_activity_at:     new Date().toISOString(),
     });
 
     const passengerCount = selectedPackage.summary?.passengers || 1;
@@ -310,16 +285,13 @@ class WhatsAppBookingFlow {
     return false;
   }
 
-  // ─────────────────────────────────────────────
-  // Does this message look like a genuine answer to the current step?
-  // ─────────────────────────────────────────────
   _looksLikeExpectedAnswer(text, session) {
     const t = text.trim();
     if (session.current_step === 'awaiting_price_approval') {
       return /^(yes|yeah|y|ok|okay|approve|confirmed?|sure|proceed|go ahead|no|nope|n|decline|reject|don'?t)$/i.test(t);
     }
     if (session.current_step === 'awaiting_details_message') {
-      return PASSENGER_DETAIL_LINE_LOCAL.test(t);
+      return PASSENGER_DETAIL_PATTERN.test(t);
     }
     if (session.current_step === 'awaiting_contact_details') {
       return /^(phone|email)\s*:/im.test(t);
@@ -327,9 +299,6 @@ class WhatsAppBookingFlow {
     return false;
   }
 
-  // ─────────────────────────────────────────────
-  // MID-BOOKING PIVOT
-  // ─────────────────────────────────────────────
   async _handlePivotAway({ phoneNumberId, from }) {
     await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
 
@@ -340,7 +309,7 @@ class WhatsAppBookingFlow {
       );
       await whatsappService.sendPackages(phoneNumberId, from, cached.packages);
       await whatsappService.sendText(phoneNumberId, from,
-        `Reply with the option number (1-${cached.packages.length}) to book a different one, or search again for something new.`
+        `Reply with the option number (1-${cached.packages.length}) to book a different one, or search again.`
       );
     } else {
       await whatsappService.sendText(phoneNumberId, from,
@@ -363,6 +332,9 @@ class WhatsAppBookingFlow {
 
   // ─────────────────────────────────────────────
   // PARSE PASSENGER BLOCKS
+  // Output shape stays as WhatsApp-native:
+  //   { firstName, lastName, dateOfBirth, gender, type, seatPreference, ageAtTravel }
+  // passengerMapper converts these to supplier shapes in bookingService.
   // ─────────────────────────────────────────────
   _parseDetailsMessage(text, expectedCount, travelDate) {
     const blocks = text
@@ -372,7 +344,7 @@ class WhatsAppBookingFlow {
 
     if (blocks.length === 0) {
       return {
-        error: "I couldn't read any traveler details in that message. Please use the format shown above.",
+        error: "I couldn't read any traveler details. Please use the format shown above.",
       };
     }
 
@@ -380,98 +352,85 @@ class WhatsAppBookingFlow {
     const warnings   = [];
 
     for (let i = 0; i < blocks.length; i++) {
-      const block = blocks[i];
+      const block  = blocks[i];
       const fields = {};
 
       block.split('\n').forEach(line => {
         const match = line.match(/^([^:]+):\s*(.*)$/);
-        if (match) {
-          const key   = match[1].trim().toLowerCase();
-          const value = match[2].trim();
-          fields[key] = value;
-        }
+        if (match) fields[match[1].trim().toLowerCase()] = match[2].trim();
       });
 
-      // ── Name ──────────────────────────────────────────────
+      // Name
       const name = fields['name'];
       if (!name) {
-        return {
-          error: `Traveler ${i + 1} is missing a Name. Please check the format and try again.`,
-        };
+        return { error: `Traveler ${i + 1} is missing a Name. Please check the format.` };
       }
       const nameParts = name.trim().split(/\s+/);
       const firstName = nameParts[0];
       const lastName  = nameParts.slice(1).join(' ') || nameParts[0];
 
-      // ── DOB ───────────────────────────────────────────────
-      const rawDob = fields['dob'] || fields['date of birth'];
+      // DOB
+      const rawDob    = fields['dob'] || fields['date of birth'];
       const parsedDob = _parseFlexibleDate(rawDob);
       if (!parsedDob) {
         return {
-          error: `I couldn't read Traveler ${i + 1}'s date of birth (${name}). Try something like "21 May 1990", "21/05/1990", or "1990-05-21".`,
+          error: `I couldn't read Traveler ${i + 1}'s date of birth (${name}). Try "21 May 1990", "21/05/1990", or "1990-05-21".`,
         };
       }
 
-      // ── Gender ────────────────────────────────────────────
+      // Gender
       const gender = _parseGender(fields['gender'] || fields['sex']);
       if (!gender) {
-        return {
-          error: `I couldn't read the gender for ${name}. Please use Male or Female (or M/F).`,
-        };
+        return { error: `I couldn't read the gender for ${name}. Use Male or Female (or M/F).` };
       }
 
-      // ── Type ──────────────────────────────────────────────
+      // Type
       const type = _parseType(fields['type'] || fields['traveler type'] || fields['traveller type']);
       if (!type) {
-        return {
-          error: `I couldn't read the traveler type for ${name}. Please use Adult or Child.`,
-        };
+        return { error: `I couldn't read the traveler type for ${name}. Use Adult or Child.` };
       }
 
-      // ── Seat (optional) ───────────────────────────────────
+      // Seat (optional)
       const seatPreference = _parseSeat(
         fields['seat'] || fields['seat preference'] || fields['seat pref'] || null
       );
 
-      // ── Child age cross-check ──────────────────────────────
-      // Reference date: travel date from package snapshot, or today
-      const refDate = travelDate || new Date().toISOString().split('T')[0];
+      // Child age cross-check
+      const refDate    = travelDate || new Date().toISOString().split('T')[0];
       const ageAtTravel = _ageAt(parsedDob, refDate);
 
       if (type === 'child' && ageAtTravel >= 18) {
         return {
-          error: `${name}'s date of birth (${parsedDob}) shows they'll be ${ageAtTravel} years old at travel — that's an adult fare. Please correct their Type to *Adult*, or check the date of birth.`,
+          error: `${name}'s DOB shows they'll be ${ageAtTravel} at travel — that's an adult fare. ` +
+                 `Please correct Type to *Adult*, or check the date of birth.`,
         };
       }
 
       if (type === 'adult' && ageAtTravel < 18) {
-        // Warn but don't hard-block — parent may be intentionally
-        // booking a 16/17 year old as adult (some suppliers allow it)
         warnings.push(
-          `Note: ${name} will be ${ageAtTravel} years old at travel but is booked as an Adult. If this is correct, ignore this — otherwise update their Type to Child.`
+          `Note: ${name} will be ${ageAtTravel} years old at travel but is booked as Adult. ` +
+          `If correct, ignore this — otherwise update Type to Child.`
         );
       }
 
       if (ageAtTravel < 2) {
         warnings.push(
-          `Note: ${name} will be under 2 years old at travel (infant). Some suppliers handle infant fares separately — our team will confirm this with you.`
+          `Note: ${name} will be under 2 years old at travel (infant). ` +
+          `Some suppliers handle infant fares separately — our team will confirm.`
         );
       }
 
-      passengers.push({
-        firstName,
-        lastName,
-        dateOfBirth: parsedDob,
-        gender,
-        type,
-        seatPreference,
-        ageAtTravel,
-      });
+      passengers.push({ firstName, lastName, dateOfBirth: parsedDob, gender, type, seatPreference, ageAtTravel });
     }
 
     if (expectedCount && passengers.length !== expectedCount) {
+      logger.warn('WhatsApp: passenger count mismatch', {
+        expected: expectedCount,
+        received: passengers.length,
+      });
       return {
-        error: `This booking is for ${expectedCount} traveler(s), but I found ${passengers.length} block(s). Please include exactly ${expectedCount} traveler block(s), separated by a blank line.`,
+        error: `This booking is for ${expectedCount} traveler(s), but I found ${passengers.length} block(s). ` +
+               `Please send exactly ${expectedCount} block(s) separated by a blank line.`,
       };
     }
 
@@ -479,13 +438,12 @@ class WhatsAppBookingFlow {
   }
 
   // ─────────────────────────────────────────────
-  // STEP 1: PASSENGER DETAILS BLOCK
+  // STEP 1: PASSENGER DETAILS
   // ─────────────────────────────────────────────
   async _handleDetailsMessage({ phoneNumberId, from, text, session }) {
     const expectedCount = session.passenger_count || 1;
-    const pkg = session.package_snapshot;
+    const pkg           = session.package_snapshot;
 
-    // Travel date from package snapshot for child age cross-check
     const travelDate = pkg?.transport?.departureDate
       || pkg?.summary?.departureDate
       || null;
@@ -494,23 +452,21 @@ class WhatsAppBookingFlow {
 
     if (parsed.error) {
       await whatsappService.sendText(phoneNumberId, from,
-        `${parsed.error}\n\nPlease resend your details using the format shown earlier.`
+        `${parsed.error}\n\nPlease resend using the format shown earlier.`
       );
       return true;
     }
 
-    // Send any age-related warnings before continuing
     if (parsed.warnings?.length > 0) {
       for (const warning of parsed.warnings) {
         await whatsappService.sendText(phoneNumberId, from, `⚠️ ${warning}`);
       }
     }
 
-    // Save passengers, move to contact details step
     await supabase
       .from('whatsapp_booking_sessions')
       .update({
-        current_step: 'awaiting_contact_details',
+        current_step:         'awaiting_contact_details',
         passengers_collected: parsed.passengers,
       })
       .eq('phone', from);
@@ -528,9 +484,7 @@ class WhatsAppBookingFlow {
     const fields = {};
     text.split('\n').forEach(line => {
       const match = line.match(/^([^:]+):\s*(.+)$/);
-      if (match) {
-        fields[match[1].trim().toLowerCase()] = match[2].trim();
-      }
+      if (match) fields[match[1].trim().toLowerCase()] = match[2].trim();
     });
 
     const guestPhone = fields['phone'] || fields['tel'] || fields['mobile'] || null;
@@ -544,10 +498,14 @@ class WhatsAppBookingFlow {
     }
 
     const pkg = session.package_snapshot;
-    const needsEmail = !!(pkg?.transport && (pkg.transport.transportType || 'flight') === 'flight');
-    if (needsEmail && !guestEmail) {
+
+    // Email required for flights.
+    // For hotel-only RateHawk bookings, bookingService will default
+    // to the corporate email for the ETG user.email field.
+    const hasFlights = !!(pkg?.transport && (pkg.transport.transportType || 'flight') === 'flight');
+    if (hasFlights && !guestEmail) {
       await whatsappService.sendText(phoneNumberId, from,
-        `An Email address is required for flight bookings. Please resend including an Email line.\n\n${CONTACT_TEMPLATE}`
+        `An Email address is required for flight bookings. Please resend with an Email line.\n\n${CONTACT_TEMPLATE}`
       );
       return true;
     }
@@ -560,32 +518,31 @@ class WhatsAppBookingFlow {
     await this._finalizeBooking({
       phoneNumberId,
       from,
-      session: {
-        ...session,
-        guest_phone: guestPhone,
-        guest_email: guestEmail || null,
-      },
+      session: { ...session, guest_phone: guestPhone, guest_email: guestEmail || null },
     });
     return true;
   }
 
   // ─────────────────────────────────────────────
   // FINALIZE BOOKING
+  //
+  // bookingService is responsible for calling passengerMapper
+  // to shape passengers per supplier before calling the adapter.
   // ─────────────────────────────────────────────
   async _finalizeBooking({ phoneNumberId, from, session }) {
     await whatsappService.sendText(phoneNumberId, from,
       'Got it! Holding your flight and confirming your hotel now — one moment...'
     );
 
-    const bookingRef = `BDR-${Date.now()}`;
-    const passengers = session.passengers_collected || [];
-    const guestName  = `${passengers[0]?.firstName || ''} ${passengers[0]?.lastName || ''}`.trim();
+    const bookingRef  = _generateBookingRef();
+    const passengers  = session.passengers_collected || [];
+    const guestName   = `${passengers[0]?.firstName || ''} ${passengers[0]?.lastName || ''}`.trim();
 
     const result = await bookingService.initBooking({
       bookingRef,
       agencyId:         session.agency_id,
       pkg:              session.package_snapshot,
-      passengerDetails: passengers,
+      passengerDetails: passengers,   // WhatsApp-native shape — bookingService maps to supplier shapes
       guestName,
       guestPhone:       session.guest_phone,
       guestEmail:       session.guest_email,
@@ -599,8 +556,8 @@ class WhatsAppBookingFlow {
     };
 
     if (!result.success && result.code === 'PRICE_CHANGED') {
-      const oldFmt = `${result.currency} ${Number(result.oldPrice).toLocaleString()}`;
-      const newFmt = `${result.currency} ${Number(result.newPrice).toLocaleString()}`;
+      const oldFmt    = `${result.currency} ${Number(result.oldPrice).toLocaleString()}`;
+      const newFmt    = `${result.currency} ${Number(result.newPrice).toLocaleString()}`;
       const flightNote = result.flightHeld
         ? '\n\nYour flight hold is not yet charged — it will expire automatically if you cancel.'
         : '';
@@ -624,11 +581,11 @@ class WhatsAppBookingFlow {
         .eq('phone', from);
 
       await whatsappService.sendText(phoneNumberId, from,
-        `The hotel price changed once the traveler's real date of birth was applied:\n\n` +
+        `The hotel price changed once real dates of birth were applied:\n\n` +
         `Old price: ~${oldFmt}~\n` +
         `New price: *${newFmt}*` +
         flightNote +
-        `\n\nReply *yes* to approve the new price and continue, or *no* to cancel.`
+        `\n\nReply *yes* to approve and continue, or *no* to cancel.`
       );
       return;
     }
@@ -643,14 +600,13 @@ class WhatsAppBookingFlow {
 
     await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
 
-    // Seat selection notes
     if (result.seatSelection?.unresolved?.length > 0) {
       const notes = result.seatSelection.unresolved
         .filter(u => u.reason !== 'no preference stated')
         .map(u => `• ${u.reason}`);
       if (notes.length > 0) {
         await whatsappService.sendText(phoneNumberId, from,
-          `Note on seat preferences:\n${notes.join('\n')}\n\nYour booking is proceeding without those specific seats — you can still request one at check-in.`
+          `Note on seat preferences:\n${notes.join('\n')}\n\nBooking is proceeding without those seats — you can request one at check-in.`
         );
       }
     }
@@ -667,7 +623,7 @@ class WhatsAppBookingFlow {
   }
 
   // ─────────────────────────────────────────────
-  // PRICE APPROVAL (after PRICE_CHANGED)
+  // PRICE APPROVAL
   // ─────────────────────────────────────────────
   async _handlePriceApproval({ phoneNumberId, from, text, session }) {
     const answer = text.trim().toLowerCase();
@@ -683,6 +639,7 @@ class WhatsAppBookingFlow {
       return true;
     }
 
+    // Delete session before the retry call — prevents stale state
     await supabase.from('whatsapp_booking_sessions').delete().eq('phone', from);
 
     if (isNo) {
@@ -690,7 +647,7 @@ class WhatsAppBookingFlow {
         ? ' Your flight hold will expire automatically — no charge has been made.'
         : '';
       await whatsappService.sendText(phoneNumberId, from,
-        `Booking cancelled.${flightNote} Feel free to search again if you would like different options.`
+        `Booking cancelled.${flightNote} Feel free to search again for different options.`
       );
       return true;
     }
@@ -708,12 +665,13 @@ class WhatsAppBookingFlow {
       guestPhone:       ctx.guestPhone,
       guestEmail:       ctx.guestEmail,
       channel:          'whatsapp',
-      priceApproved:    true,
+      priceApproved:    true,  // tells bookingService to skip re-price check
     });
 
     if (!result.success) {
+      // Session already deleted above — tell user to search again
       await whatsappService.sendText(phoneNumberId, from,
-        `Something went wrong at the new price: ${result.error}\n\nNo payment has been taken. Please search again.`
+        `Something went wrong at the new price: ${result.error}\n\nNo payment has been taken. Please search again for a fresh rate.`
       );
       return true;
     }
@@ -754,22 +712,25 @@ class WhatsAppBookingFlow {
 
     if (!paymentResult.success) {
       await whatsappService.sendText(phoneNumberId, from,
-        `Your flight and hotel are held, but we couldn't send the payment prompt (${paymentResult.error}). Please contact support with booking ref ${result.bookingRef}.`
+        `Your flight and hotel are held, but we couldn't send the payment prompt (${paymentResult.error}). ` +
+        `Please contact support with booking ref ${result.bookingRef}.`
       );
-      logger.error('WhatsApp payment trigger failed after successful booking init', {
+      logger.error('WhatsApp: payment trigger failed after successful booking init', {
         bookingRef: result.bookingRef, error: paymentResult.error,
       });
       return;
     }
 
     await whatsappService.sendText(phoneNumberId, from,
-      `Check your phone and enter your *M-Pesa PIN* to complete payment.\n\nThis booking will be held for 30 minutes. We'll message you once payment is confirmed.`
+      `Check your phone and enter your *M-Pesa PIN* to complete payment.\n\n` +
+      `This booking will be held for 30 minutes. We'll message you once payment is confirmed.`
     );
 
-    logger.info('WhatsApp booking init + payment trigger complete', {
+    logger.info('WhatsApp: booking init + payment trigger complete', {
       bookingRef: result.bookingRef, from,
     });
   }
 }
 
 module.exports = new WhatsAppBookingFlow();
+module.exports.PASSENGER_DETAIL_PATTERN = PASSENGER_DETAIL_PATTERN;

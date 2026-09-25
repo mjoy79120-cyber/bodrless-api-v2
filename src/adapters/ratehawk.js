@@ -11,10 +11,15 @@
  *   search/multicomplete/ — 30 requests per 60 seconds
  *   booking endpoints   — 30 requests per 60 seconds
  *
- * SERP RATE LIMITER:
- *   All search() calls go through _serpQueue which enforces
- *   max 10 requests per 60 seconds. Excess requests are queued
- *   and fire as slots open up. This prevents 429s from ETG.
+ * BOOKING FLOW (ETG required order):
+ *   1. search()        — SERP: get hotels + search_hash / match_hash
+ *   2. getHotelPage()  — HP:   get h-... book_hash for chosen hotel
+ *   3. prebook()       — Confirms availability; h-... → p-... hash
+ *   4. book()          — form → finish → poll for final status
+ *
+ * PASSENGER SHAPING:
+ *   Use passengerMapper.toRateHawkRooms() before calling book().
+ *   Do NOT pass raw WhatsApp passenger objects directly.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -27,13 +32,13 @@ const supabase   = require('../utils/supabase');
 // ─────────────────────────────────────────────
 // SERP RATE LIMITER
 // ETG allows 10 SERP requests per 60 seconds.
-// We enforce 9/60s to give ourselves a safety margin.
+// We enforce 9/60s to give a safety margin.
 // ─────────────────────────────────────────────
-const SERP_MAX_PER_WINDOW = 9;       // stay under the 10 limit
-const SERP_WINDOW_MS      = 60000;   // 60 second window
+const SERP_MAX_PER_WINDOW = 9;
+const SERP_WINDOW_MS      = 60000;
 
-const _serpTimestamps = []; // timestamps of recent SERP calls
-const _serpQueue      = []; // pending calls waiting for a slot
+const _serpTimestamps = [];
+const _serpQueue      = [];
 let   _serpDraining   = false;
 
 function _enqueueSerpCall(fn) {
@@ -45,21 +50,16 @@ function _enqueueSerpCall(fn) {
 
 async function _drainSerpQueue() {
   _serpDraining = true;
-
   while (_serpQueue.length > 0) {
-    // Remove timestamps outside the current window
     const now = Date.now();
     while (_serpTimestamps.length > 0 && now - _serpTimestamps[0] > SERP_WINDOW_MS) {
       _serpTimestamps.shift();
     }
-
     if (_serpTimestamps.length < SERP_MAX_PER_WINDOW) {
-      // Slot available — fire the next call
       const { fn, resolve, reject } = _serpQueue.shift();
       _serpTimestamps.push(Date.now());
       try { resolve(await fn()); } catch (err) { reject(err); }
     } else {
-      // Window full — wait until oldest timestamp expires
       const waitMs = SERP_WINDOW_MS - (Date.now() - _serpTimestamps[0]) + 100;
       logger.info('RateHawk: SERP rate limit reached — waiting', {
         waitMs, queued: _serpQueue.length,
@@ -67,7 +67,6 @@ async function _drainSerpQueue() {
       await new Promise(r => setTimeout(r, waitMs));
     }
   }
-
   _serpDraining = false;
 }
 
@@ -162,23 +161,9 @@ const STATIC_GEO_OVERRIDES = {
   'cancun':           { lat: 21.1619,  lng: -86.8515, radius: 20 },
   'sydney':           { lat: -33.8688, lng: 151.2093, radius: 20 },
   'melbourne':        { lat: -37.8136, lng: 144.9631, radius: 20 },
+  // Sandbox test coordinates (ETG documented)
+  'los angeles':      { lat: 34.077194, lng: -118.36068, radius: 30 },
 };
-
-const RADIUS_OVERRIDES = {
-  'masai mara': 80, 'maasai mara': 80, 'amboseli': 60, 'tsavo': 80,
-  'samburu': 60,    'lake nakuru': 40, 'aberdare': 50, 'ol pejeta': 40,
-  'serengeti': 80,  'ngorongoro': 60,  'tarangire': 60, 'naivasha': 50,
-  'nakuru': 40,     'diani': 30,       'malindi': 30,   'watamu': 30,
-  'lamu': 20,       'nanyuki': 40,     'nairobi': 25,   'mombasa': 20,
-  'kampala': 25,    'dar es salaam': 25, 'kigali': 20,  'zanzibar': 25,
-  'dubai': 20,      'london': 20,      'paris': 15,     'new york': 15,
-  'bwindi': 40,     'kruger': 80,      'kruger park': 80,
-};
-
-function _getRadius(cityName) {
-  const key = (cityName || '').toLowerCase().trim();
-  return RADIUS_OVERRIDES[key] || 30;
-}
 
 // ─────────────────────────────────────────────
 // NOMINATIM RATE LIMITER  (1 req/sec per OSM policy)
@@ -208,9 +193,27 @@ async function _drainNominatimQueue() {
   _nominatimRunning = false;
 }
 
+// ─────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────
+
+// Errors that mean the booking is definitively dead — stop polling.
 const TERMINAL_ERRORS = new Set([
   'soldout', 'book_limit', 'booking_finish_did_not_succeed',
-  'provider', '3ds', 'block',
+  'provider', '3ds', 'block', 'charge', 'not_allowed',
+]);
+
+// Errors on /booking/form/ that mean stop immediately (don't retry).
+const TERMINAL_FORM_ERRORS = new Set([
+  'contract_mismatch', 'hotel_not_found', 'insufficient_b2b_balance',
+  'reservation_is_not_allowed', 'rate_not_found', 'sandbox_restriction',
+]);
+
+// Errors on /booking/finish/ that mean stop immediately.
+const TERMINAL_FINISH_ERRORS = new Set([
+  'booking_form_expired', 'rate_not_found', 'return_path_required',
+  'email', 'incorrect_guests_number', 'incorrect_children_data',
+  'incorrect_rooms_number', 'unauthorized_group_booking',
 ]);
 
 const MEAL_PLAN_MAP = {
@@ -226,6 +229,9 @@ function _normalizeMealPlan(mealCode) {
   return MEAL_PLAN_MAP[mealCode.toLowerCase()] || mealCode;
 }
 
+// ─────────────────────────────────────────────
+// ADAPTER
+// ─────────────────────────────────────────────
 class RateHawkAdapter {
 
   constructor() {
@@ -235,10 +241,11 @@ class RateHawkAdapter {
     this.baseUrl        = this.isSandbox
       ? 'https://api-sandbox.ratehawk.com/api/b2b/v3'
       : 'https://api.worldota.net/api/b2b/v3';
-    this.timeout        = Number(process.env.RATEHAWK_TIMEOUT_MS)        || 20000;
-    this.searchTimeout  = Number(process.env.RATEHAWK_SEARCH_TIMEOUT_MS) || 18000;
-    this.pollAttempts   = Number(process.env.RATEHAWK_POLL_ATTEMPTS)     || 30;
-    this.pollIntervalMs = Number(process.env.RATEHAWK_POLL_INTERVAL_MS)  || 3000;
+    this.timeout        = Number(process.env.RATEHAWK_TIMEOUT_MS)         || 20000;
+    this.searchTimeout  = Number(process.env.RATEHAWK_SEARCH_TIMEOUT_MS)  || 18000;
+    this.prebookTimeout = Number(process.env.RATEHAWK_PREBOOK_TIMEOUT_MS) || 60000;
+    this.pollAttempts   = Number(process.env.RATEHAWK_POLL_ATTEMPTS)      || 30;
+    this.pollIntervalMs = Number(process.env.RATEHAWK_POLL_INTERVAL_MS)   || 5000;
   }
 
   _authHeader() {
@@ -274,23 +281,6 @@ class RateHawkAdapter {
     }
   }
 
-  async _get(path, params, timeoutMs) {
-    const url = `${this.baseUrl}${path}`;
-    try {
-      const res = await axios.get(url, {
-        headers: this._headers(),
-        params,
-        timeout: timeoutMs || this.timeout,
-      });
-      return res.data;
-    } catch (err) {
-      const status = err.response?.status;
-      const detail = JSON.stringify(err.response?.data)?.slice(0, 300);
-      logger.error('RateHawk GET failed', { path, status, detail, error: err.message });
-      throw err;
-    }
-  }
-
   // ─────────────────────────────────────────────
   // GEO RESOLUTION — FIVE TIERS
   // ─────────────────────────────────────────────
@@ -306,7 +296,7 @@ class RateHawkAdapter {
       return {
         latitude:  parseFloat(data.latitude),
         longitude: parseFloat(data.longitude),
-        radius:    data.radius || _getRadius(cityKey),
+        radius:    data.radius || 30,
       };
     } catch (err) {
       logger.warn('RateHawk: Supabase geo cache lookup failed', { cityKey, error: err.message });
@@ -340,7 +330,7 @@ class RateHawkAdapter {
         });
         const result = response.data?.[0];
         if (!result) return null;
-        const radius = _getRadius(cityName);
+        const radius = STATIC_GEO_OVERRIDES[cityKey]?.radius || 30;
         const geo    = { latitude: parseFloat(result.lat), longitude: parseFloat(result.lon), radius };
         await this._writeSupabaseCache(cityKey, cityName, geo, result.display_name);
         return geo;
@@ -354,7 +344,7 @@ class RateHawkAdapter {
   async _lookupRegionId(cityName) {
     if (!this._hasCredentials()) return null;
     try {
-      const data = await this._post('/search/multicomplete/', { query: cityName, language: 'en' }, 6000);
+      const data    = await this._post('/search/multicomplete/', { query: cityName, language: 'en' }, 6000);
       const regions = data?.data?.regions || [];
       const cities  = data?.data?.cities  || [];
       const matches = [...regions, ...cities];
@@ -410,27 +400,24 @@ class RateHawkAdapter {
 
   // ─────────────────────────────────────────────
   // SEARCH HOTELS  (SERP)
-  // Goes through _enqueueSerpCall to respect the
-  // 10 requests/60s ETG rate limit.
   // ─────────────────────────────────────────────
   async search(params) {
     if (!this._hasCredentials()) {
       logger.warn('RateHawk: credentials not configured — skipping');
       return [];
     }
-    // Queue through rate limiter — never fires more than 9/60s
     return _enqueueSerpCall(() => this._doSearch(params));
   }
 
   async _doSearch({
     destination, checkIn, checkOut,
     adults = 1, children = 0, childAges = [], rooms = 1,
-    nights, budget,
-    departureDate, returnDate, // engine passes these — map to checkIn/checkOut
+    nights, budget, residency,
+    departureDate, returnDate,
   }) {
-    // Accept both naming conventions from the engine
     const resolvedCheckIn  = checkIn  || departureDate;
     const resolvedCheckOut = checkOut || returnDate;
+    const resolvedResidency = (residency || 'ke').toLowerCase();
 
     const { regionId, geolocation } = await this._resolveDestination(destination);
 
@@ -439,15 +426,17 @@ class RateHawkAdapter {
       return [];
     }
 
-    const adultsPerRoom   = Math.max(1, Math.ceil(adults / rooms));
-    const childrenPerRoom = Math.ceil(children / rooms);
-    const guests          = [];
+    // Build ETG guests array — children as array of integer ages per room
+    const adultsPerRoom = Math.max(1, Math.ceil(adults / rooms));
+    const childrenSlice = childAges.slice();
+
+    const guests = [];
     for (let r = 0; r < rooms; r++) {
-      const g = { adults: adultsPerRoom, children: childrenPerRoom };
-      if (childrenPerRoom > 0 && childAges.length > 0) {
-        g.children_ages = childAges.slice(0, childrenPerRoom);
-      }
-      guests.push(g);
+      const roomChildAges = childrenSlice.splice(0, Math.ceil((childAges.length - r) / rooms));
+      guests.push({
+        adults:   adultsPerRoom,
+        children: roomChildAges,
+      });
     }
 
     const body = {
@@ -456,12 +445,11 @@ class RateHawkAdapter {
       guests,
       language:  'en',
       currency:  'USD',
-      residency: 'ke',
+      residency: resolvedResidency,
     };
 
-    // Prefer region_id; fall back to geo
     if (regionId) {
-      body.region_id = regionId;
+      body.region_id = Number(regionId);
     } else {
       body.latitude  = geolocation.latitude;
       body.longitude = geolocation.longitude;
@@ -471,11 +459,8 @@ class RateHawkAdapter {
     const endpoint = regionId ? '/search/serp/region/' : '/search/serp/geo/';
 
     logger.info('RateHawk SERP request', {
-      destination,
-      checkIn:    resolvedCheckIn,
-      checkOut:   resolvedCheckOut,
-      adults, children, rooms,
-      endpoint,
+      destination, checkIn: resolvedCheckIn, checkOut: resolvedCheckOut,
+      adults, children, rooms, residency: resolvedResidency, endpoint,
       resolvedAs: regionId
         ? `regionId:${regionId}`
         : `geo:${geolocation?.latitude},${geolocation?.longitude} radius:${geolocation?.radius}km`,
@@ -493,12 +478,12 @@ class RateHawkAdapter {
       if (hotels.length === 0) {
         logger.warn('RateHawk: zero results', {
           destination,
-          note: 'Sandbox may restrict to documented test anchors only',
+          note: 'Sandbox only returns results for region_ids 2011/2395/2734/6053839 and specific geo coords',
         });
       }
 
       return this._normalizeHotels(hotels, {
-        checkIn: resolvedCheckIn, checkOut: resolvedCheckOut, nights, adults, budget,
+        checkIn: resolvedCheckIn, checkOut: resolvedCheckOut, nights, adults, budget, rooms,
       });
 
     } catch (err) {
@@ -512,105 +497,300 @@ class RateHawkAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // PREBOOK
+  // HOTEL PAGE  (Step 2 of booking flow)
+  // ─────────────────────────────────────────────
+  async getHotelPage({ hotelId, checkIn, checkOut, guests, residency = 'ke' }) {
+    if (!this._hasCredentials()) throw new Error('RateHawk credentials not configured');
+
+    const isNumeric = /^\d+$/.test(String(hotelId));
+    const body = {
+      checkin:   checkIn,
+      checkout:  checkOut,
+      guests,
+      language:  'en',
+      currency:  'USD',
+      residency: residency.toLowerCase(),
+    };
+    if (isNumeric) {
+      body.hid = Number(hotelId);
+    } else {
+      body.id = hotelId;
+    }
+
+    logger.info('RateHawk: getHotelPage', { hotelId, checkIn, checkOut });
+
+    const data   = await this._post('/search/hp/', body, this.searchTimeout);
+    const hotels = data?.data?.hotels || [];
+
+    if (hotels.length === 0) {
+      throw new Error(`RateHawk hotelpage: no results for hotel ${hotelId}`);
+    }
+
+    return hotels[0];
+  }
+
+  // ─────────────────────────────────────────────
+  // PREBOOK  (Step 3 of booking flow)
+  //
+  // FIX: newBookHash is at data.data.hotels[0].rates[0].book_hash
+  // (same nested shape as HP response — confirmed against ETG docs
+  // and sandbox response example in doc index 10).
+  // The p-... hash lives inside the rates array, not at top level.
+  // FIX: field name is "hash" not "book_hash".
+  // FIX: timeout is 60s minimum per ETG requirement.
   // ─────────────────────────────────────────────
   async prebook({ bookHash }) {
     if (!this._hasCredentials()) throw new Error('RateHawk credentials not configured');
+
+    if (!bookHash?.startsWith('h-')) {
+      logger.warn('RateHawk prebook: expected h-... hash from HP step', {
+        bookHash: bookHash?.slice(0, 20),
+      });
+    }
+
     const data = await this._post('/hotel/prebook/', {
-      book_hash:              bookHash,
+      hash:                   bookHash,
       price_increase_percent: Number(process.env.RATEHAWK_PRICE_INCREASE_PCT) || 2,
-    });
-    const result = data?.data;
-    if (!result) throw new Error('RateHawk prebook: empty response');
+    }, this.prebookTimeout);
+
+    // ETG prebook response shape (from sandbox doc, index 10):
+    // { data: { hotels: [{ rates: [{ book_hash: 'p-...', ... }] }], changes: { price_changed } } }
+    const hotels = data?.data?.hotels || [];
+    if (hotels.length === 0) throw new Error('RateHawk prebook: empty hotels in response');
+
+    const rate        = hotels[0]?.rates?.[0];
+    const newBookHash = rate?.book_hash;
+
+    if (!newBookHash?.startsWith('p-')) {
+      throw new Error(
+        `RateHawk prebook: expected p-... hash in rates[0].book_hash, got "${newBookHash?.slice(0, 20)}". ` +
+        'Check ETG prebook response structure.'
+      );
+    }
+
+    const paymentType  = rate.payment_options?.payment_types?.find(pt => pt.type === 'deposit')
+                      || rate.payment_options?.payment_types?.[0];
+    const priceChanged = data?.data?.changes?.price_changed || false;
+
     logger.info('RateHawk prebook success', {
-      oldHash:  bookHash.slice(0, 20),
-      newHash:  result.book_hash?.slice(0, 20),
-      netPrice: result.net_price,
+      oldHash:      bookHash.slice(0, 20),
+      newHash:      newBookHash.slice(0, 20),
+      priceChanged,
+      showAmount:   paymentType?.show_amount,
     });
+
+    if (priceChanged) {
+      logger.warn('RateHawk prebook: price changed — must notify agency before proceeding', {
+        newAmount: paymentType?.show_amount,
+        currency:  paymentType?.show_currency_code,
+      });
+    }
+
     return {
-      bookHash:     result.book_hash,
-      netPrice:     Number(result.net_price || 0),
-      currency:     result.currency || 'USD',
-      priceChanged: result.price_changed || false,
-      expiresAt:    result.book_hash_expires_at || null,
+      bookHash:     newBookHash,
+      netPrice:     Number(paymentType?.amount      || 0),
+      showPrice:    Number(paymentType?.show_amount  || 0),
+      currency:     paymentType?.show_currency_code || paymentType?.currency_code || 'USD',
+      priceChanged,
+      roomName:     rate.room_name || null,
+      mealPlan:     _normalizeMealPlan(rate.meal),
+      freeCancellationBefore: paymentType?.cancellation_penalties?.free_cancellation_before || null,
+      excludedTaxes: (paymentType?.tax_data?.taxes || [])
+        .filter(t => !t.included_by_supplier)
+        .map(t => ({ name: t.name, amount: t.amount, currency: t.currency_code })),
     };
   }
 
   // ─────────────────────────────────────────────
-  // BOOKING FORM
+  // BOOKING FORM  (Step 4a)
+  //
+  // FIX: user_ip is required per ETG docs.
+  // FIX: book_hash must be the p-... hash from prebook.
   // ─────────────────────────────────────────────
-  async _openBookingForm({ partnerOrderId, bookHash }) {
+  async _openBookingForm({ partnerOrderId, bookHash, userIp }) {
+    if (!bookHash?.startsWith('p-')) {
+      throw new Error(
+        `RateHawk booking form: expected p-... hash, got "${bookHash?.slice(0, 20)}"`
+      );
+    }
+
     const data = await this._post('/hotel/order/booking/form/', {
       partner_order_id: partnerOrderId,
       book_hash:        bookHash,
       language:         'en',
+      user_ip:          userIp || '0.0.0.0',
     });
-    return data?.data || {};
+
+    if (data?.error && TERMINAL_FORM_ERRORS.has(data.error)) {
+      throw new Error(`RateHawk booking form terminal error: ${data.error}`);
+    }
+
+    // Handle double_booking_form — caller should retry with new partner_order_id
+    if (data?.error === 'double_booking_form') {
+      const err = new Error('RateHawk booking form: double_booking_form');
+      err.code = 'DOUBLE_BOOKING_FORM';
+      throw err;
+    }
+
+    const formData     = data?.data || {};
+    const paymentTypes = formData.payment_types || [];
+
+    logger.info('RateHawk: booking form opened', {
+      partnerOrderId,
+      orderId:        formData.order_id,
+      paymentOptions: paymentTypes.map(pt => `${pt.type}:${pt.amount}${pt.currency_code}`),
+    });
+
+    return formData;
   }
 
   // ─────────────────────────────────────────────
-  // BOOKING FINISH
+  // BOOKING FINISH  (Step 4b)
+  //
+  // FIX: bookHash is now destructured and included in body.
+  // FIX: rooms structure is correct — array of { guests: [...] }.
+  // FIX: children need is_child:true AND age (integer).
+  //   The age field alone does NOT mark a guest as a child (ETG docs).
+  // FIX: payment_type field name (not "payment").
+  // FIX: at least one real adult per room required.
+  //
+  // CALLER RESPONSIBILITY:
+  //   guestsByRoom must come from passengerMapper.toRateHawkRooms()
+  //   so that type/age/isChild are already in ETG format.
   // ─────────────────────────────────────────────
-  async _finishBooking({ partnerOrderId, bookHash, holder, guests }) {
-    return await this._post('/hotel/order/booking/finish/', {
-      partner_order_id: partnerOrderId,
-      book_hash:        bookHash,
-      language:         'en',
-      payment:          { type: 'deposit' },
-      guests: guests.map(g => ({
-        first_name: g.firstName,
-        last_name:  g.lastName,
-        email:      g.email  || holder.email || null,
-        phone:      g.phone  || holder.phone || null,
-      })),
-      holder: {
-        first_name: holder.firstName,
-        last_name:  holder.lastName,
-        email:      holder.email,
-        phone:      holder.phone || null,
+  async _finishBooking({ partnerOrderId, bookHash, holder, guestsByRoom, formData }) {
+    // bookHash is now correctly destructured and used
+    if (!bookHash?.startsWith('p-')) {
+      throw new Error(
+        `RateHawk finish: expected p-... hash, got "${bookHash?.slice(0, 20)}"`
+      );
+    }
+
+    // guestsByRoom: array of arrays, one per room
+    // Each inner array contains ETG guest objects from passengerMapper
+    const rooms = (guestsByRoom || [[{
+      first_name: holder.firstName,
+      last_name:  holder.lastName,
+    }]]).map(roomGuests => ({ guests: roomGuests }));
+
+    // Match payment exactly to what the form returned
+    const formPayment = formData?.payment_types?.find(pt => pt.type === 'deposit')
+                     || formData?.payment_types?.[0];
+
+    const body = {
+      language: 'en',
+      partner: {
+        partner_order_id: partnerOrderId,
+        comment:          'Bodrless booking',
       },
-    });
+      payment_type: {
+        type:          'deposit',
+        amount:        formPayment?.amount        || '0',
+        currency_code: formPayment?.currency_code || 'USD',
+      },
+      rooms,
+      user: {
+        // B2B: ETG expects a fixed corporate email, not guest email
+        email:   process.env.RATEHAWK_CORPORATE_EMAIL || holder.email,
+        phone:   holder.phone || null,
+        comment: null,
+      },
+    };
+
+    // supplier_data: required if ETG contract mandates it
+    if (holder.firstName && holder.lastName) {
+      body.supplier_data = {
+        first_name_original: holder.firstName,
+        last_name_original:  holder.lastName,
+        phone:               holder.phone || null,
+        email:               holder.email || process.env.RATEHAWK_CORPORATE_EMAIL,
+      };
+    }
+
+    return await this._post('/hotel/order/booking/finish/', body);
   }
 
   // ─────────────────────────────────────────────
-  // GET BOOKING STATUS
+  // GET BOOKING STATUS  (Step 4c — poll this)
+  //
+  // FIX: status and orderId live at data.data, not data.
+  // Confirmed against ETG docs (index 16):
+  //   { data: { partner_order_id, percent }, status: 'ok'|'error'|'processing', error: null }
+  // The top-level `status` field IS the booking status.
+  // The top-level `error` field IS the error code when status === 'error'.
+  // data.data.partner_order_id is the order reference.
   // ─────────────────────────────────────────────
   async getBookingStatus({ partnerOrderId }) {
-    const data = await this._get('/hotel/order/booking/finish/status/', {
+    const response = await this._post('/hotel/order/booking/finish/status/', {
       partner_order_id: partnerOrderId,
     });
+
+    // ETG response shape:
+    // { status: 'ok'|'processing'|'error'|'3ds', error: 'soldout'|null|..., data: { partner_order_id, percent } }
+    // Top-level status and error are what we act on.
     return {
-      status:    data?.data?.status    || 'unknown',
-      orderId:   data?.data?.order_id  || null,
-      errorCode: data?.data?.error_code || null,
+      status:    response?.status    || 'unknown',
+      errorCode: response?.error     || null,
+      orderId:   response?.data?.partner_order_id || partnerOrderId,
     };
   }
 
   // ─────────────────────────────────────────────
-  // BOOK  (form → finish → poll)
+  // BOOK  (orchestrates form → finish → poll)
+  //
+  // IMPORTANT: guestsByRoom must be pre-shaped via
+  // passengerMapper.toRateHawkRooms() before calling this.
   // ─────────────────────────────────────────────
-  async book({ partnerOrderId, bookHash, holder, guests }) {
+  async book({ partnerOrderId, bookHash, holder, guestsByRoom, userIp }) {
     if (!this._hasCredentials()) throw new Error('RateHawk credentials not configured');
 
+    if (!bookHash?.startsWith('p-')) {
+      throw new Error(
+        `RateHawk book: expected p-... hash from prebook, got "${bookHash?.slice(0, 20)}". ` +
+        'Call prebook() first.'
+      );
+    }
+
     logger.info('RateHawk: opening booking form', { partnerOrderId });
-    const formResult = await this._openBookingForm({ partnerOrderId, bookHash });
-    logger.info('RateHawk: booking form opened', { partnerOrderId, formResult });
+    const formData = await this._openBookingForm({ partnerOrderId, bookHash, userIp });
 
     logger.info('RateHawk: sending booking finish', { partnerOrderId });
-    await this._finishBooking({ partnerOrderId, bookHash, holder, guests });
+    const finishResult = await this._finishBooking({
+      partnerOrderId,
+      bookHash,      // FIX: now correctly passed through
+      holder,
+      guestsByRoom,
+      formData,
+    });
 
+    // Terminal finish errors — stop immediately
+    if (finishResult?.error && TERMINAL_FINISH_ERRORS.has(finishResult.error)) {
+      throw new Error(`RateHawk booking finish failed: ${finishResult.error}`);
+    }
+
+    // Poll status until confirmed, failed, or timeout
     for (let attempt = 1; attempt <= this.pollAttempts; attempt++) {
       await new Promise(r => setTimeout(r, this.pollIntervalMs));
+
       const { status, orderId, errorCode } = await this.getBookingStatus({ partnerOrderId });
-      logger.info('RateHawk: booking poll', { partnerOrderId, attempt, status, orderId });
+      logger.info('RateHawk: booking poll', { partnerOrderId, attempt, status, errorCode, orderId });
 
       if (status === 'ok') {
         logger.info('RateHawk: booking confirmed', { partnerOrderId, orderId });
         return { status: 'confirmed', partnerOrderId, supplierOrderId: orderId, bookHash };
       }
+
       if (TERMINAL_ERRORS.has(status) || TERMINAL_ERRORS.has(errorCode)) {
-        throw new Error(`RateHawk booking failed: ${status || errorCode}`);
+        throw new Error(`RateHawk booking failed: ${errorCode || status}`);
       }
+
+      // status: processing | timeout | unknown | 5xx → keep polling
+    }
+
+    // ETG: always send a final status request at the last second
+    const { status: finalStatus, orderId, errorCode } = await this.getBookingStatus({ partnerOrderId });
+    if (finalStatus === 'ok') {
+      return { status: 'confirmed', partnerOrderId, supplierOrderId: orderId, bookHash };
     }
 
     logger.warn('RateHawk: poll timed out — awaiting_confirmation', { partnerOrderId });
@@ -618,12 +798,18 @@ class RateHawkAdapter {
   }
 
   // ─────────────────────────────────────────────
-  // GET ORDER
+  // GET ORDER  (post-booking only, not for status checks)
+  // ETG: wait 1-2 min after confirmation before calling this
   // ─────────────────────────────────────────────
   async getOrder({ partnerOrderId }) {
     if (!this._hasCredentials()) throw new Error('RateHawk credentials not configured');
-    const data = await this._get('/hotel/order/info/', { partner_order_id: partnerOrderId });
-    return data?.data || null;
+    const data = await this._post('/hotel/order/info/', {
+      ordering:   { ordering_type: 'desc', ordering_by: 'created_at' },
+      pagination: { page_size: 1, page_number: 1 },
+      search:     { partner_data: { partner_order_id: partnerOrderId } },
+      language:   'en',
+    });
+    return data?.data?.orders?.[0] || null;
   }
 
   // ─────────────────────────────────────────────
@@ -637,9 +823,10 @@ class RateHawkAdapter {
       logger.info('RateHawk: cancellation result', { partnerOrderId, result });
       return {
         partnerOrderId,
-        status:        result?.status        || 'cancelled',
-        penaltyAmount: result?.penalty_amount ? Number(result.penalty_amount) : 0,
-        currency:      result?.currency       || 'USD',
+        status:         data?.status || 'cancelled',
+        amountRefunded: result?.amount_refunded?.amount ? Number(result.amount_refunded.amount) : 0,
+        amountPayable:  result?.amount_payable?.amount  ? Number(result.amount_payable.amount)  : 0,
+        currency:       result?.amount_refunded?.currency_code || 'USD',
       };
     } catch (err) {
       logger.error('RateHawk cancel failed', { partnerOrderId, error: err.message });
@@ -649,19 +836,19 @@ class RateHawkAdapter {
 
   // ─────────────────────────────────────────────
   // NORMALIZE HOTELS
-  // Identical output shape to HotelBeds._normalizeHotels()
   // ─────────────────────────────────────────────
-  _normalizeHotels(hotels, { checkIn, checkOut, nights, adults, budget }) {
+  _normalizeHotels(hotels, { checkIn, checkOut, nights, adults, budget, rooms = 1 }) {
     const results = [];
 
     for (const hotel of hotels) {
       const rates = hotel.rates || [];
       if (rates.length === 0) continue;
 
-      rates.sort((a, b) =>
-        Number(a.daily_prices?.[0] || a.payment_options?.payment_types?.[0]?.show_amount || 0) -
-        Number(b.daily_prices?.[0] || b.payment_options?.payment_types?.[0]?.show_amount || 0)
-      );
+      rates.sort((a, b) => {
+        const priceA = Number(a.payment_options?.payment_types?.[0]?.show_amount || 0);
+        const priceB = Number(b.payment_options?.payment_types?.[0]?.show_amount || 0);
+        return priceA - priceB;
+      });
 
       const rate        = rates[0];
       const paymentType = rate.payment_options?.payment_types?.find(pt => pt.type === 'deposit')
@@ -671,18 +858,32 @@ class RateHawkAdapter {
       const nightCount    = nights || this._nightsBetween(checkIn, checkOut) || 1;
       const pricePerNight = nightCount > 0 ? totalRate / nightCount : totalRate;
       const currency      = paymentType?.show_currency_code || paymentType?.currency_code || 'USD';
-      const isRefundable  = !rate.rg_ext?.nr;
-      const penalties     = paymentType?.cancellation_penalties?.policies || [];
-      const images        = (hotel.images || [])
+
+      const freeCancellationBefore = paymentType?.cancellation_penalties?.free_cancellation_before || null;
+      const isRefundable           = !!freeCancellationBefore;
+
+      const excludedTaxes = (paymentType?.tax_data?.taxes || [])
+        .filter(t => !t.included_by_supplier)
+        .map(t => ({ name: t.name, amount: t.amount, currency: t.currency_code }));
+
+      const cancellationPolicies = paymentType?.cancellation_penalties?.policies || [];
+
+      const images = (hotel.images || [])
         .map(img => typeof img === 'string' ? img : img?.url || '')
-        .filter(Boolean).slice(0, 10);
+        .filter(Boolean)
+        .slice(0, 10);
 
       results.push({
         supplier:             'ratehawk',
-        hotelCode:            String(hotel.id || hotel.hid),
+        hotelCode:            String(hotel.hid || hotel.id),
+        hotelId:              hotel.hid  ? Number(hotel.hid) : null,
+        hotelSlug:            hotel.id   || null,
         name:                 hotel.name,
         stars:                hotel.star_rating ? Number(hotel.star_rating) : null,
-        rating:               hotel.serp_filters?.includes('rating_above_8') ? 8 : null,
+        // Use actual rating float if available; fall back to filter tag floor
+        rating:               hotel.rating
+                                ? Number(hotel.rating)
+                                : (hotel.serp_filters?.includes('rating_above_8') ? 8 : null),
         location:             hotel.region?.name || hotel.area?.name || null,
         latitude:             hotel.latitude  || hotel.coordinates?.latitude  || null,
         longitude:            hotel.longitude || hotel.coordinates?.longitude || null,
@@ -694,14 +895,18 @@ class RateHawkAdapter {
         totalRate:            Math.round(totalRate     * 100) / 100,
         currency,
         rateKey:              rate.book_hash,
+        matchHash:            rate.match_hash || null,
         rateType:             isRefundable ? 'REF' : 'NOR',
         isRefundable,
-        cancellationPolicies: penalties,
-        rateComments:         rate.meal ? _normalizeMealPlan(rate.meal) : null,
+        freeCancellationBefore,
+        excludedTaxes,
+        cancellationPolicies,
+        rateComments:         _normalizeMealPlan(rate.meal),
         mealPlan:             _normalizeMealPlan(rate.meal),
         boardType:            rate.meal || null,
+        roomName:             rate.room_name || null,
         promotions:           [],
-        rooms:                rooms || 1,
+        rooms,
         adults,
         supplier_tag:         rate.book_hash ? rate.book_hash.slice(0, 20) : null,
       });
