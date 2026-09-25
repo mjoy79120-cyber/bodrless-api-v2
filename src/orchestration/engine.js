@@ -569,6 +569,7 @@ class OrchestrationEngine {
     console.log("FINAL OUTBOUND TRANSPORT:", outboundTransport.length, outboundResult.connectsVia ? `(via ${outboundResult.connectsVia})` : '');
     console.log("FINAL RETURN TRANSPORT:",   returnTransport.length, returnResult.connectsVia ? `(via ${returnResult.connectsVia})` : '');
     console.log("FINAL HOTELS:",             hotels.length);
+    console.log("HOTEL SUPPLIERS:", hotels.slice(0, 4).map(h => `${h.name} [${h.supplier}]`));
 
     let unavailableProviderNote = null;
     let unavailableHotelNote = null;
