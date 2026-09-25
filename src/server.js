@@ -429,24 +429,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ── TEMP: RateHawk connection test ───────────────────────────
-app.get('/test-ratehawk', async (req, res) => {
-  const rateHawk = require('./adapters/ratehawk');
-  try {
-    const results = await rateHawk.search({
-      destination: 'New York',
-      checkIn: '2026-11-01',
-      checkOut: '2026-11-06',
-      adults: 1,
-      rooms: 1,
-    });
-    res.json({ ok: true, count: results.length, results });
-  } catch (err) {
-    res.json({ ok: false, error: err.message });
-  }
-});
-// ── END TEMP ─────────────────────────────────────────────────
-
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Bodrless API running on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV}`);
