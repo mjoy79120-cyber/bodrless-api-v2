@@ -154,10 +154,10 @@ router.post('/whatsapp', async (req, res) => {
 
     const { userKey, phone, userId, username, recipient } = identity;
 
-      // ── TYPING INDICATOR — fire immediately, don't await ──
-if (message.id && (message.type === 'text' || message.type === 'interactive')) {
-  whatsappService.sendTypingIndicator(phoneNumberId, message.id).catch(() => {});
-}
+    // ── TYPING INDICATOR — fire immediately, don't await ──
+    if (message.id && (message.type === 'text' || message.type === 'interactive')) {
+      whatsappService.sendTypingIndicator(phoneNumberId, message.id).catch(() => {});
+    }
 
     // ── INTERACTIVE REPLIES ────────────────────────────────
     if (message.type === 'interactive') {
@@ -216,40 +216,42 @@ if (message.id && (message.type === 'text' || message.type === 'interactive')) {
       return;
     }
 
-    // ── AUDIO / VOICE NOTES ────────────────────────────────────
-if (message.type === 'audio') {
-  const audioResult = await handleAudioMessage({
-    message, phoneNumberId, recipient, userKey, agencyId, contact,
-  });
-  if (audioResult?.transcript) {
-    // Feed transcript into normal flow as if user typed it
-    const prompt = audioResult.transcript;
-    const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
-    const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
-      conversationHistory: memCtx.conversationHistory,
-      previousParams:      memCtx.previousParams,
-      channel:             'whatsapp',
-      phone:               phone || userKey,
-    });
-    conversationMemory.saveTurn(userKey, agencyId, {
-      userMessage:    prompt,
-      engineResponse: result.text,
-      tripParams:     result.tripParams,
-      packages:       result.packages || [],
-      sessionId:      result.sessionId,
-    }).catch(() => {});
-    await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
-  }
-  return;
-}
+    // ── AUDIO / VOICE NOTES ────────────────────────────────
+    if (message.type === 'audio') {
+      const agencyId = await _resolveAgency(phoneNumberId);
+      const audioResult = await handleAudioMessage({
+        message, phoneNumberId, recipient, userKey,
+        agencyId,
+        contact: null,
+      });
+      if (audioResult?.transcript) {
+        const prompt = audioResult.transcript;
+        const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
+        const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
+          conversationHistory: memCtx.conversationHistory,
+          previousParams:      memCtx.previousParams,
+          channel:             'whatsapp',
+          phone:               phone || userKey,
+        });
+        conversationMemory.saveTurn(userKey, agencyId, {
+          userMessage:    prompt,
+          engineResponse: result.text,
+          tripParams:     result.tripParams,
+          packages:       result.packages || [],
+          sessionId:      result.sessionId,
+        }).catch(() => {});
+        await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+      }
+      return;
+    }
 
-// ── NON-TEXT MESSAGES ──────────────────────────────────────
-if (message.type !== 'text') {
-  await whatsappService.sendText(phoneNumberId, recipient,
-    "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
-  );
-  return;
-}
+    // ── NON-TEXT MESSAGES ──────────────────────────────────
+    if (message.type !== 'text') {
+      await whatsappService.sendText(phoneNumberId, recipient,
+        "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
+      );
+      return;
+    }
 
     const prompt = message.text.body;
     const agencyId = await _resolveAgency(phoneNumberId);
@@ -493,7 +495,6 @@ if (message.type !== 'text') {
     // ── END STALE PARAMS GUARD ─────────────────────────────
 
     // ── ASKED FOR CHEAPER DETECTION ────────────────────────
-    // Log before orchestration so the signal is captured even if search fails
     const { detectCheaperRequest } = require('../orchestration/promptParser');
     if (detectCheaperRequest(prompt)) {
       const cached = await packageCache.get(userKey);
@@ -538,7 +539,6 @@ if (message.type !== 'text') {
           sessionId:      result.sessionId,
         });
 
-        // ── REC: write profile after child-age resume ──────
         recLog(_writeProfile, phone || userKey, agencyId, supabase);
 
         await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
@@ -557,10 +557,10 @@ if (message.type !== 'text') {
         candidateOrigin.split(/\s+/).length <= 3 &&
         !/\d+\s*nights?\b/i.test(candidateOrigin) &&
         !/\bto\b.{3,}/i.test(candidateOrigin) &&
-    !/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(candidateOrigin) &&
-    !/\b(next\s+(week|month|year)|this\s+(week|month|weekend)|tomorrow|today)\b/i.test(candidateOrigin) &&
-    !/^\d{1,2}[\/-]\d{1,2}([\/-]\d{2,4})?$/.test(candidateOrigin) &&
-    !/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(candidateOrigin);
+        !/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d/i.test(candidateOrigin) &&
+        !/\b(next\s+(week|month|year)|this\s+(week|month|weekend)|tomorrow|today)\b/i.test(candidateOrigin) &&
+        !/^\d{1,2}[\/-]\d{1,2}([\/-]\d{2,4})?$/.test(candidateOrigin) &&
+        !/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(candidateOrigin);
 
       if (looksLikePlace) {
         logger.info('Clarification resume: injecting origin from reply', {
@@ -587,7 +587,6 @@ if (message.type !== 'text') {
           packages: result.packages || [], sessionId: result.sessionId,
         });
 
-        // ── REC: write profile after clarification resume ──
         recLog(_writeProfile, phone || userKey, agencyId, supabase);
 
         if (result.needsClarification) {
@@ -629,62 +628,55 @@ if (message.type !== 'text') {
     }
 
     // ── NORMAL ORCHESTRATION ───────────────────────────────
-if (activeLegFlow) {
-  logger.info('LegFlow: user sent fresh search — clearing active flow', { userKey });
-  await conversationMemory.clearLegFlow(userKey, agencyId);
-}
+    if (activeLegFlow) {
+      logger.info('LegFlow: user sent fresh search — clearing active flow', { userKey });
+      await conversationMemory.clearLegFlow(userKey, agencyId);
+    }
 
-await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
-logger.info('Webhook: calling orchestrationEngine...', { userKey, prompt: prompt.slice(0, 80) });
+    await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
+    logger.info('Webhook: calling orchestrationEngine...', { userKey, prompt: prompt.slice(0, 80) });
 
-// ── TRIPLY ROUTING ─────────────────────────────────────
-const { data: agencyRow } = await supabase
-  .from('agencies')
-  .select('integration_type, approval_mode')
-  .eq('id', agencyId)
-  .single();
+    // ── TRIPLY ROUTING ─────────────────────────────────────
+    const { data: agencyRow } = await supabase
+      .from('agencies')
+      .select('integration_type, approval_mode')
+      .eq('id', agencyId)
+      .single();
 
-let result;
+    let result;
 
-if (agencyRow?.integration_type === 'triply') {
-  // Triply agency — goes through approval flow
-  const triplyConversationManager = require('../services/triplyConversationManager');
-  result = await triplyConversationManager.handle(prompt, agencyId, {
-    conversationHistory: memCtx.conversationHistory,
-    previousParams:      memCtx.previousParams,
-    channel:             'whatsapp',
-    phone:               phone || userKey,
-    sendWhatsApp:        (to, msg) => whatsappService.sendText(phoneNumberId, to, msg),
-  });
+    if (agencyRow?.integration_type === 'triply') {
+      const triplyConversationManager = require('../services/triplyConversationManager');
+      result = await triplyConversationManager.handle(prompt, agencyId, {
+        conversationHistory: memCtx.conversationHistory,
+        previousParams:      memCtx.previousParams,
+        channel:             'whatsapp',
+        phone:               phone || userKey,
+        sendWhatsApp:        (to, msg) => whatsappService.sendText(phoneNumberId, to, msg),
+      });
 
-  // If auto approval — result already delivered to traveler inside the manager
-  // If manual approval — result is held, agent must approve in Triply dashboard
-  // Either way we save the turn and return — do not send packages here
-  conversationMemory.saveTurn(userKey, agencyId, {
-    userMessage:    prompt,
-    engineResponse: result.text,
-    tripParams:     result.tripParams,
-    packages:       result.packages || [],
-    sessionId:      result.sessionId,
-  }).catch(err => logger.error('Webhook: saveTurn failed (non-blocking)', { error: err.message, userKey }));
+      conversationMemory.saveTurn(userKey, agencyId, {
+        userMessage:    prompt,
+        engineResponse: result.text,
+        tripParams:     result.tripParams,
+        packages:       result.packages || [],
+        sessionId:      result.sessionId,
+      }).catch(err => logger.error('Webhook: saveTurn failed (non-blocking)', { error: err.message, userKey }));
 
-  // Only send text response to traveler if manual approval
-  // The package itself will be sent after agent approves
-  if (agencyRow?.approval_mode === 'manual' && result.needsClarification) {
-    await whatsappService.sendText(phoneNumberId, recipient, result.text);
-  }
+      if (agencyRow?.approval_mode === 'manual' && result.needsClarification) {
+        await whatsappService.sendText(phoneNumberId, recipient, result.text);
+      }
 
-  return;
+      return;
 
-} else {
-  // All other agencies — existing flow completely unchanged
-  result = await orchestrationEngine.orchestrate(prompt, agencyId, {
-    conversationHistory: memCtx.conversationHistory,
-    previousParams:      memCtx.previousParams,
-    channel:             'whatsapp',
-    phone:               phone || userKey,
-  });
-}
+    } else {
+      result = await orchestrationEngine.orchestrate(prompt, agencyId, {
+        conversationHistory: memCtx.conversationHistory,
+        previousParams:      memCtx.previousParams,
+        channel:             'whatsapp',
+        phone:               phone || userKey,
+      });
+    }
 
     logger.info('Webhook: orchestration returned', {
       userKey,
@@ -730,7 +722,6 @@ if (agencyRow?.integration_type === 'triply') {
       sessionId:      result.sessionId,
     }).catch(err => logger.error('Webhook: saveTurn failed (non-blocking)', { error: err.message, userKey }));
 
-    // ── REC: write profile after every orchestration ───────
     recLog(_writeProfile, phone || userKey, agencyId, supabase);
 
     // ── TRAIN WARM-UP ──────────────────────────────────────
