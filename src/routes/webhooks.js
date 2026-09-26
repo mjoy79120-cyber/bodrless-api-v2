@@ -153,8 +153,8 @@ router.post('/whatsapp', async (req, res) => {
 
     const { userKey, phone, userId, username, recipient } = identity;
 
-    // ── TYPING INDICATOR — fire immediately, don't await ──
-if (message.type === 'text' && message.id) {
+      // ── TYPING INDICATOR — fire immediately, don't await ──
+if (message.id && (message.type === 'text' || message.type === 'interactive')) {
   whatsappService.sendTypingIndicator(phoneNumberId, message.id).catch(() => {});
 }
 
