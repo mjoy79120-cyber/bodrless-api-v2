@@ -34,6 +34,7 @@ const whatsappChangeFlow = require('../services/whatsappChangeFlow');
 const packageCache = require('../services/packageCache');
 const conversationMemory = require('../services/conversationMemoryService');
 const disruptionFlow = require('../services/disruptionFlow');
+const { handleAudioMessage } = require('../services/audioHandler');
 const { logger } = require('../utils/logger');
 
 // ── Recommendation engine (fire-and-forget — never throws) ────────────────
@@ -215,13 +216,40 @@ if (message.id && (message.type === 'text' || message.type === 'interactive')) {
       return;
     }
 
-    // ── NON-TEXT MESSAGES ──────────────────────────────────
-    if (message.type !== 'text') {
-      await whatsappService.sendText(phoneNumberId, recipient,
-        "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
-      );
-      return;
-    }
+    // ── AUDIO / VOICE NOTES ────────────────────────────────────
+if (message.type === 'audio') {
+  const audioResult = await handleAudioMessage({
+    message, phoneNumberId, recipient, userKey, agencyId, contact,
+  });
+  if (audioResult?.transcript) {
+    // Feed transcript into normal flow as if user typed it
+    const prompt = audioResult.transcript;
+    const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
+    const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
+      conversationHistory: memCtx.conversationHistory,
+      previousParams:      memCtx.previousParams,
+      channel:             'whatsapp',
+      phone:               phone || userKey,
+    });
+    conversationMemory.saveTurn(userKey, agencyId, {
+      userMessage:    prompt,
+      engineResponse: result.text,
+      tripParams:     result.tripParams,
+      packages:       result.packages || [],
+      sessionId:      result.sessionId,
+    }).catch(() => {});
+    await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+  }
+  return;
+}
+
+// ── NON-TEXT MESSAGES ──────────────────────────────────────
+if (message.type !== 'text') {
+  await whatsappService.sendText(phoneNumberId, recipient,
+    "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
+  );
+  return;
+}
 
     const prompt = message.text.body;
     const agencyId = await _resolveAgency(phoneNumberId);
