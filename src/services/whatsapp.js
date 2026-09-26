@@ -478,6 +478,31 @@ class WhatsAppService {
     });
   }
 
+// ── TYPING INDICATOR ──────────────────────────────────────────
+  async sendTypingIndicator(phoneNumberId, messageId) {
+    try {
+      await axios.post(
+        `${WHATSAPP_API_URL}/${phoneNumberId}/messages`,
+        {
+          messaging_product: 'whatsapp',
+          status:            'read',
+          message_id:        messageId,
+          typing_indicator:  { type: 'text' },
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
+            'Content-Type':  'application/json',
+          },
+          timeout: 5000,
+        }
+      );
+      logger.info('WhatsApp: typing indicator sent', { phoneNumberId, messageId });
+    } catch (err) {
+      logger.warn('WhatsApp: typing indicator failed', { error: err.message });
+    }
+  }
+
   // ── CORE SEND ──────────────────────────────────────────────────
   async _send(phoneNumberId, payload) {
     if (!phoneNumberId || !payload) {
