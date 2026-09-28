@@ -29,7 +29,7 @@ class TriplyConversationManager {
       await this._updateState(conversation.id, 'building');
 
       // 4. Run your existing engine — completely unchanged
-      const result = await orchestrationEngine.orchestrate(
+      const result = await engine.orchestrate(
         prompt, agencyId, {
           ...context,
           conversationHistory,
@@ -155,7 +155,7 @@ class TriplyConversationManager {
 
     // Run engine again with the instruction appended to the original prompt
     const originalParams = conversation.trip_params || {};
-    const result = await orchestrationEngine.orchestrate(
+    const result = await engine.orchestrate(
       instruction, agencyId, {
         previousParams:      originalParams,
         conversationHistory: conversation.conversation_history || [],
