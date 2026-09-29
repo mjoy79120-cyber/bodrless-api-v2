@@ -61,6 +61,9 @@ async function _downloadWhatsAppAudio(mediaId) {
 // Accepts .ogg (WhatsApp's format) directly.
 // ─────────────────────────────────────────────
 async function _transcribeAudio(audioBuffer) {
+  const key = process.env.GROQ_API_KEY;
+  logger.info('Groq transcribe attempt', { keyLength: key?.length, keyStart: key?.slice(0, 8) });
+
   const form = new FormData();
 
   form.append('file', audioBuffer, {
@@ -68,10 +71,6 @@ async function _transcribeAudio(audioBuffer) {
     contentType: 'audio/ogg',
   });
   form.append('model', 'whisper-large-v3-turbo');
-
-  // Omitting `language` lets Whisper auto-detect.
-  // Good for your market — handles English, Swahili, and Sheng naturally.
-  // To force Swahili: form.append('language', 'sw');
 
   const res = await axios.post(
     'https://api.groq.com/openai/v1/audio/transcriptions',
