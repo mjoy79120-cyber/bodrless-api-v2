@@ -54,6 +54,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.set('trust proxy', 1);
 
+app.use(express.static(path.join(__dirname, '..', 'public')));
+
 // ── Public Webhook Routes (no auth, no rate limit) ────────────
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/webhooks', intasendWebhookRoutes);
