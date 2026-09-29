@@ -35,7 +35,9 @@ const { logger } = require('../utils/logger');
 //   2. GET that URL   → returns the actual audio bytes
 // ─────────────────────────────────────────────
 async function _downloadWhatsAppAudio(mediaId) {
-  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  const token = process.env.WHATSAPP_TOKEN;
+
+  logger.info('Downloading WhatsApp audio', { mediaId, tokenLength: token?.length, tokenStart: token?.slice(0, 8) });
 
   // Step 1: resolve media URL
   const metaRes = await axios.get(
