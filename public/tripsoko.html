@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Triply — Live Demo</title>
+<title>Tripsoko — Live Demo</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -114,8 +114,8 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
   user-select: none;
 }
 
-/* ── RIGHT: TRIPLY DASHBOARD ── */
-.triply-side {
+/* ── RIGHT: Tripsoko DASHBOARD ── */
+.Tripsoko-side {
   flex: 1; display: flex; overflow: hidden;
 }
 
@@ -313,13 +313,13 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
   <!-- DIVIDER -->
   <div class="divider-label">LIVE FLOW</div>
 
-  <!-- ══ RIGHT: TRIPLY ══ -->
-  <div class="triply-side">
+  <!-- ══ RIGHT: Tripsoko ══ -->
+  <div class="Tripsoko-side">
 
     <!-- SIDEBAR -->
     <aside class="sidebar">
       <div class="sidebar-logo">
-        <div class="logo-text">triply</div>
+        <div class="logo-text">Tripsoko</div>
         <div class="logo-sub">Agency Platform</div>
       </div>
       <nav class="sidebar-nav">
@@ -405,7 +405,7 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
   <div>
     <div class="push-title">New itinerary ready — Amara Osei</div>
     <div class="push-body">Nairobi → Zanzibar · 5 nights · Review now</div>
-    <div class="push-time">Just now · Triply</div>
+    <div class="push-time">Just now · Tripsoko</div>
   </div>
 </div>
 
@@ -416,7 +416,7 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
 const API_BASE = 'https://bodrless-api-v2.onrender.com';
 const CONV_ID  = '4778aea1-4d2f-4233-85cc-c7cfd593c835';
 const TOKEN    = '96147014-cac5-46ab-9837-1d0c6554ee08';
-const AGENT_ID = 'triply_agent_001';
+const AGENT_ID = 'Tripsoko_agent_001';
 
 let currentVersion = null;
 let flowStarted = false;
@@ -523,7 +523,7 @@ function clientSend() {
     setTimeout(() => {
       hideTyping();
       addBubble("Got it! 🌴 We're building your Zanzibar itinerary now. You'll hear back shortly.", 'in');
-      // Step 3: notify Triply dashboard
+      // Step 3: notify Tripsoko dashboard
       setTimeout(notifyDashboard, 1800);
     }, 1400);
   }, 1200);
@@ -608,7 +608,7 @@ function loadAmaraDetail() {
 // ── FETCH DRAFT ──
 async function fetchAndRender() {
   try {
-    const res = await fetch(`${API_BASE}/api/partners/triply/conversations/${CONV_ID}`, {
+    const res = await fetch(`${API_BASE}/api/partners/Tripsoko/conversations/${CONV_ID}`, {
       headers: { 'Authorization': `Bearer ${TOKEN}` }
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -677,7 +677,7 @@ async function approveItinerary() {
   const btn = document.getElementById('approveBtn');
   btn.disabled = true; btn.textContent = 'Sending…';
   try {
-    const res = await fetch(`${API_BASE}/api/partners/triply/conversations/${CONV_ID}/approve`, {
+    const res = await fetch(`${API_BASE}/api/partners/Tripsoko/conversations/${CONV_ID}/approve`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent_id: AGENT_ID })
@@ -685,7 +685,7 @@ async function approveItinerary() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     // Get draft for WA message
-    const draftRes = await fetch(`${API_BASE}/api/partners/triply/conversations/${CONV_ID}`, {
+    const draftRes = await fetch(`${API_BASE}/api/partners/Tripsoko/conversations/${CONV_ID}`, {
       headers: { 'Authorization': `Bearer ${TOKEN}` }
     });
     const draftData = await draftRes.json();
@@ -729,7 +729,7 @@ async function submitRebuild() {
   document.getElementById('buildingState').style.display = 'flex';
 
   try {
-    const res = await fetch(`${API_BASE}/api/partners/triply/conversations/${CONV_ID}/rebuild`, {
+    const res = await fetch(`${API_BASE}/api/partners/Tripsoko/conversations/${CONV_ID}/rebuild`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent_id: AGENT_ID, instruction: note })
