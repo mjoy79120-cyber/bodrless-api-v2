@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Tripsoko — Live Demo</title>
+<title>TripSoko — Live Demo</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -17,153 +17,55 @@
   --sidebar-w: 200px;
 }
 html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e; color: var(--text); overflow: hidden; }
-
-/* SHELL */
-.demo-shell {
-  display: flex; height: 100vh; gap: 0;
-}
-
-/* ── LEFT: WHATSAPP ── */
-.wa-side {
-  width: 380px; flex-shrink: 0;
-  display: flex; flex-direction: column;
-  background: var(--wa-bg);
-  border-right: 1px solid #d1c4b5;
-}
-.wa-header {
-  background: #075E54;
-  padding: 10px 14px;
-  display: flex; align-items: center; gap: 10px;
-}
-.wa-avatar {
-  width: 36px; height: 36px; border-radius: 50%;
-  background: #25D366; display: flex; align-items: center;
-  justify-content: center; font-weight: 700; font-size: 14px; color: white;
-  flex-shrink: 0;
-}
+.demo-shell { display: flex; height: 100vh; gap: 0; }
+.wa-side { width: 380px; flex-shrink: 0; display: flex; flex-direction: column; background: var(--wa-bg); border-right: 1px solid #d1c4b5; }
+.wa-header { background: #075E54; padding: 10px 14px; display: flex; align-items: center; gap: 10px; }
+.wa-avatar { width: 36px; height: 36px; border-radius: 50%; background: #25D366; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; color: white; flex-shrink: 0; }
 .wa-contact-name { font-size: 14px; font-weight: 600; color: white; }
 .wa-contact-sub { font-size: 11px; color: rgba(255,255,255,0.6); }
 .wa-online { display: flex; align-items: center; gap: 4px; }
 .wa-online-dot { width: 7px; height: 7px; border-radius: 50%; background: #25D366; }
-
-.wa-messages {
-  flex: 1; overflow-y: auto; padding: 12px 10px;
-  display: flex; flex-direction: column; gap: 6px;
-}
-.wa-bubble {
-  max-width: 78%; padding: 7px 10px 5px;
-  border-radius: 7.5px; font-size: 13px; line-height: 1.45;
-  position: relative; word-break: break-word;
-}
-.wa-bubble.out {
-  background: var(--wa-bubble-out); align-self: flex-end;
-  border-bottom-right-radius: 2px;
-}
-.wa-bubble.in {
-  background: var(--wa-bubble-in); align-self: flex-start;
-  border-bottom-left-radius: 2px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-}
+.wa-messages { flex: 1; overflow-y: auto; padding: 12px 10px; display: flex; flex-direction: column; gap: 6px; }
+.wa-bubble { max-width: 78%; padding: 7px 10px 5px; border-radius: 7.5px; font-size: 13px; line-height: 1.45; position: relative; word-break: break-word; }
+.wa-bubble.out { background: var(--wa-bubble-out); align-self: flex-end; border-bottom-right-radius: 2px; }
+.wa-bubble.in { background: var(--wa-bubble-in); align-self: flex-start; border-bottom-left-radius: 2px; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
 .wa-time { font-size: 10px; color: rgba(0,0,0,0.35); text-align: right; margin-top: 2px; }
 .wa-bubble.out .wa-time { color: #667781; }
-.wa-typing {
-  align-self: flex-start; background: white; border-radius: 7.5px;
-  padding: 10px 14px; display: none; gap: 4px; align-items: center;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-}
+.wa-typing { align-self: flex-start; background: white; border-radius: 7.5px; padding: 10px 14px; display: none; gap: 4px; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
 .wa-typing.show { display: flex; }
-.typing-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: #b0b0b0;
-  animation: typeBounce 1.2s infinite;
-}
+.typing-dot { width: 7px; height: 7px; border-radius: 50%; background: #b0b0b0; animation: typeBounce 1.2s infinite; }
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes typeBounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-5px)} }
-
-.wa-input-row {
-  padding: 8px 10px;
-  background: #f0f0f0;
-  display: flex; align-items: center; gap: 8px;
-  border-top: 1px solid #d1c4b5;
-}
-.wa-input {
-  flex: 1; background: white; border: none; border-radius: 20px;
-  padding: 9px 14px; font-size: 13px; font-family: 'Inter', sans-serif;
-  outline: none; color: var(--text);
-}
-.wa-send-btn {
-  width: 38px; height: 38px; border-radius: 50%;
-  background: #075E54; border: none; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: background 0.15s; flex-shrink: 0;
-}
+.wa-input-row { padding: 8px 10px; background: #f0f0f0; display: flex; align-items: center; gap: 8px; border-top: 1px solid #d1c4b5; }
+.wa-input { flex: 1; background: white; border: none; border-radius: 20px; padding: 9px 14px; font-size: 13px; font-family: 'Inter', sans-serif; outline: none; color: var(--text); }
+.wa-send-btn { width: 38px; height: 38px; border-radius: 50%; background: #075E54; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.15s; flex-shrink: 0; }
 .wa-send-btn:hover { background: #128C7E; }
 .wa-send-btn svg { color: white; }
-
-/* itinerary formatted */
 .itin-msg { font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
 .itin-msg strong { font-weight: 700; }
-
-/* DIVIDER LABEL */
-.divider-label {
-  writing-mode: vertical-rl; text-orientation: mixed;
-  background: #0d1117; color: rgba(255,255,255,0.15);
-  font-size: 9px; font-weight: 600; letter-spacing: 0.1em;
-  text-transform: uppercase; padding: 14px 6px;
-  display: flex; align-items: center; justify-content: center;
-  user-select: none;
-}
-
-/* ── RIGHT: Tripsoko DASHBOARD ── */
-.Tripsoko-side {
-  flex: 1; display: flex; overflow: hidden;
-}
-
-.sidebar {
-  width: var(--sidebar-w); flex-shrink: 0;
-  background: var(--navy);
-  display: flex; flex-direction: column;
-}
+.divider-label { writing-mode: vertical-rl; text-orientation: mixed; background: #0d1117; color: rgba(255,255,255,0.15); font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; padding: 14px 6px; display: flex; align-items: center; justify-content: center; user-select: none; }
+.tripsoko-side { flex: 1; display: flex; overflow: hidden; }
+.sidebar { width: var(--sidebar-w); flex-shrink: 0; background: var(--navy); display: flex; flex-direction: column; }
 .sidebar-logo { padding: 18px 16px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); }
 .logo-text { font-size: 19px; font-weight: 700; color: white; letter-spacing: -0.3px; }
 .logo-sub { font-size: 9.5px; color: rgba(255,255,255,0.3); margin-top: 1px; }
 .sidebar-nav { padding: 10px 8px; flex: 1; }
-.nav-section-label {
-  font-size: 9px; font-weight: 600; color: rgba(255,255,255,0.25);
-  text-transform: uppercase; letter-spacing: 0.08em;
-  padding: 8px 8px 5px;
-}
-.nav-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 8px; border-radius: 5px;
-  font-size: 12.5px; font-weight: 500; color: rgba(255,255,255,0.45);
-  cursor: pointer; margin-bottom: 1px;
-}
+.nav-section-label { font-size: 9px; font-weight: 600; color: rgba(255,255,255,0.25); text-transform: uppercase; letter-spacing: 0.08em; padding: 8px 8px 5px; }
+.nav-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 5px; font-size: 12.5px; font-weight: 500; color: rgba(255,255,255,0.45); cursor: pointer; margin-bottom: 1px; }
 .nav-item.active { background: var(--teal-dim); color: var(--teal); }
-.nav-badge {
-  margin-left: auto; background: var(--teal); color: var(--navy);
-  font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 20px;
-}
+.nav-badge { margin-left: auto; background: var(--teal); color: var(--navy); font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 20px; }
 .sidebar-footer { padding: 12px 8px; border-top: 1px solid rgba(255,255,255,0.06); }
 .agency-pill { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 5px; background: rgba(255,255,255,0.04); }
 .agency-avatar { width: 26px; height: 26px; border-radius: 5px; background: var(--teal); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--navy); flex-shrink: 0; }
 .agency-name { font-size: 11.5px; font-weight: 600; color: white; }
 .agency-role { font-size: 9.5px; color: rgba(255,255,255,0.3); }
-
-/* INQUIRY LIST */
-.inquiry-panel {
-  width: 260px; flex-shrink: 0;
-  background: white; border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; overflow: hidden;
-}
+.inquiry-panel { width: 260px; flex-shrink: 0; background: white; border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
 .panel-header { padding: 16px 16px 12px; border-bottom: 1px solid var(--border); }
 .panel-title { font-size: 14px; font-weight: 600; }
 .panel-sub { font-size: 11px; color: var(--slate); margin-top: 2px; }
 .inquiry-list { overflow-y: auto; flex: 1; }
-.inquiry-item {
-  padding: 12px 16px; border-bottom: 1px solid var(--border);
-  cursor: pointer; transition: background 0.1s;
-}
+.inquiry-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.1s; }
 .inquiry-item:hover { background: var(--off); }
 .inquiry-item.active { background: #EEF9F8; border-left: 3px solid var(--teal); padding-left: 13px; }
 .inq-top { display: flex; justify-content: space-between; align-items: flex-start; }
@@ -171,71 +73,36 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
 .inq-time { font-size: 10px; color: var(--text-light); }
 .inq-route { font-size: 11.5px; font-weight: 500; margin-top: 3px; }
 .inq-meta { font-size: 10.5px; color: var(--slate); margin-top: 2px; }
-.status-dot {
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 10px; font-weight: 600;
-  padding: 2px 6px; border-radius: 20px; margin-top: 5px;
-}
+.status-dot { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 20px; margin-top: 5px; }
 .status-dot::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .status-dot.pending { background: #FEF3C7; color: #92400E; }
 .status-dot.ready { background: #D1FAE5; color: #065F46; }
 .status-dot.sent { background: #DBEAFE; color: #1E40AF; }
-
-/* NOTIFICATION BADGE */
-.notif-badge {
-  display: none; position: absolute;
-  top: -4px; right: -4px; width: 8px; height: 8px;
-  border-radius: 50%; background: var(--teal);
-  animation: pulse 1s infinite;
-}
+.notif-badge { display: none; position: absolute; top: -4px; right: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--teal); animation: pulse 1s infinite; }
 @keyframes pulse { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.4);opacity:0.7} }
-
-/* DETAIL */
 .detail-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--off); }
-.detail-header {
-  background: white; border-bottom: 1px solid var(--border);
-  padding: 14px 20px; display: flex; align-items: center; justify-content: space-between;
-}
+.detail-header { background: white; border-bottom: 1px solid var(--border); padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; }
 .detail-client { font-size: 15px; font-weight: 600; }
 .detail-route { font-size: 11.5px; color: var(--slate); margin-top: 2px; }
 .header-actions { display: flex; gap: 7px; }
-.btn {
-  font-size: 12px; font-weight: 600; padding: 6px 13px;
-  border-radius: 6px; border: none; cursor: pointer;
-  transition: all 0.15s; display: flex; align-items: center; gap: 5px;
-  font-family: 'Inter', sans-serif;
-}
+.btn { font-size: 12px; font-weight: 600; padding: 6px 13px; border-radius: 6px; border: none; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 5px; font-family: 'Inter', sans-serif; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--slate); }
 .btn-ghost:hover:not(:disabled) { border-color: var(--slate); }
 .btn-teal { background: var(--teal); color: white; }
 .btn-teal:hover:not(:disabled) { background: #009E91; }
-.btn-outline { background: transparent; border: 1px solid var(--teal); color: var(--teal); }
-
 .detail-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
-
 .card { background: white; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
-.card-label {
-  font-size: 9.5px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.07em; color: var(--slate);
-  padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--off);
-}
+.card-label { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--slate); padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--off); }
 .card-body { padding: 12px 14px; }
-
-.request-msg {
-  font-size: 12.5px; color: var(--text); line-height: 1.6;
-  padding: 10px 12px; background: #F0F9F8;
-  border-radius: 6px; border-left: 3px solid var(--teal);
-}
+.request-msg { font-size: 12.5px; color: var(--text); line-height: 1.6; padding: 10px 12px; background: #F0F9F8; border-radius: 6px; border-left: 3px solid var(--teal); }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .chip { font-size: 10.5px; font-weight: 500; padding: 2px 8px; border-radius: 20px; background: var(--off); border: 1px solid var(--border); color: var(--slate); }
-
 .ai-building { display: flex; flex-direction: column; align-items: center; padding: 28px 20px; text-align: center; }
 .ai-spinner { width: 32px; height: 32px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--teal); animation: spin 0.8s linear infinite; margin-bottom: 10px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .ai-building-text strong { font-size: 13px; color: var(--text); display: block; margin-bottom: 3px; }
 .ai-building-text { font-size: 11.5px; color: var(--slate); }
-
 .pkg-card { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; margin-bottom: 8px; }
 .pkg-card.selected { border-color: var(--teal); box-shadow: 0 0 0 2px var(--teal-dim); }
 .pkg-header { padding: 10px 12px; background: var(--off); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
@@ -246,45 +113,28 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
 .pkg-body { padding: 8px 12px; display: flex; gap: 12px; flex-wrap: wrap; }
 .pkg-detail { font-size: 11px; color: var(--slate); display: flex; align-items: center; gap: 4px; }
 .pkg-detail .teal { color: var(--teal); }
-
 .rebuild-form { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
 .rebuild-title { font-size: 12.5px; font-weight: 600; margin-bottom: 8px; }
 .rebuild-textarea { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 8px 11px; font-size: 12.5px; font-family: 'Inter', sans-serif; color: var(--text); resize: none; outline: none; line-height: 1.5; }
 .rebuild-textarea:focus { border-color: var(--teal); }
 .rebuild-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
-
 .success-banner { background: #D1FAE5; border: 1px solid #A7F3D0; border-radius: 7px; padding: 10px 14px; display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12.5px; color: #065F46; font-weight: 500; }
-
-/* TOAST */
 .toast { position: fixed; bottom: 20px; right: 20px; background: var(--navy); color: white; padding: 9px 14px; border-radius: 7px; font-size: 12.5px; font-weight: 500; box-shadow: 0 4px 20px rgba(0,0,0,0.3); transform: translateY(60px); opacity: 0; transition: all 0.25s; z-index: 100; }
 .toast.show { transform: translateY(0); opacity: 1; }
 .toast.success { border-left: 3px solid var(--green); }
 .toast.error { border-left: 3px solid #EF4444; }
-
-/* PUSH NOTIFICATION */
-.push-notif {
-  position: fixed; top: 20px; right: 20px; z-index: 200;
-  background: white; border-radius: 10px; padding: 12px 14px;
-  box-shadow: 0 8px 30px rgba(0,0,0,0.2); width: 280px;
-  display: flex; gap: 10px; align-items: flex-start;
-  transform: translateX(320px); opacity: 0; transition: all 0.3s cubic-bezier(0.34,1.56,0.64,1);
-  border-top: 3px solid var(--teal);
-}
+.push-notif { position: fixed; top: 20px; right: 20px; z-index: 200; background: white; border-radius: 10px; padding: 12px 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.2); width: 280px; display: flex; gap: 10px; align-items: flex-start; transform: translateX(320px); opacity: 0; transition: all 0.3s cubic-bezier(0.34,1.56,0.64,1); border-top: 3px solid var(--teal); }
 .push-notif.show { transform: translateX(0); opacity: 1; }
 .push-icon { width: 32px; height: 32px; border-radius: 6px; background: var(--teal); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .push-title { font-size: 12px; font-weight: 700; color: var(--text); }
 .push-body { font-size: 11px; color: var(--slate); margin-top: 2px; }
 .push-time { font-size: 10px; color: var(--text-light); margin-top: 3px; }
-
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 </style>
 </head>
 <body>
-
 <div class="demo-shell">
-
-  <!-- ══ LEFT: WHATSAPP ══ -->
   <div class="wa-side">
     <div class="wa-header">
       <div class="wa-avatar">AO</div>
@@ -296,12 +146,9 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
         </div>
       </div>
     </div>
-
     <div class="wa-messages" id="waMessages">
-      <!-- date stamp -->
       <div style="text-align:center;font-size:10.5px;color:#667781;background:rgba(255,255,255,0.6);border-radius:6px;padding:3px 10px;align-self:center;margin-bottom:4px">TODAY</div>
     </div>
-
     <div class="wa-input-row">
       <input class="wa-input" id="waInput" placeholder="Type a message…" value="Hi, I'd like to plan a trip to Zanzibar. 5 nights, 2 adults, flying from Nairobi around Oct 14. Something 4-5 star." readonly />
       <button class="wa-send-btn" onclick="clientSend()">
@@ -310,16 +157,12 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
     </div>
   </div>
 
-  <!-- DIVIDER -->
   <div class="divider-label">LIVE FLOW</div>
 
-  <!-- ══ RIGHT: Tripsoko ══ -->
-  <div class="Tripsoko-side">
-
-    <!-- SIDEBAR -->
+  <div class="tripsoko-side">
     <aside class="sidebar">
       <div class="sidebar-logo">
-        <div class="logo-text">Tripsoko</div>
+        <div class="logo-text">TripSoko</div>
         <div class="logo-sub">Agency Platform</div>
       </div>
       <nav class="sidebar-nav">
@@ -354,7 +197,6 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
       </div>
     </aside>
 
-    <!-- INQUIRY LIST -->
     <div class="inquiry-panel">
       <div class="panel-header">
         <div class="panel-title">Trip Requests</div>
@@ -376,7 +218,6 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
       </div>
     </div>
 
-    <!-- DETAIL PANEL -->
     <div class="detail-panel">
       <div class="detail-header" id="detailHeader">
         <div>
@@ -393,11 +234,9 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
         </div>
       </div>
     </div>
-
   </div>
 </div>
 
-<!-- PUSH NOTIFICATION -->
 <div class="push-notif" id="pushNotif">
   <div class="push-icon">
     <svg width="16" height="16" fill="none" stroke="white" stroke-width="2.5" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
@@ -405,30 +244,21 @@ html, body { height: 100%; font-family: 'Inter', sans-serif; background: #1a1a2e
   <div>
     <div class="push-title">New itinerary ready — Amara Osei</div>
     <div class="push-body">Nairobi → Zanzibar · 5 nights · Review now</div>
-    <div class="push-time">Just now · Tripsoko</div>
+    <div class="push-time">Just now · TripSoko</div>
   </div>
 </div>
 
-<!-- TOAST -->
 <div class="toast" id="toast"></div>
 
 <script>
-const API_BASE = 'https://bodrless-api-v2.onrender.com';
-const CONV_ID  = '4778aea1-4d2f-4233-85cc-c7cfd593c835';
-const TOKEN    = '96147014-cac5-46ab-9837-1d0c6554ee08';
-const AGENT_ID = 'Tripsoko_agent_001';
-
-let currentVersion = null;
 let flowStarted = false;
 
-// ── UTILS ──
 function toast(msg, type='success') {
   const t = document.getElementById('toast');
   t.textContent = msg; t.className = `toast ${type} show`;
   setTimeout(() => t.className = 'toast', 3000);
 }
-function stars(n) { return '★'.repeat(Math.min(n||0,5)) + '☆'.repeat(Math.max(0,5-(n||0))); }
-function kes(n) { return 'KES ' + Number(n).toLocaleString(); }
+
 function time() {
   const d = new Date(); let h = d.getHours(), m = d.getMinutes();
   const ampm = h >= 12 ? 'PM' : 'AM';
@@ -436,7 +266,6 @@ function time() {
   return `${h}:${m} ${ampm}`;
 }
 
-// ── WA BUBBLE ──
 function addBubble(text, dir, isHtml=false) {
   const msgs = document.getElementById('waMessages');
   const b = document.createElement('div');
@@ -456,51 +285,13 @@ function showTyping() {
   msgs.appendChild(t);
   msgs.scrollTop = msgs.scrollHeight;
 }
+
 function hideTyping() {
   const t = document.getElementById('typingIndicator');
   if (t) t.remove();
 }
 
-// ── FORMAT ITINERARY for WhatsApp ──
-function formatItinerary(draft) {
-  const pkgs = draft.packages || [];
-  if (!pkgs.length) return draft.text || 'Your itinerary is ready.';
-
-  let msg = (draft.text || 'Here are your trip options') + '\n\n';
-
-  pkgs.forEach((pkg, i) => {
-    const h  = pkg.hotel     || {};
-    const s  = pkg.summary   || {};
-    const tr = pkg.transport || {};
-
-    msg += `*Option ${i+1}*\n`;
-    msg += `━━━━━━━━━━━━━━━━\n`;
-    msg += `*Route:* ${s.route || `${s.origin||'Nairobi'} to ${s.destination||'Zanzibar'}`}\n`;
-    msg += `*Travelers:* ${s.passengers || 2}\n`;
-    msg += `*Nights:* ${s.nights || '—'}\n\n`;
-
-    if (tr.transportType === 'flight' || tr.airline) {
-      msg += `*✈️ Flight*\n`;
-      msg += `  Airline: ${tr.airline || '—'}\n`;
-      msg += `  Flight: ${tr.flightNumber || '—'}\n`;
-      msg += `  Departs: ${tr.departureTime || '—'} · Arrives: ${tr.arrivalTime || '—'}\n\n`;
-    }
-
-    msg += `*🏨 Hotel*\n`;
-    msg += `  ${h.name || 'Hotel'} ${'⭐'.repeat(h.stars||0)}\n`;
-    if (h.pricePerNight) msg += `  ${kes(h.pricePerNight)}/night × ${s.nights || '—'} nights\n\n`;
-
-    msg += `*Total: ${kes(s.totalPrice || 0)}* for ${s.passengers||2} traveler(s)\n`;
-    msg += `_(${kes(s.pricePerPerson || 0)} per person)_\n`;
-  });
-
-  msg += `\nReply *CONFIRM* to proceed with booking or let me know if you'd like any changes. 🌍`;
-  return msg;
-}
-
-// ── RENDER WA ITINERARY (formatted) ──
 function renderWaItinerary(text) {
-  // convert bold *text* and _italic_
   let html = text
     .replace(/\*(.*?)\*/g, '<strong>$1</strong>')
     .replace(/_(.*?)_/g, '<em>$1</em>')
@@ -508,39 +299,30 @@ function renderWaItinerary(text) {
   return `<div class="itin-msg">${html}</div>`;
 }
 
-// ── STEP 1: CLIENT SENDS ──
 function clientSend() {
   if (flowStarted) return;
   flowStarted = true;
-
   const msg = document.getElementById('waInput').value;
   addBubble(msg, 'out');
   document.getElementById('waInput').value = '';
-
-  // Step 2: acknowledgement after 1.2s
   setTimeout(() => {
     showTyping();
     setTimeout(() => {
       hideTyping();
       addBubble("Got it! 🌴 We're building your Zanzibar itinerary now. You'll hear back shortly.", 'in');
-      // Step 3: notify Tripsoko dashboard
       setTimeout(notifyDashboard, 1800);
     }, 1400);
   }, 1200);
 }
 
-// ── STEP 3: DASHBOARD NOTIFICATION ──
 function notifyDashboard() {
-  // Update nav badge
   document.getElementById('navBadge').textContent = '3';
   document.getElementById('notifBadge').style.display = 'block';
   document.getElementById('panelSub').textContent = '3 pending review';
 
-  // Add to inquiry list
   const list = document.getElementById('inquiryList');
   const item = document.createElement('div');
   item.className = 'inquiry-item active'; item.id = 'inqAmara';
-  item.style.animation = 'none';
   item.innerHTML = `
     <div class="inq-top"><div class="client-name">Amara Osei</div><div class="inq-time">Just now</div></div>
     <div class="inq-route">Nairobi → Zanzibar</div>
@@ -548,16 +330,13 @@ function notifyDashboard() {
     <span class="status-dot ready" id="amaraStatus">Itinerary Ready</span>`;
   list.insertBefore(item, list.firstChild);
 
-  // Push notification
   const notif = document.getElementById('pushNotif');
   notif.classList.add('show');
   setTimeout(() => notif.classList.remove('show'), 4000);
 
-  // Load detail panel
   loadAmaraDetail();
 }
 
-// ── LOAD AMARA DETAIL ──
 function loadAmaraDetail() {
   document.getElementById('detailClient').textContent = 'Amara Osei';
   document.getElementById('detailRoute').textContent  = 'Nairobi → Zanzibar · 5 nights · 2 adults · Oct 14';
@@ -578,14 +357,39 @@ function loadAmaraDetail() {
         </div>
       </div>
     </div>
-    <div class="card" id="itinCard">
+    <div class="card">
       <div class="card-label">AI-Built Itinerary</div>
       <div class="card-body">
-        <div class="ai-building" id="buildingState">
-          <div class="ai-spinner"></div>
-          <div class="ai-building-text"><strong>Building itinerary…</strong>Searching flights, hotels & transfers</div>
+        <div id="packagesContainer">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <div style="font-size:13px;font-weight:600;color:var(--text)">Here are 2 options for your Zanzibar trip</div>
+            <div style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;background:var(--teal-dim);color:var(--teal)">v1</div>
+          </div>
+          <div class="pkg-card selected">
+            <div class="pkg-header">
+              <div><div class="pkg-hotel">Zanzibar Serena Hotel</div><div class="pkg-stars">★★★★★</div></div>
+              <div><div class="pkg-price-main">KES 142,000</div><div class="pkg-price-sub">KES 18,500/night · 5 nights</div></div>
+            </div>
+            <div class="pkg-body">
+              <div class="pkg-detail"><span class="teal">✈</span> Kenya Airways KQ 100</div>
+              <div class="pkg-detail"><span class="teal">⏱</span> 08:00 → 09:45</div>
+              <div class="pkg-detail"><span class="teal">👥</span> 2 pax</div>
+              <div class="pkg-detail" style="margin-left:auto;font-weight:600;color:var(--text)">KES 71,000/person</div>
+            </div>
+          </div>
+          <div class="pkg-card">
+            <div class="pkg-header">
+              <div><div class="pkg-hotel">Zanzibar Palace Hotel</div><div class="pkg-stars">★★★★☆</div></div>
+              <div><div class="pkg-price-main">KES 118,000</div><div class="pkg-price-sub">KES 14,200/night · 5 nights</div></div>
+            </div>
+            <div class="pkg-body">
+              <div class="pkg-detail"><span class="teal">✈</span> Jambojet JM 200</div>
+              <div class="pkg-detail"><span class="teal">⏱</span> 10:30 → 12:15</div>
+              <div class="pkg-detail"><span class="teal">👥</span> 2 pax</div>
+              <div class="pkg-detail" style="margin-left:auto;font-weight:600;color:var(--text)">KES 59,000/person</div>
+            </div>
+          </div>
         </div>
-        <div id="packagesContainer" style="display:none"></div>
       </div>
     </div>
     <div class="rebuild-form" id="rebuildForm" style="display:none">
@@ -600,121 +404,31 @@ function loadAmaraDetail() {
       <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
       Proposal sent to Amara Osei via WhatsApp
     </div>`;
-
-  // Fetch from real API
-  fetchAndRender();
 }
 
-// ── FETCH DRAFT ──
-async function fetchAndRender() {
-  try {
-    const res = await fetch(`${API_BASE}/api/partners/Tripsoko/conversations/${CONV_ID}`, {
-      headers: { 'Authorization': `Bearer ${TOKEN}` }
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    currentVersion = data.version;
-
-    // small artificial delay so spinner feels real
-    await new Promise(r => setTimeout(r, 800));
-
-    document.getElementById('buildingState').style.display = 'none';
-    const container = document.getElementById('packagesContainer');
-    container.style.display = 'block';
-    renderPackages(data.draft || {}, container);
-  } catch(e) {
-    document.getElementById('buildingState').innerHTML = `
-      <div style="text-align:center;color:var(--slate);font-size:12px">
-        <strong style="color:var(--text);display:block;margin-bottom:4px">Could not reach API</strong>${e.message}
-      </div>`;
-  }
-}
-
-function renderPackages(draft, container) {
-  const title = document.createElement('div');
-  title.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px';
-  title.innerHTML = `
-    <div style="font-size:13px;font-weight:600;color:var(--text)">${draft.text || 'Trip Options'}</div>
-    <div style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;background:var(--teal-dim);color:var(--teal)">v${currentVersion}</div>`;
-  container.appendChild(title);
-
-  const pkgs = draft.packages || [];
-  if (!pkgs.length) {
-    container.innerHTML += `<div style="text-align:center;padding:20px;color:var(--slate);font-size:12px"><strong style="color:var(--text);display:block;margin-bottom:4px">No packages returned</strong>Sandbox has no live inventory — in production, real options appear here.</div>`;
-    return;
-  }
-
-  pkgs.forEach((pkg, i) => {
-    const h = pkg.hotel || {}, s = pkg.summary || {}, tr = pkg.transport || {};
-    const card = document.createElement('div');
-    card.className = `pkg-card${i===0?' selected':''}`;
-    card.innerHTML = `
-      <div class="pkg-header">
-        <div>
-          <div class="pkg-hotel">${h.name || 'Hotel'}</div>
-          <div class="pkg-stars">${stars(h.stars)}</div>
-        </div>
-        <div>
-          <div class="pkg-price-main">${kes(s.totalPrice||0)}</div>
-          <div class="pkg-price-sub">${kes(h.pricePerNight||0)}/night · ${s.nights||'—'} nights</div>
-        </div>
-      </div>
-      <div class="pkg-body">
-        <div class="pkg-detail"><span class="teal">✈</span> ${tr.airline||'—'} ${tr.flightNumber||''}</div>
-        <div class="pkg-detail"><span class="teal">⏱</span> ${tr.departureTime||'—'} → ${tr.arrivalTime||'—'}</div>
-        <div class="pkg-detail"><span class="teal">👥</span> ${s.passengers||2} pax</div>
-        <div class="pkg-detail" style="margin-left:auto;font-weight:600;color:var(--text)">${kes(s.pricePerPerson||0)}/person</div>
-      </div>`;
-    container.appendChild(card);
-  });
-
-  // store draft for WA send
-  container._draft = draft;
-}
-
-// ── APPROVE ──
 async function approveItinerary() {
   const btn = document.getElementById('approveBtn');
   btn.disabled = true; btn.textContent = 'Sending…';
-  try {
-    const res = await fetch(`${API_BASE}/api/partners/Tripsoko/conversations/${CONV_ID}/approve`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_id: AGENT_ID })
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-    // Get draft for WA message
-    const draftRes = await fetch(`${API_BASE}/api/partners/Tripsoko/conversations/${CONV_ID}`, {
-      headers: { 'Authorization': `Bearer ${TOKEN}` }
-    });
-    const draftData = await draftRes.json();
+  await new Promise(r => setTimeout(r, 1000));
 
-    // Show success in dashboard
-    document.getElementById('successBanner').style.display = 'flex';
-    document.getElementById('headerActions').innerHTML = `<span style="font-size:12px;color:var(--green);font-weight:600">✓ Sent to client via WhatsApp</span>`;
-    document.getElementById('amaraStatus').className = 'status-dot sent';
-    document.getElementById('amaraStatus').textContent = 'Proposal Sent';
-    toast('Itinerary approved and sent to Amara');
+  document.getElementById('successBanner').style.display = 'flex';
+  document.getElementById('headerActions').innerHTML = `<span style="font-size:12px;color:var(--green);font-weight:600">✓ Sent to client via WhatsApp</span>`;
+  document.getElementById('amaraStatus').className = 'status-dot sent';
+  document.getElementById('amaraStatus').textContent = 'Proposal Sent';
+  toast('Itinerary approved and sent to Amara');
 
-    // Send back to WhatsApp after 1.5s
+  setTimeout(() => {
+    const itinText = `*Here are your trip options* 🌍\n\n*Option 1*\n━━━━━━━━━━━━━━━━\n*Route:* Nairobi to Zanzibar\n*Travelers:* 2\n*Nights:* 5\n\n*✈️ Flight*\n  Airline: Kenya Airways\n  Flight: KQ 100\n  Departs: 08:00 · Arrives: 09:45\n\n*🏨 Hotel*\n  Zanzibar Serena Hotel ⭐⭐⭐⭐⭐\n  KES 18,500/night × 5 nights\n\n*Total: KES 142,000* for 2 travelers\n_(KES 71,000 per person)_\n\n*Option 2*\n━━━━━━━━━━━━━━━━\n*Route:* Nairobi to Zanzibar\n*Travelers:* 2\n*Nights:* 5\n\n*✈️ Flight*\n  Airline: Jambojet\n  Flight: JM 200\n  Departs: 10:30 · Arrives: 12:15\n\n*🏨 Hotel*\n  Zanzibar Palace Hotel ⭐⭐⭐⭐\n  KES 14,200/night × 5 nights\n\n*Total: KES 118,000* for 2 travelers\n_(KES 59,000 per person)_\n\nReply *1* or *2* to choose your option, or let me know if you'd like any changes. 🌍`;
+    showTyping();
     setTimeout(() => {
-      const itinText = formatItinerary(draftData.draft || {});
-      showTyping();
-      setTimeout(() => {
-        hideTyping();
-        const html = renderWaItinerary(itinText);
-        addBubble(html, 'in', true);
-      }, 1200);
-    }, 1500);
-
-  } catch(e) {
-    toast('Approve failed: ' + e.message, 'error');
-    btn.disabled = false; btn.textContent = '✓ Approve & Send';
-  }
+      hideTyping();
+      const html = renderWaItinerary(itinText);
+      addBubble(html, 'in', true);
+    }, 1200);
+  }, 1500);
 }
 
-// ── REBUILD ──
 function showRebuild() { document.getElementById('rebuildForm').style.display = 'block'; document.getElementById('rebuildNote').focus(); }
 function hideRebuild() { document.getElementById('rebuildForm').style.display = 'none'; }
 
@@ -724,30 +438,31 @@ async function submitRebuild() {
   const btn = document.querySelector('#rebuildForm .btn-teal');
   btn.disabled = true; btn.textContent = 'Rebuilding…';
 
-  document.getElementById('packagesContainer').style.display = 'none';
-  document.getElementById('buildingState').innerHTML = `<div class="ai-spinner"></div><div class="ai-building-text"><strong>Rebuilding with your changes…</strong>Re-searching inventory</div>`;
-  document.getElementById('buildingState').style.display = 'flex';
+  document.getElementById('packagesContainer').innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;padding:28px 20px;text-align:center"><div class="ai-spinner"></div><div class="ai-building-text"><strong>Rebuilding with your changes…</strong>Re-searching inventory</div></div>`;
 
-  try {
-    const res = await fetch(`${API_BASE}/api/partners/Tripsoko/conversations/${CONV_ID}/rebuild`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_id: AGENT_ID, instruction: note })
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    await new Promise(r => setTimeout(r, 600));
-    const container = document.getElementById('packagesContainer');
-    container.innerHTML = '';
-    await fetchAndRender();
-    hideRebuild();
-    toast('Itinerary rebuilt — version ' + currentVersion);
-  } catch(e) {
-    toast('Rebuild failed: ' + e.message, 'error');
-    document.getElementById('buildingState').style.display = 'none';
-    document.getElementById('packagesContainer').style.display = 'block';
-  } finally {
-    btn.disabled = false; btn.textContent = 'Rebuild Itinerary';
-  }
+  await new Promise(r => setTimeout(r, 2000));
+
+  document.getElementById('packagesContainer').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="font-size:13px;font-weight:600;color:var(--text)">Updated options based on your changes</div>
+      <div style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;background:var(--teal-dim);color:var(--teal)">v2</div>
+    </div>
+    <div class="pkg-card selected">
+      <div class="pkg-header">
+        <div><div class="pkg-hotel">Baraza Resort & Spa</div><div class="pkg-stars">★★★★★</div></div>
+        <div><div class="pkg-price-main">KES 158,000</div><div class="pkg-price-sub">KES 22,000/night · 5 nights</div></div>
+      </div>
+      <div class="pkg-body">
+        <div class="pkg-detail"><span class="teal">✈</span> Kenya Airways KQ 100</div>
+        <div class="pkg-detail"><span class="teal">⏱</span> 08:00 → 09:45</div>
+        <div class="pkg-detail"><span class="teal">👥</span> 2 pax</div>
+        <div class="pkg-detail" style="margin-left:auto;font-weight:600;color:var(--text)">KES 79,000/person</div>
+      </div>
+    </div>`;
+
+  hideRebuild();
+  toast('Itinerary rebuilt — version 2');
+  btn.disabled = false; btn.textContent = 'Rebuild Itinerary';
 }
 </script>
 </body>
