@@ -237,6 +237,90 @@ class WhatsAppService {
     await this.sendPackages(phoneNumberId, to, legPackages, { legHeader: header });
   }
 
+    // ── TRAVELER HISTORY ───────────────────────────────────────────
+  async sendTravelerHistory(phoneNumberId, to, { bookings = [], searches = [], profile = null, name = null } = {}) {
+    const firstName = _safeStr(name, '').split(' ')[0] || 'there';
+    const lines = [`Hey ${firstName} 👋 Here's what I have on your travel so far:`, ''];
+
+    // ── Confirmed bookings ─────────────────────────
+    const confirmed = (bookings || []).filter(b => b?.status === 'confirmed').slice(0, 3);
+    if (confirmed.length > 0) {
+      lines.push('*✅ Your bookings:*');
+      for (const b of confirmed) {
+        const d     = b.departure_date ? new Date(b.departure_date) : null;
+        const date  = d && !isNaN(d.getTime())
+          ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+          : null;
+        const price = b.total_price != null
+          ? _fmtPrice(b.total_price, _safeStr(b.currency, 'KES'))
+          : null;
+        const ref   = b.booking_ref ? `Ref: ${b.booking_ref}` : null;
+        lines.push('  • ' + [`*${_titleCase(_safeStr(b.destination, 'Trip'))}*`, date, price, ref].filter(Boolean).join(' · '));
+      }
+      lines.push('');
+    }
+
+    // ── Recent searches (accepts strings, {destination}, or {trip_params:{destination}}) ──
+    const recentDests = [...new Set(
+      (searches || [])
+        .map(s => typeof s === 'string' ? s : (s?.destination || s?.trip_params?.destination))
+        .filter(Boolean)
+        .map(d => _titleCase(d))
+    )].slice(0, 4);
+
+    if (recentDests.length > 0) {
+      lines.push('*🔍 Recently searched:*');
+      recentDests.forEach(d => lines.push(`  • ${d}`));
+      lines.push('');
+    }
+
+    // ── Profile insights ───────────────────────────
+    if (profile) {
+      const insights = [];
+      const top = (obj, n) => Object.entries(obj || {})
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .slice(0, n)
+        .map(([k]) => k);
+
+      const topDests = top(profile.destination_scores, 3).map(_titleCase);
+      if (topDests.length) insights.push(`📍 Favourite destinations: ${topDests.join(', ')}`);
+
+      if (profile.budget_min_kes && profile.budget_max_kes) {
+        insights.push(`💰 Typical budget: ${_fmtPrice(profile.budget_min_kes)} – ${Number(profile.budget_max_kes).toLocaleString()}`);
+      }
+
+      const topStyle = top(profile.travel_style_scores, 2);
+      if (topStyle.length) insights.push(`🎒 Travel style: ${topStyle.join(', ')}`);
+
+      const nMin = profile.preferred_nights_min;
+      const nMax = profile.preferred_nights_max;
+      if (nMin && nMax) insights.push(`🌙 Typical stay: ${nMin === nMax ? `${nMin} nights` : `${nMin}–${nMax} nights`}`);
+
+      if (insights.length > 0) {
+        lines.push('*🧠 What I know about you:*');
+        insights.forEach(i => lines.push(`  ${i}`));
+        lines.push('');
+      }
+
+      if (profile.last_intent_destination && profile.booking_readiness && profile.booking_readiness !== 'browsing') {
+        lines.push(`_Looks like you were interested in *${_titleCase(profile.last_intent_destination)}*. Want me to pick up where you left off?_`);
+        lines.push('');
+      }
+    }
+
+    const hasAnything = confirmed.length || recentDests.length || profile;
+    if (!hasAnything) {
+      lines.length = 0;
+      lines.push(`Hey ${firstName} 👋 I don't have any trips on file for you yet. Tell me where you'd like to go and I'll start searching.`);
+    } else if (recentDests.length > 0) {
+      lines.push(`Reply with any destination above and I'll search fresh prices, or tell me somewhere new.`);
+    } else {
+      lines.push(`Tell me where you'd like to go and I'll get searching.`);
+    }
+
+    return this.sendText(phoneNumberId, to, lines.join('\n'));
+  }
+  
   _transportMeta(transportType) {
     const type = _safeStr(transportType, 'flight').toLowerCase();
     if (type === 'bus')   return { type, icon: '🚌', label: 'Bus',   operatorWord: 'Operator' };

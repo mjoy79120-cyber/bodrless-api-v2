@@ -57,6 +57,8 @@ const recLog = (fn, ...args) => {
 };
 
 const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|type|dob|date of birth|seat)\s*:/im;
+const HISTORY_QUERY_PATTERN = /\b(what (have|did) i (been )?(search|look|book|plan)\w*|what trips|my trips|my searches|my bookings|my (travel )?history|my past trips|trips i('ve| have) (booked|searched|taken)|what do you know about me|what was i (looking|searching))\b/i;
+const HISTORY_EXCLUDE_PATTERN = /\b(cancel|change|modify|refund|reschedule|amend)\b/i;
 const _pendingResumeChoice = new Map();
 
 // ─────────────────────────────────────────────
@@ -312,7 +314,55 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    if (!_looksLikeFreshTripRequest(prompt)) {
+    // ═══════════ NEW: TRAVELER HISTORY QUERY (start) ═══════════
+    if (
+      prompt.trim().split(/\s+/).length <= 10 &&
+      HISTORY_QUERY_PATTERN.test(prompt) &&
+      !HISTORY_EXCLUDE_PATTERN.test(prompt) &&
+      !(await whatsappBookingFlow.hasActiveSession(userKey))
+    ) {
+      logger.info('Webhook: history query detected', { userKey, preview: prompt.slice(0, 60) });
+
+      try {
+        const ids = [...new Set([phone, userKey].filter(Boolean))];
+
+        const [bookingsRes, profileRes] = await Promise.all([
+          supabase
+            .from('bookings')
+            .select('destination, departure_date, total_price, currency, booking_ref, status')
+            .in('guest_phone', ids)
+            .order('created_at', { ascending: false })
+            .limit(5),
+          supabase
+            .from('traveler_taste_profiles')
+            .select('*')
+            .eq('traveler_phone', phone || userKey)
+            .maybeSingle(),
+        ]);
+
+        if (bookingsRes.error) logger.warn('History: bookings query failed', { error: bookingsRes.error.message });
+        if (profileRes.error)  logger.warn('History: profile query failed',  { error: profileRes.error.message });
+
+        const lastDest = contact?.previous_params?.destination;
+        const searches = lastDest ? [{ destination: lastDest }] : [];
+
+        await whatsappService.sendTravelerHistory(phoneNumberId, recipient, {
+          bookings: bookingsRes.data || [],
+          searches,
+          profile:  profileRes.data || null,
+          name:     contact?.name || username || null,
+        });
+      } catch (err) {
+        logger.error('Webhook: history query failed', { userKey, error: err.message });
+        await whatsappService.sendText(phoneNumberId, recipient,
+          "I couldn't pull your history right now. Try again in a moment."
+        );
+      }
+      return;
+    }
+    // ═══════════ NEW: TRAVELER HISTORY QUERY (end) ═════════════
+
+     if (!_looksLikeFreshTripRequest(prompt)) {
       const dropOff = await conversationMemory.checkDropOff(userKey, agencyId);
       if (dropOff.isDropOff) {
         const welcomeMsg = conversationMemory.buildDropOffWelcome({
