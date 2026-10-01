@@ -62,6 +62,23 @@ function _titleCase(str) {
   return String(str).replace(/\b\w/g, c => c.toUpperCase());
 }
 
+function _timeAgo(value) {
+  if (!value) return null;
+  const s   = String(value);
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z';   // column is timestamp without time zone (UTC)
+  const t   = new Date(iso).getTime();
+  if (isNaN(t)) return null;
+  const mins = Math.floor((Date.now() - t) / 60000);
+  if (mins < 2)  return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} month${months === 1 ? '' : 's'} ago`;
+}
+
 // ── ASYNC — hits Supabase via getVisaNote ──────────────────────
 async function _visaLine(summary = {}, transport = null) {
   const origin      = _safeStr(transport?.origin      || summary?.origin      || '', '');
@@ -261,12 +278,22 @@ class WhatsAppService {
     }
 
     // ── Recent searches (accepts strings, {destination}, or {trip_params:{destination}}) ──
-    const recentDests = [...new Set(
-      (searches || [])
-        .map(s => typeof s === 'string' ? s : (s?.destination || s?.trip_params?.destination))
-        .filter(Boolean)
-        .map(d => _titleCase(d))
-    )].slice(0, 4);
+        const seen = new Set();
+    const recentDests = [];
+    for (const s of (searches || [])) {
+      const raw = typeof s === 'string' ? s : (s?.destination || s?.trip_params?.destination);
+      if (!raw) continue;
+      const key = String(raw).trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const parts = [_titleCase(raw)];
+      const n = _safeInt(s?.nights, 0);
+      if (n > 0) parts.push(`${n} night${n === 1 ? '' : 's'}`);
+      const ago = _timeAgo(s?.created_at);
+      if (ago) parts.push(ago);
+      recentDests.push(parts.join(' · '));
+      if (recentDests.length >= 5) break;
+    }
 
     if (recentDests.length > 0) {
       lines.push('*🔍 Recently searched:*');

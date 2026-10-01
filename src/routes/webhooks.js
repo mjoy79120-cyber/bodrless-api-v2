@@ -340,7 +340,7 @@ router.post('/whatsapp', async (req, res) => {
             .maybeSingle(),
           supabase
             .from('trip_searches')
-            .select('destination, created_at')
+            .select('destination, nights, created_at')
             .in('traveler_phone', ids)
             .not('destination', 'is', null)
             .order('created_at', { ascending: false })
