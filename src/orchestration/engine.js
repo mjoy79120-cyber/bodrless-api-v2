@@ -2215,7 +2215,7 @@ const taggedParams = (isTransportOnly || isTrainOnly)
           return normalize(t.airline || '').includes(target) || target.includes(normalize(t.airline || '')) || normalize(t.airlineCode || '').includes(target) || normalize(t.provider || '').includes(target);
         });
       }
-      await supabase.from('trip_searches').insert({ id: uuidv4(), agency_id: agencyId, session_id: sessionId, prompt, destination: tripParams.destination || null, origin: tripParams.origin || null, passengers: tripParams.passengers || 1, budget: tripParams.budget || null, nights: tripParams.nights || null, packages_returned: packagesReturned, channel, converted: false, preferred_transport_provider: preferredProvider, preferred_transport_mode: preferredMode, preferred_fulfilled: preferredFulfilled, created_at: new Date().toISOString() });
+      await supabase.from('trip_searches').insert({ id: uuidv4(), agency_id: agencyId, session_id: sessionId, traveler_phone: tripParams._phone || null, prompt, destination: tripParams.destination || null, origin: tripParams.origin || null, passengers: tripParams.passengers || 1, budget: tripParams.budget || null, nights: tripParams.nights || null, packages_returned: packagesReturned, channel, converted: false, preferred_transport_provider: preferredProvider, preferred_transport_mode: preferredMode, preferred_fulfilled: preferredFulfilled, created_at: new Date().toISOString() });
     } catch (err) {
       logger.error('trip_searches insert failed', { error: err.message });
     }

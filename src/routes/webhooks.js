@@ -314,7 +314,7 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    // ═══════════ NEW: TRAVELER HISTORY QUERY (start) ═══════════
+        // ═══════════ NEW: TRAVELER HISTORY QUERY (start) ═══════════
     if (
       prompt.trim().split(/\s+/).length <= 10 &&
       HISTORY_QUERY_PATTERN.test(prompt) &&
@@ -326,7 +326,7 @@ router.post('/whatsapp', async (req, res) => {
       try {
         const ids = [...new Set([phone, userKey].filter(Boolean))];
 
-        const [bookingsRes, profileRes] = await Promise.all([
+        const [bookingsRes, profileRes, searchesRes] = await Promise.all([
           supabase
             .from('bookings')
             .select('destination, departure_date, total_price, currency, booking_ref, status')
@@ -338,13 +338,22 @@ router.post('/whatsapp', async (req, res) => {
             .select('*')
             .eq('traveler_phone', phone || userKey)
             .maybeSingle(),
+          supabase
+            .from('trip_searches')
+            .select('destination, created_at')
+            .in('traveler_phone', ids)
+            .not('destination', 'is', null)
+            .order('created_at', { ascending: false })
+            .limit(15),
         ]);
 
         if (bookingsRes.error) logger.warn('History: bookings query failed', { error: bookingsRes.error.message });
         if (profileRes.error)  logger.warn('History: profile query failed',  { error: profileRes.error.message });
+        if (searchesRes.error) logger.warn('History: searches query failed', { error: searchesRes.error.message });
 
-        const lastDest = contact?.previous_params?.destination;
-        const searches = lastDest ? [{ destination: lastDest }] : [];
+        const searches = searchesRes.data?.length
+          ? searchesRes.data
+          : (contact?.previous_params?.destination ? [{ destination: contact.previous_params.destination }] : []);
 
         await whatsappService.sendTravelerHistory(phoneNumberId, recipient, {
           bookings: bookingsRes.data || [],
