@@ -1,0 +1,18 @@
+{
+  "scenario": "s1-serp",
+  "request": {
+    "destination": "los angeles",
+    "checkIn": "2026-10-11",
+    "checkOut": "2026-10-13",
+    "guests": [
+      {
+        "adults": 1,
+        "children": [
+          5
+        ]
+      }
+    ],
+    "residency": "ke"
+  },
+  "response": []
+}

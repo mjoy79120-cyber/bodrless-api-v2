@@ -43,8 +43,8 @@ if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR);
 const HOTEL_ID_A = 8473727;
 const HOTEL_ID_B = 8473727;
 
-const CHECK_IN  = _nextWeekday(7);   // 7 days from now
-const CHECK_OUT = _nextWeekday(9);   // 2 nights
+const CHECK_IN  = _nextWeekday(30);  // 30 days from now
+const CHECK_OUT = _nextWeekday(32);  // 2 nights
 
 // ETG Sandbox rule: last name must be "Ratehawk" for test bookings.
 const ADULT_1 = {
