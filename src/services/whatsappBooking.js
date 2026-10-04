@@ -34,7 +34,7 @@ const supabase        = require('../utils/supabase');
 const bookingService  = require('./bookingService');
 const whatsappService = require('./whatsapp');
 const packageCache    = require('./packageCache');
-const { resolveNationality } = require('./passengerMapper');
+const { resolveNationality } = require('../utils/passengerMapper');
 const { parsePhoneNumberFromString } = require('libphonenumber-js');
 const { logger }      = require('../utils/logger');
 
