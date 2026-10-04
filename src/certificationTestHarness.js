@@ -40,8 +40,8 @@ const LOG_DIR = path.join(__dirname, 'cert-logs');
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR);
 
 // ── Sandbox test data ───────────────────────────────────────
-const HOTEL_ID_A = 10004834;
-const HOTEL_ID_B = 8819557;
+const HOTEL_ID_A = 8473727;
+const HOTEL_ID_B = 8473727;
 
 const CHECK_IN  = _nextWeekday(7);   // 7 days from now
 const CHECK_OUT = _nextWeekday(9);   // 2 nights
