@@ -10,19 +10,30 @@
  *     lastName:       String,
  *     dateOfBirth:    'YYYY-MM-DD',
  *     gender:         'male' | 'female',
+ *     nationality:    'ke' | 'uz' | ...  (ISO 3166-1 alpha-2, lowercase)
  *     type:           'adult' | 'child',
  *     seatPreference: 'window' | 'aisle' | 'exit_row' | null,
  *     ageAtTravel:    Number,
  *   }
  *
  * Output shapes:
- *   RateHawk  → guestsByRoom  (array of arrays, one per room)
- *   HotelBeds → paxes         (flat array with type AD/CH)
- *   TravelDuqa → passengers   (flat array for flight hold)
+ *   RateHawk  → allocateRooms()      (canonical — use for HP + booking)
+ *   RateHawk  → toRateHawkSearchGuests() (SERP only — estimate from counts)
+ *   HotelBeds → toHotelBedsPaxes()   (flat array with type AD/CH)
+ *   TravelDuqa → toTravelDuqaPassengers() (flat array for flight hold)
+ *
+ * CHANGE LOG
+ *   2026-10-02  Added allocateRooms() — single allocator for HP + booking.
+ *               Fixed toRateHawkSearchGuests() child-age splice bug.
+ *               ETG age threshold: ≤17 at check-in = child.
  * ─────────────────────────────────────────────────────────────
  */
 
 'use strict';
+
+// ─────────────────────────────────────────────
+// SHARED UTILITY
+// ─────────────────────────────────────────────
 
 /**
  * Calculate age in full years at a reference date.
@@ -40,85 +51,98 @@ function ageAt(dobStr, refDateStr) {
 }
 
 // ─────────────────────────────────────────────
-// RATEHAWK
+// RATEHAWK — CANONICAL ROOM ALLOCATOR
+// Use this for BOTH hotelpage guests AND booking rooms.
+// Keeps the two in sync so ETG never sees a mismatch.
 // ─────────────────────────────────────────────
 
 /**
- * Allocate a flat passenger list into rooms for RateHawk.
+ * Allocate passengers into rooms for RateHawk.
  *
- * ETG requires one `rooms` entry per room, each containing a
- * `guests` array. Adults and children must match the search
- * request exactly — ETG validates guest counts server-side.
+ * ETG rules:
+ *   - Everyone ≤17 at check-in is a child (requires is_child:true + age).
+ *   - Every room must have at least one adult.
+ *   - Guest counts/ages in booking must exactly match the HP request.
  *
- * Strategy:
- *   - Adults fill rooms first (round-robin).
- *   - Children are distributed proportionally across rooms.
- *   - If only one room, all passengers go into room 0.
+ * Returns two shapes derived from the same allocation so they always match:
+ *   hotelpageGuests  — for /search/hp/  (adults count + children ages array)
+ *   bookingRooms     — for /booking/finish/ (full guest objects per room)
  *
- * @param {Array}  passengers  WhatsApp passenger objects
- * @param {number} roomCount   Number of rooms from the package
- * @param {string} travelDate  YYYY-MM-DD — used to compute child age
- * @returns {Array<Array>}     guestsByRoom — array of guest arrays
+ * @param {Array}  passengers  WhatsApp passenger objects (with dateOfBirth)
+ * @param {number} roomCount
+ * @param {string} checkIn     YYYY-MM-DD — used to compute age at travel
+ * @returns {{ hotelpageGuests: Array, bookingRooms: Array }}
  */
-function toRateHawkRooms(passengers, roomCount = 1, travelDate) {
-  const refDate = travelDate || new Date().toISOString().split('T')[0];
+function allocateRooms(passengers, roomCount = 1, checkIn) {
+  const refDate = checkIn || new Date().toISOString().split('T')[0];
 
-  // Separate adults and children
-  const adults   = passengers.filter(p => p.type === 'adult');
-  const children = passengers.filter(p => p.type === 'child');
-
-  // Build empty room buckets
-  const rooms = Array.from({ length: roomCount }, () => []);
-
-  // Distribute adults round-robin across rooms
-  adults.forEach((adult, i) => {
-    rooms[i % roomCount].push(_toRateHawkGuest(adult, refDate));
-  });
-
-  // Distribute children round-robin across rooms (after adults)
-  children.forEach((child, i) => {
-    rooms[i % roomCount].push(_toRateHawkGuest(child, refDate));
-  });
-
-  // Safety: every room must have at least one adult guest.
-  // If a room ended up with only children (shouldn't happen in
-  // normal search flow but guard defensively), log a warning.
-  rooms.forEach((roomGuests, idx) => {
-    const hasAdult = roomGuests.some(g => !g.is_child);
-    if (!hasAdult) {
-      const { logger } = require('./logger');
-      logger.warn('passengerMapper: room has no adult — ETG will reject', {
-        roomIndex: idx, guests: roomGuests.map(g => g.first_name),
-      });
-    }
-  });
-
-  return rooms;
-}
-
-/**
- * Convert a single WhatsApp passenger to an ETG guest object.
- * @private
- */
-function _toRateHawkGuest(p, refDate) {
-  const isChild = p.type === 'child';
-  const guest = {
-    first_name: p.firstName,
-    last_name:  p.lastName,
-  };
-  if (isChild) {
-    guest.is_child = true;
-    // ETG requires integer age, not DOB string
-    guest.age = typeof p.ageAtTravel === 'number'
+  // Compute age at check-in for every passenger.
+  // ETG threshold: ≤17 = child.
+  const people = passengers.map(p => {
+    const age = typeof p.ageAtTravel === 'number'
       ? p.ageAtTravel
       : ageAt(p.dateOfBirth, refDate);
+    return { p, age, isChild: age <= 17 };
+  });
+
+  const adults   = people.filter(x => !x.isChild);
+  const children = people.filter(x =>  x.isChild);
+
+  // Every room needs at least one adult.
+  if (adults.length < roomCount) {
+    const { logger } = require('../utils/logger');
+    logger.warn('passengerMapper.allocateRooms: fewer adults than rooms — ETG will reject', {
+      adults: adults.length, roomCount,
+    });
   }
-  return guest;
+
+  // Build room buckets.
+  const rooms = Array.from({ length: roomCount }, () => ({ adults: [], children: [] }));
+
+  // Round-robin adults first, then children.
+  adults.forEach((x, i)   => rooms[i % roomCount].adults.push(x));
+  children.forEach((x, i) => rooms[i % roomCount].children.push(x));
+
+  // ── hotelpageGuests: ETG HP search shape ──────────────────
+  // { adults: N, children: [age, age, ...] }
+  const hotelpageGuests = rooms.map(room => ({
+    adults:   room.adults.length || 1,   // safety: never send 0 adults
+    children: room.children.map(x => x.age),
+  }));
+
+  // ── bookingRooms: ETG /booking/finish/ shape ──────────────
+  // [{ guests: [{ first_name, last_name, is_child?, age? }] }]
+  const bookingRooms = rooms.map(room => ({
+    guests: [
+      ...room.adults.map(x => ({
+        first_name: x.p.firstName,
+        last_name:  x.p.lastName,
+      })),
+      ...room.children.map(x => ({
+        first_name: x.p.firstName,
+        last_name:  x.p.lastName,
+        is_child:   true,
+        age:        x.age,
+      })),
+    ],
+  }));
+
+  return { hotelpageGuests, bookingRooms };
 }
 
+// ─────────────────────────────────────────────
+// RATEHAWK — SERP SEARCH GUESTS  (estimate only)
+// Used for /search/serp/* calls where we have counts but no DOBs.
+// Do NOT use for hotelpage or booking — use allocateRooms() there.
+// ─────────────────────────────────────────────
+
 /**
- * Build the ETG `guests` search param from a package room config.
- * Used in search / HP calls — separate from booking guest data.
+ * Build the ETG `guests` SERP param from counts.
+ *
+ * FIX: previous version spliced `ages` inside the loop, which
+ * caused the array length to shrink mid-iteration, dropping
+ * children in later rooms.  We now slice (non-destructive) and
+ * distribute by index.
  *
  * @param {number} adults
  * @param {Array}  childAges  Array of integer ages
@@ -127,14 +151,33 @@ function _toRateHawkGuest(p, refDate) {
  */
 function toRateHawkSearchGuests(adults, childAges = [], rooms = 1) {
   const adultsPerRoom = Math.max(1, Math.ceil(adults / rooms));
-  const ages = [...childAges];
-  const guests = [];
+  const result = [];
+
   for (let r = 0; r < rooms; r++) {
-    const roomChildCount = Math.ceil((ages.length - r) / rooms);
-    const roomChildren   = ages.splice(0, Math.max(0, roomChildCount));
-    guests.push({ adults: adultsPerRoom, children: roomChildren });
+    // Distribute child ages across rooms by index (non-destructive).
+    const roomChildren = childAges.filter((_, i) => i % rooms === r);
+    result.push({
+      adults:   adultsPerRoom,
+      children: roomChildren,
+    });
   }
-  return guests;
+
+  return result;
+}
+
+// ─────────────────────────────────────────────
+// RATEHAWK — LEGACY ROOM BUILDER  (kept for compatibility)
+// New code should use allocateRooms() instead.
+// ─────────────────────────────────────────────
+
+/**
+ * @deprecated Use allocateRooms() — this does not guarantee
+ * that hotelpageGuests and bookingRooms match.
+ */
+function toRateHawkRooms(passengers, roomCount = 1, travelDate) {
+  const { bookingRooms } = allocateRooms(passengers, roomCount, travelDate);
+  // Return flat array-of-arrays to match old callers.
+  return bookingRooms.map(r => r.guests);
 }
 
 // ─────────────────────────────────────────────
@@ -157,7 +200,6 @@ function toHotelBedsPaxes(passengers, roomCount = 1, travelDate) {
   const refDate = travelDate || new Date().toISOString().split('T')[0];
   const paxes   = [];
 
-  // Distribute passengers across rooms (round-robin, same as RateHawk)
   const adults   = passengers.filter(p => p.type === 'adult');
   const children = passengers.filter(p => p.type === 'child');
 
@@ -191,9 +233,6 @@ function toHotelBedsPaxes(passengers, roomCount = 1, travelDate) {
 
 /**
  * Convert WhatsApp passengers to TravelDuqa passenger array.
- *
- * TravelDuqa uses type strings: 'ADT', 'CHD', 'INF'.
- * DOB is passed as-is (YYYY-MM-DD) — TravelDuqa accepts it.
  *
  * @param {Array}  passengers  WhatsApp passenger objects
  * @param {string} travelDate  YYYY-MM-DD
@@ -245,11 +284,67 @@ function toHolder(passengers, guestEmail, guestPhone) {
   };
 }
 
+// ─────────────────────────────────────────────
+// NATIONALITY → ISO CODE
+// Maps common country names / demonyms to lowercase ISO 3166-1 alpha-2.
+// Used to extract residency from the passenger Nationality field.
+// ─────────────────────────────────────────────
+
+const NATIONALITY_MAP = {
+  // East Africa
+  kenyan: 'ke', kenya: 'ke', ke: 'ke',
+  tanzanian: 'tz', tanzania: 'tz', tz: 'tz',
+  ugandan: 'ug', uganda: 'ug', ug: 'ug',
+  rwandan: 'rw', rwanda: 'rw', rw: 'rw',
+  ethiopian: 'et', ethiopia: 'et', et: 'et',
+  // Southern Africa
+  southafrican: 'za', 'south africa': 'za', za: 'za',
+  zimbabwean: 'zw', zimbabwe: 'zw', zw: 'zw',
+  zambian: 'zm', zambia: 'zm', zm: 'zm',
+  mozambican: 'mz', mozambique: 'mz', mz: 'mz',
+  // Commonly tested by ETG
+  uzbek: 'uz', uzbekistani: 'uz', uzbekistan: 'uz', uz: 'uz',
+  // Indian Ocean
+  seychellois: 'sc', seychelles: 'sc', sc: 'sc',
+  mauritian: 'mu', mauritius: 'mu', mu: 'mu',
+  // Middle East
+  emirati: 'ae', uae: 'ae', 'united arab emirates': 'ae', ae: 'ae',
+  qatari: 'qa', qatar: 'qa', qa: 'qa',
+  // Common European
+  british: 'gb', uk: 'gb', 'united kingdom': 'gb', gb: 'gb',
+  german: 'de', germany: 'de', de: 'de',
+  french: 'fr', france: 'fr', fr: 'fr',
+  american: 'us', 'united states': 'us', usa: 'us', us: 'us',
+  indian: 'in', india: 'in', in: 'in',
+  chinese: 'cn', china: 'cn', cn: 'cn',
+};
+
+/**
+ * Convert a raw nationality string to a lowercase ISO country code.
+ * Falls back to 'ke' (Kenya) if not recognised — log a warning.
+ *
+ * @param {string} raw  e.g. "Kenyan", "Uganda", "uz"
+ * @returns {string}    e.g. "ke"
+ */
+function toResidencyCode(raw) {
+  if (!raw) return 'ke';
+  const key = raw.trim().toLowerCase();
+  // Direct ISO code (2 chars)
+  if (/^[a-z]{2}$/.test(key)) return key;
+  const mapped = NATIONALITY_MAP[key];
+  if (mapped) return mapped;
+  const { logger } = require('../utils/logger');
+  logger.warn('passengerMapper.toResidencyCode: unrecognised nationality — defaulting ke', { raw });
+  return 'ke';
+}
+
 module.exports = {
   ageAt,
+  allocateRooms,
   toRateHawkRooms,
   toRateHawkSearchGuests,
   toHotelBedsPaxes,
   toTravelDuqaPassengers,
   toHolder,
+  toResidencyCode,
 };

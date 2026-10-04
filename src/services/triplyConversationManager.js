@@ -153,14 +153,14 @@ class TriplyConversationManager {
     // Update state to building
     await this._updateState(conversationId, 'building');
 
-    // Run engine again with the instruction appended to the original prompt
+    // Run engine again with the instruction appended to the original pr ompt
     const originalParams = conversation.trip_params || {};
     const result = await engine.orchestrate(
       instruction, agencyId, {
         previousParams:      originalParams,
         conversationHistory: conversation.conversation_history || [],
       }
-    );
+    ); 
 
     // Save new draft version
     const newVersion = (conversation.version || 0) + 1;

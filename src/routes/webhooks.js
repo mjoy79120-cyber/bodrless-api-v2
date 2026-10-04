@@ -20,6 +20,14 @@
  * logEvent: package_viewed, asked_for_cheaper
  * logFeedback: package_viewed on selection, package_rejected on control-word clear
  * writeProfile: triggered after every orchestration result (non-blocking)
+ *
+ * v3.2 (2026-10-04):
+ *   - PASSENGER_DETAIL_LINE recognises Nationality / Passport country
+ *   - Message-id dedup (processed_message_ids table) so a redelivered
+ *     WhatsApp message can't trigger two booking attempts / deposits
+ *   - Passenger/contact detail blocks are never treated as a "fresh
+ *     search" (a DOB like "21 May 1990" used to match the month+digit
+ *     rule and wipe the booking session)
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -56,7 +64,8 @@ const recLog = (fn, ...args) => {
   try { fn(...args).catch(() => {}); } catch (_) {}
 };
 
-const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|type|dob|date of birth|seat)\s*:/im;
+const PASSENGER_DETAIL_LINE = /^(name|id\/passport no|id\/passport|id|passport|gender|nationality|passport country|type|dob|date of birth|seat)\s*:/im;
+const CONTACT_DETAIL_LINE = /^(phone|email)\s*:/im;
 const HISTORY_QUERY_PATTERN = /\b(what (have|did) i (been )?(search|look|book|plan)\w*|what trips|my trips|my searches|my bookings|my (travel )?history|my past trips|trips i('ve| have) (booked|searched|taken)|what do you know about me|what was i (looking|searching))\b/i;
 const HISTORY_EXCLUDE_PATTERN = /\b(cancel|change|modify|refund|reschedule|amend)\b/i;
 const _pendingResumeChoice = new Map();
@@ -132,6 +141,23 @@ router.post('/whatsapp', async (req, res) => {
 
     const message       = body.entry[0].changes[0].value.messages[0];
     const phoneNumberId = body.entry[0].changes[0].value.metadata.phone_number_id;
+
+    // ── DEDUP: WhatsApp can redeliver the same message ─────
+    // Insert-first: the primary key rejects a second delivery atomically.
+    if (message.id) {
+      const { error: dedupErr } = await supabase
+        .from('processed_message_ids')
+        .insert({ message_id: message.id });
+
+      if (dedupErr?.code === '23505') {
+        logger.info('Webhook: duplicate message_id — ignoring', { messageId: message.id });
+        return;
+      }
+      if (dedupErr) {
+        // Don't block bookings if the dedup table is down
+        logger.warn('Webhook: dedup insert failed', { messageId: message.id, error: dedupErr.message });
+      }
+    }
 
     const identity = _resolveIdentity(body, message);
 
@@ -314,7 +340,7 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-        // ═══════════ NEW: TRAVELER HISTORY QUERY (start) ═══════════
+    // ═══════════ NEW: TRAVELER HISTORY QUERY (start) ═══════════
     if (
       prompt.trim().split(/\s+/).length <= 10 &&
       HISTORY_QUERY_PATTERN.test(prompt) &&
@@ -371,7 +397,7 @@ router.post('/whatsapp', async (req, res) => {
     }
     // ═══════════ NEW: TRAVELER HISTORY QUERY (end) ═════════════
 
-     if (!_looksLikeFreshTripRequest(prompt)) {
+    if (!_looksLikeFreshTripRequest(prompt)) {
       const dropOff = await conversationMemory.checkDropOff(userKey, agencyId);
       if (dropOff.isDropOff) {
         const welcomeMsg = conversationMemory.buildDropOffWelcome({
@@ -435,6 +461,9 @@ router.post('/whatsapp', async (req, res) => {
     // ── ACTIVE BOOKING SESSION ─────────────────────────────
     const _looksLikeFreshSearch = (text) => {
       const t = text.trim();
+      // Passenger / contact detail blocks are answers, never new searches
+      // (a DOB like "21 May 1990" would otherwise match the month+digit rule below)
+      if (PASSENGER_DETAIL_LINE.test(t) || CONTACT_DETAIL_LINE.test(t)) return false;
       if (/^(new booking|new search|start over|restart|cancel)$/i.test(t)) return true;
       if (/\b(to|from)\b.{3,}/i.test(t) && t.split(/\s+/).length >= 4) return true;
       if (/\d+\s*nights?\b/i.test(t)) return true;

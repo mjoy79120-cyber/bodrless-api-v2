@@ -5,15 +5,16 @@
  * contact details asked once at the end.
  *
  * PASSENGER MAPPER:
- * Raw WhatsApp passenger objects (type/dateOfBirth/etc.) are kept
- * in the session as-is. The passengerMapper utility converts them
- * into supplier-specific shapes (RateHawk rooms, HotelBeds paxes,
+ * Raw WhatsApp passenger objects (type/dateOfBirth/nationality/etc.)
+ * are kept in the session as-is. The passengerMapper utility converts
+ * them into supplier-specific shapes (RateHawk rooms, HotelBeds paxes,
  * TravelDuqa passengers) inside bookingService, not here.
  *
  * BLOCK FORMAT (per passenger, blank line between blocks):
  *   Name: John Doe
  *   DOB: 21 May 1990
  *   Gender: Male
+ *   Nationality: Kenyan
  *   Type: Adult
  *   Seat: Window          ← optional
  *
@@ -22,13 +23,10 @@
  *   Email: john@example.com
  *
  * CHANGES FROM PREVIOUS VERSION:
- *   - passengerMapper integration documented (mapping happens in bookingService)
- *   - guestsByRoom construction delegated to passengerMapper.toRateHawkRooms()
- *   - HotelBeds paxes delegated to passengerMapper.toHotelBedsPaxes()
- *   - bookingRef collision risk reduced (timestamp + random suffix)
- *   - _handlePriceApproval retry correctly tells user to search again on failure
- *   - needsEmail now also defaults email to corporate for hotel-only RateHawk
- *   - orphaned passenger-detail detection exported for webhooks.js safety net
+ *   - Nationality field collected per traveler (stored as residency code)
+ *   - roomCount derived from the package and passed to bookingService
+ *     (both on first attempt and on price-approval retry)
+ *   - PASSENGER_DETAIL_PATTERN recognises nationality lines
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -36,6 +34,8 @@ const supabase        = require('../utils/supabase');
 const bookingService  = require('./bookingService');
 const whatsappService = require('./whatsapp');
 const packageCache    = require('./packageCache');
+const { resolveNationality } = require('./passengerMapper');
+const { parsePhoneNumberFromString } = require('libphonenumber-js');
 const { logger }      = require('../utils/logger');
 
 // ─────────────────────────────────────────────
@@ -49,11 +49,13 @@ Send your traveler details like this:
 Name: John Doe
 DOB: 21 May 1990
 Gender: Male
+Nationality: Kenyan
 Type: Adult
 Seat: Window
 
 *Seat is optional* — leave it out or write: window / aisle / exit row / any
 *Type* is Adult or Child
+*Nationality* is your passport country (e.g. Kenyan, Tanzanian, British)
 
 For more than one traveler, add each person as a separate block with a blank line between them.
 
@@ -74,7 +76,7 @@ const WANTS_SOMETHING_DIFFERENT = /\b(actually|change (my|the)?\s*(flight|hotel|
  * Exported — used by webhooks.js safety net to detect orphaned
  * passenger-detail messages that arrive with no active session.
  */
-const PASSENGER_DETAIL_PATTERN = /^(name|dob|date of birth|gender|type|seat)\s*:/im;
+const PASSENGER_DETAIL_PATTERN = /^(name|dob|date of birth|gender|nationality|passport country|type|seat)\s*:/im;
 module.exports.PASSENGER_DETAIL_PATTERN = PASSENGER_DETAIL_PATTERN;
 
 const RESUME_GAP_MS = 20 * 60 * 1000;
@@ -90,6 +92,30 @@ function _parseGender(raw) {
   if (t.startsWith('m') && !t.startsWith('mi') && t.length <= 4) return 'male';
   if (t.startsWith('f') && t.length <= 6) return 'female';
   return null;
+}
+
+/**
+ * Nationality → residency code (e.g. "Kenyan" → "ke").
+ * Only called when the traveler actually typed a value. Returns null
+ * if it can't be mapped so the caller can ask again instead of
+ * silently pricing with the wrong residency.
+ */
+function _parseNationality(raw) {
+  return resolveNationality(raw);  // strict: null if unrecognised
+}
+
+/**
+ * Best-guess nationality from the WhatsApp number (e.g. "2547..." → 'ke').
+ * Only a fallback for travelers who leave the Nationality line out —
+ * a SIM's country is not the same as a passport country.
+ */
+function _nationalityFromPhone(from) {
+  try {
+    const p = parsePhoneNumberFromString('+' + String(from).replace(/^\+/, ''));
+    return p?.country ? p.country.toLowerCase() : null;
+  } catch {
+    return null;
+  }
 }
 
 function _parseType(raw) {
@@ -180,6 +206,17 @@ function _ageAt(dobStr, referenceDate) {
 function _generateBookingRef() {
   const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `BDR-${Date.now()}-${suffix}`;
+}
+
+/**
+ * Room count for allocateRooms(). Must be computed identically on the
+ * first attempt and on the price-approval retry.
+ */
+function _getRoomCount(pkg) {
+  return pkg?.summary?.occupancy?.rooms
+    || pkg?.rooms
+    || pkg?.hotel?.rooms
+    || 1;
 }
 
 // ─────────────────────────────────────────────
@@ -333,10 +370,11 @@ class WhatsAppBookingFlow {
   // ─────────────────────────────────────────────
   // PARSE PASSENGER BLOCKS
   // Output shape stays as WhatsApp-native:
-  //   { firstName, lastName, dateOfBirth, gender, type, seatPreference, ageAtTravel }
+  //   { firstName, lastName, dateOfBirth, gender, nationality, type,
+  //     seatPreference, ageAtTravel }
   // passengerMapper converts these to supplier shapes in bookingService.
   // ─────────────────────────────────────────────
-  _parseDetailsMessage(text, expectedCount, travelDate) {
+  _parseDetailsMessage(text, expectedCount, travelDate, defaultNationality = 'ke') {
     const blocks = text
       .split(/\n\s*\n/)
       .map(b => b.trim())
@@ -350,6 +388,7 @@ class WhatsAppBookingFlow {
 
     const passengers = [];
     const warnings   = [];
+    const assumedNationalityFor = [];
 
     for (let i = 0; i < blocks.length; i++) {
       const block  = blocks[i];
@@ -382,6 +421,22 @@ class WhatsAppBookingFlow {
       const gender = _parseGender(fields['gender'] || fields['sex']);
       if (!gender) {
         return { error: `I couldn't read the gender for ${name}. Use Male or Female (or M/F).` };
+      }
+
+      // Nationality — if left out, fall back to the phone-number guess
+      const rawNationality = fields['nationality'] || fields['passport country'] || null;
+      let nationality;
+      if (rawNationality && rawNationality.trim()) {
+        nationality = _parseNationality(rawNationality);
+        if (!nationality) {
+          return {
+            error: `I couldn't recognise the nationality "${rawNationality}" for ${name}. ` +
+                   `Use your passport country, e.g. Kenyan, Tanzanian, British.`,
+          };
+        }
+      } else {
+        nationality = defaultNationality;
+        assumedNationalityFor.push(name);
       }
 
       // Type
@@ -420,7 +475,10 @@ class WhatsAppBookingFlow {
         );
       }
 
-      passengers.push({ firstName, lastName, dateOfBirth: parsedDob, gender, type, seatPreference, ageAtTravel });
+      passengers.push({
+        firstName, lastName, dateOfBirth: parsedDob,
+        gender, nationality, type, seatPreference, ageAtTravel,
+      });
     }
 
     if (expectedCount && passengers.length !== expectedCount) {
@@ -434,7 +492,7 @@ class WhatsAppBookingFlow {
       };
     }
 
-    return { passengers, warnings };
+    return { passengers, warnings, assumedNationalityFor };
   }
 
   // ─────────────────────────────────────────────
@@ -448,7 +506,8 @@ class WhatsAppBookingFlow {
       || pkg?.summary?.departureDate
       || null;
 
-    const parsed = this._parseDetailsMessage(text, expectedCount, travelDate);
+    const defaultNationality = _nationalityFromPhone(from) || 'ke';
+    const parsed = this._parseDetailsMessage(text, expectedCount, travelDate, defaultNationality);
 
     if (parsed.error) {
       await whatsappService.sendText(phoneNumberId, from,
@@ -471,8 +530,13 @@ class WhatsAppBookingFlow {
       })
       .eq('phone', from);
 
+    const assumedNote = parsed.assumedNationalityFor?.length > 0
+      ? `\n\n🌍 No nationality given for ${parsed.assumedNationalityFor.join(', ')} — assumed *${defaultNationality.toUpperCase()}* from your phone number. ` +
+        `If that's wrong, resend the details with a Nationality line.`
+      : '';
+
     await whatsappService.sendText(phoneNumberId, from,
-      `✅ Got details for ${parsed.passengers.length === 1 ? '1 traveler' : `${parsed.passengers.length} travelers`}.\n\n${CONTACT_TEMPLATE}`
+      `✅ Got details for ${parsed.passengers.length === 1 ? '1 traveler' : `${parsed.passengers.length} travelers`}.${assumedNote}\n\n${CONTACT_TEMPLATE}`
     );
     return true;
   }
@@ -538,11 +602,16 @@ class WhatsAppBookingFlow {
     const passengers  = session.passengers_collected || [];
     const guestName   = `${passengers[0]?.firstName || ''} ${passengers[0]?.lastName || ''}`.trim();
 
+    // roomCount lets allocateRooms() distribute guests correctly
+    const pkg       = session.package_snapshot;
+    const roomCount = _getRoomCount(pkg);
+
     const result = await bookingService.initBooking({
       bookingRef,
       agencyId:         session.agency_id,
-      pkg:              session.package_snapshot,
+      pkg,
       passengerDetails: passengers,   // WhatsApp-native shape — bookingService maps to supplier shapes
+      roomCount,
       guestName,
       guestPhone:       session.guest_phone,
       guestEmail:       session.guest_email,
@@ -661,6 +730,7 @@ class WhatsAppBookingFlow {
       agencyId:         session.agency_id,
       pkg:              session.package_snapshot,
       passengerDetails: ctx.passengerDetails,
+      roomCount:        _getRoomCount(session.package_snapshot),  // must match first attempt
       guestName:        ctx.guestName,
       guestPhone:       ctx.guestPhone,
       guestEmail:       ctx.guestEmail,
