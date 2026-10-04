@@ -34,7 +34,7 @@
 const fs             = require('fs');
 const path           = require('path');
 const ratehawkAdapter = require('./adapters/ratehawk');
-const { allocateRooms, toResidencyCode } = require('./utilis/passengerMapper');
+const { allocateRooms, toResidencyCode } = require('./utils/passengerMapper');
 
 const LOG_DIR = path.join(__dirname, 'cert-logs');
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR);
