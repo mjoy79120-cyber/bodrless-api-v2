@@ -1,0 +1,34 @@
+{
+  "scenario": "s4-prebook",
+  "request": {
+    "bookHash": "h-5ab9fb82-479e-512d-81ed-6f7fc4a519f5",
+    "price_increase_percent": 0
+  },
+  "response": {
+    "bookHash": "p-f28a0ee3-e627-454d-9e1c-360171844333",
+    "netPrice": 2,
+    "showPrice": 2,
+    "currency": "USD",
+    "priceChanged": false,
+    "roomName": "Bed in Dorm (shared bathroom) (sofa)",
+    "mealPlan": "Room Only",
+    "freeCancellationBefore": "2026-11-04T21:00:00",
+    "excludedTaxes": [
+      {
+        "name": "city_tax",
+        "amount": "7.70",
+        "currency": "HNL"
+      },
+      {
+        "name": "cleaning_fee",
+        "amount": "80.58",
+        "currency": "HNL"
+      },
+      {
+        "name": "occupancy_tax",
+        "amount": "6.16",
+        "currency": "HNL"
+      }
+    ]
+  }
+}

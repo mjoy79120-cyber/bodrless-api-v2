@@ -1,0 +1,226 @@
+{
+  "scenario": "s1-serp",
+  "request": {
+    "destination": "los angeles",
+    "checkIn": "2026-11-05",
+    "checkOut": "2026-11-07",
+    "guests": [
+      {
+        "adults": 1,
+        "children": [
+          5
+        ]
+      }
+    ],
+    "residency": "ke"
+  },
+  "response": [
+    {
+      "supplier": "ratehawk",
+      "hotelCode": "7383938",
+      "hotelId": 7383938,
+      "hotelSlug": "diego_de_almagro_los_angeles",
+      "stars": null,
+      "rating": null,
+      "location": null,
+      "latitude": null,
+      "longitude": null,
+      "images": [],
+      "checkIn": "2026-11-05",
+      "checkOut": "2026-11-07",
+      "nights": 2,
+      "pricePerNight": 117,
+      "totalRate": 234,
+      "currency": "USD",
+      "matchHash": "m-786ff2ce-2391-55e1-8c81-3392c0e72f63",
+      "rateType": "REF",
+      "isRefundable": true,
+      "freeCancellationBefore": "2026-11-02T03:00:00",
+      "excludedTaxes": [],
+      "cancellationPolicies": [
+        {
+          "start_at": null,
+          "end_at": "2026-11-02T03:00:00",
+          "amount_charge": "0.00",
+          "amount_show": "0.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "0.00",
+              "amount_net": "0.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "0.00",
+              "amount_net": "0.00",
+              "amount_commission": "0.00"
+            }
+          }
+        },
+        {
+          "start_at": "2026-11-02T03:00:00",
+          "end_at": "2026-11-05T03:00:00",
+          "amount_charge": "159.00",
+          "amount_show": "159.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "159.00",
+              "amount_net": "159.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "159.00",
+              "amount_net": "159.00",
+              "amount_commission": "0.00"
+            }
+          }
+        },
+        {
+          "start_at": "2026-11-05T03:00:00",
+          "end_at": null,
+          "amount_charge": "234.00",
+          "amount_show": "234.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "234.00",
+              "amount_net": "234.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "234.00",
+              "amount_net": "234.00",
+              "amount_commission": "0.00"
+            }
+          }
+        }
+      ],
+      "rateComments": "Bed & Breakfast",
+      "mealPlan": "Bed & Breakfast",
+      "boardType": "breakfast",
+      "roomName": "Standard Double room (full double bed) (king size bed, Child bed is not included)",
+      "promotions": [],
+      "rooms": 1,
+      "adults": 1,
+      "supplier_tag": null
+    },
+    {
+      "supplier": "ratehawk",
+      "hotelCode": "7860172",
+      "hotelId": 7860172,
+      "hotelSlug": "four_points_by_sheraton_los_angeles",
+      "stars": null,
+      "rating": null,
+      "location": null,
+      "latitude": null,
+      "longitude": null,
+      "images": [],
+      "checkIn": "2026-11-05",
+      "checkOut": "2026-11-07",
+      "nights": 2,
+      "pricePerNight": 106.5,
+      "totalRate": 213,
+      "currency": "USD",
+      "matchHash": "m-0f1b984a-c92a-53b3-8385-82be4482fbe9",
+      "rateType": "NOR",
+      "isRefundable": false,
+      "freeCancellationBefore": null,
+      "excludedTaxes": [],
+      "cancellationPolicies": [
+        {
+          "start_at": null,
+          "end_at": null,
+          "amount_charge": "213.00",
+          "amount_show": "213.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "213.00",
+              "amount_net": "213.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "213.00",
+              "amount_net": "213.00",
+              "amount_commission": "0.00"
+            }
+          }
+        }
+      ],
+      "rateComments": "Bed & Breakfast",
+      "mealPlan": "Bed & Breakfast",
+      "boardType": "breakfast",
+      "roomName": "Traditional Double room (full double bed) (king size bed, Child bed is not included)",
+      "promotions": [],
+      "rooms": 1,
+      "adults": 1,
+      "supplier_tag": null
+    },
+    {
+      "supplier": "ratehawk",
+      "hotelCode": "10232588",
+      "hotelId": 10232588,
+      "hotelSlug": "hotel_dikran",
+      "stars": null,
+      "rating": null,
+      "location": null,
+      "latitude": null,
+      "longitude": null,
+      "images": [],
+      "checkIn": "2026-11-05",
+      "checkOut": "2026-11-07",
+      "nights": 2,
+      "pricePerNight": 69.5,
+      "totalRate": 139,
+      "currency": "USD",
+      "matchHash": "m-2d730695-6965-5ae1-a814-16cc8df30c4e",
+      "rateType": "REF",
+      "isRefundable": true,
+      "freeCancellationBefore": "2026-10-10T13:00:00",
+      "excludedTaxes": [],
+      "cancellationPolicies": [
+        {
+          "start_at": null,
+          "end_at": "2026-10-10T13:00:00",
+          "amount_charge": "0.00",
+          "amount_show": "0.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "0.00",
+              "amount_net": "0.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "0.00",
+              "amount_net": "0.00",
+              "amount_commission": "0.00"
+            }
+          }
+        },
+        {
+          "start_at": "2026-10-10T13:00:00",
+          "end_at": null,
+          "amount_charge": "139.00",
+          "amount_show": "139.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "139.00",
+              "amount_net": "139.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "139.00",
+              "amount_net": "139.00",
+              "amount_commission": "0.00"
+            }
+          }
+        }
+      ],
+      "rateComments": "Bed & Breakfast",
+      "mealPlan": "Bed & Breakfast",
+      "boardType": "breakfast",
+      "roomName": "Standard Twin room (twin beds) (bed type is subject to availability, Child bed is not included, child bed not included, child meal not included)",
+      "promotions": [],
+      "rooms": 1,
+      "adults": 1,
+      "supplier_tag": null
+    }
+  ]
+}

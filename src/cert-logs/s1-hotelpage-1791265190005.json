@@ -1,0 +1,185 @@
+{
+  "scenario": "s1-hotelpage",
+  "request": {
+    "hotelId": 7383938,
+    "hotelpageGuests": [
+      {
+        "adults": 1,
+        "children": [
+          5
+        ]
+      }
+    ],
+    "residency": "ke"
+  },
+  "response": {
+    "id": "diego_de_almagro_los_angeles",
+    "hid": 7383938,
+    "rates": [
+      {
+        "book_hash": "h-ed12b2e2-81fa-5a29-9a98-1d03085ecab3",
+        "match_hash": "m-786ff2ce-2391-55e1-8c81-3392c0e72f63",
+        "daily_prices": [
+          "117.00",
+          "117.00"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "234.00",
+              "show_amount": "234.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "EUR",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "vat",
+                    "included_by_supplier": true,
+                    "amount": "37.36",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "234.00",
+                  "amount_net": "234.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "234.00",
+                  "amount_net": "234.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-02T03:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-02T03:00:00",
+                    "end_at": "2026-11-05T03:00:00",
+                    "amount_charge": "159.00",
+                    "amount_show": "159.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "159.00",
+                        "amount_net": "159.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "159.00",
+                        "amount_net": "159.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-05T03:00:00",
+                    "end_at": null,
+                    "amount_charge": "234.00",
+                    "amount_show": "234.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "234.00",
+                        "amount_net": "234.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "234.00",
+                        "amount_net": "234.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-02T03:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Standard Double room (full double bed) (king size bed, Child bed is not included)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom"
+        ],
+        "sell_price_limits": null,
+        "allotment": 1,
+        "amenities_data": [
+          "non-smoking",
+          "king-bed",
+          "child-bed-fee"
+        ],
+        "any_residency": false,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Standard Double room",
+          "main_name": "Standard Double room",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": "king size bed, Child bed is not included",
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      }
+    ],
+    "bar_price_data": null
+  }
+}

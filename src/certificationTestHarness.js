@@ -194,7 +194,7 @@ async function scenario2_MultiRoom() {
   try {
     const passengers = [ADULT_1, ADULT_2, CHILD_UZ];
     const { hotelpageGuests, bookingRooms } = allocateRooms(passengers, 2, CHECK_IN);
-    const residency = toResidencyCode(ADULT_1.nationality);
+    const residency = toResidencyCode(CHILD_UZ.nationality);
 
     console.log('   hotelpageGuests:', JSON.stringify(hotelpageGuests));
     console.log('   bookingRooms:   ', JSON.stringify(bookingRooms.map(r => r.guests.map(g => g.first_name))));
