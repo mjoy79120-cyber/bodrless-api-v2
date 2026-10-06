@@ -1,0 +1,17 @@
+{
+  "scenario": "s1-prebook",
+  "request": {
+    "bookHash": "h-d8bf4bc7-bdd7-5ef6-811c-a0d549f279a2"
+  },
+  "response": {
+    "bookHash": "p-411a31d1-a809-43f9-af87-edbe7e387f33",
+    "netPrice": 234,
+    "showPrice": 234,
+    "currency": "USD",
+    "priceChanged": false,
+    "roomName": "Standard Double room (full double bed) (king size bed, Child bed is not included)",
+    "mealPlan": "Bed & Breakfast",
+    "freeCancellationBefore": "2026-11-02T03:00:00",
+    "excludedTaxes": []
+  }
+}

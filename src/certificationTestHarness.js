@@ -131,8 +131,9 @@ async function scenario1_SingleRoomAdultChildUzbek() {
       checkIn:  CHECK_IN,
       checkOut: CHECK_OUT,
       guests:   hotelpageGuests,
-      residency,
+      residency: 'uz',
     };
+    
     const serpResults = await _serpSearch(serpParams);
     _log('s1-serp', serpParams, serpResults);
 
@@ -377,7 +378,7 @@ async function _serpSearch(params) {
     children:      params.guests?.reduce((s, r) => s + r.children.length, 0) || 0,
     childAges:     params.guests?.flatMap(r => r.children) || [],
     rooms:         params.guests?.length || 1,
-    residency:     params.residency || 'ke',
+    residency:     params.residency || 'uz',
     departureDate: params.checkIn  || CHECK_IN,
     returnDate:    params.checkOut || CHECK_OUT,
   });
