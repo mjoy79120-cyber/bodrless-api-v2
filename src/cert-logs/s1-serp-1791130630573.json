@@ -1,0 +1,157 @@
+{
+  "scenario": "s1-serp",
+  "request": {
+    "destination": "los angeles",
+    "checkIn": "2026-11-03",
+    "checkOut": "2026-11-05",
+    "guests": [
+      {
+        "adults": 1,
+        "children": [
+          5
+        ]
+      }
+    ],
+    "residency": "ke"
+  },
+  "response": [
+    {
+      "supplier": "ratehawk",
+      "hotelCode": "7383938",
+      "hotelId": 7383938,
+      "hotelSlug": "diego_de_almagro_los_angeles",
+      "stars": null,
+      "rating": null,
+      "location": null,
+      "latitude": null,
+      "longitude": null,
+      "images": [],
+      "checkIn": "2026-11-03",
+      "checkOut": "2026-11-05",
+      "nights": 2,
+      "pricePerNight": 124.5,
+      "totalRate": 249,
+      "currency": "USD",
+      "matchHash": "m-2a9df548-4fd0-5db2-8032-2d53524ce76a",
+      "rateType": "REF",
+      "isRefundable": true,
+      "freeCancellationBefore": "2026-10-31T03:00:00",
+      "excludedTaxes": [],
+      "cancellationPolicies": [
+        {
+          "start_at": null,
+          "end_at": "2026-10-31T03:00:00",
+          "amount_charge": "0.00",
+          "amount_show": "0.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "0.00",
+              "amount_net": "0.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "0.00",
+              "amount_net": "0.00",
+              "amount_commission": "0.00"
+            }
+          }
+        },
+        {
+          "start_at": "2026-10-31T03:00:00",
+          "end_at": "2026-11-03T03:00:00",
+          "amount_charge": "169.00",
+          "amount_show": "169.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "169.00",
+              "amount_net": "169.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "169.00",
+              "amount_net": "169.00",
+              "amount_commission": "0.00"
+            }
+          }
+        },
+        {
+          "start_at": "2026-11-03T03:00:00",
+          "end_at": null,
+          "amount_charge": "249.00",
+          "amount_show": "249.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "249.00",
+              "amount_net": "249.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "249.00",
+              "amount_net": "249.00",
+              "amount_commission": "0.00"
+            }
+          }
+        }
+      ],
+      "rateComments": "Bed & Breakfast",
+      "mealPlan": "Bed & Breakfast",
+      "boardType": "breakfast",
+      "roomName": "Standard Double room (full double bed) (king size bed, Child bed is not included)",
+      "promotions": [],
+      "rooms": 1,
+      "adults": 1,
+      "supplier_tag": null
+    },
+    {
+      "supplier": "ratehawk",
+      "hotelCode": "7860172",
+      "hotelId": 7860172,
+      "hotelSlug": "four_points_by_sheraton_los_angeles",
+      "stars": null,
+      "rating": null,
+      "location": null,
+      "latitude": null,
+      "longitude": null,
+      "images": [],
+      "checkIn": "2026-11-03",
+      "checkOut": "2026-11-05",
+      "nights": 2,
+      "pricePerNight": 119,
+      "totalRate": 238,
+      "currency": "USD",
+      "matchHash": "m-bfc66d98-3cdf-5011-a85b-f54464031453",
+      "rateType": "NOR",
+      "isRefundable": false,
+      "freeCancellationBefore": null,
+      "excludedTaxes": [],
+      "cancellationPolicies": [
+        {
+          "start_at": null,
+          "end_at": null,
+          "amount_charge": "238.00",
+          "amount_show": "238.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "238.00",
+              "amount_net": "238.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "238.00",
+              "amount_net": "238.00",
+              "amount_commission": "0.00"
+            }
+          }
+        }
+      ],
+      "rateComments": "Bed & Breakfast",
+      "mealPlan": "Bed & Breakfast",
+      "boardType": "breakfast",
+      "roomName": "Traditional Double room (full double bed) (king size bed, Child bed is not included)",
+      "promotions": [],
+      "rooms": 1,
+      "adults": 1,
+      "supplier_tag": null
+    }
+  ]
+}

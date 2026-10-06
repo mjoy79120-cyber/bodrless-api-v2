@@ -141,8 +141,11 @@ async function scenario1_SingleRoomAdultChildUzbek() {
     }
 
     // ── Hotelpage ──
-    const hp = await _hotelpage(HOTEL_ID_A, CHECK_IN, CHECK_OUT, hotelpageGuests, residency);
-    _log('s1-hotelpage', { hotelId: HOTEL_ID_A, hotelpageGuests, residency }, hp);
+    const firstHotel = serpResults[0];
+    const liveHotelId = firstHotel.hotelId || firstHotel.hotelCode;
+    console.log(`   Using hotel from SERP: ${firstHotel.name} (hid: ${liveHotelId})`);
+    const hp = await _hotelpage(liveHotelId, CHECK_IN, CHECK_OUT, hotelpageGuests, residency);
+    _log('s1-hotelpage', { hotelId: liveHotelId, hotelpageGuests, residency }, hp);
 
     const rate  = hp?.rates?.[0];
     const hHash = rate?.book_hash;

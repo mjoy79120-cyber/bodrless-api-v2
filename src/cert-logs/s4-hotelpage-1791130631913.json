@@ -1,0 +1,3797 @@
+{
+  "scenario": "s4-hotelpage",
+  "request": {
+    "hotelId": 8473727
+  },
+  "response": {
+    "id": "test_hotel_do_not_book",
+    "hid": 8473727,
+    "rates": [
+      {
+        "book_hash": "h-8d96bec8-4446-56ba-b76c-81aa22da1f40",
+        "match_hash": "m-df503d69-377f-5eb2-8531-59da2fb57612",
+        "daily_prices": [
+          "1.00",
+          "1.00"
+        ],
+        "meal": "nomeal",
+        "meal_data": {
+          "value": "nomeal",
+          "has_breakfast": false,
+          "no_child_meal": true
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "2.00",
+              "show_amount": "2.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "2.00",
+                  "amount_net": "2.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "2.00",
+                  "amount_net": "2.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-02T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-02T21:00:00",
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "1.00",
+                    "amount_show": "1.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "1.00",
+                        "amount_net": "1.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "1.00",
+                        "amount_net": "1.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "2.00",
+                    "amount_show": "2.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "2.00",
+                        "amount_net": "2.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "2.00",
+                        "amount_net": "2.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-02T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 1,
+          "quality": 0,
+          "sex": 0,
+          "bathroom": 1,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Bed in Dorm (shared bathroom) (sofa)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 7,
+        "amenities_data": [
+          "sofa",
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": {
+          "amount": "0.00",
+          "currency_code": "USD",
+          "from_time": "12:00:00"
+        },
+        "room_data_trans": {
+          "main_room_type": "Bed in Dorm (shared bathroom)",
+          "main_name": "Bed in Dorm",
+          "bathroom": "shared bathroom",
+          "bedding_type": "sofa",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "sofa-bed",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-c09a3d82-1e9d-5b87-aa5f-a552c6699203",
+        "match_hash": "m-44e8d8b5-6fd2-5aed-91ce-e25ea16b036d",
+        "daily_prices": [
+          "1.00",
+          "1.00"
+        ],
+        "meal": "nomeal",
+        "meal_data": {
+          "value": "nomeal",
+          "has_breakfast": false,
+          "no_child_meal": true
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "2.00",
+              "show_amount": "2.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "2.00",
+                  "amount_net": "2.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "2.00",
+                  "amount_net": "2.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "2.00",
+                    "amount_show": "2.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "2.00",
+                        "amount_net": "2.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "2.00",
+                        "amount_net": "2.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Standard room (single bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 48,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Standard room",
+          "main_name": "Standard room",
+          "bathroom": null,
+          "bedding_type": "single bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "single",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-f3c8203c-b46b-5e40-9eeb-c0fdb568cbdb",
+        "match_hash": "m-3da55c37-0ba2-5a35-9b90-f3f5e1e7cbde",
+        "daily_prices": [
+          "1.50",
+          "1.50"
+        ],
+        "meal": "nomeal",
+        "meal_data": {
+          "value": "nomeal",
+          "has_breakfast": false,
+          "no_child_meal": true
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "3.00",
+              "show_amount": "3.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "3.00",
+                  "amount_net": "3.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "3.00",
+                  "amount_net": "3.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-02T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-02T21:00:00",
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "1.00",
+                    "amount_show": "1.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "1.00",
+                        "amount_net": "1.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "1.00",
+                        "amount_net": "1.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "3.00",
+                    "amount_show": "3.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "3.00",
+                        "amount_net": "3.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "3.00",
+                        "amount_net": "3.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-02T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Standard room (twin beds)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 5,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": {
+          "amount": "1.00",
+          "currency_code": "USD",
+          "from_time": "12:00:00"
+        },
+        "room_data_trans": {
+          "main_room_type": "Standard room",
+          "main_name": "Standard room",
+          "bathroom": null,
+          "bedding_type": "twin beds",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "single",
+              "count": 2
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-41f0d2c0-3790-58cf-ade3-91d4ab64613f",
+        "match_hash": "m-87de4868-06d9-53ad-b361-4ff3d11ce0a3",
+        "daily_prices": [
+          "2.00",
+          "2.00"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "4.00",
+              "show_amount": "4.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "4.00",
+                  "amount_net": "4.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "4.00",
+                  "amount_net": "4.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-02T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-02T21:00:00",
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "2.00",
+                    "amount_show": "2.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "2.00",
+                        "amount_net": "2.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "2.00",
+                        "amount_net": "2.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "4.00",
+                    "amount_show": "4.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "4.00",
+                        "amount_net": "4.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "4.00",
+                        "amount_net": "4.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-02T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 1,
+          "quality": 0,
+          "sex": 0,
+          "bathroom": 1,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Bed in Dorm (shared bathroom) (bunk bed, full double bed and sofa)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 54,
+        "amenities_data": [
+          "sofa",
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": {
+          "amount": "2.00",
+          "currency_code": "USD",
+          "from_time": "12:00:00"
+        },
+        "room_data_trans": {
+          "main_room_type": "Bed in Dorm (shared bathroom)",
+          "main_name": "Bed in Dorm",
+          "bathroom": "shared bathroom",
+          "bedding_type": "bunk bed, full double bed and sofa",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            },
+            {
+              "bed": "bunk-bed",
+              "count": 1
+            },
+            {
+              "bed": "sofa-bed",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-f5c22de0-dab4-5782-aca1-a0be05a582ed",
+        "match_hash": "m-76968828-fa57-5267-92b2-599f1038f360",
+        "daily_prices": [
+          "2.00",
+          "2.00"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "4.00",
+              "show_amount": "4.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "4.00",
+                  "amount_net": "4.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "4.00",
+                  "amount_net": "4.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-02T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-02T21:00:00",
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "2.00",
+                    "amount_show": "2.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "2.00",
+                        "amount_net": "2.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "2.00",
+                        "amount_net": "2.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "4.00",
+                    "amount_show": "4.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "4.00",
+                        "amount_net": "4.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "4.00",
+                        "amount_net": "4.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-02T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 1,
+          "quality": 0,
+          "sex": 0,
+          "bathroom": 1,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Bed in Dorm (shared bathroom) (2 full double beds and sofa)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 54,
+        "amenities_data": [
+          "sofa",
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": {
+          "amount": "2.00",
+          "currency_code": "USD",
+          "from_time": "12:00:00"
+        },
+        "room_data_trans": {
+          "main_room_type": "Bed in Dorm (shared bathroom)",
+          "main_name": "Bed in Dorm",
+          "bathroom": "shared bathroom",
+          "bedding_type": "2 full double beds and sofa",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 2
+            },
+            {
+              "bed": "sofa-bed",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-44d827aa-d5a6-566d-9796-78fecec6bcc9",
+        "match_hash": "m-056452bc-5f6b-576f-a58b-29b674682ef7",
+        "daily_prices": [
+          "10.00",
+          "10.00"
+        ],
+        "meal": "nomeal",
+        "meal_data": {
+          "value": "nomeal",
+          "has_breakfast": false,
+          "no_child_meal": true
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "20.00",
+              "show_amount": "20.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "20.00",
+                  "amount_net": "20.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "20.00",
+                  "amount_net": "20.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": null,
+                    "amount_charge": "20.00",
+                    "amount_show": "20.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "20.00",
+                        "amount_net": "20.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "20.00",
+                        "amount_net": "20.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": null
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Standard Double room (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 100,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": {
+          "amount": "3.00",
+          "currency_code": "USD",
+          "from_time": "12:00:00"
+        },
+        "room_data_trans": {
+          "main_room_type": "Standard Double room",
+          "main_name": "Standard Double room",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-4a6b08d0-4c08-5bc1-8c24-53b72e50aeb1",
+        "match_hash": "m-ba0984fe-1794-5faf-a854-a32b0f470244",
+        "daily_prices": [
+          "11.50",
+          "11.50"
+        ],
+        "meal": "nomeal",
+        "meal_data": {
+          "value": "nomeal",
+          "has_breakfast": false,
+          "no_child_meal": true
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "23.00",
+              "show_amount": "23.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "23.00",
+                  "amount_net": "23.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "23.00",
+                  "amount_net": "23.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "23.00",
+                    "amount_show": "23.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "23.00",
+                        "amount_net": "23.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "23.00",
+                        "amount_net": "23.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Standard room (twin beds)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 100,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Standard room",
+          "main_name": "Standard room",
+          "bathroom": null,
+          "bedding_type": "twin beds",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "single",
+              "count": 2
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-2f7bfa1d-69dc-5b54-bdbf-612750934a3a",
+        "match_hash": "m-4c9f0ef4-6474-5cda-acb5-d6e15510fad1",
+        "daily_prices": [
+          "11.50",
+          "11.50"
+        ],
+        "meal": "nomeal",
+        "meal_data": {
+          "value": "nomeal",
+          "has_breakfast": false,
+          "no_child_meal": true
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "23.00",
+              "show_amount": "23.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "23.00",
+                  "amount_net": "23.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "23.00",
+                  "amount_net": "23.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "23.00",
+                    "amount_show": "23.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "23.00",
+                        "amount_net": "23.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "23.00",
+                        "amount_net": "23.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Standard Double room (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 100,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Standard Double room",
+          "main_name": "Standard Double room",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-79abd716-ec79-5cfc-80ec-d405d551ac7d",
+        "match_hash": "m-188e6b3a-36ca-5b0b-a679-a5a1d4fd9cf5",
+        "daily_prices": [
+          "85.50",
+          "85.50"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "171.00",
+              "show_amount": "171.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "171.00",
+                  "amount_net": "171.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "171.00",
+                  "amount_net": "171.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "171.00",
+                    "amount_show": "171.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "171.00",
+                        "amount_net": "171.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "171.00",
+                        "amount_net": "171.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Standard Double room (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 100,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Standard Double room",
+          "main_name": "Standard Double room",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-a7fbba18-96e0-55e7-b5ba-fb05d32de882",
+        "match_hash": "m-e990ef6e-0fef-52cf-9de5-1c333fdb1c3f",
+        "daily_prices": [
+          "85.50",
+          "85.50"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "171.00",
+              "show_amount": "171.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "171.00",
+                  "amount_net": "171.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "171.00",
+                  "amount_net": "171.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "171.00",
+                    "amount_show": "171.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "171.00",
+                        "amount_net": "171.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "171.00",
+                        "amount_net": "171.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Standard room (twin beds)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 100,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Standard room",
+          "main_name": "Standard room",
+          "bathroom": null,
+          "bedding_type": "twin beds",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "single",
+              "count": 2
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-0879ddbb-cd35-5444-9433-def78c029ff6",
+        "match_hash": "m-216575e2-016d-540e-9d0a-3d1f7ea63f54",
+        "daily_prices": [
+          "350.50",
+          "350.50"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "701.00",
+              "show_amount": "701.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "701.00",
+                  "amount_net": "701.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "701.00",
+                  "amount_net": "701.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "701.00",
+                    "amount_show": "701.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "701.00",
+                        "amount_net": "701.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "701.00",
+                        "amount_net": "701.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 1,
+          "quality": 0,
+          "sex": 0,
+          "bathroom": 1,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Bed in Dorm (shared bathroom) (bunk bed, full double bed and sofa)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 54,
+        "amenities_data": [
+          "sofa",
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Bed in Dorm (shared bathroom)",
+          "main_name": "Bed in Dorm",
+          "bathroom": "shared bathroom",
+          "bedding_type": "bunk bed, full double bed and sofa",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            },
+            {
+              "bed": "bunk-bed",
+              "count": 1
+            },
+            {
+              "bed": "sofa-bed",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-c6795cc6-eccd-5f26-b218-d198a30b827d",
+        "match_hash": "m-c982dd22-632a-574b-b2f7-14891a139c72",
+        "daily_prices": [
+          "350.50",
+          "350.50"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "701.00",
+              "show_amount": "701.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "701.00",
+                  "amount_net": "701.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "701.00",
+                  "amount_net": "701.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "701.00",
+                    "amount_show": "701.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "701.00",
+                        "amount_net": "701.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "701.00",
+                        "amount_net": "701.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 1,
+          "quality": 0,
+          "sex": 0,
+          "bathroom": 1,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Bed in Dorm (shared bathroom) (2 full double beds and sofa)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 54,
+        "amenities_data": [
+          "sofa",
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Bed in Dorm (shared bathroom)",
+          "main_name": "Bed in Dorm",
+          "bathroom": "shared bathroom",
+          "bedding_type": "2 full double beds and sofa",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 2
+            },
+            {
+              "bed": "sofa-bed",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-18a16650-5821-5df5-87e9-72b5dbffeec6",
+        "match_hash": "m-51fb985e-1a80-55e0-a1d2-de7ee385f19d",
+        "daily_prices": [
+          "350.50",
+          "350.50"
+        ],
+        "meal": "dinner",
+        "meal_data": {
+          "value": "dinner",
+          "has_breakfast": false,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "701.00",
+              "show_amount": "701.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "701.00",
+                  "amount_net": "701.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "701.00",
+                  "amount_net": "701.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "701.00",
+                    "amount_show": "701.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "701.00",
+                        "amount_net": "701.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "701.00",
+                        "amount_net": "701.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 5,
+          "quality": 8,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 20,
+          "floor": 0
+        },
+        "room_name": "Executive Double Suite with lake view (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 80,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Executive Double Suite with lake view",
+          "main_name": "Executive Double Suite with lake view",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-48c81e7a-d723-5b89-b6f1-43dcd11545df",
+        "match_hash": "m-b270f187-4305-5a82-aaca-da80cb2cd21a",
+        "daily_prices": [
+          "352.00",
+          "352.00"
+        ],
+        "meal": "lunch",
+        "meal_data": {
+          "value": "lunch",
+          "has_breakfast": false,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "704.00",
+              "show_amount": "704.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "704.00",
+                  "amount_net": "704.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "704.00",
+                  "amount_net": "704.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "704.00",
+                    "amount_show": "704.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "704.00",
+                        "amount_net": "704.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "704.00",
+                        "amount_net": "704.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 5,
+          "quality": 8,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 20,
+          "floor": 0
+        },
+        "room_name": "Executive Double Suite with lake view (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 80,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Executive Double Suite with lake view",
+          "main_name": "Executive Double Suite with lake view",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-4db22e01-7681-5af3-bbc4-9b9b60fb0a80",
+        "match_hash": "m-eff38f63-6f2a-529a-8584-7a257fe46d47",
+        "daily_prices": [
+          "354.50",
+          "354.50"
+        ],
+        "meal": "half-board",
+        "meal_data": {
+          "value": "half-board",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "709.00",
+              "show_amount": "709.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "709.00",
+                  "amount_net": "709.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "709.00",
+                  "amount_net": "709.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "709.00",
+                    "amount_show": "709.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "709.00",
+                        "amount_net": "709.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "709.00",
+                        "amount_net": "709.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 5,
+          "quality": 8,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 20,
+          "floor": 0
+        },
+        "room_name": "Executive Double Suite with lake view (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 80,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Executive Double Suite with lake view",
+          "main_name": "Executive Double Suite with lake view",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-f620bba1-1385-55a8-b119-16d55cf6e78b",
+        "match_hash": "m-8ec01661-66e2-5913-8588-7df8184d6b48",
+        "daily_prices": [
+          "363.50",
+          "363.50"
+        ],
+        "meal": "half-board-lunch",
+        "meal_data": {
+          "value": "half-board-lunch",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "727.00",
+              "show_amount": "727.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "727.00",
+                  "amount_net": "727.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "727.00",
+                  "amount_net": "727.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "727.00",
+                    "amount_show": "727.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "727.00",
+                        "amount_net": "727.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "727.00",
+                        "amount_net": "727.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 5,
+          "quality": 8,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 20,
+          "floor": 0
+        },
+        "room_name": "Executive Double Suite with lake view (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 80,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Executive Double Suite with lake view",
+          "main_name": "Executive Double Suite with lake view",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-d49eeddc-fd12-509b-a807-f1d2120fcc2c",
+        "match_hash": "m-d3f738b5-08b0-560f-ba5f-68c072a8471a",
+        "daily_prices": [
+          "401.50",
+          "401.50"
+        ],
+        "meal": "full-board",
+        "meal_data": {
+          "value": "full-board",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "803.00",
+              "show_amount": "803.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "803.00",
+                  "amount_net": "803.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "803.00",
+                  "amount_net": "803.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "803.00",
+                    "amount_show": "803.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "803.00",
+                        "amount_net": "803.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "803.00",
+                        "amount_net": "803.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 5,
+          "quality": 8,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 20,
+          "floor": 0
+        },
+        "room_name": "Executive Double Suite with lake view (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 80,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Executive Double Suite with lake view",
+          "main_name": "Executive Double Suite with lake view",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-a8db8a5c-7f74-5cfa-8e9a-c48f3bbefcc2",
+        "match_hash": "m-172629aa-4ddc-5c5e-9795-44becd1ae3d6",
+        "daily_prices": [
+          "419.00",
+          "419.00"
+        ],
+        "meal": "all-inclusive",
+        "meal_data": {
+          "value": "all-inclusive",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "838.00",
+              "show_amount": "838.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "838.00",
+                  "amount_net": "838.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "838.00",
+                  "amount_net": "838.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "838.00",
+                    "amount_show": "838.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "838.00",
+                        "amount_net": "838.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "838.00",
+                        "amount_net": "838.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 5,
+          "quality": 8,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 20,
+          "floor": 0
+        },
+        "room_name": "Executive Double Suite with lake view (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 80,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Executive Double Suite with lake view",
+          "main_name": "Executive Double Suite with lake view",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-fb9c9f46-f9d7-5fc0-a593-8c4f7674d4e6",
+        "match_hash": "m-00e5313e-a601-50bc-aa80-2823bbaf6bcf",
+        "daily_prices": [
+          "427.50",
+          "427.50"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "855.00",
+              "show_amount": "855.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "855.00",
+                  "amount_net": "855.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "855.00",
+                  "amount_net": "855.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "855.00",
+                    "amount_show": "855.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "855.00",
+                        "amount_net": "855.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "855.00",
+                        "amount_net": "855.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 5,
+          "quality": 6,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Deluxe Double Suite (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_breakfast",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 10,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Deluxe Double Suite",
+          "main_name": "Deluxe Double Suite",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": true
+      },
+      {
+        "book_hash": "h-0214ddb2-be52-58a0-ae24-53d55c8ef609",
+        "match_hash": "m-9cb2a9eb-f3f7-53bd-8f94-af57f4a51984",
+        "daily_prices": [
+          "436.00",
+          "436.00"
+        ],
+        "meal": "ultra-all-inclusive",
+        "meal_data": {
+          "value": "ultra-all-inclusive",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "872.00",
+              "show_amount": "872.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "872.00",
+                  "amount_net": "872.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "872.00",
+                  "amount_net": "872.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "872.00",
+                    "amount_show": "872.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "872.00",
+                        "amount_net": "872.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "872.00",
+                        "amount_net": "872.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 5,
+          "quality": 8,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 20,
+          "floor": 0
+        },
+        "room_name": "Executive Double Suite with lake view (full double bed)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom",
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 80,
+        "amenities_data": [
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Executive Double Suite with lake view",
+          "main_name": "Executive Double Suite with lake view",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": null,
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-e475a21b-63b9-5c17-93a0-47fcc3f3a8dd",
+        "match_hash": "m-b758c4da-5392-5680-b482-12812f800c0c",
+        "daily_prices": [
+          "854.50",
+          "854.50"
+        ],
+        "meal": "nomeal",
+        "meal_data": {
+          "value": "nomeal",
+          "has_breakfast": false,
+          "no_child_meal": true
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "1709.00",
+              "show_amount": "1709.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "city_tax",
+                    "included_by_supplier": false,
+                    "amount": "7.70",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "cleaning_fee",
+                    "included_by_supplier": false,
+                    "amount": "80.59",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "electricity_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.22",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "occupancy_tax",
+                    "included_by_supplier": false,
+                    "amount": "6.16",
+                    "currency_code": "HNL"
+                  },
+                  {
+                    "name": "resort_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  },
+                  {
+                    "name": "service_fee",
+                    "included_by_supplier": true,
+                    "amount": "0.25",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "1709.00",
+                  "amount_net": "1709.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "1709.00",
+                  "amount_net": "1709.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-02T21:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-02T21:00:00",
+                    "end_at": "2026-11-03T21:00:00",
+                    "amount_charge": "1000.00",
+                    "amount_show": "1000.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "1000.00",
+                        "amount_net": "1000.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "1000.00",
+                        "amount_net": "1000.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T21:00:00",
+                    "end_at": null,
+                    "amount_charge": "1709.00",
+                    "amount_show": "1709.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "1709.00",
+                        "amount_net": "1709.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "1709.00",
+                        "amount_net": "1709.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-02T21:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 1,
+          "quality": 0,
+          "sex": 0,
+          "bathroom": 1,
+          "bedding": 0,
+          "family": 0,
+          "capacity": 0,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Bed in Dorm (shared bathroom) (full double bed) (no window)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_internet"
+        ],
+        "sell_price_limits": null,
+        "allotment": 1,
+        "amenities_data": [
+          "no-window",
+          "non-smoking"
+        ],
+        "any_residency": true,
+        "deposit": null,
+        "no_show": {
+          "amount": "1000.00",
+          "currency_code": "USD",
+          "from_time": "12:00:00"
+        },
+        "room_data_trans": {
+          "main_room_type": "Bed in Dorm (shared bathroom)",
+          "main_name": "Bed in Dorm",
+          "bathroom": "shared bathroom",
+          "bedding_type": "full double bed",
+          "misc_room_type": "no window",
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      }
+    ],
+    "bar_price_data": null
+  }
+}
