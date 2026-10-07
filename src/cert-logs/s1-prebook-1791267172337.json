@@ -1,0 +1,17 @@
+{
+  "scenario": "s1-prebook",
+  "request": {
+    "bookHash": "h-ffc9dd3b-9b77-5ea7-bc2a-446c94466dc1"
+  },
+  "response": {
+    "bookHash": "p-c1bf3876-b001-487a-80e3-ff71403415ed",
+    "netPrice": 213,
+    "showPrice": 213,
+    "currency": "USD",
+    "priceChanged": false,
+    "roomName": "Traditional Double room (full double bed) (king size bed, Child bed is not included)",
+    "mealPlan": "Bed & Breakfast",
+    "freeCancellationBefore": null,
+    "excludedTaxes": []
+  }
+}

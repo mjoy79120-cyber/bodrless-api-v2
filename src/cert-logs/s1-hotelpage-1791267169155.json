@@ -1,0 +1,763 @@
+{
+  "scenario": "s1-hotelpage",
+  "request": {
+    "hotelId": 7860172,
+    "hotelpageGuests": [
+      {
+        "adults": 1,
+        "children": [
+          5
+        ]
+      }
+    ],
+    "residency": "ke"
+  },
+  "response": {
+    "id": "four_points_by_sheraton_los_angeles",
+    "hid": 7860172,
+    "rates": [
+      {
+        "book_hash": "h-ffc9dd3b-9b77-5ea7-bc2a-446c94466dc1",
+        "match_hash": "m-0f1b984a-c92a-53b3-8385-82be4482fbe9",
+        "daily_prices": [
+          "106.50",
+          "106.50"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "213.00",
+              "show_amount": "213.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "EUR",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "vat",
+                    "included_by_supplier": true,
+                    "amount": "34.01",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "213.00",
+                  "amount_net": "213.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "213.00",
+                  "amount_net": "213.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": null,
+                    "amount_charge": "213.00",
+                    "amount_show": "213.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "213.00",
+                        "amount_net": "213.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "213.00",
+                        "amount_net": "213.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": null
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Traditional Double room (full double bed) (king size bed, Child bed is not included)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom"
+        ],
+        "sell_price_limits": null,
+        "allotment": 1,
+        "amenities_data": [
+          "non-smoking",
+          "child-bed-fee",
+          "king-bed"
+        ],
+        "any_residency": false,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Traditional Double room",
+          "main_name": "Traditional Double room",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": "king size bed, Child bed is not included",
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-85357133-9fc8-5c25-8642-9dcd2c02c26c",
+        "match_hash": "m-35094ee6-8c40-52b5-81a7-21b225c36db7",
+        "daily_prices": [
+          "113.00",
+          "113.00"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "226.00",
+              "show_amount": "226.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "EUR",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "vat",
+                    "included_by_supplier": true,
+                    "amount": "36.08",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "226.00",
+                  "amount_net": "226.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "226.00",
+                  "amount_net": "226.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-03T03:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-03T03:00:00",
+                    "end_at": "2026-11-05T03:00:00",
+                    "amount_charge": "152.00",
+                    "amount_show": "152.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "152.00",
+                        "amount_net": "152.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "152.00",
+                        "amount_net": "152.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-05T03:00:00",
+                    "end_at": null,
+                    "amount_charge": "226.00",
+                    "amount_show": "226.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "226.00",
+                        "amount_net": "226.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "226.00",
+                        "amount_net": "226.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-03T03:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Traditional Double room (full double bed) (king size bed, Child bed is not included)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom"
+        ],
+        "sell_price_limits": null,
+        "allotment": 1,
+        "amenities_data": [
+          "child-bed-fee",
+          "king-bed",
+          "non-smoking"
+        ],
+        "any_residency": false,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Traditional Double room",
+          "main_name": "Traditional Double room",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": "king size bed, Child bed is not included",
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-8426066c-6588-5121-8c39-09bdf0b4da5d",
+        "match_hash": "m-1e6e68ec-46c4-5ae2-a780-39ac521e62a9",
+        "daily_prices": [
+          "154.00",
+          "139.00"
+        ],
+        "meal": "nomeal",
+        "meal_data": {
+          "value": "nomeal",
+          "has_breakfast": false,
+          "no_child_meal": true
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "293.00",
+              "show_amount": "293.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "vat",
+                    "included_by_supplier": true,
+                    "amount": "46.78",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "293.00",
+                  "amount_net": "293.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "293.00",
+                  "amount_net": "293.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": null,
+                    "amount_charge": "293.00",
+                    "amount_show": "293.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "293.00",
+                        "amount_net": "293.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "293.00",
+                        "amount_net": "293.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": null
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 4,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Traditional Twin room (twin beds) (Child bed is not included, child bed not included, child meal not included)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom"
+        ],
+        "sell_price_limits": null,
+        "allotment": 1,
+        "amenities_data": [
+          "child-bed-fee",
+          "non-smoking"
+        ],
+        "any_residency": false,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Traditional Twin room",
+          "main_name": "Traditional Twin room",
+          "bathroom": null,
+          "bedding_type": "twin beds",
+          "misc_room_type": "Child bed is not included, child bed not included, child meal not included",
+          "beds": [
+            {
+              "bed": "single",
+              "count": 2
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-faac33db-abf6-5ee7-9f7d-b54abdf268f9",
+        "match_hash": "m-d928b114-545c-5eaf-b504-297033b4d037",
+        "daily_prices": [
+          "153.92",
+          "142.08"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "296.00",
+              "show_amount": "296.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "vat",
+                    "included_by_supplier": true,
+                    "amount": "47.26",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "296.00",
+                  "amount_net": "296.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "296.00",
+                  "amount_net": "296.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-04T03:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-04T03:00:00",
+                    "end_at": "2026-11-05T03:00:00",
+                    "amount_charge": "148.00",
+                    "amount_show": "148.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "148.00",
+                        "amount_net": "148.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "148.00",
+                        "amount_net": "148.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-05T03:00:00",
+                    "end_at": null,
+                    "amount_charge": "296.00",
+                    "amount_show": "296.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "296.00",
+                        "amount_net": "296.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "296.00",
+                        "amount_net": "296.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-04T03:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 3,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Traditional Double room (full double bed) (bed type is subject to availability, Child bed is not included)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom"
+        ],
+        "sell_price_limits": null,
+        "allotment": 1,
+        "amenities_data": [
+          "not-guaranteed",
+          "child-bed-fee",
+          "non-smoking"
+        ],
+        "any_residency": false,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Traditional Double room",
+          "main_name": "Traditional Double room",
+          "bathroom": null,
+          "bedding_type": "full double bed",
+          "misc_room_type": "bed type is subject to availability, Child bed is not included",
+          "beds": [
+            {
+              "bed": "double",
+              "count": 1
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      },
+      {
+        "book_hash": "h-07112548-2b6c-5179-b70a-6b90e41fff15",
+        "match_hash": "m-30d3afb2-d2f8-5702-9da4-9b0d411784ba",
+        "daily_prices": [
+          "153.92",
+          "142.08"
+        ],
+        "meal": "breakfast",
+        "meal_data": {
+          "value": "breakfast",
+          "has_breakfast": true,
+          "no_child_meal": false
+        },
+        "payment_options": {
+          "payment_types": [
+            {
+              "amount": "296.00",
+              "show_amount": "296.00",
+              "currency_code": "USD",
+              "show_currency_code": "USD",
+              "by": null,
+              "is_need_credit_card_data": false,
+              "is_need_cvc": false,
+              "type": "deposit",
+              "vat_data": {
+                "included": false,
+                "applied": false,
+                "amount": "0.00",
+                "currency_code": "USD",
+                "value": "0.00"
+              },
+              "tax_data": {
+                "taxes": [
+                  {
+                    "name": "vat",
+                    "included_by_supplier": true,
+                    "amount": "47.26",
+                    "currency_code": "USD"
+                  }
+                ]
+              },
+              "perks": {},
+              "commission_info": {
+                "show": {
+                  "amount_gross": "296.00",
+                  "amount_net": "296.00",
+                  "amount_commission": "0.00"
+                },
+                "charge": {
+                  "amount_gross": "296.00",
+                  "amount_net": "296.00",
+                  "amount_commission": "0.00"
+                }
+              },
+              "cancellation_penalties": {
+                "policies": [
+                  {
+                    "start_at": null,
+                    "end_at": "2026-11-04T03:00:00",
+                    "amount_charge": "0.00",
+                    "amount_show": "0.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "0.00",
+                        "amount_net": "0.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-04T03:00:00",
+                    "end_at": "2026-11-05T03:00:00",
+                    "amount_charge": "148.00",
+                    "amount_show": "148.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "148.00",
+                        "amount_net": "148.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "148.00",
+                        "amount_net": "148.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  },
+                  {
+                    "start_at": "2026-11-05T03:00:00",
+                    "end_at": null,
+                    "amount_charge": "296.00",
+                    "amount_show": "296.00",
+                    "commission_info": {
+                      "show": {
+                        "amount_gross": "296.00",
+                        "amount_net": "296.00",
+                        "amount_commission": "0.00"
+                      },
+                      "charge": {
+                        "amount_gross": "296.00",
+                        "amount_net": "296.00",
+                        "amount_commission": "0.00"
+                      }
+                    }
+                  }
+                ],
+                "free_cancellation_before": "2026-11-04T03:00:00"
+              },
+              "recommended_price": null
+            }
+          ]
+        },
+        "bar_rate_price_data": null,
+        "rg_ext": {
+          "class": 3,
+          "quality": 2,
+          "sex": 0,
+          "bathroom": 2,
+          "bedding": 4,
+          "family": 0,
+          "capacity": 2,
+          "club": 0,
+          "bedrooms": 0,
+          "balcony": 0,
+          "view": 0,
+          "floor": 0
+        },
+        "room_name": "Traditional Twin room (twin beds) (Child bed is not included, child bed not included)",
+        "room_name_info": null,
+        "serp_filters": [
+          "has_bathroom"
+        ],
+        "sell_price_limits": null,
+        "allotment": 1,
+        "amenities_data": [
+          "child-bed-fee",
+          "non-smoking"
+        ],
+        "any_residency": false,
+        "deposit": null,
+        "no_show": null,
+        "room_data_trans": {
+          "main_room_type": "Traditional Twin room",
+          "main_name": "Traditional Twin room",
+          "bathroom": null,
+          "bedding_type": "twin beds",
+          "misc_room_type": "Child bed is not included, child bed not included",
+          "beds": [
+            {
+              "bed": "single",
+              "count": 2
+            }
+          ]
+        },
+        "legal_info": null,
+        "is_package": false
+      }
+    ],
+    "bar_price_data": null
+  }
+}

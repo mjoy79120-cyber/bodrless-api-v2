@@ -148,9 +148,11 @@ async function scenario1_SingleRoomAdultChildUzbek() {
     const hp = await _hotelpage(liveHotelId, CHECK_IN, CHECK_OUT, hotelpageGuests, residency);
     _log('s1-hotelpage', { hotelId: liveHotelId, hotelpageGuests, residency }, hp);
 
-    const rate  = hp?.rates?.[0];
-    const hHash = rate?.book_hash;
-    if (!hHash?.startsWith('h-')) return _fail(name, `No h-... hash from hotelpage: ${hHash}`);
+   const rates = hp?.rates || [];
+const rate  = rates.find(r => r.payment_options?.payment_types?.[0]?.cancellation_penalties?.free_cancellation_before)
+           || rates[0];
+const hHash = rate?.book_hash;
+if (!hHash?.startsWith('h-')) return _fail(name, `No h-... hash from hotelpage: ${hHash}`);
 
     // ── Prebook ──
     const prebook = await ratehawkAdapter.prebook({ bookHash: hHash });
@@ -203,7 +205,9 @@ async function scenario2_MultiRoom() {
     const hp = await _hotelpage(HOTEL_ID_A, CHECK_IN, CHECK_OUT, hotelpageGuests, residency);
     _log('s2-hotelpage', { hotelId: HOTEL_ID_A, hotelpageGuests }, hp);
 
-    const rate  = hp?.rates?.[0];
+    const rates = hp?.rates || [];
+    const rate  = rates.find(r => r.payment_options?.payment_types?.[0]?.cancellation_penalties?.free_cancellation_before)
+               || rates[0];
     const hHash = rate?.book_hash;
     if (!hHash?.startsWith('h-')) return _fail(name, `No h-... hash: ${hHash}`);
 
