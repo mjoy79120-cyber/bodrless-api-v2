@@ -1164,7 +1164,7 @@ closeBtn.onclick = function() {
       : {'Content-Type':'application/json','x-api-key':  agencyKey};
     var body     = isHotelMode
       ? JSON.stringify(Object.assign({prompt:text,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams}, guestName ? {guestName:guestName} : {}))
-      : JSON.stringify(Object.assign({prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)}, guestName ? {guestName:guestName} : {}));
+      : JSON.stringify({prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams})
 
     fetch(endpoint,{method:'POST',headers:hdrs,body:body})
     .then(function(r){ return r.json(); })
