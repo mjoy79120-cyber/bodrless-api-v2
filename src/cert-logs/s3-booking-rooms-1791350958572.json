@@ -1,0 +1,40 @@
+{
+  "scenario": "s3-booking-rooms",
+  "request": {
+    "passengers": [
+      {
+        "firstName": "Peter",
+        "lastName": "Ratehawk",
+        "dateOfBirth": "1990-05-21",
+        "gender": "male",
+        "nationality": "ke",
+        "type": "adult"
+      },
+      {
+        "firstName": "Ali",
+        "lastName": "Ratehawk",
+        "dateOfBirth": "2021-11-06",
+        "gender": "male",
+        "nationality": "uz",
+        "type": "child"
+      }
+    ],
+    "checkIn": "2026-11-06"
+  },
+  "response": [
+    {
+      "guests": [
+        {
+          "first_name": "Peter",
+          "last_name": "Ratehawk"
+        },
+        {
+          "first_name": "Ali",
+          "last_name": "Ratehawk",
+          "is_child": true,
+          "age": 5
+        }
+      ]
+    }
+  ]
+}

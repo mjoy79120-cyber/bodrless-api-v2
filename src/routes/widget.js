@@ -2,12 +2,30 @@ const express = require('express');
 const router  = express.Router();
 
 router.get('/', (req, res) => {
-  const mode        = req.query.mode  || 'agency';
+  const hex   = (v, d) => /^#?[0-9a-f]{6}$/i.test(v || '') ? '#' + v.replace('#', '') : d;
+  const clean = (v, d, n = 60) => v ? String(v).replace(/[<>"'`\\${}]/g, '').slice(0, n) : d;
+
+  const mode        = req.query.mode || 'agency';
   const isHotelMode = mode === 'hotel_direct';
-  const agencyKey   = req.query.key   || (isHotelMode ? 'sarova' : 'epic-travels');
-  const agencyName  = req.query.name  || (isHotelMode ? 'Sarova Hotels' : 'Epic Travels');
-  const embedTarget = req.query.embed || null;
+  const rawKey      = req.query.key || (isHotelMode ? 'sarova' : 'epic-travels');
+  const agencyKey   = /^[a-z0-9_-]{1,40}$/i.test(rawKey) ? rawKey : 'epic-travels';
+  const agencyName  = clean(req.query.name, isHotelMode ? 'Sarova Hotels' : 'Epic Travels', 40);
+  const embedTarget = req.query.embed ? String(req.query.embed).replace(/[^\w-]/g, '') : null;
   const apiBase     = process.env.API_BASE_URL || 'https://bodrless-api-v2.onrender.com';
+
+  const theme   = req.query.theme === 'dark' ? 'dark' : 'light';
+  const primary = hex(req.query.primary, '#1E2A5E');
+  const accent  = hex(req.query.accent,  '#B8964A');
+  const CFG = {
+    name:  agencyName,
+    theme,
+    logo:  /^https:\/\//.test(req.query.logo || '') ? String(req.query.logo).slice(0, 300) : '',
+    title: clean(req.query.title, 'Welcome to ' + agencyName, 80),
+    intro: clean(req.query.intro, 'Where would you like to go?', 120),
+    chips: (req.query.chips ? String(req.query.chips).split('|') : [
+      'Nairobi to Zanzibar', 'Cape Town 5 nights', 'Masai Mara safari', 'Kigali, Rwanda'
+    ]).map(c => clean(c, '', 40)).filter(Boolean).slice(0, 6),
+  };
 
   // Permanent fix: reject hotel_direct requests with no key or an unknown-looking key
   // This surfaces a clear error instead of silently using the wrong hotel group
@@ -19,12 +37,14 @@ router.get('/', (req, res) => {
 
   // ── STYLES ──────────────────────────────────────────────────────────────
   const styles = `
-:root{--et-navy:#1E2A5E;--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F9F7F4;--et-border:#E8E3DA;--et-muted:#9A9088;--et-green:#27ae60;--et-gold:#B8964A;}
-#bodrless-chat{background:var(--et-white);z-index:999999;display:none;flex-direction:column;border-radius:18px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,0.14);font-family:'Inter',Arial,sans-serif;}
+#bodrless-widget-root{--et-navy:${primary};--et-gold:${accent};--et-red:#C0392B;--et-white:#FFFFFF;--et-cream:#F7F5F1;--et-border:#E7E2D9;--et-muted:#8B857C;--et-green:#27ae60;--et-ink:#1B2240;}
+#bodrless-chat{background:var(--et-white);z-index:999999;display:none;flex-direction:column;border-radius:20px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.18);font-family:'Inter',system-ui,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
 #bodrless-chat.open{display:flex;}
-#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:390px;height:640px;}
-#bodrless-chat.embedded{position:relative;width:100%;height:760px;display:flex;border-radius:0;}
-@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:0.5;}30%{transform:translateY(-5px);opacity:1;}}
+#bodrless-chat.floating{position:fixed;bottom:90px;right:24px;width:480px;height:min(680px,calc(100vh - 120px));}
+#bodrless-chat.embedded{position:relative;width:100%;height:min(720px,calc(100vh - 40px));min-height:520px;}
+@media(max-width:560px){#bodrless-chat.floating{width:calc(100vw - 16px);right:8px;bottom:80px;height:calc(100vh - 100px);}}
+@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:.5;}30%{transform:translateY(-5px);opacity:1;}}
+@keyframes et-nudge{0%,100%{transform:translateY(0);}50%{transform:translateY(-5px);}}
 #et-header{background:var(--et-navy);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
 #et-header-left{display:flex;align-items:center;gap:12px;}
 #et-header-text h3{font-size:14px;color:white;margin:0 0 1px 0;font-weight:600;}
@@ -35,10 +55,12 @@ router.get('/', (req, res) => {
 .msg{padding:11px 15px;border-radius:16px;max-width:82%;font-size:13.5px;line-height:1.55;}
 .user{background:var(--et-navy);color:white;margin-left:auto;border-bottom-right-radius:4px;}
 .bot{background:var(--et-white);color:#2A2A2A;border:1px solid var(--et-border);border-bottom-left-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,0.05);}
-.typing{background:var(--et-white);border:1px solid var(--et-border);padding:12px 16px;border-radius:16px;display:flex;gap:5px;align-items:center;width:fit-content;}
-.typing span{width:6px;height:6px;background:var(--et-navy);border-radius:50%;animation:bounce 1.2s infinite;}
-.typing span:nth-child(2){animation-delay:0.2s;background:var(--et-gold);}
-.typing span:nth-child(3){animation-delay:0.4s;}
+.typing{background:var(--et-white);border:1px solid var(--et-border);padding:12px 16px;border-radius:16px;display:flex;align-items:center;gap:10px;width:fit-content;max-width:82%;}
+.typing-dots{display:flex;gap:5px;align-items:center;flex-shrink:0;}
+.typing-dots span{width:6px;height:6px;background:var(--et-navy);border-radius:50%;animation:bounce 1.2s infinite;}
+.typing-dots span:nth-child(2){animation-delay:0.2s;background:var(--et-gold);}
+.typing-dots span:nth-child(3){animation-delay:0.4s;}
+.typing-label{font-size:12.5px;color:var(--et-muted);font-style:italic;transition:opacity 0.25s ease;}
 .et-welcome{background:var(--et-white);border-radius:14px;padding:20px;border:1px solid var(--et-border);}
 .et-welcome-eyebrow{font-size:10px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:var(--et-gold);margin-bottom:10px;}
 .et-welcome-title{font-size:18px;font-weight:600;color:var(--et-navy);margin-bottom:8px;line-height:1.3;}
@@ -51,11 +73,7 @@ router.get('/', (req, res) => {
 .et-starter:hover .st-body{color:rgba(255,255,255,0.7);}
 .st-title{font-size:13px;font-weight:600;color:var(--et-navy);margin-bottom:3px;}
 .st-body{font-size:12px;color:var(--et-muted);line-height:1.45;}
-.et-agency-welcome{background:linear-gradient(135deg,#1E2A5E 0%,#2d3f82 100%);border-radius:16px;padding:16px;color:white;border-left:4px solid #C0392B;}
-.et-agency-welcome h4{font-size:14px;margin:0 0 6px 0;}
-.et-agency-welcome p{font-size:12px;margin:0 0 12px 0;color:rgba(255,255,255,0.7);}
-.et-suggestions{display:flex;flex-wrap:wrap;gap:6px;}
-.et-suggestion{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.9);padding:5px 10px;border-radius:20px;font-size:11px;cursor:pointer;}
+
 .leg-section{border:1px solid var(--et-border);border-radius:14px;overflow:hidden;margin-bottom:12px;background:var(--et-white);box-shadow:0 2px 8px rgba(0,0,0,0.05);}
 .leg-header{padding:10px 14px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;}
 .leg-header.arrival{background:#1E2A5E;}.leg-header.departure{background:#2d3f82;}.leg-header.internal{background:#34495e;}.leg-header.return_stay{background:#2c3e50;}.leg-header.stopover{background:#7f8c8d;}
@@ -183,6 +201,95 @@ router.get('/', (req, res) => {
 .bodrless-powered{text-align:center;padding:8px 0 4px;font-size:10px;color:var(--et-muted);letter-spacing:0.5px;}
 .bodrless-powered a{color:var(--et-muted);text-decoration:none;font-weight:600;}
 .bodrless-powered a:hover{color:var(--et-navy);}
+/* ── motion system: soft rise-in for every dynamic element ── */
+#bodrless-widget-root{--et-ease:cubic-bezier(.22,1,.36,1);--et-spring:cubic-bezier(.34,1.4,.64,1);}
+@keyframes et-rise{from{opacity:0;transform:translateY(10px) scale(.985);}to{opacity:1;transform:translateY(0) scale(1);}}
+.msg,.typing,.package,.leg-section,.trip-summary,.et-welcome,.upsell-section,.name-form,.restore-banner,.price-alert,.multi-prop-bar,.et-starter{animation:et-rise .38s var(--et-ease) both;}
+.msg.user{transform-origin:bottom right;}
+.msg.bot,.typing{transform-origin:bottom left;}
+
+/* hero entrance with stagger */
+.et-hero h4{animation:et-rise .45s var(--et-ease) both;}
+.et-hero p{animation:et-rise .45s .06s var(--et-ease) both;}
+.et-chip-grid .et-chip{opacity:0;animation:et-rise .4s var(--et-ease) forwards;}
+.et-chip-grid .et-chip:nth-child(1){animation-delay:.10s}
+.et-chip-grid .et-chip:nth-child(2){animation-delay:.16s}
+.et-chip-grid .et-chip:nth-child(3){animation-delay:.22s}
+.et-chip-grid .et-chip:nth-child(4){animation-delay:.28s}
+.et-chip-grid .et-chip:nth-child(5){animation-delay:.34s}
+.et-chip-grid .et-chip:nth-child(6){animation-delay:.40s}
+.et-name-row{animation:et-rise .4s .45s var(--et-ease) both;}
+
+/* panel open/close: fade + rise from the launcher */
+#bodrless-chat{opacity:0;transform:translateY(18px) scale(.96);transform-origin:bottom right;pointer-events:none;transition:opacity .3s var(--et-ease),transform .3s var(--et-ease);}
+#bodrless-chat.open{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;}
+#bodrless-chat.embedded{transform-origin:center bottom;}
+
+/* tactile press states */
+#bodrless-send{transition:transform .16s var(--et-spring),background .2s,filter .2s;}
+#bodrless-send:active{transform:scale(.86);}
+.et-chip,.et-starter,.et-suggestion,.select-btn,.book,.confirm-btn,.upsell-add-btn,.summary-action-btn,.restore-btn,.transfer-option,.transfer-confirm-btn,.multi-prop-checkout-btn,.price-approve,.price-cancel{transition:transform .16s var(--et-spring),background .2s,border-color .2s,opacity .2s,color .2s,box-shadow .2s;}
+.et-chip:active,.et-starter:active,.et-suggestion:active,.select-btn:active,.book:active,.confirm-btn:active,.upsell-add-btn:active{transform:scale(.965);}
+
+/* card hover lift */
+.package,.upsell-card{transition:transform .22s var(--et-ease),box-shadow .22s var(--et-ease),border-color .2s,background .2s,opacity .2s;}
+.package:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(27,34,64,.10);}
+.upsell-card:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(27,34,64,.08);}
+
+/* slimmer scrollbar */
+#bodrless-messages::-webkit-scrollbar{width:6px;}
+#bodrless-messages::-webkit-scrollbar-thumb{background:var(--et-border);border-radius:3px;}
+#bodrless-messages::-webkit-scrollbar-track{background:transparent;}
+
+/* respect reduced motion */
+@media (prefers-reduced-motion:reduce){#bodrless-widget-root *,#bodrless-widget-root *::before,#bodrless-widget-root *::after{animation:none!important;transition:none!important;opacity:1!important;transform:none!important;}}
+
+/* header */
+#et-header{padding:14px 18px;background:var(--et-navy);}
+.et-logo{width:40px;height:40px;border-radius:12px;background:#fff;color:var(--et-navy);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;overflow:hidden;flex-shrink:0;}
+.et-logo img{width:100%;height:100%;object-fit:contain;padding:4px;box-sizing:border-box;}
+#et-header-text h3{font-size:15px;letter-spacing:-.01em;}
+#et-header-text p{display:flex;align-items:center;gap:6px;font-size:11px;letter-spacing:0;text-transform:none;color:rgba(255,255,255,.7);}
+.et-dot{width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block;}
+
+/* empty state: fills the panel instead of leaving dead space */
+#bodrless-messages{scrollbar-width:thin;scrollbar-color:var(--et-border) transparent;}
+.et-hero{margin:auto 0;padding:4px 2px 12px;}
+.et-hero h4{font-size:24px;line-height:1.2;letter-spacing:-.02em;margin:0 0 8px;color:var(--et-ink);font-weight:700;}
+.et-hero p{font-size:13.5px;line-height:1.55;color:var(--et-muted);margin:0 0 18px;max-width:34ch;}
+.et-chip-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.et-chip{background:var(--et-white);border:1px solid var(--et-border);border-radius:12px;padding:12px 14px;font:500 13px/1.3 'Inter',Arial,sans-serif;color:var(--et-ink);text-align:left;cursor:pointer;transition:border-color .15s,transform .15s;}
+.et-chip:hover{border-color:var(--et-gold);transform:translateY(-1px);}
+.et-chip:focus-visible,#bodrless-send:focus-visible{outline:2px solid var(--et-gold);outline-offset:2px;}
+.et-name-row{display:block;margin-top:16px;}
+.et-name-input{width:100%;box-sizing:border-box;background:transparent;border:none;border-bottom:1px solid var(--et-border);padding:8px 2px;font:400 13px 'Inter',Arial,sans-serif;color:var(--et-ink);outline:none;}
+.et-name-input::placeholder{color:var(--et-muted);}
+.et-name-input:focus{border-bottom-color:var(--et-gold);}
+
+/* messages + input */
+.msg{font-size:14px;}
+.bot{box-shadow:none;}
+#bodrless-input-area{padding:12px 14px 6px;border-top:none;}
+#bodrless-input{padding:12px 16px;border:1px solid var(--et-border);font-size:14px;}
+#bodrless-input:focus{border-color:var(--et-gold);box-shadow:0 0 0 3px rgba(184,150,74,.18);}
+#bodrless-send{background:var(--et-gold);}
+#bodrless-send:hover{filter:brightness(1.08);background:var(--et-gold);}
+.bodrless-powered{padding:2px 0 10px;background:var(--et-white);}
+
+/* dark theme (?theme=dark): for dark hero pages like the AFCON one */
+#bodrless-chat.dark{--et-white:#1a1f33;--et-cream:#12162a;--et-border:rgba(255,255,255,.1);--et-muted:#9aa3b8;--et-ink:#fff;}
+.dark .bot,.dark .et-chip{color:#e8eaf2;}
+.dark #bodrless-input,.dark .name-input,.dark .dob-row select{background:#12162a;color:#fff;}
+.dark .user{background:var(--et-gold);}
+.dark .pkg-name,.dark .st-title,.dark .upsell-name,.dark .ts-leg-detail,.dark .ts-leg-price,.dark .ts-total-price,.dark .pkg-price,.dark .deposit-row.total,.dark .leg-selected-detail,.dark .transfer-prompt h4,.dark .name-form p{color:#fff;}
+.dark .deposit-row,.dark .transfer-option{color:#c9cfdf;}
+.dark .leg-selected-summary,.dark .trip-summary-total,.dark .pkg-footer{background:rgba(255,255,255,.04);}
+.dark .upsell-card.selected{background:rgba(39,174,96,.15);}
+.dark .hl-neutral,.dark .cancel-policy.neutral{background:rgba(255,255,255,.07);color:#c9cfdf;}
+/* typing indicator in dark mode: navy dots would vanish on the dark bubble */
+.dark .typing-dots span{background:#fff;}
+.dark .typing-dots span:nth-child(2){background:var(--et-gold);}
+
 `;
 
   const widgetCode = `(function () {
@@ -197,6 +304,7 @@ function initWidget() {
   var embedTarget         = ${JSON.stringify(embedTarget)};
   var agencyKey           = '${agencyKey}';
   var apiBase             = '${apiBase}';
+  var CFG = ${JSON.stringify(CFG)};
   var legFlow             = null;
   var itineraryId         = null;
   var pendingRestoreId    = null;
@@ -258,13 +366,27 @@ function initWidget() {
   var root    = document.createElement('div'); root.id = 'bodrless-widget-root';
   var chatDiv = document.createElement('div'); chatDiv.id = 'bodrless-chat';
   chatDiv.classList.add(embedTarget ? 'embedded' : 'floating');
+
+  chatDiv.classList.add(CFG.theme);
+  if (!document.getElementById('bodrless-font')) {
+    var fl = document.createElement('link'); fl.id = 'bodrless-font'; fl.rel = 'stylesheet';
+    fl.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap';
+    document.head.appendChild(fl);
+  }
   var header     = document.createElement('div'); header.id = 'et-header';
   var headerLeft = document.createElement('div'); headerLeft.id = 'et-header-left';
-  var logoWrap   = document.createElement('div');
-  logoWrap.style.cssText = 'display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:#0F4C3A;color:#fff;font-family:Playfair Display,serif;font-size:22px;font-weight:700;box-shadow:0 6px 16px rgba(0,0,0,.18);flex-shrink:0;';
-  logoWrap.innerText = '${agencyName.charAt(0)}';
+  var logoWrap = document.createElement('div'); logoWrap.className = 'et-logo';
+  if (CFG.logo) {
+    var li = document.createElement('img'); li.src = CFG.logo; li.alt = CFG.name;
+    li.onerror = function () { li.remove(); logoWrap.innerText = CFG.name.charAt(0); };
+    logoWrap.appendChild(li);
+  } else { logoWrap.innerText = CFG.name.charAt(0); }
   var headerText = document.createElement('div'); headerText.id = 'et-header-text';
-  headerText.innerHTML = '<h3>${agencyName}</h3><p>' + (isHotelMode ? 'Concierge' : 'Travel Specialist') + '</p>';
+  var h3 = document.createElement('h3'); h3.innerText = CFG.name;
+  var sub = document.createElement('p');
+  var dot = document.createElement('i'); dot.className = 'et-dot';
+  sub.appendChild(dot); sub.appendChild(document.createTextNode(isHotelMode ? 'Concierge, replies instantly' : 'Online, replies instantly'));
+  headerText.appendChild(h3); headerText.appendChild(sub);
   headerLeft.appendChild(logoWrap); headerLeft.appendChild(headerText);
   var closeBtn = document.createElement('button'); closeBtn.id = 'et-close'; closeBtn.innerHTML = '&#215;';
   if (embedTarget) closeBtn.style.display = 'none';
@@ -277,7 +399,7 @@ function initWidget() {
   input.placeholder = isHotelMode ? 'How can I help you plan your stay?' : 'Where would you like to go?';
   var sendBtn = document.createElement('button'); sendBtn.id = 'bodrless-send'; sendBtn.innerHTML = '&#10148;';
   inputArea.appendChild(input); inputArea.appendChild(sendBtn);
-  chatDiv.appendChild(header); chatDiv.appendChild(messages); chatDiv.appendChild(poweredBy); chatDiv.appendChild(inputArea);
+  chatDiv.appendChild(header); chatDiv.appendChild(messages); chatDiv.appendChild(inputArea); chatDiv.appendChild(poweredBy);
   root.appendChild(chatDiv);
   if (embedTarget) {
     var mount = document.getElementById(embedTarget);
@@ -287,20 +409,29 @@ function initWidget() {
   var welcomeShown = false;
   if (!embedTarget) {
     var triggerBtn = document.createElement('button'); triggerBtn.id = 'bodrless-trigger';
-triggerBtn.innerText = isHotelMode ? 'Book a Room' : '✈️ Plan Your Trip';
-triggerBtn.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1E2A5E;color:white;border:none;padding:14px 24px;border-radius:30px;cursor:pointer;font-size:15px;font-weight:600;box-shadow:0 8px 32px rgba(0,0,0,0.25);z-index:999998;font-family:Inter,Arial,sans-serif;transition:all 0.2s;letter-spacing:0.3px;';
-triggerBtn.onmouseover = function(){ this.style.background='#B8964A'; this.style.transform='scale(1.04)'; };
-triggerBtn.onmouseout  = function(){ this.style.background='#1E2A5E'; this.style.transform='scale(1)'; };
+triggerBtn.style.cssText = [
+  'position:fixed','bottom:28px','right:28px','background:${primary}','color:white','border:none',
+  'padding:0 22px','height:52px','border-radius:26px','cursor:pointer','font-size:14px','font-weight:600',
+  'letter-spacing:-0.01em','box-shadow:0 4px 24px rgba(30,42,94,.35),0 1px 4px rgba(0,0,0,.15)',
+  'z-index:999998','font-family:Inter,system-ui,Arial,sans-serif','display:flex','align-items:center',
+  'gap:9px','transition:transform .18s,box-shadow .18s'
+].join(';');
+triggerBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' + (isHotelMode ? 'Book a Room' : 'Plan your trip');
+triggerBtn.onmouseover = function(){ this.style.transform='translateY(-2px)'; this.style.boxShadow='0 8px 32px rgba(30,42,94,.4),0 2px 6px rgba(0,0,0,.12)'; };
+triggerBtn.onmouseout  = function(){ this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 24px rgba(30,42,94,.35),0 1px 4px rgba(0,0,0,.15)'; };
 document.body.appendChild(triggerBtn);
+setTimeout(function(){ triggerBtn.style.animation='et-nudge 1.8s cubic-bezier(.22,1,.36,1) 2'; }, 1500);
 triggerBtn.onclick = function() {
   triggerBtn.style.display = 'none';
-  chatDiv.classList.add('open');
+  chatDiv.style.display = 'flex';
+  requestAnimationFrame(function() { requestAnimationFrame(function() { chatDiv.classList.add('open'); }); });
   input.focus();
   if (!welcomeShown) { welcomeShown = true; _initView(); }
 };
 closeBtn.onclick = function() {
   chatDiv.classList.remove('open');
-  triggerBtn.style.display = 'block';
+  setTimeout(function() { chatDiv.style.display = 'none'; triggerBtn.style.display = 'flex'; }, 280);
+
 };
   } else { chatDiv.classList.add('open'); if (!welcomeShown) { welcomeShown = true; _initView(); } }
 
@@ -316,8 +447,41 @@ closeBtn.onclick = function() {
     div.innerText = text; messages.appendChild(div); messages.scrollTop = messages.scrollHeight;
     return div;
   }
-  function showTyping() { var d = document.createElement('div'); d.className = 'typing'; d.id = 'et-typing'; d.innerHTML = '<span></span><span></span><span></span>'; messages.appendChild(d); messages.scrollTop = messages.scrollHeight; }
-  function hideTyping() { var t = document.getElementById('et-typing'); if (t) t.remove(); }
+  var TYPING_MESSAGES = [
+    'Putting your trip together…',
+    'Building your package…',
+    'Searching flights & hotels…',
+    'Finding the best options for you…',
+    'Checking availability…',
+    'Almost there…'
+  ];
+  var _typingInterval = null;
+
+  function showTyping() {
+    if (_typingInterval) { clearInterval(_typingInterval); _typingInterval = null; }
+    var old = document.getElementById('et-typing'); if (old) old.remove();
+    var d = document.createElement('div'); d.className = 'typing'; d.id = 'et-typing';
+    var dots = document.createElement('div'); dots.className = 'typing-dots';
+    dots.innerHTML = '<span></span><span></span><span></span>';
+    var label = document.createElement('div'); label.className = 'typing-label'; label.id = 'et-typing-label';
+    var msgIndex = Math.floor(Math.random() * TYPING_MESSAGES.length);
+    label.innerText = TYPING_MESSAGES[msgIndex];
+    d.appendChild(dots); d.appendChild(label);
+    messages.appendChild(d); messages.scrollTop = messages.scrollHeight;
+    _typingInterval = setInterval(function () {
+      msgIndex = (msgIndex + 1) % TYPING_MESSAGES.length;
+      var lbl = document.getElementById('et-typing-label');
+      if (lbl) {
+        lbl.style.opacity = '0';
+        setTimeout(function () { lbl.innerText = TYPING_MESSAGES[msgIndex]; lbl.style.opacity = '1'; }, 250);
+      }
+    }, 3500);
+  }
+
+  function hideTyping() {
+    if (_typingInterval) { clearInterval(_typingInterval); _typingInterval = null; }
+    var t = document.getElementById('et-typing'); if (t) t.remove();
+  }
   function scrollToEl(el) { if (!el) return; setTimeout(function() { messages.scrollTo({ top: el.offsetTop - 12, behavior: 'smooth' }); }, 80); }
   function fmtTime(iso) { if (!iso) return 'TBC'; try { var d = new Date(iso); if (isNaN(d)) return iso; return d.toLocaleTimeString('en-KE', {hour:'2-digit',minute:'2-digit'}); } catch(e) { return iso; } }
   function fmtPrice(n, cur) { return (cur||'KES')+' '+(Math.round(Number(n)||0)).toLocaleString(); }
@@ -465,18 +629,36 @@ closeBtn.onclick = function() {
     legFlow = null; itineraryId = null; persistState();
   }
 
+  var NAME_KEY  = 'bodrless_name_' + agencyKey;
+  var guestName = '';
+  try { guestName = localStorage.getItem(NAME_KEY) || ''; } catch (e) {}
+
+  function saveName(v) {
+    guestName = String(v || '').replace(/[^\\p{L}\\s'-]/gu, '').trim().slice(0, 30);
+    try { guestName ? localStorage.setItem(NAME_KEY, guestName) : localStorage.removeItem(NAME_KEY); } catch (e) {}
+  }
+
   function showAgencyWelcome() {
-    var div = document.createElement('div'); div.className = 'et-agency-welcome';
-    var h4  = document.createElement('h4'); h4.innerText = 'Welcome to ${agencyName}';
-    var p   = document.createElement('p');  p.innerText  = 'Tell me your dream destination and I will find the perfect package.';
-    var sug = document.createElement('div'); sug.className = 'et-suggestions';
-    ['Nairobi to Zanzibar','Cape Town 5 nights','Masai Mara Safari','Kigali Rwanda','Cairo Egypt'].forEach(function(s) {
-      var btn = document.createElement('span'); btn.className = 'et-suggestion'; btn.innerText = s;
-      btn.onclick = function() { input.value = s; send(); };
-      sug.appendChild(btn);
+    var hero = document.createElement('div'); hero.className = 'et-hero'; hero.id = 'et-hero';
+    var h4 = document.createElement('h4');
+    h4.innerText = guestName ? 'Welcome back, ' + guestName : CFG.title;
+    var p = document.createElement('p');
+    p.innerText = guestName ? 'Where would you like to go this time?' : CFG.intro;
+    var grid = document.createElement('div'); grid.className = 'et-chip-grid';
+    CFG.chips.forEach(function (s) {
+      var b = document.createElement('button'); b.className = 'et-chip'; b.innerText = s;
+      b.onclick = function () { input.value = s; send(); };
+      grid.appendChild(b);
     });
-    div.appendChild(h4); div.appendChild(p); div.appendChild(sug);
-    messages.appendChild(div);
+    hero.appendChild(h4); hero.appendChild(p); hero.appendChild(grid);
+    if (!guestName) {
+      var row = document.createElement('label'); row.className = 'et-name-row';
+      var ni = document.createElement('input'); ni.className = 'et-name-input';
+      ni.placeholder = 'Your first name, so I can address you (optional)';
+      ni.maxLength = 30; ni.autocomplete = 'given-name';
+      row.appendChild(ni); hero.appendChild(row);
+    }
+    messages.appendChild(hero);
   }
 
   function replayTranscript() {
@@ -962,6 +1144,9 @@ closeBtn.onclick = function() {
   // ─────────────────────────────────────────────────────────────────────────
   function send() {
     var text = input.value.trim(); if (!text) return;
+    var nameEl = document.querySelector('#bodrless-chat .et-name-input');
+    if (nameEl && nameEl.value.trim()) saveName(nameEl.value);
+    var heroEl = document.getElementById('et-hero'); if (heroEl) heroEl.remove();
     if (isHotelMode && /\b(?:cancel|modify|change|update|manage|view)\b/.test(text.toLowerCase()) && /\b(?:booking|reservation|stay|ref|reference)\b/.test(text.toLowerCase())) {
       addMsg(text,'user');transcript.push({type:'user',text:text});persistState();input.value='';
       addMsg("Of course — please provide your booking reference and the phone number you used.",'bot');return;
@@ -978,8 +1163,8 @@ closeBtn.onclick = function() {
       ? {'Content-Type':'application/json','x-hotel-key': agencyKey}
       : {'Content-Type':'application/json','x-api-key':  agencyKey};
     var body     = isHotelMode
-      ? JSON.stringify({prompt:text,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams})
-      : JSON.stringify({prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)});
+      ? JSON.stringify({prompt:text,guestName:guestName||null,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams})
+      : JSON.stringify({prompt:text,guestName:guestName||null,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)});
 
     fetch(endpoint,{method:'POST',headers:hdrs,body:body})
     .then(function(r){ return r.json(); })
@@ -1178,7 +1363,7 @@ closeBtn.onclick = function() {
 
   sendBtn.onclick = send;
   input.addEventListener('keypress', function(e){ if (e.key === 'Enter') send(); });
-  console.log('[BODRLESS] Widget loaded — key:' + agencyKey + ' mode:${mode}');
+  console.log('[BODRLESS] Widget loaded — key:' + agencyKey + ' mode:' + (isHotelMode ? 'hotel_direct' : 'agency'));
 }
 if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initWidget); } else { initWidget(); }
 })();`;

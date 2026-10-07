@@ -1,0 +1,70 @@
+{
+  "scenario": "s1-serp",
+  "request": {
+    "destination": "los angeles",
+    "checkIn": "2026-11-06",
+    "checkOut": "2026-11-08",
+    "guests": [
+      {
+        "adults": 1,
+        "children": [
+          5
+        ]
+      }
+    ],
+    "residency": "uz"
+  },
+  "response": [
+    {
+      "supplier": "ratehawk",
+      "hotelCode": "7860172",
+      "hotelId": 7860172,
+      "hotelSlug": "four_points_by_sheraton_los_angeles",
+      "stars": null,
+      "rating": null,
+      "location": null,
+      "latitude": null,
+      "longitude": null,
+      "images": [],
+      "checkIn": "2026-11-06",
+      "checkOut": "2026-11-08",
+      "nights": 2,
+      "pricePerNight": 139,
+      "totalRate": 278,
+      "currency": "USD",
+      "matchHash": "m-73e1b6a8-92d7-5277-948e-a5e929563735",
+      "rateType": "NOR",
+      "isRefundable": false,
+      "freeCancellationBefore": null,
+      "excludedTaxes": [],
+      "cancellationPolicies": [
+        {
+          "start_at": null,
+          "end_at": null,
+          "amount_charge": "278.00",
+          "amount_show": "278.00",
+          "commission_info": {
+            "show": {
+              "amount_gross": "278.00",
+              "amount_net": "278.00",
+              "amount_commission": "0.00"
+            },
+            "charge": {
+              "amount_gross": "278.00",
+              "amount_net": "278.00",
+              "amount_commission": "0.00"
+            }
+          }
+        }
+      ],
+      "rateComments": "Room Only",
+      "mealPlan": "Room Only",
+      "boardType": "nomeal",
+      "roomName": "Traditional Twin room (twin beds) (Child bed is not included, child bed not included, child meal not included)",
+      "promotions": [],
+      "rooms": 1,
+      "adults": 1,
+      "supplier_tag": null
+    }
+  ]
+}
