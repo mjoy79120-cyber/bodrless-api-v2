@@ -1163,8 +1163,8 @@ closeBtn.onclick = function() {
       ? {'Content-Type':'application/json','x-hotel-key': agencyKey}
       : {'Content-Type':'application/json','x-api-key':  agencyKey};
     var body     = isHotelMode
-      ? JSON.stringify({prompt:text,guestName:guestName||null,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams})
-      : JSON.stringify({prompt:text,guestName:guestName||null,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)});
+      ? JSON.stringify(Object.assign({prompt:text,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams}, guestName ? {guestName:guestName} : {}))
+      : JSON.stringify(Object.assign({prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:(sessionId?previousParams:null)}, guestName ? {guestName:guestName} : {}));
 
     fetch(endpoint,{method:'POST',headers:hdrs,body:body})
     .then(function(r){ return r.json(); })
