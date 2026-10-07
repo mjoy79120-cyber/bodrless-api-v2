@@ -1171,16 +1171,7 @@ closeBtn.onclick = function() {
     .then(function(data){
       hideTyping();
 
-      // TEMP DEBUG — remove after diagnosis
-      console.log('[BODRLESS] API response:', JSON.stringify({
-        isClassifiedTrip: data.isClassifiedTrip,
-        hasTripResults:   !!(data.tripResults && data.tripResults.length),
-        tripResultsCount: data.tripResults && data.tripResults.length,
-        hasPackages:      !!(data.packages && data.packages.length),
-        packagesCount:    data.packages && data.packages.length,
-        text:             data.text,
-        needsClarification: data.needsClarification,
-      }));
+      console.log('[BODRLESS] API response:', JSON.stringify(data));
 
       if(data.sessionId)           sessionId           = data.sessionId;
       if(data.tripParams)          previousParams      = data.tripParams;
