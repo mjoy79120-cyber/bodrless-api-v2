@@ -1485,8 +1485,6 @@ closeBtn.onclick = function() {
       : JSON.stringify({
               prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,
               conversationHistory:conversationHistory,previousParams:previousParams,
-              selectedPackage: (modifyState && selectedPkgHold) ? selectedPkgHold.package : null,
-              modifying:       !!(modifyState && modifyState.active),
             })
 
     fetch(endpoint,{method:'POST',headers:hdrs,body:body})
