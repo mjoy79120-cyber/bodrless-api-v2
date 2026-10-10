@@ -25,6 +25,7 @@ router.get('/', (req, res) => {
     chips: (req.query.chips ? String(req.query.chips).split('|') : [
       'Nairobi to Zanzibar', 'Cape Town 5 nights', 'Masai Mara safari', 'Kigali, Rwanda'
     ]).map(c => clean(c, '', 40)).filter(Boolean).slice(0, 6),
+    greetingMode: isHotelMode ? 'concierge' : (req.query.mode === 'safari' ? 'safari' : 'travel'),
   };
 
   // Permanent fix: reject hotel_direct requests with no key or an unknown-looking key
@@ -290,6 +291,15 @@ router.get('/', (req, res) => {
 .dark .typing-dots span{background:#fff;}
 .dark .typing-dots span:nth-child(2){background:var(--et-gold);}
 
+/* OTP flow */
+.otp-note{font-size:11px;color:var(--et-muted);text-align:center;margin-top:6px;}
+
+/* wish nudge in chat — soft highlight */
+.msg.bot.wish-nudge{background:linear-gradient(135deg,#f0f4ff,#fff);border-color:var(--et-gold);}
+
+/* drawer wish section */
+.dr-item small{color:var(--et-muted);}
+
 `;
 
   const widgetCode = `(function () {
@@ -333,6 +343,7 @@ function initWidget() {
         transcript: transcript.slice(-20),
         conversationHistory, previousParams, sessionId,
         legFlow, itineraryId,
+        selectedPkg: selectedPkgHold ? { package: selectedPkgHold.package, savedAt: new Date(selectedPkgHold.savedAt).toISOString() } : null,
       }));
     } catch(e) {}
   }
@@ -357,6 +368,8 @@ function initWidget() {
     legFlow             = __r.legFlow             || null;
     itineraryId         = __r.itineraryId         || null;
     hasRestoredHistory  = transcript.length > 0;
+    conversationId      = sessionId || null;
+    _loadSelectedPkg(__r);
   }
 
   var style = document.createElement('style');
@@ -626,6 +639,18 @@ closeBtn.onclick = function() {
     if (itineraryId) {
       fetch(apiBase + '/api/trips/itinerary/' + itineraryId + '/abandon', { method: 'POST', headers: {'Content-Type':'application/json','x-api-key': agencyKey} }).catch(function(){});
     }
+    if (legFlow && legFlow.runningTotalKES > 0 && visitorToken) {
+      // get the verified phone if we have it, then record abandonment
+      wapi('GET', '/otp/status').then(function (d) {
+        if (d && d.verified) {
+          // server records abandonment signal via travelerIntelligence
+          wapi('POST', '/visitor/abandonment', {
+            totalKES: legFlow.runningTotalKES,
+            destination: legFlow.tripParams && legFlow.tripParams.destination,
+          }).catch(function () {});
+        }
+      }).catch(function () {});
+    }
     legFlow = null; itineraryId = null; persistState();
   }
 
@@ -633,32 +658,245 @@ closeBtn.onclick = function() {
   var guestName = '';
   try { guestName = localStorage.getItem(NAME_KEY) || ''; } catch (e) {}
 
+  // ── PATCH: conversational state ─────────────────────────────────────────
+  var wishList          = [];      // open trip wishes for this visitor
+  var otpState          = null;    // { step: 'awaiting_phone'|'awaiting_code', phone? }
+  var selectedPkgHold   = null;    // { package, savedAt }
+  var PKG_HOLD_TTL      = 60 * 60 * 1000;   // 1 hour
+  var modifyState       = null;    // { active: true, originalParams }
+  var _waLinkOffered    = false;
+
+  // visitor identity for /api/widget routes (widgetMemory / widgetOtp)
+  var visitorToken = '';
+  try {
+    visitorToken = localStorage.getItem('bodrless_visitor') || '';
+    if (!visitorToken) {
+      visitorToken = 'v_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem('bodrless_visitor', visitorToken);
+    }
+  } catch (e) { visitorToken = 'v_anon_' + Math.random().toString(36).slice(2); }
+  var conversationId = null;
+
+  function wapi(method, path, body) {
+    var opts = { method: method, headers: { 'Content-Type': 'application/json', 'x-visitor-token': visitorToken } };
+    if (isHotelMode) opts.headers['x-hotel-key'] = agencyKey; else opts.headers['x-api-key'] = agencyKey;
+    if (body) opts.body = JSON.stringify(body);
+    return fetch(apiBase + '/api/widget' + path, opts).then(function (r) { return r.json(); });
+  }
+
   function saveName(v) {
     guestName = String(v || '').replace(/[^\\p{L}\\s'-]/gu, '').trim().slice(0, 30);
     try { guestName ? localStorage.setItem(NAME_KEY, guestName) : localStorage.removeItem(NAME_KEY); } catch (e) {}
   }
 
+  // Pool of warm openers, keyed by greeting mode.
+  // The agency name is injected at runtime so every agency
+  // gets its own voice, not a generic line.
+  var GREETINGS = {
+    travel: [
+      function(n) { return '🌍 Karibu! Welcome to ' + n + '. Before I start pulling up options for you — what should I call you?'; },
+      function(n) { return '✈️ Hey there! ' + n + ' here. I\\'m about to find you something amazing — but first, who am I planning this trip for?'; },
+      function(n) { return '👋 Welcome to ' + n + '! Quick one before we dive in — what\\'s your name so I can make this personal?'; },
+      function(n) { return '🌟 Hi and welcome to ' + n + '. I\\'d love to help you plan your next adventure — what do I call you?'; },
+    ],
+    safari: [
+      function(n) { return '🦁 Welcome to ' + n + '! The wild is waiting — but first, tell me your name so I know who I\\'m sending on this adventure.'; },
+      function(n) { return '🌿 Jambo! ' + n + ' here. Before we start talking safaris, what should I call you?'; },
+      function(n) { return '🐘 Hey explorer! Welcome to ' + n + '. What\\'s your name? I want to make sure this trip is built just for you.'; },
+    ],
+    concierge: [
+      function(n) { return '🏨 Good day and welcome to ' + n + '. It\\'s a pleasure to have you. May I ask your name so I can assist you properly?'; },
+      function(n) { return '✨ Welcome to ' + n + '. Before I look into availability for you, who shall I say I\\'m helping today?'; },
+      function(n) { return '🌸 Hello and welcome to ' + n + '. I\\'m here to take care of everything — what is your name?'; },
+    ],
+  };
+
+  var NAME_REACTIONS = [
+    function(n) { return n + ', great to meet you! 😊 Now — where are you thinking of going?'; },
+    function(n) { return 'Love that name! So ' + n + ', what trip can I help you with?'; },
+    function(n) { return n + '! Perfect. Where in the world are we sending you?'; },
+    function(n) { return 'Nice to meet you ' + n + ' 👋 What destination are you dreaming of?'; },
+    function(n) { return n + ', you\\'ve come to the right place. What trip are we planning?'; },
+  ];
+
+  function _pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
   function showAgencyWelcome() {
+    // returning visitor — skip greeter, go straight to conversation
+    if (guestName) {
+      var heroEl = document.getElementById('et-hero');
+      if (heroEl) heroEl.remove();
+      var pool = [
+        'Welcome back ' + guestName + '! 👋 Where are we going this time?',
+        guestName + ', good to have you back! What trip are we planning?',
+        'Hey ' + guestName + '! Ready for your next adventure? Tell me where.',
+        'Welcome back ' + guestName + ' 🌍 What destination shall we explore?',
+      ];
+      setTimeout(function () { addMsg(_pick(pool), 'bot'); }, 300);
+      _loadAndShowWishes();
+      return;
+    }
+
+    // first visit — show chip grid while greeter message types
     var hero = document.createElement('div'); hero.className = 'et-hero'; hero.id = 'et-hero';
-    var h4 = document.createElement('h4');
-    h4.innerText = guestName ? 'Welcome back, ' + guestName : CFG.title;
-    var p = document.createElement('p');
-    p.innerText = guestName ? 'Where would you like to go this time?' : CFG.intro;
     var grid = document.createElement('div'); grid.className = 'et-chip-grid';
     CFG.chips.forEach(function (s) {
       var b = document.createElement('button'); b.className = 'et-chip'; b.innerText = s;
-      b.onclick = function () { input.value = s; send(); };
+      b.onclick = function () {
+        var heroEl = document.getElementById('et-hero'); if (heroEl) heroEl.remove();
+        if (!guestName) { _pendingChip = s; _askNameFirst(); return; }
+        input.value = s; send();
+      };
       grid.appendChild(b);
     });
-    hero.appendChild(h4); hero.appendChild(p); hero.appendChild(grid);
-    if (!guestName) {
-      var row = document.createElement('label'); row.className = 'et-name-row';
-      var ni = document.createElement('input'); ni.className = 'et-name-input';
-      ni.placeholder = 'Your first name, so I can address you (optional)';
-      ni.maxLength = 30; ni.autocomplete = 'given-name';
-      row.appendChild(ni); hero.appendChild(row);
-    }
+    hero.appendChild(grid);
     messages.appendChild(hero);
+
+    // animated bot greeting after a short pause
+    var pool   = GREETINGS[CFG.greetingMode] || GREETINGS.travel;
+    var opener = _pick(pool)(CFG.name);
+    setTimeout(function () {
+      addMsg(opener, 'bot');
+      _awaitingName = true;
+    }, 400);
+  }
+
+  var _awaitingName = false;
+  var _pendingChip  = null;
+
+  function _askNameFirst() {
+    addMsg('Before I look that up — what\\'s your name so I can keep this personal?', 'bot');
+    _awaitingName = true;
+  }
+
+  // ── 8: WhatsApp OTP bridge ──────────────────────────────────────────────
+  function _offerWhatsAppLink() {
+    wapi('GET', '/otp/status').then(function (d) {
+      if (d && d.verified) return;   // already linked
+      setTimeout(function () {
+        var name = guestName ? guestName + ', want' : 'Want';
+        addMsg(name + ' me to send these options and updates to your WhatsApp too? Just drop your number and I\\'ll send a quick confirmation code.', 'bot');
+        otpState = { step: 'awaiting_phone' };
+      }, 800);
+    }).catch(function () {});
+  }
+
+  function _handleOtpPhone(text) {
+    var raw = text.replace(/[\\s\\-()]/g, '');
+    if (!/^\\+?[\\d]{9,15}$/.test(raw)) {
+      addMsg('That doesn\\'t look like a valid number — try again with your full number, like 0712345678 or +254712345678.', 'bot');
+      return;
+    }
+    otpState = { step: 'awaiting_code', phone: raw };
+    showTyping();
+    wapi('POST', '/otp/send', { phone: raw }).then(function (d) {
+      hideTyping();
+      if (d && d.alreadyVerified) {
+        otpState = null;
+        addMsg('You\\'re already linked! I\\'ll send updates to your WhatsApp.', 'bot');
+        return;
+      }
+      if (d && d._devCode) {
+        addMsg('(Dev mode) Your code is: ' + d._devCode + ' — type it in to verify.', 'bot');
+        return;
+      }
+      addMsg('Perfect! I just sent a 6-digit code to ' + raw + '. Type it in here to confirm.', 'bot');
+    }).catch(function () {
+      hideTyping(); otpState = null;
+      addMsg('Couldn\\'t send the code right now. You can try again later.', 'bot');
+    });
+  }
+
+  function _handleOtpCode(text) {
+    var code = text.replace(/\\s/g, '');
+    if (!/^\\d{6}$/.test(code)) {
+      addMsg('That doesn\\'t look right — it should be a 6-digit code. Try again?', 'bot');
+      return;
+    }
+    showTyping();
+    wapi('POST', '/otp/verify', { phone: otpState.phone, code: code }).then(function (d) {
+      hideTyping(); otpState = null;
+      if (d && d.ok) {
+        var name = guestName ? guestName + ', you\\'re' : 'You\\'re';
+        addMsg('✅ ' + name + ' all set! I\\'ll send trip updates and price drops to your WhatsApp from now on.', 'bot');
+      } else {
+        addMsg('That code didn\\'t match. Want to try again? Just send your number.', 'bot');
+      }
+    }).catch(function () {
+      hideTyping(); otpState = null;
+      addMsg('Something went wrong verifying your code. Try again later.', 'bot');
+    });
+  }
+
+  // ── 9: selected package hold (restored from persisted state) ────────────
+  function _loadSelectedPkg(c) {
+    if (!c.selectedPkg) return;
+    var age = Date.now() - new Date(c.selectedPkg.savedAt).getTime();
+    if (age > PKG_HOLD_TTL) return;   // stale
+    selectedPkgHold = { package: c.selectedPkg.package, savedAt: new Date(c.selectedPkg.savedAt).getTime() };
+  }
+
+  // ── 13: trip wishes ─────────────────────────────────────────────────────
+  // NOTE: this widget has no drawer yet — when renderDrawer() is added,
+  // call _loadWishesIntoDrawer(body) inside it (patch section 13).
+  function _loadWishesIntoDrawer(body) {
+    if (!body) return;
+    wapi('GET', '/wishes').then(function (d) {
+      if (!d || !d.wishes || !d.wishes.length) return;
+      var section = document.createElement('div');
+      var label = document.createElement('div');
+      label.style.cssText = 'font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--et-muted);padding:4px 0 8px;';
+      label.innerText = 'Saved trip ideas';
+      section.appendChild(label);
+      d.wishes.forEach(function (w) {
+        var it = document.createElement('div'); it.className = 'dr-item';
+        var tx = document.createElement('div');
+        var tt = document.createElement('div');
+        tt.innerText = '🗺️ ' + w.destination + (w.departure_month ? '  ·  ' + w.departure_month : '');
+        var sm = document.createElement('small');
+        sm.innerText = w.best_price_kes
+          ? 'From KES ' + Math.round(w.best_price_kes).toLocaleString() + (w.price_change < -1000 ? '  📉' : '')
+          : 'Searching for options…';
+        tx.appendChild(tt); tx.appendChild(sm);
+        it.onclick = function () { if (window.closeDrawer) closeDrawer(); _openWish(w); };
+        it.appendChild(tx); section.appendChild(it);
+      });
+      body.insertBefore(section, body.children[1] || null);
+    }).catch(function () {});
+  }
+
+  function _loadAndShowWishes() {
+    if (!visitorToken) return;
+    wapi('GET', '/wishes').then(function (d) {
+      if (!d || !d.wishes || !d.wishes.length) return;
+      // show a soft nudge in chat if there are saved wishes
+      var w = d.wishes[0];
+      if (w.best_price_kes && w.cache_valid) {
+        var name = guestName ? guestName + ', I' : 'I';
+        setTimeout(function () {
+          addMsg(name + ' still have your ' + w.destination + ' trip idea saved' + (w.departure_month ? ' for ' + w.departure_month : '') + '. From KES ' + Math.round(w.best_price_kes).toLocaleString() + '. Want to pick that up?', 'bot');
+        }, 1800);
+      }
+    }).catch(function () {});
+  }
+
+  function _openWish(w) {
+    addMsg('Let\\'s look at your ' + w.destination + ' trip' + (w.departure_month ? ' for ' + w.departure_month : '') + '!', 'bot');
+    showTyping();
+    wapi('GET', '/wishes/' + w.id + '/packages').then(function (d) {
+      hideTyping();
+      if (!d || !d.packages_cached || !d.packages_cached.length) {
+        addMsg('Still searching for options — I\\'ll have something shortly. Ask me about ' + w.destination + ' and I\\'ll pull them up now.', 'bot');
+        input.value = 'Find me options for ' + w.destination + (w.departure_month ? ' in ' + w.departure_month : '');
+        return;
+      }
+      addMsg('Here\\'s what I found for ' + w.destination + (w.departure_month ? ' in ' + w.departure_month : '') + ':', 'bot');
+      d.packages_cached.slice(0, 4).forEach(function (p, i) {
+        var card = addPackage(p, i, null, null);
+        messages.appendChild(card);
+      });
+      messages.scrollTop = messages.scrollHeight;
+    }).catch(function () { hideTyping(); });
   }
 
   function replayTranscript() {
@@ -890,6 +1128,21 @@ closeBtn.onclick = function() {
       .catch(function() { em.innerText = 'Network error. Please try again.'; em.style.display = 'block'; cfb.innerText = 'Confirm Booking'; cfb.disabled = false; });
     };
     form.appendChild(cfb);
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'summary-action-btn secondary';
+    cancelBtn.innerText = '✕ Cancel and go back';
+    cancelBtn.style.marginTop = '8px';
+    cancelBtn.onclick = function () {
+      form.remove();
+      // clear booking session server-side
+      if (visitorToken && conversationId) {
+        wapi('POST', '/conversations/' + conversationId + '/cancel-booking').catch(function () {});
+      }
+      // keep context, just surface the packages again
+      addMsg('No problem ' + (guestName || '') + ' — your options are still above. Take your time.', 'bot');
+      selectedPkgHold = selectedPkgHold; // keep the hold alive
+    };
+    form.appendChild(cancelBtn);
     var tb = document.createElement('div'); tb.className = 'trust-badge'; tb.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Secure payment via M-Pesa'; form.appendChild(tb);
     messages.appendChild(form); messages.scrollTop = messages.scrollHeight;
   }
@@ -935,7 +1188,16 @@ closeBtn.onclick = function() {
     var pps = document.createElement('small'); pps.innerText = fmtPrice(ppp,cur)+'/person · '+pax+' traveller(s)'; ppd.appendChild(pps);
     if (onSelect) {
       var selBtn = document.createElement('button'); selBtn.className = 'select-btn'; selBtn.innerText = '✓ Select';
-      selBtn.onclick = function() { selBtn.innerText = 'Selected ✓'; selBtn.className = 'select-btn selected'; selBtn.disabled = true; onSelect(p); };
+      selBtn.onclick = function() { selBtn.innerText = 'Selected ✓'; selBtn.className = 'select-btn selected'; selBtn.disabled = true; onSelect(p);
+        selectedPkgHold = { package: p, savedAt: Date.now() };
+        if (visitorToken && conversationId) {
+          wapi('PUT', '/conversations/' + conversationId + '/state', {
+            legFlow: legFlow, itineraryId: itineraryId,
+            selectedPkg: { package: p, savedAt: new Date().toISOString() },
+          }).catch(function () {});
+        }
+        persistState();
+      };
       pf.appendChild(ppd); pf.appendChild(selBtn);
     } else {
       var bk = document.createElement('button'); bk.className = 'book'; bk.innerText = 'Book Now';
@@ -985,6 +1247,21 @@ closeBtn.onclick = function() {
       .catch(function(){em2.innerText='Network error.';em2.style.display='block';cfb2.innerText='Confirm Booking';cfb2.disabled=false;});
     };
     form.appendChild(cfb2);
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'summary-action-btn secondary';
+    cancelBtn.innerText = '✕ Cancel and go back';
+    cancelBtn.style.marginTop = '8px';
+    cancelBtn.onclick = function () {
+      form.remove();
+      // clear booking session server-side
+      if (visitorToken && conversationId) {
+        wapi('POST', '/conversations/' + conversationId + '/cancel-booking').catch(function () {});
+      }
+      // keep context, just surface the packages again
+      addMsg('No problem ' + (guestName || '') + ' — your options are still above. Take your time.', 'bot');
+      selectedPkgHold = selectedPkgHold; // keep the hold alive
+    };
+    form.appendChild(cancelBtn);
     var tb2=document.createElement('div');tb2.className='trust-badge';tb2.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Secure payment via M-Pesa';form.appendChild(tb2);
     messages.appendChild(form);messages.scrollTop=messages.scrollHeight;
   }
@@ -1144,6 +1421,39 @@ closeBtn.onclick = function() {
   // ─────────────────────────────────────────────────────────────────────────
   function send() {
     var text = input.value.trim(); if (!text) return;
+
+    // ── name capture ─────────────────────────────────────────
+    if (_awaitingName) {
+      _awaitingName = false;
+      var heroEl = document.getElementById('et-hero'); if (heroEl) heroEl.remove();
+      var rawName = text.trim().split(/\\s+/)[0];    // take first word only
+      rawName = rawName.charAt(0).toUpperCase() + rawName.slice(1).toLowerCase();
+      if (rawName.length >= 2 && rawName.length <= 30 && /^[a-zA-ZÀ-ÿ'-]+$/.test(rawName)) {
+        saveName(rawName);
+        addMsg(text, 'user'); transcript.push({ type: 'user', text: text }); persistState();
+        input.value = '';
+        var reaction = _pick(NAME_REACTIONS)(guestName);
+        setTimeout(function () {
+          addMsg(reaction, 'bot');
+          _loadAndShowWishes();
+          if (_pendingChip) {
+            var chip = _pendingChip; _pendingChip = null;
+            setTimeout(function () { input.value = chip; send(); }, 600);
+          }
+        }, 350);
+        return;
+      }
+      // doesn't look like a name — treat as a destination and carry on
+      _awaitingName = false;
+    }
+
+    // ── OTP flow intercept ───────────────────────────────────
+    if (otpState) {
+      addMsg(text, 'user'); transcript.push({ type: 'user', text: text }); input.value = '';
+      if (otpState.step === 'awaiting_phone') { _handleOtpPhone(text); return; }
+      if (otpState.step === 'awaiting_code')  { _handleOtpCode(text);  return; }
+    }
+
     var nameEl = document.querySelector('#bodrless-chat .et-name-input');
     if (nameEl && nameEl.value.trim()) saveName(nameEl.value);
     var heroEl = document.getElementById('et-hero'); if (heroEl) heroEl.remove();
@@ -1156,6 +1466,14 @@ closeBtn.onclick = function() {
       addMsg(text,'user');transcript.push({type:'user',text:text});persistState();input.value='';
       showTyping();_searchAlternativesForLeg(awaitingLeg,text);return;
     }
+    // ── mid-conversation modify ──────────────────────────────
+    var MODIFY_RE = /change|modify|different|cheaper|upgrade|more nights|fewer nights|another hotel|another flight|swap/i;
+    if (selectedPkgHold && MODIFY_RE.test(text) && !legFlow) {
+      var pkgAge = Date.now() - (selectedPkgHold.savedAt || 0);
+      if (pkgAge < PKG_HOLD_TTL) {
+        modifyState = { active: true, originalParams: previousParams };
+      }
+    }
     addMsg(text,'user');transcript.push({type:'user',text:text});persistState();
     input.value='';showTyping();
     var endpoint = isHotelMode ? apiBase+'/api/hotel/orchestrate' : apiBase+'/api/trips/orchestrate';
@@ -1163,8 +1481,14 @@ closeBtn.onclick = function() {
       ? {'Content-Type':'application/json','x-hotel-key': agencyKey}
       : {'Content-Type':'application/json','x-api-key':  agencyKey};
     var body     = isHotelMode
-      ? JSON.stringify(Object.assign({prompt:text,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams}, guestName ? {guestName:guestName} : {}))
-      : JSON.stringify({prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams})
+      ? JSON.stringify(Object.assign({prompt:text,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams,visitorId:conversationId || null}, guestName ? {guestName:guestName} : {}))
+      : JSON.stringify({
+              prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,
+              conversationHistory:conversationHistory,previousParams:previousParams,
+              visitorId: conversationId || null,
+              selectedPackage: (modifyState && selectedPkgHold) ? selectedPkgHold.package : null,
+              modifying:       !!(modifyState && modifyState.active),
+            })
 
     fetch(endpoint,{method:'POST',headers:hdrs,body:body})
     .then(function(r){ return r.json(); })
@@ -1173,7 +1497,8 @@ closeBtn.onclick = function() {
 
       console.log('[BODRLESS] API response:', JSON.stringify(data));
 
-      if(data.sessionId)           sessionId           = data.sessionId;
+      modifyState = null;
+      if(data.sessionId)         { sessionId = data.sessionId; conversationId = conversationId || data.sessionId; }
       if(data.tripParams)          previousParams      = data.tripParams;
       if(data.conversationHistory) conversationHistory = data.conversationHistory;
 
@@ -1223,6 +1548,12 @@ closeBtn.onclick = function() {
       });
       transcript.push({type:'packages',packages:pkgs.slice(0,4)});
       scrollToEl(botMsg3);persistState();
+
+      // after packages rendered, offer WhatsApp link once per session
+      if (visitorToken && !_waLinkOffered && pkgs && pkgs.length > 0) {
+        _waLinkOffered = true;
+        setTimeout(_offerWhatsAppLink, 1200);
+      }
 
       // ── Cache refresh spinner ─────────────────────────────────────────────
       if (data.needsRefresh || (data.cacheResult && data.cacheResult.needsRefresh)) {
