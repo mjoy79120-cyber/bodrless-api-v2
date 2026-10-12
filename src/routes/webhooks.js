@@ -36,7 +36,6 @@ const router = express.Router();
 const supabase = require('../utils/supabase');
 const orchestrationEngine = require('../orchestration/engine');
 const { createConversation } = require('../conversation');
-const conversation = createConversation({ engine: orchestrationEngine, logger });
 const whatsappService = require('../services/whatsapp');
 const whatsappBookingFlow = require('../services/whatsappBooking');
 const whatsappCancelFlow = require('../services/whatsappCancelFlow');
@@ -46,6 +45,7 @@ const conversationMemory = require('../services/conversationMemoryService');
 const disruptionFlow = require('../services/disruptionFlow');
 const { handleAudioMessage } = require('../services/audioHandler');
 const { logger } = require('../utils/logger');
+const conversation = createConversation({ engine: orchestrationEngine, logger });
 
 // ── Recommendation engine (fire-and-forget — never throws) ────────────────
 let _logEvent, _logFeedback, _writeProfile;
