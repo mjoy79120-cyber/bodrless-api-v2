@@ -179,6 +179,31 @@ function detectCheaperRequest(text) {
 }
 
 // ─────────────────────────────────────────────
+// NAME EXTRACTOR
+// ─────────────────────────────────────────────
+
+const NAME_STOP_WORDS = new Set([
+  'fine','good','great','ok','okay','yes','no','sure','here','ready','set',
+  'nairobi','mombasa','kampala','zanzibar','dubai','london','cairo',
+]);
+
+function extractName(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const cleaned = raw
+    .trim()
+    .replace(/^(i'?m|am|i am|my name is|naitwa|call me|it'?s|this is|hey i'?m|hi i'?m)\s+/i, '')
+    .trim();
+  const toks = cleaned.split(/\s+/);
+  const hasMarker = /^(i'?m|am|i am|my name is|naitwa|call me)\b/i.test(raw.trim());
+  if (!hasMarker && toks.length > 1) return null;
+  const first = toks[0];
+  if (!first || first.length < 2) return null;
+  if (NAME_STOP_WORDS.has(first.toLowerCase())) return null;
+  if (/^\d/.test(first)) return null;
+  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+}
+
+// ─────────────────────────────────────────────
 // UTILITY HELPERS
 // ─────────────────────────────────────────────
 
@@ -1023,7 +1048,7 @@ function _resolveOriginFallback(parsed, session) {
     parsed.destination &&
     _normStr(parsed.destination) === _normStr(session.destination);
 
-  const isSameTripContinuation = sameDestination && freshScore < 0.3;
+  const isSameTripContinuation = sameDestination && freshScore < 0.45;
 
   if (isSameTripContinuation) {
     parsed.origin = session.origin;
@@ -1266,4 +1291,5 @@ module.exports = {
   isFreshTripPrompt,
   scoreFreshPrompt: _scoreFreshPrompt,
   detectCheaperRequest,
+  extractName,
 };

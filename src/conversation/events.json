@@ -1,0 +1,14 @@
+{
+  "_readme": "Curated facts the bot may state about events. Edit this file, not code. Anything null/false is treated as UNKNOWN and the bot says so instead of guessing. Fill startDate/endDate and set datesConfirmed:true only after checking CAF's official announcement.",
+  "afcon": {
+    "aliases": ["afcon", "africa cup of nations", "africa cup", "can 2027", "can2027", "caf tournament", "the tournament"],
+    "name": "Africa Cup of Nations (AFCON) 2027",
+    "hosts": ["Kenya", "Tanzania", "Uganda"],
+    "_hostsSource": "From model memory (joint bid awarded by CAF in 2023). VERIFY before launch; delete the field to stop the bot mentioning hosts.",
+    "datesConfirmed": false,
+    "startDate": null,
+    "endDate": null,
+    "kenyaVenues": [],
+    "lastVerified": null
+  }
+}

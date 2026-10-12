@@ -35,6 +35,8 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../utils/supabase');
 const orchestrationEngine = require('../orchestration/engine');
+const { createConversation } = require('../conversation');
+const conversation = createConversation({ engine: orchestrationEngine, logger });
 const whatsappService = require('../services/whatsapp');
 const whatsappBookingFlow = require('../services/whatsappBooking');
 const whatsappCancelFlow = require('../services/whatsappCancelFlow');
@@ -255,11 +257,14 @@ router.post('/whatsapp', async (req, res) => {
       if (audioResult?.transcript) {
         const prompt = audioResult.transcript;
         const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
-        const result = await orchestrationEngine.orchestrate(prompt, agencyId, {
+        const result = await conversation.orchestrate(prompt, agencyId, {
           conversationHistory: memCtx.conversationHistory,
           previousParams:      memCtx.previousParams,
           channel:             'whatsapp',
           phone:               phone || userKey,
+          messageId:           message.id,
+          sessionKey:          userKey,
+          userName:            contact?.name || username || null,
         });
         conversationMemory.saveTurn(userKey, agencyId, {
           userMessage:    prompt,
@@ -758,14 +763,16 @@ router.post('/whatsapp', async (req, res) => {
       return;
 
     } else {
-      result = await orchestrationEngine.orchestrate(prompt, agencyId, {
+      result = await conversation.orchestrate(prompt, agencyId, {
         conversationHistory: memCtx.conversationHistory,
         previousParams:      memCtx.previousParams,
         channel:             'whatsapp',
         phone:               phone || userKey,
+        messageId:           message.id,
+        sessionKey:          userKey,
+        userName:            contact?.name || username || null,
       });
     }
-
     logger.info('Webhook: orchestration returned', {
       userKey,
       hasText:            !!result.text,

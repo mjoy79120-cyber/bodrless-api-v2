@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const supabase = require("../utils/supabase");
 const { logger } = require("../utils/logger");
-const { parsePrompt, resolveCountryToCity, resolveSafariDestination, isFreshTripPrompt, scoreFreshPrompt } = require("./promptParser");
+const { parsePrompt, resolveCountryToCity, resolveSafariDestination, isFreshTripPrompt, scoreFreshPrompt, extractname } = require("./promptParser");
 const { rankPackages } = require("./packageRanker");
 const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
 const destinationIntel = require("../services/destinationIntel");
@@ -90,6 +90,7 @@ class OrchestrationEngine {
     const sessionId = uuidv4();
     const { conversationHistory = [], previousParams = null, skipParsing = false } = context;
 
+    logger.info("Orchestration started", { agencyId, prompt });
     logger.info(`[${sessionId}] Started`, { agencyId, prompt });
 
     try {
@@ -110,6 +111,35 @@ class OrchestrationEngine {
     }
 
     try {
+
+      // ── FIX 1: FAQ / KNOWLEDGE GATE ──────────────────────────────────────
+      // Runs before ANY parsing so knowledge questions never hit the slot-filler
+      const FAQ_ENTRIES = [
+        {
+          patterns: [/\bafcon\b/i, /\bafrica\s*cup\b/i, /\bcaf\s*(championship|tournament)\b/i],
+          answer: `AFCON 2027 will be hosted across Kenya, Uganda and Tanzania — official dates haven't been confirmed yet. Tell me when you're thinking of travelling and I'll price flights and hotels around that. Which city are you eyeing — Nairobi, Mombasa, Kisumu?`
+        },
+      ];
+
+      for (const faq of FAQ_ENTRIES) {
+        if (faq.patterns.some(p => p.test(prompt))) {
+          const partialParams = previousParams
+            ? { ...previousParams, _awaitingClarification: undefined, _awaitingHotelFollowUp: undefined }
+            : {};
+          return {
+            sessionId,
+            text: faq.answer,
+            packages: [],
+            needsClarification: true,
+            tripParams: partialParams,
+            intent: null,
+            conversationHistory,
+            generatedAt: new Date().toISOString(),
+          };
+        }
+      }
+      // ── END FIX 1 ─────────────────────────────────────────────────────────
+
       // ── SKIP PARSING ──────────────────────────────────────────────────────
       if (skipParsing && previousParams) {
         const tripParams = { ...previousParams, agencyId };
@@ -149,7 +179,7 @@ class OrchestrationEngine {
         };
       }
 
-      // ── FLIGHT-ONLY HOTEL FOLLOW-UP ───────────────────────────────────────
+      // ── FIX 2: HOTEL FOLLOW-UP GATE — clear on non-yes/no ────────────────
       if (previousParams?._awaitingHotelFollowUp) {
         const lower = (prompt || '').toLowerCase().trim();
 
@@ -176,11 +206,33 @@ class OrchestrationEngine {
             );
           }
         }
-        // ── END CORRECTION DETECTION ────────────────────────────
 
         const isYes = /^(yes|y|sure|ok|okay|yep|yeah|yah|add|include|ndio|sawa)$/i.test(lower);
         const isNo  = /^(no|n|nope|nah|skip|just the flight|flight only|hapana|book it)$/i.test(lower)
           || (/\b(no|not|just\s+(?:the\s+)?flight)\b/i.test(lower) && lower.length < 50);
+
+        // FIX 2A: TTL — expire the gate after 5 minutes
+        const setAt   = previousParams._hotelFollowUpSetAt;
+        const expired = setAt && (Date.now() - setAt) > 5 * 60 * 1000;
+
+        // FIX 2B: Anything that isn't yes/no (or expired) clears the gate and routes normally
+        if (!isYes && !isNo || expired) {
+          logger.info('Engine: hotel follow-up gate cleared — routing normally', {
+            reason: expired ? 'ttl_expired' : 'non_yes_no_message',
+            prompt: prompt.slice(0, 80),
+          });
+          const cleanParams = {
+            ...previousParams,
+            _awaitingHotelFollowUp: undefined,
+            _hotelFollowUpSetAt:    undefined,
+            _lastFlightPackages:    undefined,
+          };
+          const freshIntent = this._detectIntent(prompt, cleanParams);
+          return await this._continueOrchestration(
+            cleanParams, agencyId, prompt, conversationHistory,
+            sessionId, freshIntent, context.channel, context.phone
+          );
+        }
 
         if (isYes) {
           const hotelParams = {
@@ -206,24 +258,15 @@ class OrchestrationEngine {
             sessionId,
             text: `Got it — just the flight to ${dest}. Select the option you'd like above and I'll get it booked for you.`,
             packages:            previousParams._lastFlightPackages || [],
+            needsClarification:  false,  // FIX 6: was missing, caused duplicate messages
             tripParams:          { ...previousParams, _awaitingHotelFollowUp: undefined },
             intent:              null,
             conversationHistory,
             generatedAt:         new Date().toISOString(),
           };
         }
-
-        return {
-          sessionId,
-          text: `Just to confirm — would you like me to add hotels in ${this._titleCase(previousParams.destination || 'your destination')} to your flight options? Reply *yes* or *no*.`,
-          packages:            previousParams._lastFlightPackages || [],
-          needsClarification:  true,
-          tripParams:          previousParams,
-          intent:              null,
-          conversationHistory,
-          generatedAt:         new Date().toISOString(),
-        };
       }
+      // ── END FIX 2 ─────────────────────────────────────────────────────────
 
       if (previousParams?._awaitingClarification) {
         return await this._resumeClarification(prompt, agencyId, previousParams, conversationHistory, sessionId, context.channel, context.phone);
@@ -333,25 +376,43 @@ class OrchestrationEngine {
         }
         console.log("FOLLOW-UP DETECTED — adjusted params:", tripParams);
 
-        // ── DESTINATION CHANGE + MULTI-TRIP OVERRIDE ────────────────────────
-        const freshParse = await parsePrompt(prompt, null);
-        const freshDest  = (freshParse.destination || '').toLowerCase().trim();
-        const prevDest   = (tripParams.destination  || '').toLowerCase().trim();
+        // ── FIX 5: DESTINATION SWITCH vs DESTINATION CHANGE ─────────────────
+        const isDestinationSwitch = !!(intent.adjustments?._keepOrigin && intent.adjustments?.destination);
 
-        const destinationChanged = freshDest && prevDest && freshDest !== prevDest;
-        const isMultiTripOverride = Array.isArray(freshParse.trips) && freshParse.trips.length > 1 &&
-          !freshParse.trips.some(t => (t.destination || '').toLowerCase() === prevDest);
-
-        if (destinationChanged || isMultiTripOverride) {
-          logger.info('Engine: follow-up override — destination changed or multi-trip detected', {
-            previous: prevDest,
-            new:      freshDest,
-            reason:   destinationChanged ? 'destination_changed' : 'multi_trip',
+        if (isDestinationSwitch) {
+          // "let's try Zanzibar" — keep Nairobi as origin, swap destination only
+          logger.info('Engine: destination switch — keeping origin, swapping destination', {
+            previous: (previousParams.destination || '').toLowerCase(),
+            new:      (intent.adjustments.destination || '').toLowerCase(),
+            origin:   previousParams.origin,
           });
-          tripParams = { ...freshParse, agencyId };
-          intent.isFollowUp = false;
+          tripParams.destination = resolveCountryToCity(intent.adjustments.destination);
+          tripParams.origin      = previousParams.origin;
+          // Clear stale date/hotel state but keep pax/budget/nights
+          tripParams._awaitingHotelFollowUp = undefined;
+          tripParams._lastFlightPackages    = undefined;
+
+        } else {
+          // Original destination-changed / multi-trip override logic
+          const freshParse = await parsePrompt(prompt, null);
+          const freshDest  = (freshParse.destination || '').toLowerCase().trim();
+          const prevDest   = (tripParams.destination  || '').toLowerCase().trim();
+
+          const destinationChanged = freshDest && prevDest && freshDest !== prevDest;
+          const isMultiTripOverride = Array.isArray(freshParse.trips) && freshParse.trips.length > 1 &&
+            !freshParse.trips.some(t => (t.destination || '').toLowerCase() === prevDest);
+
+          if (destinationChanged || isMultiTripOverride) {
+            logger.info('Engine: follow-up override — destination changed or multi-trip detected', {
+              previous: prevDest,
+              new:      freshDest,
+              reason:   destinationChanged ? 'destination_changed' : 'multi_trip',
+            });
+            tripParams = { ...freshParse, agencyId };
+            intent.isFollowUp = false;
+          }
         }
-        // ── END OVERRIDE ────────────────────────────────────────────────────
+        // ── END FIX 5 ──────────────────────────────────────────────────────
 
       } else {
         const sessionWithStore = previousParams
@@ -424,7 +485,7 @@ class OrchestrationEngine {
       console.log(`[DATE FALLBACK] No returnDate — using ${tripParams.returnDate} (${nights} nights${!tripParams.nights ? ' default' : ''})`);
     }
 
-       tripParams._datesWereAssumed = datesWereAssumed;
+    tripParams._datesWereAssumed = datesWereAssumed;
 
     const resolvedIntent = intent || this._detectIntent(prompt, null);
     tripParams.wantsCheapest = !!resolvedIntent.wantsCheapest;
@@ -439,7 +500,6 @@ class OrchestrationEngine {
           : ['hotel', 'transfer', 'airport_assistance'],
       });
 
-      // Hotel-only: return the accessible list directly, no flights
       if (tripParams.accessibleHotelOnly) {
         return {
           text: formatAccessibilityResponse(dest, accessibleResults),
@@ -447,11 +507,8 @@ class OrchestrationEngine {
         };
       }
 
-      // Full package: run flights normally, swap hotel for accessible inventory
-      // We'll override _searchHotels result after the parallel search below
       tripParams._accessibleResults = accessibleResults;
     }
-    // ── END ACCESSIBILITY BRANCH ──────────────────────────────────────────
 
     // ── ROUTE GRAPH HINTS ─────────────────────────────────────────────────
     let routeHints = null;
@@ -534,11 +591,10 @@ class OrchestrationEngine {
       ]).catch(err => logger.warn('RouteLearning: logOutcome failed', { error: err.message }));
     }
 
-        let outboundTransport = [...outboundResult.results, ...outboundBuses, ...outboundTrains];
+    let outboundTransport = [...outboundResult.results, ...outboundBuses, ...outboundTrains];
     let returnTransport   = [...returnResult.results,   ...returnBuses,   ...returnTrains];
     let hotels = hotelResults;
 
-    // Swap HotelBeds results for accessible inventory if flagged
     if (tripParams._accessibleResults) {
       const { hotels: accessHotels, transfers: accessTransfers, airportAssistance } = tripParams._accessibleResults;
       if (accessHotels.length > 0) {
@@ -554,7 +610,6 @@ class OrchestrationEngine {
           _isAccessible: true,
         }));
       }
-      // Append accessible transfer as a note on the response (handled in text below)
       tripParams._accessibleTransfers = accessTransfers || [];
       tripParams._accessibleAirportAssistance = airportAssistance || [];
     }
@@ -629,14 +684,14 @@ class OrchestrationEngine {
 
     let rankedPackages = rankPackages(packages, tripParams, travelerProfile).slice(0, 4);
 
-if (scorePackages && context?.phone) {
-  try {
-    const scored = await scorePackages(rankedPackages, context.phone, supabase, sessionId);
-    if (scored.rankedPackages?.length > 0) rankedPackages = scored.rankedPackages;
-  } catch (err) {
-    logger.warn('recommendationScorer failed — using rankPackages result', { error: err.message });
-  }
-}
+    if (scorePackages && context?.phone) {
+      try {
+        const scored = await scorePackages(rankedPackages, context.phone, supabase, sessionId);
+        if (scored.rankedPackages?.length > 0) rankedPackages = scored.rankedPackages;
+      } catch (err) {
+        logger.warn('recommendationScorer failed — using rankPackages result', { error: err.message });
+      }
+    }
 
     const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
 
@@ -653,9 +708,8 @@ if (scorePackages && context?.phone) {
         ? ` — ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''}`
         : '';
       const isFlightOnlySearch = rankedPackages.length > 0 && rankedPackages.every(p => p._flightOnly);
-           responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
+      responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
 
-      // Append accessible transfer note if present
       if (tripParams._accessibleTransfers?.length > 0) {
         const t = tripParams._accessibleTransfers[0];
         responseText += `\n\n♿ *Accessible Transfer included:* ${t.name} — KES ${Number(t.price_from).toLocaleString()} ${t.price_unit}. Powered by Accessible Travel Kenya.`;
@@ -665,10 +719,10 @@ if (scorePackages && context?.phone) {
       }
 
       const hasReturnDate = !!(tripParams.returnDate);
-if (isFlightOnlySearch && hasReturnDate) {
-  const nights = tripParams.nights || Math.round((new Date(tripParams.returnDate) - new Date(tripParams.departureDate)) / 86400000);
-  responseText += `\n\nWould you also like me to find hotels in ${dest} for your ${nights} night${nights !== 1 ? 's' : ''}? Reply *yes* to add a hotel, or *no* to book just the flight.`;
-}
+      if (isFlightOnlySearch && hasReturnDate) {
+        const nights = tripParams.nights || Math.round((new Date(tripParams.returnDate) - new Date(tripParams.departureDate)) / 86400000);
+        responseText += `\n\nWould you also like me to find hotels in ${dest} for your ${nights} night${nights !== 1 ? 's' : ''}? Reply *yes* to add a hotel, or *no* to book just the flight.`;
+      }
 
       const excursionNote = this._buildExcursionNote(tripParams.activityRequests);
       if (excursionNote) responseText += `\n\n${excursionNote}`;
@@ -726,24 +780,35 @@ if (isFlightOnlySearch && hasReturnDate) {
       const existing = bestByKey.get(key);
       if (!existing) { bestByKey.set(key, item); continue; }
 
-      const existingPrice = Number(existing.price ?? Infinity);
-      const itemPrice     = Number(item.price     ?? Infinity);
+      // FIX 7: normalize both prices to KES before comparing
+      // Previously compared raw numbers across currencies (USD vs KES)
+      const existingKES = this._toKESSync(Number(existing.price ?? Infinity), existing.currency);
+      const itemKES     = this._toKESSync(Number(item.price     ?? Infinity), item.currency);
 
-      if (itemPrice < existingPrice) {
+      if (itemKES < existingKES) {
         logger.info('Deduped equivalent flight across suppliers — kept cheaper', {
-          key, keptSupplier: item.supplier, keptPrice: itemPrice,
-          droppedSupplier: existing.supplier, droppedPrice: existingPrice,
+          key, keptSupplier: item.supplier, keptPrice: itemKES,
+          droppedSupplier: existing.supplier, droppedPrice: existingKES,
         });
         bestByKey.set(key, item);
       } else {
         logger.info('Deduped equivalent flight across suppliers — kept cheaper', {
-          key, keptSupplier: existing.supplier, keptPrice: existingPrice,
-          droppedSupplier: item.supplier, droppedPrice: itemPrice,
+          key, keptSupplier: existing.supplier, keptPrice: existingKES,
+          droppedSupplier: item.supplier, droppedPrice: itemKES,
         });
       }
     }
 
     return [...bestByKey.values(), ...passthrough];
+  }
+
+  // FIX 7 helper: synchronous rough KES conversion for deduplication only
+  // Use the async toKES util for display/totals — this is for ordering only
+  _toKESSync(price, currency) {
+    if (!price || !isFinite(price)) return price;
+    const rates = { USD: 130, EUR: 142, GBP: 166, ZAR: 7, TZS: 0.05, UGX: 0.035 };
+    if (!currency || currency === 'KES') return price;
+    return price * (rates[currency.toUpperCase()] || 1);
   }
 
   _flightDedupeKey(flight) {
@@ -1595,7 +1660,6 @@ if (isFlightOnlySearch && hasReturnDate) {
 
   async _searchCheapestDirect(fromCity, toCity, date, tripParams) {
     if (!date) return null;
-    // ── FIX 1 (partial) — null-guard before firing supplier call ──────────
     if (!fromCity || !toCity) {
       logger.warn('_searchCheapestDirect: skipping — fromCity or toCity is null', { fromCity, toCity });
       return null;
@@ -1725,7 +1789,6 @@ if (isFlightOnlySearch && hasReturnDate) {
     const marker = previousParams._awaitingClarification;
     const answer = String(prompt || '').trim().toLowerCase();
 
-    // ── PASSENGER DATA GUARD ──────────────────────────────────────────────
     if (PASSENGER_DATA_PATTERN.test(prompt) && previousParams?.destination) {
       logger.info('_resumeClarification: passenger data detected — routing to booking handler', {
         preview: prompt.slice(0, 80),
@@ -1743,10 +1806,29 @@ if (isFlightOnlySearch && hasReturnDate) {
       };
     }
 
-    // ── FIX 3 — FRESH PROMPT DETECTION ───────────────────────────────────
-    // Use the parser's proper scorer instead of raw word count. This prevents
-    // "21 May 1990" DOB strings, single-month answers like "October", and
-    // other short-but-trip-structured inputs from being misclassified.
+    // FIX 3: In the departure_date clarification handler, check for knowledge questions
+    // before attempting to parse the answer as a date
+    if (marker?.type === 'departure_date') {
+      const looksLikeQuestion = /^(when|what|where|who|how|why|is|are|does|will|can)\b/i.test(answer);
+      if (looksLikeQuestion) {
+        logger.info('_resumeClarification: answer looks like a question — re-asking for date', {
+          answer: answer.slice(0, 80),
+        });
+        return this._buildClarificationResponse({
+          sessionId, prompt,
+          question: `I didn't quite catch that — what date are you thinking? Something like "20 November" or just "November" works perfectly.`,
+          tripParams: { ...previousParams },
+          intent: {
+            isFollowUp:   false,
+            adjustments:  {},
+            productScope: previousParams._pendingProductScope || { needsTransport: true, needsHotel: true, needsTransfers: true },
+          },
+          conversationHistory,
+          awaitingClarification: { type: 'departure_date' },
+        });
+      }
+    }
+
     const looksLikeFreshPrompt = isFreshTripPrompt(prompt);
 
     if (looksLikeFreshPrompt) {
@@ -1754,7 +1836,6 @@ if (isFlightOnlySearch && hasReturnDate) {
         preview:    prompt.slice(0, 120),
         freshScore: scoreFreshPrompt(prompt).toFixed(2),
       });
-      // Pass previousParams as session so budget/pax/preferences are inherited
       const freshTripParams = await parsePrompt(prompt, previousParams);
       freshTripParams.agencyId = agencyId;
       const freshIntent = this._detectIntent(prompt, null);
@@ -1762,7 +1843,6 @@ if (isFlightOnlySearch && hasReturnDate) {
         freshTripParams, agencyId, prompt, conversationHistory, sessionId, freshIntent, channel, phone
       );
     }
-    // ── END FIX 3 ─────────────────────────────────────────────────────────
 
     const neutralIntent = {
       isFollowUp:   false,
@@ -1793,25 +1873,25 @@ if (isFlightOnlySearch && hasReturnDate) {
 
       const parsedDate = this._parseDateAnswer(answer);
       if (parsedDate) {
-  tripParams.departureDate = parsedDate;
-  if (tripParams.nights && !tripParams.returnDate) {
-    const dep = new Date(parsedDate);
-    dep.setDate(dep.getDate() + tripParams.nights);
-    tripParams.returnDate = dep.toISOString().split('T')[0];
-  }
-  if (!tripParams.origin && !tripParams.isHotelOnly) {
-    const dest = tripParams.destination ? this._titleCase(tripParams.destination) : 'your destination';
-    return this._buildClarificationResponse({
-      sessionId, prompt,
-      question: `Got it — and where will you be departing from for ${dest}?`,
-      tripParams: { ...tripParams },
-      intent: neutralIntent,
-      conversationHistory,
-      awaitingClarification: { type: 'single_origin' },
-    });
-  }
-  return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
-}
+        tripParams.departureDate = parsedDate;
+        if (tripParams.nights && !tripParams.returnDate) {
+          const dep = new Date(parsedDate);
+          dep.setDate(dep.getDate() + tripParams.nights);
+          tripParams.returnDate = dep.toISOString().split('T')[0];
+        }
+        if (!tripParams.origin && !tripParams.isHotelOnly) {
+          const dest = tripParams.destination ? this._titleCase(tripParams.destination) : 'your destination';
+          return this._buildClarificationResponse({
+            sessionId, prompt,
+            question: `Got it — and where will you be departing from for ${dest}?`,
+            tripParams: { ...tripParams },
+            intent: neutralIntent,
+            conversationHistory,
+            awaitingClarification: { type: 'single_origin' },
+          });
+        }
+        return this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
+      }
 
       const flexibleAnswer = this._detectFlexibleDateAnswer(answer);
       if (flexibleAnswer) {
@@ -1887,14 +1967,12 @@ if (isFlightOnlySearch && hasReturnDate) {
 
     if (!tripParams._channel) tripParams._channel = channel || 'widget';
 
-    // ── PHONE PERSISTENCE ─────────────────────────────────────────────────
     if (phone && !tripParams._phone) {
       tripParams._phone = phone;
     } else if (!phone && tripParams._phone) {
       phone = tripParams._phone;
     }
 
-    // ── DESTINATION PLAUSIBILITY GATE ─────────────────────────────────────
     const IMPLAUSIBLE_DESTINATION = /^(i |we |help|plan|book|find|yes|no|ok|sure|just|same|the |my |our |a |an )/i;
     const destWordCount = (tripParams.destination || '').trim().split(/\s+/).filter(Boolean).length;
 
@@ -1924,7 +2002,6 @@ if (isFlightOnlySearch && hasReturnDate) {
       });
     }
 
-    // ── SAFARI LEG INJECTION ──────────────────────────────────────────────
     if (tripParams.safariDestination) {
       const safariDest     = tripParams.safariDestination;
       const safariDestNorm = this._normalizeCity(safariDest);
@@ -1965,7 +2042,6 @@ if (isFlightOnlySearch && hasReturnDate) {
         };
 
         if (Array.isArray(tripParams.trips) && tripParams.trips.length > 0) {
-          // Clone before mutating to avoid upstream reference corruption
           tripParams.trips = [...tripParams.trips];
           const depIdx = tripParams.trips.findIndex(t => t._role === 'departure' || this._normalizeCity(t.destination) === this._normalizeCity(tripParams.origin || ''));
           if (depIdx > 0) {
@@ -2006,7 +2082,6 @@ if (isFlightOnlySearch && hasReturnDate) {
       }
     }
 
-    // ── ROUND-TRIP vs MULTI-DESTINATION ROUTING ───────────────────────────
     if (Array.isArray(tripParams.trips) && tripParams.trips.length > 1) {
       const classifiedLegs = this._classifyTripLegs(tripParams.trips);
       const roles = classifiedLegs.map(l => l._role);
@@ -2178,12 +2253,19 @@ if (isFlightOnlySearch && hasReturnDate) {
     }
 
     const isTransportOnly = singleResult.packages.length > 0 && singleResult.packages.every(p => p._flightOnly);
-const isTrainOnly = singleResult.packages.length > 0 && singleResult.packages.every(p =>
-  p.transport?.transportType === 'train' && !p.hotel
-);
-const taggedParams = (isTransportOnly || isTrainOnly)
-  ? { ...tripParams, _awaitingHotelFollowUp: true, _lastFlightPackages: singleResult.packages }
-  : tripParams;
+    const isTrainOnly = singleResult.packages.length > 0 && singleResult.packages.every(p =>
+      p.transport?.transportType === 'train' && !p.hotel
+    );
+
+    // FIX 2 stamp: record when the hotel follow-up gate was set
+    const taggedParams = (isTransportOnly || isTrainOnly)
+      ? {
+          ...tripParams,
+          _awaitingHotelFollowUp: true,
+          _hotelFollowUpSetAt:    Date.now(),
+          _lastFlightPackages:    singleResult.packages,
+        }
+      : tripParams;
 
     return {
       sessionId,
@@ -2304,149 +2386,259 @@ const taggedParams = (isTransportOnly || isTrainOnly)
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // INTENT DETECTION
+  // FIX 3 + 4: INTENT DETECTION — full rewrite
   // ─────────────────────────────────────────────────────────────────────────────
   _detectIntent(prompt, previousParams) {
-    const lower = prompt.toLowerCase();
+    const lower = (prompt || '').toLowerCase().trim();
 
-    // ── FIX 5 — expanded fresh search patterns ────────────────────────────
-    const FRESH_SEARCH_PATTERNS = [
-      /\bplan\s+(?:me\s+)?a\s+trip\b/i,
-      /\bbook\s+(?:me\s+)?a\s+trip\b/i,
-      /\bi\s+(?:want|need|would like)\s+to\s+(?:go|travel|fly|visit)\b/i,
-      /\bfrom\s+[a-z]{3,}(?:\s+to)?\s+[a-z]{3,}\b/i,
-      /\b[a-z]{3,}\s+to\s+[a-z]{3,}\b/i,
-      /\btrip\s+(?:from|to)\s+[a-z]/i,
-      /\bfly(?:ing)?\s+(?:from|to)\s+[a-z]/i,
-      /\btravel(?:ling)?\s+(?:from|to)\s+[a-z]/i,
-      /\bi\s+have\s+\d+\s+(?:business\s+)?trips?\b/i,
-      /\bfirst\s+(?:one\s+)?is\s+.+second\s+(?:one\s+)?is\b/i,
-      // FIX 5 — catch "flight to X" / "flights to X" as fresh search signals
-      /\b(?:a\s+)?flight\s+to\s+[a-z]/i,
-      /\bflights?\s+(?:to|for)\s+[a-z]/i,
-      /\bi\s+(?:want|need)\s+(?:a\s+)?flight\b/i,
-      /\bhelp\s+me\s+(?:plan|book|find|get)\b/i,
-      /\bbudget\s+(?:of|is)?\s*(?:kes|ksh|\d)/i,
+    // ── SCOPE CHANGE PATTERNS — always follow-ups ─────────────────────────
+    const SCOPE_CHANGES = [
+      {
+        pattern: /\bonly\s+(?:need|want)?\s*flights?\b|\bjust\s+(?:the\s+)?flights?\b|\bflight[s]?\s+only\b|\bno\s+(?:hotel|accommodation|room|transfer)s?\b|\bdon'?t\s+(?:need|want)\s+(?:a\s+)?hotel\b|\bwithout\s+(?:a\s+)?hotel\b|\bi\s+only\s+n\w+ed\s+flights?\b|\bi\s+only\s+need\s+flights?\b/i,
+        scope: { needsTransport: true, needsHotel: false, needsTransfers: false },
+      },
+      {
+        pattern: /\badd\s+(?:a\s+)?hotel\b|\binclude\s+(?:a\s+)?hotel\b|\bwith\s+(?:a\s+)?hotel\b|\bwith\s+accommodation\b/i,
+        scope: { needsTransport: true, needsHotel: true, needsTransfers: true },
+      },
+      {
+        pattern: /\bhotel\s+only\b|\bjust\s+(?:a\s+)?hotel\b|\bonly\s+(?:need|want)\s+(?:a\s+)?hotel\b|\baccommodation\s+only\b/i,
+        scope: { needsTransport: false, needsHotel: true, needsTransfers: false },
+      },
     ];
 
-    const hasOwnDestinationStructure = FRESH_SEARCH_PATTERNS.some(p => p.test(lower));
+    // ── DEFINITE FRESH SEARCH — only when new destination named ──────────
+    const DEFINITE_FRESH = [
+      /\bfrom\s+[a-z]{3,}\s+to\s+[a-z]{4,}\b/i,
+      /\bplan\s+(?:me\s+)?a\s+trip\s+to\s+[a-z]{4,}\b/i,
+      /\bbook\s+(?:me\s+)?a\s+(?:trip|flight)\s+to\s+[a-z]{4,}\b/i,
+      /\btrip\s+to\s+[a-z]{4,}\b/i,
+      /\bfly(?:ing)?\s+to\s+[a-z]{4,}\b/i,
+      /\btravel(?:ling)?\s+to\s+[a-z]{4,}\b/i,
+      /\bi\s+(?:want|need|would\s+like)\s+to\s+(?:go\s+to|visit|fly\s+to)\s+[a-z]{4,}\b/i,
+      /\bgoing\s+to\s+[a-z]{4,}\b/i,
+      /\bi\s+have\s+\d+\s+(?:business\s+)?trips?\b/i,
+    ];
 
-    const followUpSignals = !!(
-      lower.match(/cheaper|less expensive|lower|affordable|budget|bei nafuu/i) ||
-      lower.match(/expensive|luxury|premium|upgrade|better|high end|bei ya juu/i) ||
-      lower.match(/other options|different|alternatives|show me more|more options/i) ||
-      lower.match(/instead|change|adjust|update|switch|replace/i) ||
-      lower.match(/more nights|fewer nights|longer|shorter|\d+\s*nights?/i) ||
-      lower.match(/window seat|aisle seat|front seat|back seat/i) ||
-      lower.match(/breakfast|all inclusive|full board|half board|room only/i) ||
-      lower.match(/morning|afternoon|evening|night|earlier|later/i) ||
-      lower.match(/more people|fewer people|just me|solo|alone|by myself/i) ||
-      lower.match(/without transfer|no transfer|with transfer/i) ||
-      lower.match(/different hotel|another hotel|change hotel/i) ||
-      lower.match(/different flight|another airline|change flight/i) ||
-      lower.match(/mid budget|moderate/i) ||
-      lower.match(/(?<![a-z])bus(?:es)?\b/i) ||
-      lower.match(/\btrain\b|\bflight\b|\bfly\b|\bflying\b/i)
-    );
+    // ── DESTINATION SWITCH — follow-up with new destination, keep origin ──
+    const DESTINATION_SWITCH = [
+      /\blet'?s\s+(?:try|do|go\s+(?:to|with))\s+([a-z][a-z\s]{2,20}?)(?:\s+instead|$|\?)/i,
+      /\bwhat\s+about\s+([a-z][a-z\s]{2,20}?)(?:\s+instead|\s+then|$|\?)/i,
+      /\bhow\s+about\s+([a-z][a-z\s]{2,20}?)(?:\s+instead|\s+then|$|\?)/i,
+      /\bactually\s+(?:let'?s\s+(?:do|go\s+to)|make\s+it|try)\s+([a-z][a-z\s]{2,20}?)(?:\s+instead|$|\?)/i,
+      /\bswitch\s+to\s+([a-z][a-z\s]{2,20}?)(?:\s+instead|$|\?)/i,
+      /\bchange\s+(?:it\s+)?to\s+([a-z][a-z\s]{2,20}?)(?:$|\?)/i,
+      /\binstead\s+(?:of\s+[a-z\s]{2,20}?,?\s*)?(?:let'?s\s+(?:do|go\s+to)|try)\s+([a-z][a-z\s]{2,20}?)(?:$|\?)/i,
+    ];
 
-    const isFollowUp = !!(previousParams && followUpSignals && !hasOwnDestinationStructure);
-
-    const adjustments  = {};
-    const productScope = { needsTransport: true, needsHotel: true, needsTransfers: true };
+    const _extractAdjustments = (t) => {
+      const adj = {};
+      if (/cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/i.test(t)) adj.budget = 'low';
+      else if (/luxury|high end|premium|bei ya juu/i.test(t)) adj.budget = 'luxury';
+      else if (/mid budget|moderate|reasonable/i.test(t)) adj.budget = 'mid';
+      const nightsMatch = t.match(/(\d+)\s*nights?/);
+      if (nightsMatch) adj.nights = parseInt(nightsMatch[1]);
+      const passMatch = t.match(/(\d+)\s*(people|persons|passengers|of us|travelers?)/);
+      if (passMatch) adj.passengers = parseInt(passMatch[1]);
+      if (/window seat/i.test(t)) adj.seatPreference = 'window';
+      if (/aisle seat/i.test(t)) adj.seatPreference = 'aisle';
+      if (/morning/i.test(t)) adj.timePreference = 'morning';
+      if (/evening|night/i.test(t)) adj.timePreference = 'evening';
+      return adj;
+    };
 
     const wantsCheapest       = /\b(cheapest|lowest[\s-]?price|lowest[\s-]?fare|best[\s-]?price)\b/i.test(lower);
-    const wantsAffordableSort = /\bcheap\b|cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/i.test(lower);
+    const wantsAffordableSort = /\bcheap\b|cheaper|less expensive|lower budget|affordable|bei nafuu/i.test(lower);
+    const wantsSuggestDates   = /\b(suggest|recommend|propose|what|any good)\s+(dates?|times?|days?)\b/i.test(lower)
+      || /\bwhen\s+(should|can|is good)\b/i.test(lower);
 
-    const hasHotelInSamePrompt = /\b(hotel|stay|lodge|put me in|book me into|staying at|at the)\b/i.test(lower);
-    const flightExclusive = !hasHotelInSamePrompt && !!(
-  lower.match(/\bonly\s+(a\s+)?flight(s)?\b|flight(s)?\s+only|just\s+(a\s+)?flight(s)?\b|\bonly\s+want\s+a\s+flight\b|\bjust\s+want\s+a\s+flight\b|search\s+flights?\s+only|\bcheapest\s+flight(s)?\b|\bcheapest\s+fare\b|\bfind\s+me\s+(a\s+|the\s+)?(cheapest|affordable|best|most\s+affordable)?\s*flight(s)?\b|\bflight(s)?\s+from\b|\bfly(?:ing)?\s+from\b/i) ||
-  lower.match(/\b(?:book|get|find|search|check)\s+(?:me\s+)?(?:a\s+)?flights?\s+to\b/i)
-);
-    const busExclusive   = lower.match(/\bonly\s+(a\s+)?(?<![a-z])bus(?:es)?\b|(?<![a-z])bus(?:es)?\s+only|just\s+(a\s+)?(?<![a-z])bus(?:es)?\b/i);
-    const hotelExclusive = lower.match(/\bonly\s+(a\s+)?hotel\b|hotel\s+only|just\s+(a\s+)?hotel\b|stay\s+only|accommodation\s+only/i);
-    const hotelIntent    = !flightExclusive && !busExclusive && lower.match(/\b(find\s+(me\s+)?a\s+hotel|looking\s+for\s+(a\s+)?hotel|need\s+(a\s+)?hotel|hotel\s+in|hotels?\s+near|where\s+to\s+stay|accommodation\s+in)\b/i);
+    // 1. No previous params → always fresh
+    if (!previousParams) {
+      return {
+        isFollowUp:          false,
+        adjustments:         _extractAdjustments(lower),
+        productScope:        this._buildProductScope(lower),
+        wantsCheapest,
+        wantsAffordableSort,
+        wantsSuggestDates,
+      };
+    }
 
-        const trainExclusive = /\b(train|sgr|madaraka)\b/i.test(lower) && !hasHotelInSamePrompt;
-
-    if (flightExclusive) {
-      productScope.needsHotel = false; productScope.needsTransfers = false; adjustments.transportMode = 'flight';
-    } else if (busExclusive) {
-      productScope.needsHotel = false; productScope.needsTransfers = false; adjustments.transportMode = 'bus';
-    } else if (trainExclusive) {
-      productScope.needsHotel = false; productScope.needsTransfers = false; adjustments.transportMode = 'train';
-    } else if (hotelExclusive || hotelIntent) {
-      productScope.needsTransport = false; productScope.needsTransfers = false;
-        } else {
-      const additivePhrase = /\b(include|also|add|as well|too|alongside)\b/i.test(lower);
-      if (!additivePhrase) {
-        if (lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)) adjustments.transportMode = 'flight';
-        else if (lower.match(/(?<![a-z])bus(?:es)?\b/i)) adjustments.transportMode = 'bus';
-      }
-      // Prevent hotel search when user said "book me a flight to X" with no hotel mention
-      if (
-        !hasHotelInSamePrompt &&
-        (previousParams?.outboundTransportMode === 'flight' || previousParams?.outboundTransportMode === 'air') &&
-        lower.match(/\bflight(s)?\b|\bfly\b|\bflying\b/i)
-      ) {
-        productScope.needsHotel = false;
-        productScope.needsTransfers = false;
+    // 2. Scope changes → always follow-up, keep destination + origin
+    for (const { pattern, scope } of SCOPE_CHANGES) {
+      if (pattern.test(lower)) {
+        return {
+          isFollowUp:          true,
+          adjustments:         _extractAdjustments(lower),
+          productScope:        scope,
+          wantsCheapest,
+          wantsAffordableSort,
+          wantsSuggestDates,
+        };
       }
     }
 
-    if (lower.match(/cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/)) adjustments.budget = 'low';
-    else if (lower.match(/luxury|high end|premium|most expensive|bei ya juu/)) adjustments.budget = 'luxury';
-    else if (lower.match(/mid budget|moderate|reasonable/)) adjustments.budget = 'mid';
-
-    const nightsMatch = lower.match(/(\d+)\s*nights?/);
-    if (nightsMatch) adjustments.nights = parseInt(nightsMatch[1]);
-
-    const passMatch = lower.match(/(\d+)\s*(people|persons|passengers|of us|travelers?)/);
-    if (passMatch) adjustments.passengers = parseInt(passMatch[1]);
-
-    let newDestination = null;
-
-    const insteadMatch =
-      lower.match(/\b(?:let'?s do|do|go to|make it|change (?:it|that) to|switch to)\s+([a-z\s]{2,30}?)\s+instead\b/i) ||
-      lower.match(/\binstead\s+(?:of\s+[a-z\s]{2,30}?,?\s*)?(?:let'?s do|do|go to|make it)\s+([a-z\s]{2,30}?)(?:\s*[.,]|$)/i) ||
-      lower.match(/\bactually,?\s+(?:let'?s do|do|go to|make it)\s+([a-z\s]{2,30}?)(?:\s+instead)?(?:\s*[.,]|$)/i);
-
-    if (insteadMatch?.[1]) {
-      const candidate = insteadMatch[1].trim();
-      if (candidate.length >= 3 && !/^(that|this|it|there|here)$/i.test(candidate)) {
-        newDestination = candidate;
-      }
-    }
-
-    if (!newDestination) {
-      const whatIfMatch =
-        lower.match(/\bwhat\s+(?:if|about)\s+(?:i\s+)?(?:go(?:es)?|travel(?:(?:l)ed)?|went|fly|flew|do|did|visit(?:ed)?)?\s*(?:to\s+)?([a-z][a-z\s]{1,25}?)(?:\s+(?:instead|on the same|with the same|\?|$))/i) ||
-        lower.match(/\bwhat\s+(?:if|about)\s+([a-z][a-z\s]{1,25}?)(?:\s*\?|$)/i);
-
-      if (whatIfMatch?.[1]) {
-        const candidate = whatIfMatch[1].trim().replace(/\s+(instead|on the same dates?|with the same dates?)$/i, '').trim();
-        if (candidate.length >= 3 && !/^(i|we|the|a|an|that|this|it|there|here|my|our|same|different)$/i.test(candidate)) {
-          newDestination = candidate;
+    // 3. Destination switch → follow-up, swap destination, keep origin
+    for (const pattern of DESTINATION_SWITCH) {
+      const match = lower.match(pattern);
+      if (match) {
+        const candidate = (match[1] || '').trim();
+        if (candidate.length >= 3 && !/^(that|this|it|there|here|same|different|the|a|an)$/i.test(candidate)) {
+          logger.info('Engine: destination switch detected', {
+            candidate,
+            previousDest: previousParams.destination,
+            previousOrigin: previousParams.origin,
+          });
+          return {
+            isFollowUp:          true,
+            adjustments:         {
+              ..._extractAdjustments(lower),
+              destination: resolveCountryToCity(candidate),
+              _keepOrigin: true,
+            },
+            productScope:        previousParams._pendingProductScope ||
+                                 { needsTransport: true, needsHotel: true, needsTransfers: true },
+            wantsCheapest,
+            wantsAffordableSort,
+            wantsSuggestDates,
+          };
         }
       }
     }
 
-    if (newDestination) adjustments.destination = newDestination;
+    // 4. Definite fresh structure — only treat as fresh if destination actually changed
+    const isFreshStructure = DEFINITE_FRESH.some(p => p.test(lower));
+    if (isFreshStructure) {
+      const destMatch = lower.match(/\bto\s+([a-z][a-z\s]{2,20}?)(?:\s+(?:from|for|on|in)|[,.]|$)/i)
+        || lower.match(/\bvisit\s+([a-z][a-z\s]{2,20}?)(?:\s+(?:from|for|on|in)|[,.]|$)/i);
+      const mentionedDest = destMatch ? destMatch[1].trim() : null;
+      const prevDest      = (previousParams.destination || '').toLowerCase().trim();
 
-    const wantsSuggestDates = /\b(suggest|recommend|propose|what|any good)\s+(dates?|times?|days?)\b/i.test(lower)
-      || /\bdates?\s+(suggestion|recommendation|ideas?)\b/i.test(lower)
-      || /\bwhen\s+(should|can|is good)\b/i.test(lower);
+      if (mentionedDest && mentionedDest !== prevDest) {
+        return {
+          isFollowUp:          false,
+          adjustments:         _extractAdjustments(lower),
+          productScope:        this._buildProductScope(lower),
+          wantsCheapest,
+          wantsAffordableSort,
+          wantsSuggestDates,
+        };
+      }
 
-    return { isFollowUp, adjustments, productScope, wantsCheapest, wantsAffordableSort, wantsSuggestDates };
+      // Same destination with trip structure = follow-up
+      return {
+        isFollowUp:          true,
+        adjustments:         _extractAdjustments(lower),
+        productScope:        previousParams._pendingProductScope ||
+                             { needsTransport: true, needsHotel: true, needsTransfers: true },
+        wantsCheapest,
+        wantsAffordableSort,
+        wantsSuggestDates,
+      };
+    }
+
+    // 5. Explicit adjustment signals → follow-up
+    const hasAdjustment = !!(
+      lower.match(/cheaper|expensive|luxury|more nights|fewer nights|\d+\s*nights?/i) ||
+      lower.match(/more people|\d+\s*(?:people|pax|adults?)/i) ||
+      lower.match(/window|aisle|morning|evening|earlier|later/i) ||
+      lower.match(/different hotel|another hotel|change hotel/i) ||
+      lower.match(/different flight|another airline|change flight/i) ||
+      lower.match(/breakfast|all inclusive|full board/i) ||
+      lower.match(/(?<![a-z])bus(?:es)?\b/i) ||
+      lower.match(/\btrain\b|\bsgr\b/i)
+    );
+
+    if (hasAdjustment) {
+      return {
+        isFollowUp:          true,
+        adjustments:         _extractAdjustments(lower),
+        productScope:        previousParams._pendingProductScope ||
+                             { needsTransport: true, needsHotel: true, needsTransfers: true },
+        wantsCheapest,
+        wantsAffordableSort,
+        wantsSuggestDates,
+      };
+    }
+
+    // 6. Short message with previous context → treat as follow-up
+    const wordCount = lower.split(/\s+/).filter(Boolean).length;
+    if (wordCount <= 8 && previousParams.destination) {
+      return {
+        isFollowUp:          true,
+        adjustments:         _extractAdjustments(lower),
+        productScope:        previousParams._pendingProductScope ||
+                             { needsTransport: true, needsHotel: true, needsTransfers: true },
+        wantsCheapest,
+        wantsAffordableSort,
+        wantsSuggestDates,
+      };
+    }
+
+    // 7. Default → fresh search
+    return {
+      isFollowUp:          false,
+      adjustments:         _extractAdjustments(lower),
+      productScope:        this._buildProductScope(lower),
+      wantsCheapest,
+      wantsAffordableSort,
+      wantsSuggestDates,
+    };
   }
 
+  // ── NEW HELPER: derive product scope from prompt ──────────────────────────
+  _buildProductScope(lower) {
+    const hasHotelInPrompt = /\b(hotel|stay|lodge|put me in|staying at)\b/i.test(lower);
+    const flightExclusive  = !hasHotelInPrompt &&
+      /\bonly\s+(?:a\s+)?flights?\b|\bflights?\s+only\b|\bjust\s+(?:a\s+)?flights?\b/i.test(lower);
+    const hotelExclusive   =
+      /\bhotel\s+only\b|\bjust\s+(?:a\s+)?hotel\b|\baccommodation\s+only\b/i.test(lower);
+    const busExclusive     =
+      /\bonly\s+(?:a\s+)?bus(?:es)?\b|\bbus(?:es)?\s+only\b/i.test(lower);
+    const trainExclusive   =
+      /\b(train|sgr|madaraka)\b/i.test(lower) && !hasHotelInPrompt;
+
+    if (flightExclusive || busExclusive || trainExclusive) {
+      return { needsTransport: true, needsHotel: false, needsTransfers: false };
+    }
+    if (hotelExclusive) {
+      return { needsTransport: false, needsHotel: true, needsTransfers: false };
+    }
+    return { needsTransport: true, needsHotel: true, needsTransfers: true };
+  }
+
+  // ── FIX 4: _adjustParams handles destination switch + origin preservation ──
   _adjustParams(previousParams, intent) {
-    const adjusted = { ...previousParams };
+    const adjusted    = { ...previousParams };
     const { adjustments } = intent;
-    if (adjustments.budget        !== undefined) adjusted.budget        = adjustments.budget;
-    if (adjustments.nights        !== undefined) adjusted.nights        = adjustments.nights;
-    if (adjustments.passengers    !== undefined) adjusted.passengers    = adjustments.passengers;
-    if (adjustments.transportMode !== undefined) adjusted.transportMode = adjustments.transportMode;
-    if (adjustments.destination   !== undefined) { adjusted.destination = adjustments.destination; adjusted.destinationCode = undefined; }
+
+    if (adjustments.budget         !== undefined) adjusted.budget         = adjustments.budget;
+    if (adjustments.nights         !== undefined) adjusted.nights         = adjustments.nights;
+    if (adjustments.passengers     !== undefined) adjusted.passengers     = adjustments.passengers;
+    if (adjustments.transportMode  !== undefined) adjusted.transportMode  = adjustments.transportMode;
+    if (adjustments.seatPreference !== undefined) adjusted.seatPreference = adjustments.seatPreference;
+    if (adjustments.timePreference !== undefined) adjusted.timePreference = adjustments.timePreference;
+
+    if (adjustments.destination !== undefined) {
+      adjusted.destination     = adjustments.destination;
+      adjusted.destinationCode = undefined;
+
+      if (adjustments._keepOrigin) {
+        // Destination switch: keep origin, clear only destination-specific state
+        // Origin stays exactly as it was in previousParams
+        adjusted._awaitingHotelFollowUp = undefined;
+        adjusted._lastFlightPackages    = undefined;
+        // Keep departureDate and nights — user probably wants same dates
+      } else {
+        // Full destination change: clear date/hotel state
+        adjusted.departureDate          = null;
+        adjusted.returnDate             = null;
+        adjusted.nights                 = null;
+        adjusted._awaitingHotelFollowUp = undefined;
+        adjusted._lastFlightPackages    = undefined;
+      }
+    }
+
     return adjusted;
   }
 
@@ -2510,14 +2702,10 @@ const taggedParams = (isTransportOnly || isTrainOnly)
     return { results: [], connectsVia: null, connectingLegBookable: true };
   }
 
-  // ── FIX 1 — null-guard at the top of _searchFlights ──────────────────────
   async _searchFlights(tripParams, leg = 'outbound', destinationAccess = null) {
     const searchOrigin      = leg === 'return' ? tripParams.destination : tripParams.origin;
     const searchDestination = leg === 'return' ? tripParams.origin      : tripParams.destination;
 
-    // NULL GUARD — never fire a supplier call with a null origin or destination.
-    // The IATA resolver bails correctly but the HTTP round-trip still happens
-    // and shows up as noise in the logs. Short-circuit here instead.
     if (!searchOrigin || !searchDestination) {
       logger.warn('_searchFlights: skipping — origin or destination is null', {
         leg, origin: searchOrigin, destination: searchDestination,
@@ -2602,12 +2790,10 @@ const taggedParams = (isTransportOnly || isTrainOnly)
     return !((mode === 'flight' || mode === 'train') && !canBypassOnKnownRoute);
   }
 
-  // ── FIX 2 — null-guard at the top of _searchBuses ────────────────────────
   async _searchBuses(tripParams, leg = 'outbound', destinationAccess = null) {
     const busOrigin = ((leg === 'return' ? tripParams.destination : tripParams.origin) || '').toLowerCase().trim();
     const busDest   = ((leg === 'return' ? tripParams.origin : tripParams.destination) || '').toLowerCase().trim();
 
-    // NULL GUARD — skip immediately if either city is empty
     if (!busOrigin || !busDest) {
       logger.warn('_searchBuses: skipping — origin or destination is null', { leg, busOrigin, busDest });
       return [];
@@ -3126,20 +3312,23 @@ const taggedParams = (isTransportOnly || isTrainOnly)
     const currentYear = now.getFullYear();
     const MONTHS = { jan:1,january:1,feb:2,february:2,mar:3,march:3,apr:4,april:4,may:5,jun:6,june:6,jul:7,july:7,aug:8,august:8,sep:9,september:9,sept:9,oct:10,october:10,nov:11,november:11,dec:12,december:12 };
 
-    const dayMonthMatch = t.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i)
-      || t.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?/i);
+    const dayMonthMatch = t.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s*(?:(\d{4})|(\d{2}))?/i)
+      || t.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?/i);
 
     if (dayMonthMatch) {
-      let day, monthStr;
-      if (/^\d/.test(dayMonthMatch[1])) { day = parseInt(dayMonthMatch[1], 10); monthStr = dayMonthMatch[2].toLowerCase().slice(0, 3); }
-      else { monthStr = dayMonthMatch[1].toLowerCase().slice(0, 3); day = parseInt(dayMonthMatch[2], 10); }
-      const month = MONTHS[monthStr] || MONTHS[dayMonthMatch[1]?.toLowerCase().slice(0, 3)];
-      if (month && day >= 1 && day <= 31) {
-        let year      = currentYear;
-        const candidate = new Date(year, month - 1, day);
-        if (candidate < now) year = currentYear + 1;
-        return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      let day, month, yr;
+      if (/^\d/.test(dayMonthMatch[1] || '')) {
+        day = parseInt(dayMonthMatch[1], 10);
+        const mKey = (dayMonthMatch[2] || '').toLowerCase().slice(0, 3);
+        month = MONTHS[mKey] || MONTHS[(dayMonthMatch[2] || '').toLowerCase()];
+        yr = _normalizeYear(dayMonthMatch[3] || dayMonthMatch[4] || new Date().getFullYear());
+      } else {
+        const mKey = (dayMonthMatch[1] || '').toLowerCase().slice(0, 3);
+        month = MONTHS[mKey] || MONTHS[(dayMonthMatch[1] || '').toLowerCase()];
+        day = parseInt(dayMonthMatch[2], 10);
+        yr = _normalizeYear(dayMonthMatch[3] || new Date().getFullYear());
       }
+      if (day && month) departureDate = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     }
 
     const slashMatch = t.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
@@ -3187,6 +3376,15 @@ const taggedParams = (isTransportOnly || isTrainOnly)
   _validateTripParams(params) {
     if (!params.destination) throw new Error("Missing destination");
   }
+}
+
+// ── Helper used in _parseDateAnswer (was an import in promptParser) ───────────
+function _normalizeYear(yearInput) {
+  const currentYear = new Date().getFullYear();
+  let yr = parseInt(yearInput, 10);
+  if (yr < 100) yr += 2000;
+  if (yr < currentYear) return currentYear;
+  return yr;
 }
 
 module.exports = new OrchestrationEngine();
