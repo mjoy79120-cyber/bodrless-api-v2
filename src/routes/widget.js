@@ -452,9 +452,9 @@ closeBtn.onclick = function() {
       _loadSelectedPkg(__r);
     }
   }
-  _restorePersistedState();
-
   function _initView() {
+    // Restore persisted state HERE — all functions (GREETINGS, showAgencyWelcome, etc.) are now defined
+    _restorePersistedState();
     if (isHotelMode) { showHotelEntry(); return; }
     if (legFlow && legFlow.legs && legFlow.legs.length > 0) { _showRestoreBanner(); }
     else if (hasRestoredHistory) { replayTranscript(); }
