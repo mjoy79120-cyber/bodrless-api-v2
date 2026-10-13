@@ -359,18 +359,7 @@ function initWidget() {
     } catch(e) { return null; }
   }
 
-  var __r = loadPersistedState();
-  if (__r) {
-    conversationHistory = __r.conversationHistory || [];
-    previousParams      = __r.previousParams      || null;
-    sessionId           = __r.sessionId           || null;
-    transcript          = __r.transcript          || [];
-    legFlow             = __r.legFlow             || null;
-    itineraryId         = __r.itineraryId         || null;
-    hasRestoredHistory  = transcript.length > 0;
-    conversationId      = sessionId || null;
-    _loadSelectedPkg(__r);
-  }
+  // NOTE: persisted state is restored AFTER all functions are defined (see _restorePersistedState call below)
 
   var style = document.createElement('style');
   style.innerHTML = ${JSON.stringify(styles)};
@@ -447,6 +436,23 @@ closeBtn.onclick = function() {
 
 };
   } else { chatDiv.classList.add('open'); if (!welcomeShown) { welcomeShown = true; _initView(); } }
+
+  // ── RESTORE: runs here so all functions above are already defined ──────────
+  function _restorePersistedState() {
+    var __r = loadPersistedState();
+    if (__r) {
+      conversationHistory = __r.conversationHistory || [];
+      previousParams      = __r.previousParams      || null;
+      sessionId           = __r.sessionId           || null;
+      transcript          = __r.transcript          || [];
+      legFlow             = __r.legFlow             || null;
+      itineraryId         = __r.itineraryId         || null;
+      hasRestoredHistory  = transcript.length > 0;
+      conversationId      = sessionId || null;
+      _loadSelectedPkg(__r);
+    }
+  }
+  _restorePersistedState();
 
   function _initView() {
     if (isHotelMode) { showHotelEntry(); return; }
