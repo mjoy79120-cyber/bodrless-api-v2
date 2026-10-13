@@ -435,8 +435,7 @@ closeBtn.onclick = function() {
   setTimeout(function() { chatDiv.style.display = 'none'; triggerBtn.style.display = 'flex'; }, 280);
 
 };
-  } else { chatDiv.classList.add('open'); if (!welcomeShown) { welcomeShown = true; _initView(); } }
-
+  } else { chatDiv.classList.add('open'); }
   // ── RESTORE: runs here so all functions above are already defined ──────────
   function _restorePersistedState() {
     var __r = loadPersistedState();
@@ -1688,6 +1687,7 @@ closeBtn.onclick = function() {
 
   sendBtn.onclick = send;
   input.addEventListener('keypress', function(e){ if (e.key === 'Enter') send(); });
+  if (embedTarget && !welcomeShown) { welcomeShown = true; _initView(); }
   console.log('[BODRLESS] Widget loaded — key:' + agencyKey + ' mode:' + (isHotelMode ? 'hotel_direct' : 'agency'));
 }
 if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', initWidget); } else { initWidget(); }
