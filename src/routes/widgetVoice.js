@@ -32,10 +32,10 @@ function requireKey(req, res, next) {
 router.post('/transcribe',
   requireKey,
   limiter,
-  express.raw({ type: 'audio/*', limit: '5mb' }),
+  express.raw({ type: '*/*', limit: '5mb' }),
   async (req, res) => {
     try {
-      if (!Buffer.isBuffer(req.body) || req.body.length < 1000) {
+      if (!Buffer.isBuffer(req.body) || req.body.length < 100) {
         return res.status(400).json({ error: 'no_audio' });
       }
       const mime = req.headers['content-type'] || 'audio/webm';
