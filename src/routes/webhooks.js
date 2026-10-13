@@ -247,7 +247,7 @@ router.post('/whatsapp', async (req, res) => {
     }
 
     // ── AUDIO / VOICE NOTES ────────────────────────────────
-    if (message.type === 'audio') {
+        if (message.type === 'audio') {
       const agencyId = await _resolveAgency(phoneNumberId);
       const audioResult = await handleAudioMessage({
         message, phoneNumberId, recipient, userKey,
@@ -256,6 +256,29 @@ router.post('/whatsapp', async (req, res) => {
       });
       if (audioResult?.transcript) {
         const prompt = audioResult.transcript;
+        const voiceContact = await _getOrCreateContact({ phone, userId, username, agencyId });
+
+        // ── FIRST-EVER MESSAGE (voice) ─────────────────────
+        if (voiceContact.justCreated) {
+          await whatsappService.sendText(phoneNumberId, recipient,
+            `Hey there! 👋 Welcome to Rove.\nThink of me as your personal travel guy, I'll sort out your transportation, stays and transfers\n\nBefore we get into it though, what's your name? I'd rather not just call you "traveler" the whole time`
+          );
+          return;
+        }
+
+        // ── AWAITING NAME (voice) ──────────────────────────
+        if (voiceContact.awaiting_name) {
+          const extractedName = _extractName(prompt);
+          if (extractedName) {
+            await _saveContactName({ phone, userId, name: extractedName });
+            await whatsappService.sendText(phoneNumberId, recipient,
+              `Good to meet you, ${extractedName}! Alright — tell me about the trip you're dreaming up. Where to, when, how many of you, and roughly what budget you're working with. I'll handle the rest.`
+            );
+            return;
+          }
+          await _clearAwaitingName({ phone, userId });
+        }
+
         const memCtx = await conversationMemory.getConversationContext(userKey, agencyId);
         const result = await conversation.orchestrate(prompt, agencyId, {
           conversationHistory: memCtx.conversationHistory,
@@ -264,7 +287,7 @@ router.post('/whatsapp', async (req, res) => {
           phone:               phone || userKey,
           messageId:           message.id,
           sessionKey:          userKey,
-          userName:            contact?.name || username || null,
+          userName:            voiceContact?.name || username || null,
         });
         conversationMemory.saveTurn(userKey, agencyId, {
           userMessage:    prompt,
@@ -278,7 +301,7 @@ router.post('/whatsapp', async (req, res) => {
       return;
     }
 
-    // ── NON-TEXT MESSAGES ──────────────────────────────────
+        // ── NON-TEXT MESSAGES ──────────────────────────────────
     if (message.type !== 'text') {
       await whatsappService.sendText(phoneNumberId, recipient,
         "Hi! I can help you plan a trip. Just describe what you're looking for — destination, dates, number of travelers and your budget."
@@ -313,7 +336,7 @@ router.post('/whatsapp', async (req, res) => {
       await _clearAwaitingName({ phone, userId });
     }
 
-    // ── DROP-OFF RECOVERY ──────────────────────────────────
+   // ── DROP-OFF RECOVERY ──────────────────────────────────
     const resumePending = _pendingResumeChoice.get(userKey);
     if (resumePending && Date.now() < resumePending.expiresAt) {
       _pendingResumeChoice.delete(userKey);

@@ -25,6 +25,7 @@ const tracking              = require('./services/trackingService');
 const insightsEngine        = require('./services/insightsEngine');
 const hotelbedsContent      = require('./services/hotelbedsContent');
 const hotelWidgetRoute      = require('./routes/hotelWidget');
+const widgetVoiceRoute      = require('./routes/widgetVoice');
 
 const cookieParser     = require('cookie-parser');
 const hotelRoutes      = require('./routes/hotelRoutes');
@@ -85,6 +86,7 @@ app.use('/widget.js', (req, res, next) => {
 app.use('/health',       healthRoutes);
 app.use('/widget.js',    widgetRoutes);
 app.use('/widget/hotel', hotelWidgetRoute);
+app.use('/api/widget',   widgetVoiceRoute);
 app.use('/api/hotel',    hotelRoutes);
 app.use('/hotel-admin',  hotelAdminRouter);
 app.use('/api/agencies', agencyRoutes);

@@ -291,6 +291,9 @@ router.get('/', (req, res) => {
 .dark .typing-dots span{background:#fff;}
 .dark .typing-dots span:nth-child(2){background:var(--et-gold);}
 
+/* voice mic */
+#bodrless-mic{background:transparent;border:1px solid var(--et-border);width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:16px;flex-shrink:0;color:var(--et-ink);display:flex;align-items:center;justify-content:center;}
+#bodrless-mic.rec{background:var(--et-red);border-color:var(--et-red);color:#fff;animation:et-nudge 1s infinite;}
 /* OTP flow */
 .otp-note{font-size:11px;color:var(--et-muted);text-align:center;margin-top:6px;}
 
@@ -1685,6 +1688,51 @@ closeBtn.onclick = function() {
     .catch(function(){hideTyping();addMsg('Network error.','bot');});
   }
 
+    // ── VOICE INPUT ─────────────────────────────────────────────────────────
+  var micBtn = document.createElement('button');
+  micBtn.id = 'bodrless-mic'; micBtn.type = 'button'; micBtn.innerHTML = '&#127908;'; micBtn.title = 'Speak';
+  inputArea.insertBefore(micBtn, sendBtn);
+
+  var _rec = null, _chunks = [], _recTimer = null;
+  function _stopRec() { if (_rec && _rec.state !== 'inactive') _rec.stop(); }
+
+  micBtn.onclick = function () {
+    if (_rec && _rec.state === 'recording') { _stopRec(); return; }
+    if (!(navigator.mediaDevices && window.MediaRecorder)) {
+      addMsg('Voice is not supported in this browser. Please type instead.', 'bot'); return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      _chunks = [];
+      _rec = new MediaRecorder(stream);
+      _rec.ondataavailable = function (e) { if (e.data && e.data.size) _chunks.push(e.data); };
+      _rec.onstop = function () {
+        clearTimeout(_recTimer);
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        micBtn.classList.remove('rec');
+        var blob = new Blob(_chunks, { type: _rec.mimeType || 'audio/webm' });
+        if (blob.size > 1000) _transcribe(blob);
+      };
+      _rec.start(); micBtn.classList.add('rec');
+      _recTimer = setTimeout(_stopRec, 60000);
+    }).catch(function () {
+      addMsg('I need microphone access to hear you. Allow it in your browser, or just type.', 'bot');
+    });
+  };
+
+  function _transcribe(blob) {
+    showTyping();
+    var h = { 'Content-Type': blob.type, 'x-visitor-token': visitorToken };
+    if (isHotelMode) h['x-hotel-key'] = agencyKey; else h['x-api-key'] = agencyKey;
+    fetch(apiBase + '/api/widget/transcribe', { method: 'POST', headers: h, body: blob })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        hideTyping();
+        if (d && d.text) { input.value = d.text; send(); }
+        else addMsg("Sorry, I couldn't catch that. Try again or type it.", 'bot');
+      })
+      .catch(function () { hideTyping(); addMsg('Voice failed. Please type instead.', 'bot'); });
+  }
+      
   sendBtn.onclick = send;
   input.addEventListener('keypress', function(e){ if (e.key === 'Enter') send(); });
   if (embedTarget && !welcomeShown) { welcomeShown = true; _initView(); }

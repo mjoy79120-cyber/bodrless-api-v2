@@ -37,7 +37,7 @@ const { logger } = require('../utils/logger');
 async function _downloadWhatsAppAudio(mediaId) {
   const token = process.env.WHATSAPP_TOKEN;
 
-  logger.info('Downloading WhatsApp audio', { mediaId, tokenLength: token?.length, tokenStart: token?.slice(0, 8) });
+  logger.info('Downloading WhatsApp audio', { mediaId });
 
   // Step 1: resolve media URL
   const metaRes = await axios.get(
@@ -62,17 +62,20 @@ async function _downloadWhatsAppAudio(mediaId) {
 // Whisper, faster, and free on Groq's current tier.
 // Accepts .ogg (WhatsApp's format) directly.
 // ─────────────────────────────────────────────
-async function _transcribeAudio(audioBuffer) {
-  const key = process.env.GROQ_API_KEY;
-  logger.info('Groq transcribe attempt', { keyLength: key?.length, keyStart: key?.slice(0, 8) });
+async function _transcribeAudio(audioBuffer, mime = 'audio/ogg') {
+  const base = String(mime).split(';')[0].trim().toLowerCase();
+  const ext  = /mp4|m4a|aac/.test(base) ? 'm4a'
+             : /webm/.test(base)        ? 'webm'
+             : /wav/.test(base)         ? 'wav'
+             : /mpeg|mp3/.test(base)    ? 'mp3'
+             : 'ogg';
 
   const form = new FormData();
-
-  form.append('file', audioBuffer, {
-    filename:    'voice.ogg',
-    contentType: 'audio/ogg',
-  });
+  form.append('file', audioBuffer, { filename: `voice.${ext}`, contentType: base });
   form.append('model', 'whisper-large-v3-turbo');
+  form.append('temperature', '0');
+  // Biases Whisper toward your destinations, which cuts misheard city names
+  form.append('prompt', 'Travel booking: Nairobi, Mombasa, Zanzibar, Masai Mara, Kigali, Cape Town, Diani, Arusha');
 
   const res = await axios.post(
     'https://api.groq.com/openai/v1/audio/transcriptions',
@@ -155,4 +158,4 @@ async function handleAudioMessage({
   return { handled: true, transcript };
 }
 
-module.exports = { handleAudioMessage };
+module.exports = { handleAudioMessage, transcribeAudio: _transcribeAudio };
