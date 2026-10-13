@@ -43,7 +43,7 @@ app.use(helmet({
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-api-key', 'x-hotel-key', 'Authorization'],
+allowedHeaders: ['Content-Type', 'x-api-key', 'x-hotel-key', 'Authorization', 'x-visitor-token'],
 }));
 
 app.use(express.json({
