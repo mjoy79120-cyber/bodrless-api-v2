@@ -87,6 +87,8 @@ app.use('/health',       healthRoutes);
 app.use('/widget.js',    widgetRoutes);
 app.use('/widget/hotel', hotelWidgetRoute);
 app.use('/api/widget',   widgetVoiceRoute);
+app.use('/api/widget',   require('./routes/widgetmemory'));
+app.use('/api/internal', require('./routes/nudgeScheduler'));
 app.use('/api/hotel',    hotelRoutes);
 app.use('/hotel-admin',  hotelAdminRouter);
 app.use('/api/agencies', agencyRoutes);

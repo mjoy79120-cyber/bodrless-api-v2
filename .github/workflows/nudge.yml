@@ -1,0 +1,26 @@
+name: Bodrless Nudge Cron
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  nudge-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger nudge run
+        run: |
+          curl -s -w "\nHTTP %{http_code}" \
+            -H "x-cron-secret: ${{ secrets.INTERNAL_CRON_SECRET }}" \
+            https://bodrless-api-v2.onrender.com/api/internal/nudge-run
+
+  wish-cleanup:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 3 * * 1' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Trigger wish cleanup
+        run: |
+          curl -s -w "\nHTTP %{http_code}" \
+            -H "x-cron-secret: ${{ secrets.INTERNAL_CRON_SECRET }}" \
+            https://bodrless-api-v2.onrender.com/api/internal/wish-cleanup

@@ -517,7 +517,7 @@ class BookingService {
       }
     }
 
-    await supabase
+        await supabase
       .from('bookings')
       .update({ booking_stage: 'paid', status: 'confirmed', payment_status: 'paid' })
       .eq('booking_ref', bookingRef);
@@ -526,6 +526,22 @@ class BookingService {
 
     const sessionId = booking.trip_params?.sessionId || null;
     tracking.markConverted({ sessionId, bookingRef });
+
+    // ── MARK WISH AS BOOKED (fire-and-forget) ─────────────
+    try {
+      const tripWishService = require('./tripWishService');
+      const destination = booking.package_snapshot?.transport?.destination
+        || booking.package_snapshot?.summary?.destination
+        || booking.destination
+        || null;
+      if (destination) {
+        tripWishService.markBooked({
+          phone:       booking.guest_phone || null,
+          visitorId:   booking.package_snapshot?.visitorId || null,
+          destination,
+        }).catch(err => logger.warn('wish markBooked failed', { error: err.message, bookingRef }));
+      }
+    } catch (_) {}
 
     this._fetchAgencyAndFireVoucher(booking, false).catch(err =>
       logger.error('Voucher/notification fire failed (booking still confirmed)', { bookingRef, error: err.message })

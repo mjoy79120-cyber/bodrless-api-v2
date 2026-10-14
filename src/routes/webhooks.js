@@ -855,7 +855,18 @@ router.post('/whatsapp', async (req, res) => {
       }
     }
 
-    await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+       await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+
+    // ── WISH DETECTION (fire-and-forget) ──────────────────
+    try {
+      const tripWishService = require('../services/tripWishService');
+      tripWishService.detectAndSave({
+        prompt,
+        phone:   phone || userKey,
+        agencyId,
+        userKey,
+      }).catch(err => logger.warn('wish detectAndSave failed', { error: err.message }));
+    } catch (_) {}
 
   } catch (error) {
     logger.error('WhatsApp webhook error', { error: error.message, stack: error.stack });
