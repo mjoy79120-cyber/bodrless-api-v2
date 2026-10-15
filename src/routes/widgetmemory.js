@@ -10,6 +10,8 @@
  *   POST /wishes/:id/nudge-seen   widget has shown the pending nudge
  *   POST /optin                   { email, name? } turn on email alerts
  *   POST /optout                  turn email alerts off
+ *   GET  /requests/latest         newest agent-approval request this visitor hasn't received yet
+ *   GET  /requests/:id            status of one request; when approved, the packages the agent released
  *   GET  /unsubscribe?token=      confirmation page (public, from emails)
  *   POST /unsubscribe?token=      performs the unsubscribe (also RFC 8058 one-click)
  *   GET  /otp/status              WhatsApp linking is paused: always unverified
@@ -111,7 +113,9 @@ router.post('/unsubscribe', async (req, res) => {
 // ─────────────────────────────────────────────
 // Visitor + agency context for everything below
 // ─────────────────────────────────────────────
-router.use((req, res, next) => {
+// Only guard the paths this router owns. Anything else (for example the live-chat
+// routes at /chat/*) falls through untouched, so mount order never matters.
+router.use(['/wishes', '/optin', '/optout', '/requests', '/otp'], (req, res, next) => {
   const visitorId = String(req.headers['x-visitor-token'] || '');
   const agencyId  = String(req.headers['x-api-key'] || req.headers['x-hotel-key'] || '');
   if (!VISITOR_RE.test(visitorId) || !AGENCY_RE.test(agencyId)) {
@@ -227,6 +231,70 @@ router.post('/optout', async (req, res) => {
   } catch (err) {
     logger.error('WidgetMemory: optout failed', { error: err.message });
     res.status(500).json({ ok: false, error: 'server_error' });
+  }
+});
+
+// ─────────────────────────────────────────────
+// AGENT-APPROVAL REQUESTS (agencies with approval_mode = 'manual')
+// The widget polls these after /orchestrate returns pendingApproval.
+// Every query is scoped to this visitor AND this agency.
+// ─────────────────────────────────────────────
+router.get('/requests/latest', async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 7 * 86400000).toISOString();
+    const { data, error } = await supabase
+      .from('package_requests')
+      .select('id,status,delivered_at,created_at')
+      .eq('visitor_id', req.visitorId)
+      .eq('agency_id', req.agencyId)
+      .in('status', ['pending', 'approved', 'declined'])
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .limit(5);
+    if (error) throw new Error(error.message);
+    // newest request that is still waiting, or decided but not yet shown to the traveler
+    const r = (data || []).find(x => x.status === 'pending' || !x.delivered_at);
+    res.json({ request: r ? { id: r.id, status: r.status } : null });
+  } catch (err) {
+    logger.error('WidgetMemory: requests/latest failed', { error: err.message });
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+router.get('/requests/:id', async (req, res) => {
+  try {
+    if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: 'bad_request' });
+    const { data: row, error } = await supabase
+      .from('package_requests')
+      .select('id,status,response_text,agent_note,approved_packages,decline_reason,trip_params,delivered_at')
+      .eq('id', req.params.id)
+      .eq('visitor_id', req.visitorId)
+      .eq('agency_id', req.agencyId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!row) return res.status(404).json({ error: 'not_found' });
+
+    if (row.status === 'pending') return res.json({ status: 'pending' });
+
+    if (row.status === 'approved' || row.status === 'declined') {
+      if (!row.delivered_at) {
+        await supabase.from('package_requests')
+          .update({ delivered_at: new Date().toISOString() })
+          .eq('id', row.id);
+      }
+      if (row.status === 'declined') return res.json({ status: 'declined', reason: row.decline_reason || null });
+      return res.json({
+        status:     'approved',
+        text:       row.response_text || null,
+        note:       row.agent_note || null,
+        packages:   row.approved_packages || [],
+        tripParams: row.trip_params || null,
+      });
+    }
+    res.json({ status: row.status });
+  } catch (err) {
+    logger.error('WidgetMemory: request status failed', { error: err.message });
+    res.status(500).json({ error: 'server_error' });
   }
 });
 
