@@ -457,9 +457,10 @@ closeBtn.onclick = function() {
       _loadSelectedPkg(__r);
     }
   }
-  function _initView() {
+    function _initView() {
     // Restore persisted state HERE — all functions (GREETINGS, showAgencyWelcome, etc.) are now defined
     _restorePersistedState();
+    _checkLiveChatConfig();   // ← add this line
     if (isHotelMode) { showHotelEntry(); return; }
     if (legFlow && legFlow.legs && legFlow.legs.length > 0) { _showRestoreBanner(); }
     else if (hasRestoredHistory) { replayTranscript(); }
@@ -676,6 +677,12 @@ closeBtn.onclick = function() {
   var PKG_HOLD_TTL      = 60 * 60 * 1000;   // 1 hour
   var modifyState       = null;    // { active: true, originalParams }
   var _waLinkOffered    = false;
+  var _waLinkOffered    = false;
+  var _liveChatEnabled    = false;
+  var _liveChatThreadId   = null;
+  var _liveChatPollIv     = null;
+  var _inLiveChat         = false;
+  var _liveChatLinkShown  = false;
 
   // visitor identity for /api/widget routes (widgetMemory / widgetOtp)
   var visitorToken = '';
@@ -1427,11 +1434,147 @@ closeBtn.onclick = function() {
     form.appendChild(cb);messages.appendChild(form);messages.scrollTop=messages.scrollHeight;
   }
 
+    function _checkLiveChatConfig() {
+    var h = isHotelMode ? {'x-hotel-key': agencyKey} : {'x-api-key': agencyKey};
+    fetch(apiBase + '/api/widget/chat/config', { headers: h })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { _liveChatEnabled = !!(d && d.liveChatEnabled); })
+      .catch(function() {});
+  }
+
+  function _offerLiveChat() {
+    if (!_liveChatEnabled || _liveChatLinkShown || _inLiveChat) return;
+    _liveChatLinkShown = true;
+    var wrap = document.createElement('div');
+    wrap.id = 'et-live-chat-offer';
+    wrap.style.cssText = 'text-align:center;padding:2px 0 10px;font-size:11px;color:var(--et-muted);';
+    wrap.innerHTML = 'Prefer to speak with someone? '
+      + '<button id="et-talk-btn" style="background:none;border:none;color:var(--et-navy);'
+      + 'font-size:11px;font-weight:600;cursor:pointer;text-decoration:underline;padding:0;">'
+      + 'Talk to a person</button>';
+    messages.appendChild(wrap);
+    messages.scrollTop = messages.scrollHeight;
+    document.getElementById('et-talk-btn').onclick = _startLiveChat;
+  }
+
+  function _startLiveChat() {
+    var offer = document.getElementById('et-live-chat-offer');
+    if (offer) offer.remove();
+    showTyping();
+    fetch(apiBase + '/api/widget/chat/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','x-visitor-token': visitorToken,'x-api-key': agencyKey},
+      body: JSON.stringify({
+        visitorId:    visitorToken,
+        agencyId:     agencyKey,
+        botHistory:   conversationHistory,
+        tripParams:   previousParams,
+        lastPackages: [],
+      })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      hideTyping();
+      if (!d.success) { addMsg("Couldn't connect right now — try again shortly.", 'bot'); return; }
+      _liveChatThreadId = d.threadId;
+      _inLiveChat = true;
+      input.placeholder = 'Message the team…';
+      var sys = document.createElement('div'); sys.className = 'msg bot';
+      sys.style.cssText = 'font-style:italic;color:var(--et-muted);font-size:12px;'
+        + 'text-align:center;background:transparent;border:none;box-shadow:none;';
+      sys.innerText = '— You\'re now chatting with the ' + CFG.name + ' team. We\'ll reply shortly. —';
+      messages.appendChild(sys);
+      _showBackToAssistantLink();
+      _startLiveChatPoll();
+      messages.scrollTop = messages.scrollHeight;
+    })
+    .catch(function() { hideTyping(); addMsg("Couldn't connect right now.", 'bot'); });
+  }
+
+  function _showBackToAssistantLink() {
+    if (document.getElementById('et-back-to-bot')) return;
+    var bar = document.createElement('div'); bar.id = 'et-back-to-bot';
+    bar.style.cssText = 'text-align:center;padding:6px;border-top:1px solid var(--et-border);'
+      + 'background:var(--et-white);flex-shrink:0;';
+    var btn = document.createElement('button');
+    btn.style.cssText = 'background:none;border:none;color:var(--et-muted);font-size:11px;cursor:pointer;text-decoration:underline;';
+    btn.innerText = '← Back to assistant';
+    btn.onclick = _backToAssistant;
+    bar.appendChild(btn);
+    chatDiv.insertBefore(bar, inputArea);
+  }
+
+  function _backToAssistant() {
+    if (_liveChatPollIv) { clearInterval(_liveChatPollIv); _liveChatPollIv = null; }
+    var bar = document.getElementById('et-back-to-bot'); if (bar) bar.remove();
+    _inLiveChat = false;
+    input.placeholder = isHotelMode ? 'How can I help you plan your stay?' : 'Where would you like to go?';
+    if (_liveChatThreadId) {
+      fetch(apiBase + '/api/widget/chat/back', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','x-visitor-token': visitorToken,'x-api-key': agencyKey},
+        body: JSON.stringify({ threadId: _liveChatThreadId })
+      }).catch(function() {});
+      _liveChatThreadId = null;
+    }
+    var sys = document.createElement('div'); sys.className = 'msg bot';
+    sys.style.cssText = 'font-style:italic;color:var(--et-muted);font-size:12px;'
+      + 'text-align:center;background:transparent;border:none;box-shadow:none;';
+    sys.innerText = '— Back with the assistant —';
+    messages.appendChild(sys); messages.scrollTop = messages.scrollHeight;
+  }
+
+  function _startLiveChatPoll() {
+    if (_liveChatPollIv) clearInterval(_liveChatPollIv);
+    var lastId = null;
+    _liveChatPollIv = setInterval(function() {
+      if (!_liveChatThreadId || !_inLiveChat) { clearInterval(_liveChatPollIv); return; }
+      var url = apiBase + '/api/widget/chat/poll?threadId=' + _liveChatThreadId
+        + (lastId ? '&after=' + lastId : '');
+      fetch(url, { headers: {'x-visitor-token': visitorToken, 'x-api-key': agencyKey} })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (!d.success) return;
+        if (d.status === 'closed' || d.status === 'timeout') {
+          clearInterval(_liveChatPollIv); _inLiveChat = false;
+          var bar = document.getElementById('et-back-to-bot'); if (bar) bar.remove();
+          input.placeholder = isHotelMode ? 'How can I help you plan your stay?' : 'Where would you like to go?';
+        }
+        (d.messages || []).forEach(function(msg) {
+          if (msg.sender !== 'agent' && msg.sender !== 'system') return;
+          var div = document.createElement('div'); div.className = 'msg bot';
+          if (msg.sender === 'system') {
+            div.style.cssText = 'font-style:italic;color:var(--et-muted);font-size:12px;'
+              + 'text-align:center;background:transparent;border:none;box-shadow:none;';
+          }
+          div.innerText = msg.body; messages.appendChild(div);
+          if (msg.packages && msg.packages.length) {
+            msg.packages.forEach(function(p, i) { messages.appendChild(addPackage(p, i, null, null)); });
+          }
+          messages.scrollTop = messages.scrollHeight;
+          lastId = msg.id;
+        });
+      })
+      .catch(function() {});
+    }, 5000);
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // SEND
   // ─────────────────────────────────────────────────────────────────────────
-  function send() {
+   function send() {
     var text = input.value.trim(); if (!text) return;
+
+    // ── live chat intercept ──────────────────────────────────
+    if (_inLiveChat && _liveChatThreadId) {
+      addMsg(text, 'user'); input.value = '';
+      fetch(apiBase + '/api/widget/chat/send', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','x-visitor-token': visitorToken,'x-api-key': agencyKey},
+        body: JSON.stringify({ threadId: _liveChatThreadId, body: text })
+      }).catch(function() {});
+      return;
+    }
 
     // ── name capture ─────────────────────────────────────────
     if (_awaitingName) {
@@ -1557,11 +1700,12 @@ closeBtn.onclick = function() {
       transcript.push({type:'packages',packages:pkgs.slice(0,4)});
       scrollToEl(botMsg3);persistState();
 
-      // after packages rendered, offer WhatsApp link once per session
+            // after packages rendered, offer WhatsApp link once per session
       if (visitorToken && !_waLinkOffered && pkgs && pkgs.length > 0) {
         _waLinkOffered = true;
         setTimeout(_offerWhatsAppLink, 1200);
       }
+      setTimeout(_offerLiveChat, 2000);
 
       // ── Cache refresh spinner ─────────────────────────────────────────────
       if (data.needsRefresh || (data.cacheResult && data.cacheResult.needsRefresh)) {

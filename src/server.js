@@ -30,6 +30,8 @@ const widgetVoiceRoute      = require('./routes/widgetVoice');
 const cookieParser     = require('cookie-parser');
 const hotelRoutes      = require('./routes/hotelRoutes');
 const hotelAdminRouter = require('./routes/hotelAdmin');
+const widgetChatRoutes = require('./routes/widgetChat');
+const agentRoutes      = require('./routes/agentRequests');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -88,6 +90,7 @@ app.use('/widget.js',    widgetRoutes);
 app.use('/widget/hotel', hotelWidgetRoute);
 app.use('/api/widget',   widgetVoiceRoute);
 app.use('/api/widget',   require('./routes/widgetmemory'));
+app.use('/api/widget',   widgetVoiceRoute);
 app.use('/api/internal', require('./routes/nudgeScheduler'));
 app.use('/api/hotel',    hotelRoutes);
 app.use('/hotel-admin',  hotelAdminRouter);
@@ -98,6 +101,10 @@ const { authenticateAgency } = require('./middleware/auth');
 app.use('/api/trips',      authenticateAgency, tripRoutes);
 app.use('/api/uploads',    authenticateAgency, uploadRoutes);
 app.use('/api/monitoring', authenticateAgency, tripMonitoringRoutes);
+
+const { authenticateSession } = require('./middleware/sessionAuth');
+app.use('/api/agent', authenticateSession, agentRoutes);
+app.use('/api/agent', authenticateSession, require('./routes/agentChat'));
 
 app.get('/test-widget.html', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');

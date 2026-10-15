@@ -84,7 +84,32 @@ router.post('/orchestrate', async (req, res) => {
       channel: value.channelType,
     }).catch(err => logger.error('Search save error', { error: err.message }));
 
- return res.json({
+     const approvalGate = require('../services/approvalGate');
+    const { data: agencyRow } = await supabase
+      .from('agencies')
+      .select('id, integration_type, approval_mode')
+      .eq('id', resolvedAgencyId)
+      .single();
+
+    const held = await approvalGate.check({
+      agencyRow,
+      result,
+      userKey: value.sessionId || `widget_${Date.now()}`,
+      channel: 'widget',
+      send:    () => Promise.resolve(),
+    });
+
+    if (held) {
+      return res.json({
+        success:     true,
+        held:        true,
+        holdMessage: approvalGate.HOLD_MSG,
+        packages:    [],
+        sessionId:   result?.sessionId || `sess_${Date.now()}`,
+      });
+    }
+
+    return res.json({
       success: true,
       sessionId: result?.sessionId || `sess_${Date.now()}`,
       text: result?.text || null,

@@ -755,7 +755,7 @@ router.post('/whatsapp', async (req, res) => {
     // ── TRIPLY ROUTING ─────────────────────────────────────
     const { data: agencyRow } = await supabase
       .from('agencies')
-      .select('integration_type, approval_mode')
+      .select('id, integration_type, approval_mode')
       .eq('id', agencyId)
       .single();
 
@@ -855,7 +855,16 @@ router.post('/whatsapp', async (req, res) => {
       }
     }
 
-       await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+           const approvalGate = require('../services/approvalGate');
+    const held = await approvalGate.check({
+      agencyRow,
+      result,
+      userKey,
+      channel: 'whatsapp',
+      phone:   recipient,
+      send:    (msg) => whatsappService.sendText(phoneNumberId, recipient, msg),
+    });
+    if (!held) await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
 
     // ── WISH DETECTION (fire-and-forget) ──────────────────
     try {
