@@ -379,4 +379,11 @@ router.get('/booking/:bookingId', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// WIDGET CONFIG (Fixes the 404 error)
+// ─────────────────────────────────────────────
+router.get('/widget/chat/config', (req, res) => {
+  res.json({ liveChatEnabled: false });
+});
+
 module.exports = router;
