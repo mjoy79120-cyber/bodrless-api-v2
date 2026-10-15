@@ -50,6 +50,7 @@ router.post('/orchestrate', async (req, res) => {
     sessionId: Joi.string().allow(null).optional(),
     conversationHistory: Joi.array().optional(),
     previousParams: Joi.object().allow(null).optional(),
+    visitorId: Joi.string().optional().allow(null, ''),
   });
 
   const { error, value } = schema.validate(req.body);
