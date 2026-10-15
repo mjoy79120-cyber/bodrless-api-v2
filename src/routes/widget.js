@@ -1311,7 +1311,7 @@ closeBtn.onclick = function() {
   function showHotelEntry() {
     var card=document.createElement('div');card.className='et-welcome';card.id='et-hotel-entry';
     var eyebrow=document.createElement('div');eyebrow.className='et-welcome-eyebrow';eyebrow.innerText='Your Personal Concierge';
-    var title=document.createElement('div');title.className='et-welcome-title';innerText='Welcome to '+agencyName
+    var title=document.createElement('div');title.className='et-welcome-title';title.innerText='Welcome to '+agencyName;
     var body=document.createElement('div');body.className='et-welcome-body';body.innerText="It's a pleasure to have you with us. Tell me the occasion, your preferred dates, and how many guests — I'll find the perfect room and make it special.";
     var ctaBtn=document.createElement('button');ctaBtn.style.cssText='display:block;width:100%;background:var(--et-navy);color:white;border:none;padding:12px 20px;border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.3px;margin-top:4px;transition:background 0.2s;';ctaBtn.innerText='Start Planning';ctaBtn.onmouseover=function(){this.style.background='var(--et-gold)';};ctaBtn.onmouseout=function(){this.style.background='var(--et-navy)';};ctaBtn.onclick=function(){card.remove();setTimeout(function(){showHotelWelcome();input.focus();},300);};
     card.appendChild(eyebrow);card.appendChild(title);card.appendChild(body);card.appendChild(ctaBtn);messages.appendChild(card);messages.scrollTop=messages.scrollHeight;
