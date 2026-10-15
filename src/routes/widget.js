@@ -418,7 +418,7 @@ function initWidget() {
   if (!embedTarget) {
     var triggerBtn = document.createElement('button'); triggerBtn.id = 'bodrless-trigger';
 triggerBtn.style.cssText = [
-  'position:fixed','bottom:28px','right:28px','background:${primary}','color:white','border:none',
+  'position:fixed','bottom:28px','right:28px','background:'+,'color:white','border:none',
   'padding:0 22px','height:52px','border-radius:26px','cursor:pointer','font-size:14px','font-weight:600',
   'letter-spacing:-0.01em','box-shadow:0 4px 24px rgba(30,42,94,.35),0 1px 4px rgba(0,0,0,.15)',
   'z-index:999998','font-family:Inter,system-ui,Arial,sans-serif','display:flex','align-items:center',
@@ -1892,3 +1892,4 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
 });
 
 module.exports = router;
+
