@@ -102,7 +102,7 @@ app.use('/api/trips',      authenticateAgency, tripRoutes);
 app.use('/api/uploads',    authenticateAgency, uploadRoutes);
 app.use('/api/monitoring', authenticateAgency, tripMonitoringRoutes);
 
-const { authenticateSession } = require('./middleware/sessionAuth');
+const { authenticateSession } = require('./middleware/authSession');
 app.use('/api/agent', authenticateSession, agentRoutes);
 app.use('/api/agent', authenticateSession, require('./routes/agentChat'));
 
