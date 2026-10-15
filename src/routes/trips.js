@@ -85,14 +85,17 @@ router.post('/orchestrate', async (req, res) => {
     }).catch(err => logger.error('Search save error', { error: err.message }));
 
      const approvalGate = require('../services/approvalGate');
+    
+    // Use maybeSingle() so it doesn't throw if the agency row isn't found
     const { data: agencyRow } = await supabase
       .from('agencies')
       .select('id, integration_type, approval_mode')
       .eq('id', resolvedAgencyId)
-      .single();
+      .maybeSingle();
 
     const held = await approvalGate.check({
-      agencyRow,
+      // Fallback to 'auto' mode if the agency row isn't in Supabase yet
+      agencyRow: agencyRow || { id: resolvedAgencyId, integration_type: 'custom', approval_mode: 'auto' },
       result,
       userKey: value.sessionId || `widget_${Date.now()}`,
       channel: 'widget',
@@ -107,7 +110,8 @@ router.post('/orchestrate', async (req, res) => {
         packages:    [],
         sessionId:   result?.sessionId || `sess_${Date.now()}`,
       });
-    }
+    };
+    
 
     return res.json({
       success: true,
