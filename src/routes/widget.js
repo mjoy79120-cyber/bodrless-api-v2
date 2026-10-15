@@ -28,8 +28,6 @@ router.get('/', (req, res) => {
     greetingMode: isHotelMode ? 'concierge' : (req.query.mode === 'safari' ? 'safari' : 'travel'),
   };
 
-  // Permanent fix: reject hotel_direct requests with no key or an unknown-looking key
-  // This surfaces a clear error instead of silently using the wrong hotel group
   if (isHotelMode && !req.query.key) {
     console.warn('[BODRLESS] hotel_direct widget loaded without ?key= — defaulting to sarova');
   }
@@ -202,14 +200,13 @@ router.get('/', (req, res) => {
 .bodrless-powered{text-align:center;padding:8px 0 4px;font-size:10px;color:var(--et-muted);letter-spacing:0.5px;}
 .bodrless-powered a{color:var(--et-muted);text-decoration:none;font-weight:600;}
 .bodrless-powered a:hover{color:var(--et-navy);}
-/* ── motion system: soft rise-in for every dynamic element ── */
+
 #bodrless-widget-root{--et-ease:cubic-bezier(.22,1,.36,1);--et-spring:cubic-bezier(.34,1.4,.64,1);}
 @keyframes et-rise{from{opacity:0;transform:translateY(10px) scale(.985);}to{opacity:1;transform:translateY(0) scale(1);}}
 .msg,.typing,.package,.leg-section,.trip-summary,.et-welcome,.upsell-section,.name-form,.restore-banner,.price-alert,.multi-prop-bar,.et-starter{animation:et-rise .38s var(--et-ease) both;}
 .msg.user{transform-origin:bottom right;}
 .msg.bot,.typing{transform-origin:bottom left;}
 
-/* hero entrance with stagger */
 .et-hero h4{animation:et-rise .45s var(--et-ease) both;}
 .et-hero p{animation:et-rise .45s .06s var(--et-ease) both;}
 .et-chip-grid .et-chip{opacity:0;animation:et-rise .4s var(--et-ease) forwards;}
@@ -221,31 +218,25 @@ router.get('/', (req, res) => {
 .et-chip-grid .et-chip:nth-child(6){animation-delay:.40s}
 .et-name-row{animation:et-rise .4s .45s var(--et-ease) both;}
 
-/* panel open/close: fade + rise from the launcher */
 #bodrless-chat{opacity:0;transform:translateY(18px) scale(.96);transform-origin:bottom right;pointer-events:none;transition:opacity .3s var(--et-ease),transform .3s var(--et-ease);}
 #bodrless-chat.open{opacity:1;transform:translateY(0) scale(1);pointer-events:auto;}
 #bodrless-chat.embedded{transform-origin:center bottom;}
 
-/* tactile press states */
 #bodrless-send{transition:transform .16s var(--et-spring),background .2s,filter .2s;}
 #bodrless-send:active{transform:scale(.86);}
 .et-chip,.et-starter,.et-suggestion,.select-btn,.book,.confirm-btn,.upsell-add-btn,.summary-action-btn,.restore-btn,.transfer-option,.transfer-confirm-btn,.multi-prop-checkout-btn,.price-approve,.price-cancel{transition:transform .16s var(--et-spring),background .2s,border-color .2s,opacity .2s,color .2s,box-shadow .2s;}
 .et-chip:active,.et-starter:active,.et-suggestion:active,.select-btn:active,.book:active,.confirm-btn:active,.upsell-add-btn:active{transform:scale(.965);}
 
-/* card hover lift */
 .package,.upsell-card{transition:transform .22s var(--et-ease),box-shadow .22s var(--et-ease),border-color .2s,background .2s,opacity .2s;}
 .package:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(27,34,64,.10);}
 .upsell-card:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(27,34,64,.08);}
 
-/* slimmer scrollbar */
 #bodrless-messages::-webkit-scrollbar{width:6px;}
 #bodrless-messages::-webkit-scrollbar-thumb{background:var(--et-border);border-radius:3px;}
 #bodrless-messages::-webkit-scrollbar-track{background:transparent;}
 
-/* respect reduced motion */
 @media (prefers-reduced-motion:reduce){#bodrless-widget-root *,#bodrless-widget-root *::before,#bodrless-widget-root *::after{animation:none!important;transition:none!important;opacity:1!important;transform:none!important;}}
 
-/* header */
 #et-header{padding:14px 18px;background:var(--et-navy);}
 .et-logo{width:40px;height:40px;border-radius:12px;background:#fff;color:var(--et-navy);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;overflow:hidden;flex-shrink:0;}
 .et-logo img{width:100%;height:100%;object-fit:contain;padding:4px;box-sizing:border-box;}
@@ -253,7 +244,6 @@ router.get('/', (req, res) => {
 #et-header-text p{display:flex;align-items:center;gap:6px;font-size:11px;letter-spacing:0;text-transform:none;color:rgba(255,255,255,.7);}
 .et-dot{width:7px;height:7px;border-radius:50%;background:#4ade80;display:inline-block;}
 
-/* empty state: fills the panel instead of leaving dead space */
 #bodrless-messages{scrollbar-width:thin;scrollbar-color:var(--et-border) transparent;}
 .et-hero{margin:auto 0;padding:4px 2px 12px;}
 .et-hero h4{font-size:24px;line-height:1.2;letter-spacing:-.02em;margin:0 0 8px;color:var(--et-ink);font-weight:700;}
@@ -267,7 +257,6 @@ router.get('/', (req, res) => {
 .et-name-input::placeholder{color:var(--et-muted);}
 .et-name-input:focus{border-bottom-color:var(--et-gold);}
 
-/* messages + input */
 .msg{font-size:14px;}
 .bot{box-shadow:none;}
 #bodrless-input-area{padding:12px 14px 6px;border-top:none;}
@@ -277,7 +266,6 @@ router.get('/', (req, res) => {
 #bodrless-send:hover{filter:brightness(1.08);background:var(--et-gold);}
 .bodrless-powered{padding:2px 0 10px;background:var(--et-white);}
 
-/* dark theme (?theme=dark): for dark hero pages like the AFCON one */
 #bodrless-chat.dark{--et-white:#1a1f33;--et-cream:#12162a;--et-border:rgba(255,255,255,.1);--et-muted:#9aa3b8;--et-ink:#fff;}
 .dark .bot,.dark .et-chip{color:#e8eaf2;}
 .dark #bodrless-input,.dark .name-input,.dark .dob-row select{background:#12162a;color:#fff;}
@@ -287,22 +275,14 @@ router.get('/', (req, res) => {
 .dark .leg-selected-summary,.dark .trip-summary-total,.dark .pkg-footer{background:rgba(255,255,255,.04);}
 .dark .upsell-card.selected{background:rgba(39,174,96,.15);}
 .dark .hl-neutral,.dark .cancel-policy.neutral{background:rgba(255,255,255,.07);color:#c9cfdf;}
-/* typing indicator in dark mode: navy dots would vanish on the dark bubble */
 .dark .typing-dots span{background:#fff;}
 .dark .typing-dots span:nth-child(2){background:var(--et-gold);}
 
-/* voice mic */
 #bodrless-mic{background:transparent;border:1px solid var(--et-border);width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:16px;flex-shrink:0;color:var(--et-ink);display:flex;align-items:center;justify-content:center;}
 #bodrless-mic.rec{background:var(--et-red);border-color:var(--et-red);color:#fff;animation:et-nudge 1s infinite;}
-/* OTP flow */
 .otp-note{font-size:11px;color:var(--et-muted);text-align:center;margin-top:6px;}
-
-/* wish nudge in chat — soft highlight */
 .msg.bot.wish-nudge{background:linear-gradient(135deg,#f0f4ff,#fff);border-color:var(--et-gold);}
-
-/* drawer wish section */
 .dr-item small{color:var(--et-muted);}
-
 `;
 
   const widgetCode = `(function () {
@@ -324,11 +304,6 @@ function initWidget() {
   var transcript          = [];
   var hasRestoredHistory  = false;
 
-  // ── PERMANENT FIX: validate hotel key on load ─────────────────────────
-  // Each hotel embed MUST pass ?key=<slug>&mode=hotel_direct in the script URL.
-  // Example for Sarova:   <script src="...widget.js?key=sarova&mode=hotel_direct"></script>
-  // Example for PrideInn: <script src="...widget.js?key=prideinn&mode=hotel_direct"></script>
-  // If key is missing the widget will warn in console and use the server-side default.
   if (isHotelMode) {
     console.log('[BODRLESS] Hotel widget loaded — group: ' + agencyKey);
   }
@@ -336,7 +311,6 @@ function initWidget() {
   var hotelSelections     = {};
   var hotelLegMeta        = null;
   var selectedUpsells     = {};
-
   var STORAGE_KEY = 'bodrless_widget_' + agencyKey;
 
   function persistState() {
@@ -362,8 +336,6 @@ function initWidget() {
     } catch(e) { return null; }
   }
 
-  // NOTE: persisted state is restored AFTER all functions are defined (see _restorePersistedState call below)
-
   var style = document.createElement('style');
   style.innerHTML = ${JSON.stringify(styles)};
   document.head.appendChild(style);
@@ -381,7 +353,7 @@ function initWidget() {
   var header     = document.createElement('div'); header.id = 'et-header';
   var headerLeft = document.createElement('div'); headerLeft.id = 'et-header-left';
   var logoWrap = document.createElement('div'); logoWrap.className = 'et-logo';
-  var EPIC_LOGO_B64 = 'data:image/jpeg;base64,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';
+  var EPIC_LOGO_B64 = 'data:image/jpeg;base64,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';
   var _logoSrc = CFG.logo ? CFG.logo : (agencyKey === 'epic-travels' ? EPIC_LOGO_B64 : '');
   if (_logoSrc) {
     var li = document.createElement('img'); li.src = _logoSrc; li.alt = CFG.name;
@@ -417,32 +389,31 @@ function initWidget() {
   var welcomeShown = false;
   if (!embedTarget) {
     var triggerBtn = document.createElement('button'); triggerBtn.id = 'bodrless-trigger';
-triggerBtn.style.cssText = [
-  'position:fixed','bottom:28px','right:28px','background:${primary}','color:white','border:none',
-  'padding:0 22px','height:52px','border-radius:26px','cursor:pointer','font-size:14px','font-weight:600',
-  'letter-spacing:-0.01em','box-shadow:0 4px 24px rgba(30,42,94,.35),0 1px 4px rgba(0,0,0,.15)',
-  'z-index:999998','font-family:Inter,system-ui,Arial,sans-serif','display:flex','align-items:center',
-  'gap:9px','transition:transform .18s,box-shadow .18s'
-].join(';');
-triggerBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' + (isHotelMode ? 'Book a Room' : 'Plan your trip');
-triggerBtn.onmouseover = function(){ this.style.transform='translateY(-2px)'; this.style.boxShadow='0 8px 32px rgba(30,42,94,.4),0 2px 6px rgba(0,0,0,.12)'; };
-triggerBtn.onmouseout  = function(){ this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 24px rgba(30,42,94,.35),0 1px 4px rgba(0,0,0,.15)'; };
-document.body.appendChild(triggerBtn);
-setTimeout(function(){ triggerBtn.style.animation='et-nudge 1.8s cubic-bezier(.22,1,.36,1) 2'; }, 1500);
-triggerBtn.onclick = function() {
-  triggerBtn.style.display = 'none';
-  chatDiv.style.display = 'flex';
-  requestAnimationFrame(function() { requestAnimationFrame(function() { chatDiv.classList.add('open'); }); });
-  input.focus();
-  if (!welcomeShown) { welcomeShown = true; _initView(); }
-};
-closeBtn.onclick = function() {
-  chatDiv.classList.remove('open');
-  setTimeout(function() { chatDiv.style.display = 'none'; triggerBtn.style.display = 'flex'; }, 280);
-
-};
+    triggerBtn.style.cssText = [
+      'position:fixed','bottom:28px','right:28px','background:${primary}','color:white','border:none',
+      'padding:0 22px','height:52px','border-radius:26px','cursor:pointer','font-size:14px','font-weight:600',
+      'letter-spacing:-0.01em','box-shadow:0 4px 24px rgba(30,42,94,.35),0 1px 4px rgba(0,0,0,.15)',
+      'z-index:999998','font-family:Inter,system-ui,Arial,sans-serif','display:flex','align-items:center',
+      'gap:9px','transition:transform .18s,box-shadow .18s'
+    ].join(';');
+    triggerBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' + (isHotelMode ? 'Book a Room' : 'Plan your trip');
+    triggerBtn.onmouseover = function(){ this.style.transform='translateY(-2px)'; this.style.boxShadow='0 8px 32px rgba(30,42,94,.4),0 2px 6px rgba(0,0,0,.12)'; };
+    triggerBtn.onmouseout  = function(){ this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 24px rgba(30,42,94,.35),0 1px 4px rgba(0,0,0,.15)'; };
+    document.body.appendChild(triggerBtn);
+    setTimeout(function(){ triggerBtn.style.animation='et-nudge 1.8s cubic-bezier(.22,1,.36,1) 2'; }, 1500);
+    triggerBtn.onclick = function() {
+      triggerBtn.style.display = 'none';
+      chatDiv.style.display = 'flex';
+      requestAnimationFrame(function() { requestAnimationFrame(function() { chatDiv.classList.add('open'); }); });
+      input.focus();
+      if (!welcomeShown) { welcomeShown = true; _initView(); }
+    };
+    closeBtn.onclick = function() {
+      chatDiv.classList.remove('open');
+      setTimeout(function() { chatDiv.style.display = 'none'; triggerBtn.style.display = 'flex'; }, 280);
+    };
   } else { chatDiv.classList.add('open'); }
-  // ── RESTORE: runs here so all functions above are already defined ──────────
+
   function _restorePersistedState() {
     var __r = loadPersistedState();
     if (__r) {
@@ -457,13 +428,13 @@ closeBtn.onclick = function() {
       _loadSelectedPkg(__r);
     }
   }
-    function _initView() {
-    // Restore persisted state HERE — all functions (GREETINGS, showAgencyWelcome, etc.) are now defined
+
+  function _initView() {
     _restorePersistedState();
-    _checkLiveChatConfig();   // ← add this line
+    _checkLiveChatConfig();
     if (isHotelMode) { showHotelEntry(); return; }
     if (legFlow && legFlow.legs && legFlow.legs.length > 0) { _showRestoreBanner(); }
-    else if (hasRestoredHistory) { replayTranscript(); }
+    else if (hasRestoredHistory) { replayTranscript(); _loadAndShowWishes(); }
     else { showAgencyWelcome(); }
   }
 
@@ -510,7 +481,7 @@ closeBtn.onclick = function() {
   function scrollToEl(el) { if (!el) return; setTimeout(function() { messages.scrollTo({ top: el.offsetTop - 12, behavior: 'smooth' }); }, 80); }
   function fmtTime(iso) { if (!iso) return 'TBC'; try { var d = new Date(iso); if (isNaN(d)) return iso; return d.toLocaleTimeString('en-KE', {hour:'2-digit',minute:'2-digit'}); } catch(e) { return iso; } }
   function fmtPrice(n, cur) { return (cur||'KES')+' '+(Math.round(Number(n)||0)).toLocaleString(); }
-  function titleCase(s) { if(!s)return''; return String(s).replace(/\b\w/g, function(c){return c.toUpperCase();}); }
+  function titleCase(s) { if(!s)return''; return String(s).replace(/\\b\\w/g, function(c){return c.toUpperCase();}); }
   function makeRow(label, name, sub) { var row = document.createElement('div'); row.className = 'pkg-row'; var l = document.createElement('div'); l.className = 'pkg-label'; l.innerText = label; var n = document.createElement('div'); n.className = 'pkg-name'; n.innerText = name; var s = document.createElement('div'); s.className = 'pkg-sub'; s.innerText = sub; row.appendChild(l); row.appendChild(n); row.appendChild(s); return row; }
   function makeHL(text, tone) { var d = document.createElement('div'); d.className = 'hl ' + (tone==='good'?'hl-good':tone==='warn'?'hl-warn':'hl-neutral'); d.innerText = text; return d; }
   function makeCancelBadge(policySummary, isRefundable) { var d = document.createElement('div'); var icon; var cls = 'cancel-policy '; if (isRefundable === true) { cls += 'refundable'; icon = '✅'; } else if (isRefundable === false) { cls += 'non-refundable'; icon = '❌'; } else { cls += 'neutral'; icon = 'ℹ️'; } d.className = cls; d.innerText = icon + '  ' + (policySummary || 'Cancellation policy confirmed at booking.'); return d; }
@@ -652,10 +623,8 @@ closeBtn.onclick = function() {
       fetch(apiBase + '/api/trips/itinerary/' + itineraryId + '/abandon', { method: 'POST', headers: {'Content-Type':'application/json','x-api-key': agencyKey} }).catch(function(){});
     }
     if (legFlow && legFlow.runningTotalKES > 0 && visitorToken) {
-      // get the verified phone if we have it, then record abandonment
       wapi('GET', '/otp/status').then(function (d) {
         if (d && d.verified) {
-          // server records abandonment signal via travelerIntelligence
           wapi('POST', '/visitor/abandonment', {
             totalKES: legFlow.runningTotalKES,
             destination: legFlow.tripParams && legFlow.tripParams.destination,
@@ -670,13 +639,11 @@ closeBtn.onclick = function() {
   var guestName = '';
   try { guestName = localStorage.getItem(NAME_KEY) || ''; } catch (e) {}
 
-  // ── PATCH: conversational state ─────────────────────────────────────────
-  var wishList          = [];      // open trip wishes for this visitor
-  var otpState          = null;    // { step: 'awaiting_phone'|'awaiting_code', phone? }
-  var selectedPkgHold   = null;    // { package, savedAt }
-  var PKG_HOLD_TTL      = 60 * 60 * 1000;   // 1 hour
-  var modifyState       = null;    // { active: true, originalParams }
-  var _waLinkOffered    = false;
+  var wishList          = [];
+  var otpState          = null;
+  var selectedPkgHold   = null;
+  var PKG_HOLD_TTL      = 60 * 60 * 1000;
+  var modifyState       = null;
   var _waLinkOffered    = false;
   var _liveChatEnabled    = false;
   var _liveChatThreadId   = null;
@@ -684,12 +651,13 @@ closeBtn.onclick = function() {
   var _inLiveChat         = false;
   var _liveChatLinkShown  = false;
 
-  // visitor identity for /api/widget routes (widgetMemory / widgetOtp)
   var visitorToken = '';
   try {
     visitorToken = localStorage.getItem('bodrless_visitor') || '';
     if (!visitorToken) {
-      visitorToken = 'v_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+      var _b = new Uint8Array(12);
+      (window.crypto || window.msCrypto).getRandomValues(_b);
+      visitorToken = 'v_' + Array.prototype.map.call(_b, function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
       localStorage.setItem('bodrless_visitor', visitorToken);
     }
   } catch (e) { visitorToken = 'v_anon_' + Math.random().toString(36).slice(2); }
@@ -707,9 +675,6 @@ closeBtn.onclick = function() {
     try { guestName ? localStorage.setItem(NAME_KEY, guestName) : localStorage.removeItem(NAME_KEY); } catch (e) {}
   }
 
-  // Pool of warm openers, keyed by greeting mode.
-  // The agency name is injected at runtime so every agency
-  // gets its own voice, not a generic line.
   var GREETINGS = {
     travel: [
       function(n) { return '🌍 Karibu! Welcome to ' + n + '. Before I start pulling up options for you — what should I call you?'; },
@@ -718,7 +683,7 @@ closeBtn.onclick = function() {
       function(n) { return '🌟 Hi and welcome to ' + n + '. I\\'d love to help you plan your next adventure — what do I call you?'; },
     ],
     safari: [
-      function(n) { return '🦁 Welcome to ' + n + '! The wild is waiting — but first, tell me your name so I know who I\\'m sending on this adventure.'; },
+      function(n) { return '🦁 Welcome to ' + n + '! The wild is waiting — but first, tell me your name so I know who I\\'s sending on this adventure.'; },
       function(n) { return '🌿 Jambo! ' + n + ' here. Before we start talking safaris, what should I call you?'; },
       function(n) { return '🐘 Hey explorer! Welcome to ' + n + '. What\\'s your name? I want to make sure this trip is built just for you.'; },
     ],
@@ -740,7 +705,6 @@ closeBtn.onclick = function() {
   function _pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
   function showAgencyWelcome() {
-    // returning visitor — skip greeter, go straight to conversation
     if (guestName) {
       var heroEl = document.getElementById('et-hero');
       if (heroEl) heroEl.remove();
@@ -755,7 +719,6 @@ closeBtn.onclick = function() {
       return;
     }
 
-    // first visit — show chip grid while greeter message types
     var hero = document.createElement('div'); hero.className = 'et-hero'; hero.id = 'et-hero';
     var grid = document.createElement('div'); grid.className = 'et-chip-grid';
     CFG.chips.forEach(function (s) {
@@ -770,7 +733,6 @@ closeBtn.onclick = function() {
     hero.appendChild(grid);
     messages.appendChild(hero);
 
-    // animated bot greeting after a short pause
     var pool   = GREETINGS[CFG.greetingMode] || GREETINGS.travel;
     var opener = _pick(pool)(CFG.name);
     setTimeout(function () {
@@ -787,10 +749,9 @@ closeBtn.onclick = function() {
     _awaitingName = true;
   }
 
-  // ── 8: WhatsApp OTP bridge ──────────────────────────────────────────────
   function _offerWhatsAppLink() {
     wapi('GET', '/otp/status').then(function (d) {
-      if (d && d.verified) return;   // already linked
+      if (d && d.verified) return;
       setTimeout(function () {
         var name = guestName ? guestName + ', want' : 'Want';
         addMsg(name + ' me to send these options and updates to your WhatsApp too? Just drop your number and I\\'ll send a quick confirmation code.', 'bot');
@@ -846,17 +807,13 @@ closeBtn.onclick = function() {
     });
   }
 
-  // ── 9: selected package hold (restored from persisted state) ────────────
   function _loadSelectedPkg(c) {
     if (!c.selectedPkg) return;
     var age = Date.now() - new Date(c.selectedPkg.savedAt).getTime();
-    if (age > PKG_HOLD_TTL) return;   // stale
+    if (age > PKG_HOLD_TTL) return;
     selectedPkgHold = { package: c.selectedPkg.package, savedAt: new Date(c.selectedPkg.savedAt).getTime() };
   }
 
-  // ── 13: trip wishes ─────────────────────────────────────────────────────
-  // NOTE: this widget has no drawer yet — when renderDrawer() is added,
-  // call _loadWishesIntoDrawer(body) inside it (patch section 13).
   function _loadWishesIntoDrawer(body) {
     if (!body) return;
     wapi('GET', '/wishes').then(function (d) {
@@ -883,16 +840,96 @@ closeBtn.onclick = function() {
     }).catch(function () {});
   }
 
+  // ── Email alerts opt-in + pending nudges ────────────────────────────────
+  var ALERTS_KEY  = 'bodrless_alerts_declined_' + agencyKey;
+  var _alertsEmail = null;   // masked address once alerts are on
+
+  function _alertsDeclinedRecently() {
+    try {
+      var t = parseInt(localStorage.getItem(ALERTS_KEY) || '0', 10);
+      return !!t && (Date.now() - t) < 14 * 24 * 60 * 60 * 1000;
+    } catch (e) { return false; }
+  }
+
+  function _offerEmailAlerts() {
+    if (_alertsEmail || _alertsDeclinedRecently()) return;
+    if (document.getElementById('et-alert-card')) return;
+    var dest = previousParams && previousParams.destination ? titleCase(previousParams.destination) : '';
+    if (!dest) return;
+
+    var card = document.createElement('div'); card.className = 'name-form'; card.id = 'et-alert-card';
+    var p = document.createElement('p');
+    p.innerText = (guestName ? guestName + ', want' : 'Want') + ' a heads-up if prices drop for ' + dest + '? Drop your email and I will keep watch. No need to book now.';
+    var emailIn = document.createElement('input');
+    emailIn.className = 'name-input'; emailIn.type = 'email'; emailIn.placeholder = 'Your email'; emailIn.autocomplete = 'email';
+    var err = document.createElement('div'); err.style.cssText = 'color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;';
+    var go = document.createElement('button'); go.className = 'confirm-btn'; go.innerText = 'Alert me';
+    var no = document.createElement('button'); no.className = 'transfer-skip'; no.innerText = 'No thanks';
+    var note = document.createElement('div'); note.className = 'otp-note'; note.innerText = 'Only about this trip. Unsubscribe any time from the email.';
+
+    function fail(msg) { go.disabled = false; go.innerText = 'Alert me'; err.innerText = msg; err.style.display = 'block'; }
+
+    go.onclick = function () {
+      var v = emailIn.value.trim();
+      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/.test(v)) { err.innerText = 'Please enter a valid email.'; err.style.display = 'block'; return; }
+      err.style.display = 'none'; go.disabled = true; go.innerText = 'Saving...';
+      wapi('POST', '/optin', { email: v, name: guestName || null }).then(function (d) {
+        if (d && d.ok) {
+          _alertsEmail = d.email || v; card.remove();
+          var t = 'Done. I will email you if prices drop or your trip gets close.';
+          addMsg(t, 'bot'); transcript.push({ type: 'bot', text: t }); persistState();
+        } else if (d && d.error === 'too_many_requests') {
+          fail('Too many tries. Please try again later.');
+        } else {
+          fail('Could not save that. Please try again.');
+        }
+      }).catch(function () { fail('Network error. Please try again.'); });
+    };
+    no.onclick = function () {
+      try { localStorage.setItem(ALERTS_KEY, String(Date.now())); } catch (e) {}
+      card.remove();
+    };
+
+    card.appendChild(p); card.appendChild(emailIn); card.appendChild(err);
+    card.appendChild(go); card.appendChild(no); card.appendChild(note);
+    messages.appendChild(card); messages.scrollTop = messages.scrollHeight;
+  }
+
+  function _addWishAction(w) {
+    var row = document.createElement('div'); row.className = 'restore-banner-actions'; row.style.margin = '4px 0 8px';
+    var b = document.createElement('button'); b.className = 'restore-btn yes'; b.innerText = 'Show me options';
+    b.onclick = function () { row.remove(); _openWish(w); };
+    row.appendChild(b); messages.appendChild(row); messages.scrollTop = messages.scrollHeight;
+  }
+
+  // REPLACES the old _loadAndShowWishes: a nudge written by the scheduler is
+  // shown first (then cleared); otherwise the soft reminder as before.
   function _loadAndShowWishes() {
     if (!visitorToken) return;
     wapi('GET', '/wishes').then(function (d) {
-      if (!d || !d.wishes || !d.wishes.length) return;
-      // show a soft nudge in chat if there are saved wishes
-      var w = d.wishes[0];
+      if (!d) return;
+      if (d.alerts && d.alerts.email) _alertsEmail = d.alerts.email;
+      var wishes = d.wishes || [];
+      if (!wishes.length) return;
+
+      var nudged = null;
+      for (var i = 0; i < wishes.length; i++) { if (wishes[i].pending_nudge) { nudged = wishes[i]; break; } }
+      if (nudged) {
+        setTimeout(function () {
+          var el = addMsg(nudged.pending_nudge, 'bot'); el.classList.add('wish-nudge');
+          transcript.push({ type: 'bot', text: nudged.pending_nudge }); persistState();
+          _addWishAction(nudged);
+          wapi('POST', '/wishes/' + nudged.id + '/nudge-seen').catch(function () {});
+        }, 1500);
+        return;
+      }
+
+      var w = wishes[0];
       if (w.best_price_kes && w.cache_valid) {
         var name = guestName ? guestName + ', I' : 'I';
         setTimeout(function () {
           addMsg(name + ' still have your ' + w.destination + ' trip idea saved' + (w.departure_month ? ' for ' + w.departure_month : '') + '. From KES ' + Math.round(w.best_price_kes).toLocaleString() + '. Want to pick that up?', 'bot');
+          _addWishAction(w);
         }, 1800);
       }
     }).catch(function () {});
@@ -947,7 +984,7 @@ closeBtn.onclick = function() {
     var icon = document.createElement('span'); icon.className = 'leg-icon'; icon.innerText = cfg.icon;
     var titleWrap = document.createElement('div');
     var title = document.createElement('div'); title.className = 'leg-title'; title.innerText = (idx + 1) + '. ' + (leg.label || leg.roleLabel || cfg.label);
-   var subtitle = document.createElement('div'); subtitle.className = 'leg-subtitle'; subtitle.innerText = leg.text ? leg.text.replace(/\\*\\*/g, '').split('\\n')[0] : cfg.label;
+    var subtitle = document.createElement('div'); subtitle.className = 'leg-subtitle'; subtitle.innerText = leg.text ? leg.text.replace(/\\*\\*/g, '').split('\\n')[0] : cfg.label;
     titleWrap.appendChild(title); titleWrap.appendChild(subtitle);
     hdrLeft.appendChild(icon); hdrLeft.appendChild(titleWrap);
     var statusBadge = document.createElement('span'); statusBadge.className = 'leg-status ' + (isLocked ? 'locked' : isCurrent ? 'active' : 'pending');
@@ -1135,7 +1172,7 @@ closeBtn.onclick = function() {
       if (itineraryId) { fetch(apiBase + '/api/trips/itinerary/' + itineraryId + '/attach-phone', { method: 'POST', headers: {'Content-Type':'application/json','x-api-key': agencyKey}, body: JSON.stringify({ phone: phone, agencyId: agencyKey }) }).catch(function(){}); }
       var selectedPackages = [];
       if (legFlow && legFlow.selections) { var sels = legFlow.selections; for (var si = 0; si < legFlow.legs.length; si++) { if (sels[si] && sels[si].package) selectedPackages.push(sels[si].package); } }
-      fetch(apiBase + '/api/trips/book-init', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agencyId: agencyKey, guestName: passengers[0].firstName + ' ' + passengers[0].lastName, guestPhone: phone, guestEmail: email, passengers: passengers, packages: selectedPackages, paymentType: paymentType, itineraryId: itineraryId || null, legFlow: legFlow }) })
+      fetch(apiBase + '/api/trips/book-init', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agencyId: agencyKey, guestName: passengers[0].firstName + ' ' + passengers[0].lastName, guestPhone: phone, guestEmail: email, passengers: passengers, packages: selectedPackages, visitorId: visitorToken, paymentType: paymentType, itineraryId: itineraryId || null, legFlow: legFlow }) })
       .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
       .then(function(res) {
         if (!res.ok || !res.data.success) { em.innerText = (res.data && res.data.error) || 'Booking failed.'; em.style.display = 'block'; cfb.innerText = 'Confirm Booking'; cfb.disabled = false; return; }
@@ -1152,13 +1189,10 @@ closeBtn.onclick = function() {
     cancelBtn.style.marginTop = '8px';
     cancelBtn.onclick = function () {
       form.remove();
-      // clear booking session server-side
       if (visitorToken && conversationId) {
         wapi('POST', '/conversations/' + conversationId + '/cancel-booking').catch(function () {});
       }
-      // keep context, just surface the packages again
       addMsg('No problem ' + (guestName || '') + ' — your options are still above. Take your time.', 'bot');
-      selectedPkgHold = selectedPkgHold; // keep the hold alive
     };
     form.appendChild(cancelBtn);
     var tb = document.createElement('div'); tb.className = 'trust-badge'; tb.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Secure payment via M-Pesa'; form.appendChild(tb);
@@ -1172,9 +1206,6 @@ closeBtn.onclick = function() {
     .catch(function(){});
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // PACKAGE CARD
-  // ─────────────────────────────────────────────────────────────────────────
   function addPackage(p, i, legIdx, onSelect) {
     var div = document.createElement('div'); div.className = 'package';
     var t = p.transport || null, rt = p.returnTransport || null, h = p.hotel || null;
@@ -1259,7 +1290,7 @@ closeBtn.onclick = function() {
       for(var k=0;k<pInputs.length;k++){var pin=pInputs[k];var f=pin.fn.value.trim(),l=pin.ln.value.trim();if(!f||!l){em2.innerText='Please fill in all names.';em2.style.display='block';return;}var dd=pin.d.value,mm=pin.m.value,yy=pin.y.value;if(!dd||!mm||!yy){em2.innerText='Date of birth required.';em2.style.display='block';return;}var dstr=yy+'-'+String(mm).padStart(2,'0')+'-'+String(dd).padStart(2,'0');var idn=pin.ii.value.trim();if(!pin.cc.checked&&!idn){em2.innerText='ID required.';em2.style.display='block';return;}pax2.push({firstName:f,lastName:l,dateOfBirth:dstr,gender:pin.gs.value,type:pin.cc.checked?'child':'adult',idNumber:idn||null});}
       var phone2=phi2.value.trim(),email2=emi2.value.trim();if(!phone2){em2.innerText='Phone required.';em2.style.display='block';return;}if(!email2){em2.innerText='Email required.';em2.style.display='block';return;}
       cfb2.innerText='Processing...';cfb2.disabled=true;
-      fetch(apiBase+'/api/trips/book-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencyId:agencyKey,guestName:pax2[0].firstName+' '+pax2[0].lastName,guestPhone:phone2,guestEmail:email2,passengers:pax2,package:p})})
+      fetch(apiBase+'/api/trips/book-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencyId:agencyKey,guestName:pax2[0].firstName+' '+pax2[0].lastName,guestPhone:phone2,guestEmail:email2,passengers:pax2,package:p,visitorId:visitorToken})})
       .then(function(r){return r.json().then(function(d){return{ok:r.ok,data:d};});})
       .then(function(res){if(!res.ok&&res.data&&res.data.code==='PRICE_CHANGED'){form.remove();showPriceAlert(res.data,{guestName:pax2[0].firstName+' '+pax2[0].lastName,phone:phone2,email:email2,passengers:pax2,pkg:p},bookBtn);return;}if(!res.ok||!res.data.success){em2.innerText=(res.data&&res.data.error)||'Booking failed.';em2.style.display='block';cfb2.innerText='Confirm Booking';cfb2.disabled=false;return;}form.remove();continueToPayment(res.data,{guestName:pax2[0].firstName+' '+pax2[0].lastName,phone:phone2,email:email2,passengers:pax2},bookBtn);})
       .catch(function(){em2.innerText='Network error.';em2.style.display='block';cfb2.innerText='Confirm Booking';cfb2.disabled=false;});
@@ -1271,13 +1302,10 @@ closeBtn.onclick = function() {
     cancelBtn.style.marginTop = '8px';
     cancelBtn.onclick = function () {
       form.remove();
-      // clear booking session server-side
       if (visitorToken && conversationId) {
         wapi('POST', '/conversations/' + conversationId + '/cancel-booking').catch(function () {});
       }
-      // keep context, just surface the packages again
       addMsg('No problem ' + (guestName || '') + ' — your options are still above. Take your time.', 'bot');
-      selectedPkgHold = selectedPkgHold; // keep the hold alive
     };
     form.appendChild(cancelBtn);
     var tb2=document.createElement('div');tb2.className='trust-badge';tb2.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Secure payment via M-Pesa';form.appendChild(tb2);
@@ -1293,7 +1321,7 @@ closeBtn.onclick = function() {
     var ca=document.createElement('button');ca.className='price-cancel';ca.innerText='Cancel';
     acts.appendChild(ap);acts.appendChild(ca);d.appendChild(acts);messages.appendChild(d);messages.scrollTop=messages.scrollHeight;
     ca.onclick=function(){d.remove();addMsg('Booking cancelled — no charge was made.','bot');};
-    ap.onclick=function(){ap.disabled=true;ca.disabled=true;ap.innerText='Processing...';fetch(apiBase+'/api/trips/book-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencyId:agencyKey,guestName:ctx.guestName,guestPhone:ctx.phone,guestEmail:ctx.email,passengers:ctx.passengers,package:ctx.pkg,priceApproved:true})}).then(function(r){return r.json().then(function(data){return{ok:r.ok,data:data};});}).then(function(res){d.remove();if(!res.ok||!res.data.success){addMsg((res.data&&res.data.error)||'Booking failed.','bot');return;}continueToPayment(res.data,ctx,btn);}).catch(function(){d.remove();addMsg('Network error.','bot');});};
+    ap.onclick=function(){ap.disabled=true;ca.disabled=true;ap.innerText='Processing...';fetch(apiBase+'/api/trips/book-init',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencyId:agencyKey,guestName:ctx.guestName,guestPhone:ctx.phone,guestEmail:ctx.email,passengers:ctx.passengers,package:ctx.pkg,priceApproved:true,visitorId:visitorToken})}).then(function(r){return r.json().then(function(data){return{ok:r.ok,data:data};});}).then(function(res){d.remove();if(!res.ok||!res.data.success){addMsg((res.data&&res.data.error)||'Booking failed.','bot');return;}continueToPayment(res.data,ctx,btn);}).catch(function(){d.remove();addMsg('Network error.','bot');});};
   }
 
   function continueToPayment(data, ctx, btn) {
@@ -1434,7 +1462,7 @@ closeBtn.onclick = function() {
     form.appendChild(cb);messages.appendChild(form);messages.scrollTop=messages.scrollHeight;
   }
 
-    function _checkLiveChatConfig() {
+  function _checkLiveChatConfig() {
     var h = isHotelMode ? {'x-hotel-key': agencyKey} : {'x-api-key': agencyKey};
     fetch(apiBase + '/api/widget/chat/config', { headers: h })
       .then(function(r) { return r.json(); })
@@ -1482,7 +1510,7 @@ closeBtn.onclick = function() {
       var sys = document.createElement('div'); sys.className = 'msg bot';
       sys.style.cssText = 'font-style:italic;color:var(--et-muted);font-size:12px;'
         + 'text-align:center;background:transparent;border:none;box-shadow:none;';
-      sys.innerText = '— You\'re now chatting with the ' + CFG.name + ' team. We\'ll reply shortly. —';
+      sys.innerText = '— You\\'re now chatting with the ' + CFG.name + ' team. We\\'ll reply shortly. —';
       messages.appendChild(sys);
       _showBackToAssistantLink();
       _startLiveChatPoll();
@@ -1559,13 +1587,9 @@ closeBtn.onclick = function() {
     }, 5000);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // SEND
-  // ─────────────────────────────────────────────────────────────────────────
-   function send() {
+  function send() {
     var text = input.value.trim(); if (!text) return;
 
-    // ── live chat intercept ──────────────────────────────────
     if (_inLiveChat && _liveChatThreadId) {
       addMsg(text, 'user'); input.value = '';
       fetch(apiBase + '/api/widget/chat/send', {
@@ -1576,11 +1600,10 @@ closeBtn.onclick = function() {
       return;
     }
 
-    // ── name capture ─────────────────────────────────────────
     if (_awaitingName) {
       _awaitingName = false;
       var heroEl = document.getElementById('et-hero'); if (heroEl) heroEl.remove();
-      var rawName = text.trim().split(/\\s+/)[0];    // take first word only
+      var rawName = text.trim().split(/\\s+/)[0];
       rawName = rawName.charAt(0).toUpperCase() + rawName.slice(1).toLowerCase();
       if (rawName.length >= 2 && rawName.length <= 30 && /^[a-zA-ZÀ-ÿ'-]+$/.test(rawName)) {
         saveName(rawName);
@@ -1597,11 +1620,9 @@ closeBtn.onclick = function() {
         }, 350);
         return;
       }
-      // doesn't look like a name — treat as a destination and carry on
       _awaitingName = false;
     }
 
-    // ── OTP flow intercept ───────────────────────────────────
     if (otpState) {
       addMsg(text, 'user'); transcript.push({ type: 'user', text: text }); input.value = '';
       if (otpState.step === 'awaiting_phone') { _handleOtpPhone(text); return; }
@@ -1620,7 +1641,7 @@ closeBtn.onclick = function() {
       addMsg(text,'user');transcript.push({type:'user',text:text});persistState();input.value='';
       showTyping();_searchAlternativesForLeg(awaitingLeg,text);return;
     }
-    // ── mid-conversation modify ──────────────────────────────
+    
     var MODIFY_RE = /change|modify|different|cheaper|upgrade|more nights|fewer nights|another hotel|another flight|swap/i;
     if (selectedPkgHold && MODIFY_RE.test(text) && !legFlow) {
       var pkgAge = Date.now() - (selectedPkgHold.savedAt || 0);
@@ -1637,16 +1658,14 @@ closeBtn.onclick = function() {
     var body     = isHotelMode
       ? JSON.stringify(Object.assign({prompt:text,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams,visitorId:conversationId || null}, guestName ? {guestName:guestName} : {}))
       : JSON.stringify({
-              prompt:text,agencyId:agencyKey,channelType:'widget',sessionId:sessionId,
+              prompt:text,agencyId:agencyKey,channelType:'widget',visitorId:visitorToken,sessionId:sessionId,
               conversationHistory:conversationHistory,previousParams:previousParams,
-            })
+            });
 
     fetch(endpoint,{method:'POST',headers:hdrs,body:body})
     .then(function(r){ return r.json(); })
     .then(function(data){
       hideTyping();
-
-      console.log('[BODRLESS] API response:', JSON.stringify(data));
 
       modifyState = null;
       if(data.sessionId)         { sessionId = data.sessionId; conversationId = conversationId || data.sessionId; }
@@ -1658,7 +1677,6 @@ closeBtn.onclick = function() {
       var pkgs = data && data.packages ? data.packages : [];
       var isHD = data.isHotelDirect || (pkgs.length > 0 && pkgs[0] && pkgs[0].isHotelDirect);
 
-      // ── CLASSIFIED MULTI-LEG TRIP ────────────────────────────────────────
       if(data.isClassifiedTrip && Array.isArray(data.tripResults)){
         var responseText=data.text||"Here's your trip broken down by leg:";
         var botMsg=addMsg(responseText,'bot');transcript.push({type:'bot',text:responseText});
@@ -1670,7 +1688,6 @@ closeBtn.onclick = function() {
         return;
       }
 
-      // ── HOTEL MODE ───────────────────────────────────────────────────────
       if(isHD){
         if(!pkgs.length){var nt2=(data&&data.text)?data.text:"No rooms available for those dates.";addMsg(nt2,'bot');transcript.push({type:'bot',text:nt2});persistState();return;}
         var rm2=data.text||"Here's what we have available:";
@@ -1689,7 +1706,6 @@ closeBtn.onclick = function() {
         scrollToEl(botMsg2);persistState();return;
       }
 
-      // ── SINGLE DESTINATION ───────────────────────────────────────────────
       if(!pkgs.length){var nt3=(data&&data.text)?data.text:"No options available.";addMsg(nt3,'bot');transcript.push({type:'bot',text:nt3});persistState();return;}
       var rm3=data.text||'I found '+pkgs.length+' option(s) for you:';
       var botMsg3=addMsg(rm3,'bot');transcript.push({type:'bot',text:rm3});
@@ -1700,92 +1716,15 @@ closeBtn.onclick = function() {
       transcript.push({type:'packages',packages:pkgs.slice(0,4)});
       scrollToEl(botMsg3);persistState();
 
-            // after packages rendered, offer WhatsApp link once per session
       if (visitorToken && !_waLinkOffered && pkgs && pkgs.length > 0) {
         _waLinkOffered = true;
-        setTimeout(_offerWhatsAppLink, 1200);
+        setTimeout(_offerEmailAlerts, 1500);
       }
       setTimeout(_offerLiveChat, 2000);
-
-      // ── Cache refresh spinner ─────────────────────────────────────────────
-      if (data.needsRefresh || (data.cacheResult && data.cacheResult.needsRefresh)) {
-        var refreshNotice = document.createElement('div');
-        refreshNotice.id  = 'et-cache-refresh-notice';
-        refreshNotice.style.cssText = [
-          'background:#F9F7F4',
-          'border:1px solid var(--et-border)',
-          'border-radius:10px',
-          'padding:8px 12px',
-          'font-size:11px',
-          'color:var(--et-muted)',
-          'display:flex',
-          'align-items:center',
-          'gap:8px',
-          'margin-top:4px',
-        ].join(';');
-        var spinner = document.createElement('span');
-        spinner.style.cssText = [
-          'width:10px','height:10px',
-          'border:2px solid var(--et-border)',
-          'border-top-color:var(--et-navy)',
-          'border-radius:50%',
-          'display:inline-block',
-          'animation:spin 0.8s linear infinite',
-          'flex-shrink:0',
-        ].join(';');
-        if (!document.getElementById('et-spin-style')) {
-          var spinStyle = document.createElement('style');
-          spinStyle.id  = 'et-spin-style';
-          spinStyle.innerText = '@keyframes spin{to{transform:rotate(360deg)}}';
-          document.head.appendChild(spinStyle);
-        }
-        var noticeText = document.createElement('span');
-        noticeText.innerText = 'Confirming live prices...';
-        refreshNotice.appendChild(spinner);
-        refreshNotice.appendChild(noticeText);
-        messages.appendChild(refreshNotice);
-        messages.scrollTop = messages.scrollHeight;
-
-        setTimeout(function() {
-          var prevInput = text;
-          fetch(endpoint, {method:'POST', headers:hdrs, body: JSON.stringify({
-            prompt:              prevInput,
-            agencyId:            agencyKey,
-            channelType:         'widget',
-            sessionId:           sessionId,
-            conversationHistory: conversationHistory,
-            previousParams:      previousParams,
-            _cacheRefresh:       true,
-          })})
-          .then(function(r){ return r.json(); })
-          .then(function(freshData) {
-            var notice = document.getElementById('et-cache-refresh-notice');
-            if (notice) notice.remove();
-            var freshPkgs = freshData && freshData.packages ? freshData.packages : [];
-            if (freshPkgs.length === 0) return;
-            var oldBest = pkgs[0] && pkgs[0].summary && pkgs[0].summary.totalPrice;
-            var newBest = freshPkgs[0] && freshPkgs[0].summary && freshPkgs[0].summary.totalPrice;
-            if (oldBest && newBest && Math.abs(newBest - oldBest) > 500) {
-              var direction = newBest > oldBest ? 'up' : 'down';
-              var nudge = document.createElement('div');
-              nudge.className = 'price-nudge ' + direction;
-              nudge.innerText = direction === 'down' ? '📉 Price dropped — updated below' : '📈 Price updated — see below';
-              messages.appendChild(nudge);
-              messages.scrollTop = messages.scrollHeight;
-              freshPkgs.slice(0,4).forEach(function(p,i){ addPackage(p,i,null,null); });
-            }
-          })
-          .catch(function(){
-            var notice = document.getElementById('et-cache-refresh-notice');
-            if (notice) notice.remove();
-          });
-        }, 2500);
-      }
     })
     .catch(function(e){hideTyping();console.log('Widget error:',e);addMsg('Unable to load options right now. Please try again.','bot');});
   }
 
-  // ── Supplier comparison display ───────────────────────────────────────────
   function addSupplierComparison(container, supplierBreakdown) {
     if (!supplierBreakdown || supplierBreakdown.length === 0) return;
     var compDiv = document.createElement('div');
@@ -1835,7 +1774,6 @@ closeBtn.onclick = function() {
     .catch(function(){hideTyping();addMsg('Network error.','bot');});
   }
 
-    // ── VOICE INPUT ─────────────────────────────────────────────────────────
   var micBtn = document.createElement('button');
   micBtn.id = 'bodrless-mic'; micBtn.type = 'button'; micBtn.innerHTML = '&#127908;'; micBtn.title = 'Speak';
   inputArea.insertBefore(micBtn, sendBtn);
