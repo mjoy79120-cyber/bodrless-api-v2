@@ -155,6 +155,7 @@ router.post('/book-init', async (req, res) => {
     passengers: Joi.array().items(passengerSchema).min(1).required(),
     package:    Joi.object().required(),
     channel:    Joi.string().optional().default('widget'),
+    visitorId: Joi.string().optional().allow(null, ''),
   });
 
   const { error, value } = schema.validate(req.body);
