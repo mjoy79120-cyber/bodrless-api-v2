@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const supabase = require("../utils/supabase");
 const { logger } = require("../utils/logger");
+const { parseDateExpression } = require("../utils/dateResolver");
 const { parsePrompt, resolveCountryToCity, resolveSafariDestination, isFreshTripPrompt, scoreFreshPrompt, extractname } = require("./promptParser");
 const { rankPackages } = require("./packageRanker");
 const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
@@ -2452,7 +2453,7 @@ class OrchestrationEngine {
       /\binstead\s+(?:of\s+[a-z\s]{2,20}?,?\s*)?(?:let'?s\s+(?:do|go\s+to)|try)\s+([a-z][a-z\s]{2,20}?)(?:$|\?)/i,
     ];
 
-    const _extractAdjustments = (t) => {
+     const _extractAdjustments = (t) => {
       const adj = {};
       if (/cheaper|less expensive|lower budget|affordable|bei nafuu|budget option/i.test(t)) adj.budget = 'low';
       else if (/luxury|high end|premium|bei ya juu/i.test(t)) adj.budget = 'luxury';
@@ -2465,7 +2466,7 @@ class OrchestrationEngine {
       if (/aisle seat/i.test(t)) adj.seatPreference = 'aisle';
       if (/morning/i.test(t)) adj.timePreference = 'morning';
       if (/evening|night/i.test(t)) adj.timePreference = 'evening';
-      const dx = this.parseDateExpression(t, { currentDeparture: previousParams?.departureDate || null });
+      const dx = parseDateExpression(t, { currentDeparture: previousParams?.departureDate || null });
       if (dx) adj.dates = dx;
       return adj;
     };
@@ -3362,7 +3363,7 @@ if (failed) results.searchFailed = true;
       return d.toLocaleDateString('en-GB', opts);
     } catch { return dateStr; }
   }
-f
+
   _parseDateAnswer(text) {
     return parseDateExpression(text)?.departureDate || null;
   }
