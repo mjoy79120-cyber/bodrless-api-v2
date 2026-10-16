@@ -2465,7 +2465,7 @@ class OrchestrationEngine {
       if (/aisle seat/i.test(t)) adj.seatPreference = 'aisle';
       if (/morning/i.test(t)) adj.timePreference = 'morning';
       if (/evening|night/i.test(t)) adj.timePreference = 'evening';
-            const dx = parseDateExpression(t, { currentDeparture: previousParams?.departureDate || null });
+      const dx = this.parseDateExpression(t, { currentDeparture: previousParams?.departureDate || null });
       if (dx) adj.dates = dx;
       return adj;
     };
@@ -2828,7 +2828,7 @@ class OrchestrationEngine {
       logger.error(`Flight search failed (${leg})`, { error: err.message });
       failed = true;
     }
-    
+
 if (failed) results.searchFailed = true;
 
     console.log(`ALL FLIGHTS (${leg}):`, results.length);
