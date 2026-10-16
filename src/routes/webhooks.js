@@ -34,6 +34,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../utils/supabase');
+const approvalGate = require('../services/approvalGate');
 const orchestrationEngine = require('../orchestration/engine');
 const { createConversation } = require('../conversation');
 const whatsappService = require('../services/whatsapp');
@@ -296,7 +297,7 @@ router.post('/whatsapp', async (req, res) => {
           packages:       result.packages || [],
           sessionId:      result.sessionId,
         }).catch(() => {});
-        await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+        await _sendGated({ agencyId, phoneNumberId, recipient, userKey, result });
       }
       return;
     }
@@ -657,7 +658,7 @@ router.post('/whatsapp', async (req, res) => {
 
         recLog(_writeProfile, phone || userKey, agencyId, supabase);
 
-        await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+        await _sendGated({ agencyId, phoneNumberId, recipient, userKey, result });
         return;
       }
 
@@ -705,19 +706,7 @@ router.post('/whatsapp', async (req, res) => {
 
         recLog(_writeProfile, phone || userKey, agencyId, supabase);
 
-        if (result.needsClarification) {
-          await whatsappService.sendText(phoneNumberId, recipient, result.text);
-          return;
-        }
-
-        await whatsappService.sendText(phoneNumberId, recipient, result.text);
-        if (result.packages?.length > 0) {
-          await whatsappService.sendPackages(phoneNumberId, recipient, result.packages);
-          await packageCache.save(userKey, result.packages, result.tripParams);
-          await whatsappService.sendText(phoneNumberId, recipient,
-            `Reply with the option number (1-${result.packages.length}) to book that option.`
-          );
-        }
+        await _sendGated({ agencyId, phoneNumberId, recipient, userKey, result });
         return;
       }
     }
@@ -731,13 +720,16 @@ router.post('/whatsapp', async (req, res) => {
         if (modifyResult.action === 'patch') {
           const pkg = modifyResult.updatedPackage;
           const nights = intent.adjustments.nights;
-          await whatsappService.sendText(phoneNumberId, recipient, `Updated to *${nights} nights* — here's your revised package:`);
-          await whatsappService.sendPackages(phoneNumberId, recipient, [pkg]);
-          await whatsappService.sendText(phoneNumberId, recipient, "Reply *book* to proceed, or tell me anything else you'd like to change.");
           await conversationMemory.saveTurn(userKey, agencyId, {
             userMessage: prompt, engineResponse: `Updated to ${nights} nights`,
             tripParams: modifyResult.updatedParams, packages: [pkg],
           });
+          const modifyResult2 = { packages: [pkg], tripParams: modifyResult.updatedParams,
+            text: `Updated to *${nights} nights* — here's your revised package:` };
+          const modifyHeld = await _sendGated({ agencyId, phoneNumberId, recipient, userKey, result: modifyResult2 });
+          if (!modifyHeld) {
+            await whatsappService.sendText(phoneNumberId, recipient, "Reply *book* to proceed, or tell me anything else you'd like to change.");
+          }
           return;
         }
       }
@@ -749,15 +741,29 @@ router.post('/whatsapp', async (req, res) => {
       await conversationMemory.clearLegFlow(userKey, agencyId);
     }
 
+    // ── PENDING REQUEST SHORT-CIRCUIT ─────────────────────
+    // If a manual-mode agency already has a pending request for this traveler
+    // and this doesn't look like a fresh search, just remind them and stop.
+    const agencyRowEarly = await _getAgencyRow(agencyId);
+    if (agencyRowEarly && approvalGate.isManual(agencyRowEarly) && !_looksLikeFreshTripRequest(prompt)) {
+      const pending = await approvalGate.getPending(agencyRowEarly.id, userKey);
+      if (pending) {
+        await whatsappService.sendText(phoneNumberId, recipient, approvalGate.STILL_HOLDING_MSG);
+        return;
+      }
+    }
+
     await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
     logger.info('Webhook: calling orchestrationEngine...', { userKey, prompt: prompt.slice(0, 80) });
 
     // ── TRIPLY ROUTING ─────────────────────────────────────
-    const { data: agencyRow } = await supabase
+    // agencyRow is already fetched above via _getAgencyRow; alias it here
+    // so the rest of this block is unchanged.
+    const agencyRow = agencyRowEarly || await supabase
       .from('agencies')
       .select('id, integration_type, approval_mode')
       .eq('id', agencyId)
-      .single();
+      .single().then(r => r.data);
 
     let result;
 
@@ -855,16 +861,7 @@ router.post('/whatsapp', async (req, res) => {
       }
     }
 
-           const approvalGate = require('../services/approvalGate');
-    const held = await approvalGate.check({
-      agencyRow,
-      result,
-      userKey,
-      channel: 'whatsapp',
-      phone:   recipient,
-      send:    (msg) => whatsappService.sendText(phoneNumberId, recipient, msg),
-    });
-    if (!held) await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+    await _sendGated({ agencyId, phoneNumberId, recipient, userKey, result });
 
     // ── WISH DETECTION (fire-and-forget) ──────────────────
     try {
@@ -1185,6 +1182,36 @@ async function _resolveAgency(phoneNumberId) {
     logger.warn('Could not resolve agency from phone number', { phoneNumberId });
   }
   return process.env.DEFAULT_AGENCY_ID || 'azaki-adventures';
+}
+
+// ── Agency row cache (60 s TTL) — avoids an extra DB hit per message ──────
+const _agencyRowCache = new Map();
+async function _getAgencyRow(agencyId) {
+  const hit = _agencyRowCache.get(agencyId);
+  if (hit && Date.now() - hit.at < 60_000) return hit.row;
+  const { data } = await supabase
+    .from('agencies')
+    .select('id, integration_type, approval_mode')
+    .eq('id', agencyId)
+    .maybeSingle();
+  _agencyRowCache.set(agencyId, { row: data || null, at: Date.now() });
+  return data || null;
+}
+
+// ── Gated sender — ALL result paths that produce packages go through here ─
+// Checks the approval gate; if not held, calls _sendOrchestrationResult.
+async function _sendGated({ agencyId, phoneNumberId, recipient, userKey, result }) {
+  const agencyRow = await _getAgencyRow(agencyId);
+  const held = await approvalGate.check({
+    agencyRow,
+    result,
+    userKey,
+    channel: 'whatsapp',
+    phone:   recipient,
+    send:    (msg) => whatsappService.sendText(phoneNumberId, recipient, msg),
+  });
+  if (!held) await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
+  return held;
 }
 
 async function _getOrCreateContact({ phone, userId, username, agencyId }) {

@@ -1,19 +1,21 @@
 /**
- * AGENT CHAT ROUTES
+ * AGENT LIVE CHAT ROUTES
  * ─────────────────────────────────────────────────────────────
- * Dashboard endpoints for the live chat inbox.
- * All routes require a valid Supabase session token via
- * authenticateSession (already on app.use('/api/agent', ...)).
+ * Dashboard endpoints for the agent side of live chat.
+ * All routes require authenticateSession (Supabase JWT).
  *
- * Mount is already handled by server.js via /api/agent.
- * These endpoints live at /api/agent/chat/...
+ * Mount in server.js (after the existing /api/agent mount):
+ *   app.use('/api/agent', authenticateSession, agentChat);
+ *
+ * Or add to the existing agentRequests mount — same middleware,
+ * just a second router on the same path prefix.
  *
  * Endpoints:
- *   GET  /chat/inbox            — open threads for this agency
- *   GET  /chat/inbox/count      — unread badge count
- *   GET  /chat/thread/:id       — full thread with messages
- *   POST /chat/thread/:id/reply — agent sends a message (+ optional packages)
- *   POST /chat/thread/:id/close — agent closes the thread
+ *   GET  /chat/inbox           list open threads for this agency
+ *   GET  /chat/inbox/count     unread badge count
+ *   GET  /chat/thread/:id      full thread with all messages
+ *   POST /chat/thread/:id/reply   agent sends a message (+ optional packages)
+ *   POST /chat/thread/:id/close   agent closes the thread
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -23,84 +25,134 @@ const Joi        = require('joi');
 const supabase   = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 
+// Lazy-load so tests can stub it
+function _getResend() {
+  try { return require('../services/emailService'); } catch { return null; }
+}
+
+const MAX_MSG_LEN  = 2000;
+const POLL_LIMIT   = 50;   // messages per thread fetch
+
 // ─────────────────────────────────────────────
-// GET /chat/inbox
-// Returns open threads for this agency, newest first.
+// GET /chat/inbox  — agent's open thread list
+// Query: status (open|closed|all), limit, offset
 // ─────────────────────────────────────────────
 router.get('/chat/inbox', async (req, res) => {
   try {
-    const { status = 'open', limit = 50, offset = 0 } = req.query;
-    const validStatuses = ['open', 'closed', 'timeout', 'all'];
+    const { status = 'open', limit = 40, offset = 0 } = req.query;
+    const validStatuses = ['open', 'closed', 'all'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ success: false, error: 'Invalid status filter' });
     }
 
     let query = supabase
       .from('chat_threads')
-      .select('id, visitor_id, status, trip_params, last_packages, started_at, last_activity_at, closed_at, agent_id', { count: 'exact' })
+      .select(
+        'id, session_key, channel, traveler_name, trip_params, last_packages, status, ' +
+        'closed_by, assigned_to, nudge_sent_at, created_at, updated_at',
+        { count: 'exact' }
+      )
       .eq('agency_id', req.agencyId)
-      .order('last_activity_at', { ascending: false })
+      .order('updated_at', { ascending: false })
       .range(Number(offset), Number(offset) + Number(limit) - 1);
 
     if (status !== 'all') query = query.eq('status', status);
 
-    const { data, count, error } = await query;
+    const { data: threads, count, error } = await query;
     if (error) throw error;
 
-    // For each thread, get the last message preview
-    const threads = await Promise.all((data || []).map(async (thread) => {
-      const { data: lastMsg } = await supabase
-        .from('chat_messages')
-        .select('sender, body, created_at')
-        .eq('thread_id', thread.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+    // For each thread, attach the last message preview and unread count
+    const threadIds = (threads || []).map(t => t.id);
+    let lastMessages = {};
+    let unreadCounts = {};
 
-      // Count unread traveler messages (no agent reply after them)
-      const { count: unread } = await supabase
+    if (threadIds.length > 0) {
+      // Last message per thread
+      const { data: msgs } = await supabase
         .from('chat_messages')
-        .select('id', { count: 'exact', head: true })
-        .eq('thread_id', thread.id)
-        .eq('sender', 'traveler')
-        .eq('read_by_agent', false);
+        .select('thread_id, sender, text, created_at')
+        .in('thread_id', threadIds)
+        .order('created_at', { ascending: false });
 
-      return { ...thread, lastMessage: lastMsg || null, unreadCount: unread || 0 };
+      if (msgs) {
+        msgs.forEach(m => {
+          if (!lastMessages[m.thread_id]) lastMessages[m.thread_id] = m;
+        });
+        // Unread = traveler messages with no agent reply after them
+        const travelerMsgs = msgs.filter(m => m.sender === 'traveler');
+        travelerMsgs.forEach(m => {
+          const agentAfter = msgs.find(
+            a => a.thread_id === m.thread_id &&
+                 a.sender === 'agent' &&
+                 new Date(a.created_at) > new Date(m.created_at)
+          );
+          if (!agentAfter) {
+            unreadCounts[m.thread_id] = (unreadCounts[m.thread_id] || 0) + 1;
+          }
+        });
+      }
+    }
+
+    const enriched = (threads || []).map(t => ({
+      ...t,
+      lastMessage:   lastMessages[t.id] || null,
+      unreadCount:   unreadCounts[t.id]  || 0,
     }));
 
-    return res.json({ success: true, threads, total: count || 0 });
+    return res.json({ success: true, threads: enriched, total: count || 0 });
   } catch (err) {
-    logger.error('agentChat GET /inbox', { error: err.message, agencyId: req.agencyId });
+    logger.error('agentChat GET /chat/inbox', { error: err.message, agencyId: req.agencyId });
     return res.status(500).json({ success: false, error: 'Failed to load inbox' });
   }
 });
 
 // ─────────────────────────────────────────────
-// GET /chat/inbox/count  — unread badge
+// GET /chat/inbox/count  — badge: open threads with unread traveler messages
 // ─────────────────────────────────────────────
 router.get('/chat/inbox/count', async (req, res) => {
   try {
-    const { count, error } = await supabase
+    // Count open threads that have at least one traveler message
+    // with no agent reply after it
+    const { data: openThreads, error } = await supabase
       .from('chat_threads')
-      .select('id', { count: 'exact', head: true })
+      .select('id')
       .eq('agency_id', req.agencyId)
       .eq('status', 'open');
 
     if (error) throw error;
-    return res.json({ success: true, count: count || 0 });
+    if (!openThreads?.length) return res.json({ success: true, count: 0 });
+
+    const ids = openThreads.map(t => t.id);
+
+    const { data: msgs } = await supabase
+      .from('chat_messages')
+      .select('thread_id, sender, created_at')
+      .in('thread_id', ids)
+      .in('sender', ['traveler', 'agent'])
+      .order('created_at', { ascending: false });
+
+    if (!msgs?.length) return res.json({ success: true, count: openThreads.length });
+
+    // A thread is "unread" if its most recent non-system message is from the traveler
+    const latestPerThread = {};
+    msgs.forEach(m => {
+      if (!latestPerThread[m.thread_id]) latestPerThread[m.thread_id] = m;
+    });
+
+    const unread = Object.values(latestPerThread).filter(m => m.sender === 'traveler').length;
+    return res.json({ success: true, count: unread });
+
   } catch (err) {
-    logger.error('agentChat GET /inbox/count', { error: err.message });
+    logger.error('agentChat GET /chat/inbox/count', { error: err.message });
     return res.status(500).json({ success: false, error: 'Failed to get count' });
   }
 });
 
 // ─────────────────────────────────────────────
-// GET /chat/thread/:id
-// Full thread with all messages. Marks traveler messages as read.
+// GET /chat/thread/:id  — full thread detail with messages
 // ─────────────────────────────────────────────
 router.get('/chat/thread/:id', async (req, res) => {
   try {
-    // Load thread — scoped to agency
     const { data: thread, error: threadErr } = await supabase
       .from('chat_threads')
       .select('*')
@@ -112,47 +164,63 @@ router.get('/chat/thread/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Thread not found' });
     }
 
-    // Load all messages
     const { data: messages, error: msgErr } = await supabase
       .from('chat_messages')
-      .select('*')
+      .select('id, sender, text, packages, agent_note, agent_id, created_at')
       .eq('thread_id', thread.id)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .limit(POLL_LIMIT);
 
     if (msgErr) throw msgErr;
 
-    // Mark unread traveler messages as read
-    await supabase
-      .from('chat_messages')
-      .update({ read_by_agent: true })
-      .eq('thread_id', thread.id)
-      .eq('sender', 'traveler')
-      .eq('read_by_agent', false);
+    // Auto-assign to this agent if unassigned and thread is open
+    if (thread.status === 'open' && !thread.assigned_to) {
+      supabase
+        .from('chat_threads')
+        .update({ assigned_to: req.agencyUser.id })
+        .eq('id', thread.id)
+        .then(() => {})
+        .catch(err => logger.warn('agentChat: auto-assign failed', { error: err.message }));
+    }
 
-    return res.json({ success: true, thread, messages: messages || [] });
+    return res.json({
+      success:  true,
+      thread,
+      messages: messages || [],
+    });
   } catch (err) {
-    logger.error('agentChat GET /thread/:id', { error: err.message });
+    logger.error('agentChat GET /chat/thread/:id', { error: err.message });
     return res.status(500).json({ success: false, error: 'Failed to load thread' });
   }
 });
 
 // ─────────────────────────────────────────────
 // POST /chat/thread/:id/reply
-// Body: { body: string, packages?: array }
+// Body: { text?: string, packages?: [...], agentNote?: string }
+// At least one of text or packages is required.
 // ─────────────────────────────────────────────
 router.post('/chat/thread/:id/reply', async (req, res) => {
   const schema = Joi.object({
-    body:     Joi.string().min(1).max(4000).required(),
-    packages: Joi.array().items(Joi.object()).max(4).optional(),
-  });
+    text:      Joi.string().max(MAX_MSG_LEN).allow('', null).optional(),
+    packages:  Joi.array().items(Joi.object()).max(4).optional(),
+    agentNote: Joi.string().max(500).allow('', null).optional(),
+  }).custom((value, helpers) => {
+    if (!value.text?.trim() && !value.packages?.length) {
+      return helpers.error('any.invalid');
+    }
+    return value;
+  }, 'text or packages required');
+
   const { error: valErr, value } = schema.validate(req.body);
-  if (valErr) return res.status(400).json({ success: false, error: valErr.details[0].message });
+  if (valErr) {
+    return res.status(400).json({ success: false, error: 'Provide text, packages, or both' });
+  }
 
   try {
     // Verify thread belongs to this agency and is open
     const { data: thread, error: threadErr } = await supabase
       .from('chat_threads')
-      .select('id, status, visitor_id, agency_id')
+      .select('id, status, session_key, agency_id')
       .eq('id', req.params.id)
       .eq('agency_id', req.agencyId)
       .single();
@@ -161,41 +229,48 @@ router.post('/chat/thread/:id/reply', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Thread not found' });
     }
     if (thread.status !== 'open') {
-      return res.status(409).json({ success: false, error: 'Thread is already closed' });
+      return res.status(409).json({ success: false, error: 'Thread is closed' });
     }
 
-    const now = new Date().toISOString();
+    // Sanitise agent text — strip HTML
+    const safeText = value.text
+      ? value.text.replace(/<[^>]*>/g, '').trim()
+      : null;
 
-    // Insert agent message
-    const { data: message, error: insertErr } = await supabase
+    const { data: msg, error: msgErr } = await supabase
       .from('chat_messages')
       .insert({
         thread_id:  thread.id,
+        agency_id:  req.agencyId,
         sender:     'agent',
-        body:       value.body,
-        packages:   value.packages || null,
+        text:       safeText || null,
+        packages:   value.packages?.length ? value.packages : null,
+        agent_note: value.agentNote || null,
         agent_id:   req.agencyUser.id,
-        created_at: now,
       })
       .select()
       .single();
 
-    if (insertErr) throw insertErr;
+    if (msgErr) throw msgErr;
 
-    // Update thread last_activity_at and agent_id
-    await supabase
+    // Mark assigned_to this agent if not already
+    supabase
       .from('chat_threads')
-      .update({
-        last_activity_at: now,
-        agent_id:         req.agencyUser.id,
-      })
-      .eq('id', thread.id);
+      .update({ assigned_to: req.agencyUser.id, updated_at: new Date().toISOString() })
+      .eq('id', thread.id)
+      .then(() => {}).catch(() => {});
 
-    logger.info('agentChat: reply sent', { threadId: thread.id, agencyId: req.agencyId });
-    return res.json({ success: true, message });
+    logger.info('agentChat: agent replied', {
+      threadId:  thread.id,
+      agencyId:  req.agencyId,
+      hasText:   !!safeText,
+      pkgCount:  value.packages?.length || 0,
+    });
+
+    return res.json({ success: true, message: msg });
 
   } catch (err) {
-    logger.error('agentChat POST /reply', { error: err.message });
+    logger.error('agentChat POST /chat/thread/:id/reply', { error: err.message });
     return res.status(500).json({ success: false, error: 'Reply failed' });
   }
 });
@@ -206,47 +281,50 @@ router.post('/chat/thread/:id/reply', async (req, res) => {
 // ─────────────────────────────────────────────
 router.post('/chat/thread/:id/close', async (req, res) => {
   const schema = Joi.object({
-    reason: Joi.string().max(300).allow('', null).optional(),
+    reason: Joi.string().max(200).allow('', null).optional(),
   });
   const { error: valErr, value } = schema.validate(req.body);
   if (valErr) return res.status(400).json({ success: false, error: valErr.details[0].message });
 
   try {
-    const now = new Date().toISOString();
-
-    const { data: thread, error: closeErr } = await supabase
+    const { data: thread, error: threadErr } = await supabase
       .from('chat_threads')
-      .update({
-        status:           'closed',
-        closed_at:        now,
-        last_activity_at: now,
-        close_reason:     value.reason || 'agent_closed',
-      })
+      .select('id, status, session_key')
       .eq('id', req.params.id)
       .eq('agency_id', req.agencyId)
-      .eq('status', 'open')
-      .select()
       .single();
 
-    if (closeErr || !thread) {
-      return res.status(409).json({ success: false, error: 'Thread not found or already closed' });
+    if (threadErr || !thread) {
+      return res.status(404).json({ success: false, error: 'Thread not found' });
+    }
+    if (thread.status !== 'open') {
+      return res.status(409).json({ success: false, error: 'Thread already closed' });
     }
 
-    // Insert system message so traveler sees it in the widget
     await supabase
-      .from('chat_messages')
-      .insert({
-        thread_id:  thread.id,
-        sender:     'system',
-        body:       value.reason || 'The agent has closed this chat. You can continue with the assistant.',
-        created_at: now,
-      });
+      .from('chat_threads')
+      .update({
+        status:     'closed',
+        closed_by:  'agent',
+        closed_at:  new Date().toISOString(),
+      })
+      .eq('id', thread.id);
 
-    logger.info('agentChat: thread closed', { threadId: thread.id, agencyId: req.agencyId });
-    return res.json({ success: true, thread });
+    // Post a system message so the traveler's poll sees the closure
+    await supabase.from('chat_messages').insert({
+      thread_id: thread.id,
+      agency_id: req.agencyId,
+      sender:    'system',
+      text:      value.reason
+        ? `Chat closed by agent: ${value.reason}`
+        : 'The agent has closed this chat. You can continue with the assistant.',
+    });
+
+    logger.info('agentChat: thread closed by agent', { threadId: thread.id, agencyId: req.agencyId });
+    return res.json({ success: true });
 
   } catch (err) {
-    logger.error('agentChat POST /close', { error: err.message });
+    logger.error('agentChat POST /chat/thread/:id/close', { error: err.message });
     return res.status(500).json({ success: false, error: 'Close failed' });
   }
 });

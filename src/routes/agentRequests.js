@@ -1,22 +1,18 @@
 /**
- * AGENT REQUESTS ROUTES
+ * AGENT REQUESTS ROUTES  (v2)
  * ─────────────────────────────────────────────────────────────
  * Dashboard endpoints for the package approval flow.
- * All routes require a valid Supabase session token
- * (Authorization: Bearer <token>) via authenticateSession.
+ * Mount:  app.use('/api/agent', authenticateSession, agentRequests);
  *
- * Mount in server.js / app.js:
- *   const agentRequests = require('./routes/agentRequests');
- *   app.use('/api/agent', authenticateSession, agentRequests);
- *
- * Endpoints:
- *   GET  /requests              list pending (and recent decided) requests
- *   GET  /requests/count        badge count — pending only
- *   GET  /requests/:id          single request detail
- *   POST /requests/:id/approve  approve as-is or with edits
- *   POST /requests/:id/decline  decline with optional reason
- *   POST /requests/:id/rebuild  re-run search with a new prompt
- *   POST /build                 create a new package from a prompt (Builder page)
+ * Changes from v1 (only approve / decline / _deliver differ):
+ *  - Empty editedPackages ([]) no longer wins over the original packages.
+ *  - Edited packages must at least carry a `summary` object.
+ *  - _deliver reports success/failure; result is stored in
+ *    delivery_status / delivery_error / delivered_at and returned to the
+ *    dashboard so an agent isn't told "approved" when nothing arrived.
+ *  - WhatsApp: approved packages are saved to packageCache BEFORE sending,
+ *    so the traveler replying "1" actually starts a booking.
+ *  - Send errors are no longer swallowed individually.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -34,9 +30,12 @@ function _getWidgetDelivery() {
 function _getWhatsApp() {
   try { return require('../services/whatsapp'); } catch { return null; }
 }
+function _getPackageCache() {
+  try { return require('../services/packageCache'); } catch { return null; }
+}
 
 // ─────────────────────────────────────────────
-// GET /requests  — list for the Requests page
+// GET /requests
 // ─────────────────────────────────────────────
 router.get('/requests', async (req, res) => {
   try {
@@ -48,7 +47,7 @@ router.get('/requests', async (req, res) => {
 
     let query = supabase
       .from('package_requests')
-      .select('id, session_key, channel, traveler_phone, trip_params, packages, edited_packages, agent_note, status, rebuild_count, created_at, updated_at, decided_at', { count: 'exact' })
+      .select('id, session_key, channel, traveler_phone, trip_params, packages, edited_packages, agent_note, status, rebuild_count, delivery_status, delivery_error, created_at, updated_at, decided_at', { count: 'exact' })
       .eq('agency_id', req.agencyId)
       .order('created_at', { ascending: false })
       .range(Number(offset), Number(offset) + Number(limit) - 1);
@@ -66,7 +65,7 @@ router.get('/requests', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// GET /requests/count  — navbar badge
+// GET /requests/count
 // ─────────────────────────────────────────────
 router.get('/requests/count', async (req, res) => {
   try {
@@ -110,13 +109,19 @@ router.get('/requests/:id', async (req, res) => {
 // ─────────────────────────────────────────────
 router.post('/requests/:id/approve', async (req, res) => {
   const schema = Joi.object({
-    editedPackages: Joi.array().items(Joi.object()).max(4).optional(),
-    agentNote:      Joi.string().max(500).allow('', null).optional(),
+    editedPackages: Joi.array()
+      .items(Joi.object({ summary: Joi.object().required() }).unknown(true))
+      .max(4)
+      .optional(),
+    agentNote: Joi.string().max(500).allow('', null).optional(),
   });
   const { error: valErr, value } = schema.validate(req.body);
   if (valErr) return res.status(400).json({ success: false, error: valErr.details[0].message });
 
   try {
+    // Treat an empty edit list as "no edits"
+    const edited = value.editedPackages?.length ? value.editedPackages : null;
+
     // Atomic claim — prevents two agents deciding the same request
     const { data: claimed, error: claimErr } = await supabase
       .from('package_requests')
@@ -124,12 +129,12 @@ router.post('/requests/:id/approve', async (req, res) => {
         status:          'approved',
         decided_by:      req.agencyUser.id,
         decided_at:      new Date().toISOString(),
-        edited_packages: value.editedPackages || null,
-        agent_note:      value.agentNote      || null,
+        edited_packages: edited,
+        agent_note:      value.agentNote || null,
       })
       .eq('id', req.params.id)
       .eq('agency_id', req.agencyId)
-      .eq('status', 'pending')           // only claim if still pending
+      .eq('status', 'pending')
       .select()
       .single();
 
@@ -137,12 +142,12 @@ router.post('/requests/:id/approve', async (req, res) => {
       return res.status(409).json({ success: false, error: 'Request already decided or not found' });
     }
 
-    // Deliver to traveler
-    const packagesToSend = claimed.edited_packages || claimed.packages || [];
-    await _deliver(claimed, packagesToSend, 'approved');
+    const packagesToSend = claimed.edited_packages?.length ? claimed.edited_packages : (claimed.packages || []);
+    const delivery = await _deliver(claimed, packagesToSend, 'approved');
+    await _recordDelivery(claimed.id, delivery);
 
-    logger.info('agentRequests: approved', { id: claimed.id, agencyId: req.agencyId });
-    return res.json({ success: true, request: claimed });
+    logger.info('agentRequests: approved', { id: claimed.id, agencyId: req.agencyId, delivery: delivery.status });
+    return res.json({ success: true, request: claimed, delivery });
 
   } catch (err) {
     logger.error('agentRequests POST /approve', { error: err.message });
@@ -180,10 +185,11 @@ router.post('/requests/:id/decline', async (req, res) => {
       return res.status(409).json({ success: false, error: 'Request already decided or not found' });
     }
 
-    await _deliver(claimed, [], 'declined');
+    const delivery = await _deliver(claimed, [], 'declined');
+    await _recordDelivery(claimed.id, delivery);
 
-    logger.info('agentRequests: declined', { id: claimed.id, agencyId: req.agencyId });
-    return res.json({ success: true, request: claimed });
+    logger.info('agentRequests: declined', { id: claimed.id, agencyId: req.agencyId, delivery: delivery.status });
+    return res.json({ success: true, request: claimed, delivery });
 
   } catch (err) {
     logger.error('agentRequests POST /decline', { error: err.message });
@@ -193,7 +199,6 @@ router.post('/requests/:id/decline', async (req, res) => {
 
 // ─────────────────────────────────────────────
 // POST /requests/:id/rebuild
-// Body: { prompt: string }
 // ─────────────────────────────────────────────
 router.post('/requests/:id/rebuild', async (req, res) => {
   const schema = Joi.object({
@@ -230,13 +235,12 @@ router.post('/requests/:id/rebuild', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// POST /build  — Package Builder page
-// Body: { prompt: string, previousParams?: object, conversationHistory?: array }
+// POST /build
 // ─────────────────────────────────────────────
 router.post('/build', async (req, res) => {
   const schema = Joi.object({
-    prompt:             Joi.string().min(3).max(600).required(),
-    previousParams:     Joi.object().allow(null).optional(),
+    prompt:              Joi.string().min(3).max(600).required(),
+    previousParams:      Joi.object().allow(null).optional(),
     conversationHistory: Joi.array().optional(),
   });
   const { error: valErr, value } = schema.validate(req.body);
@@ -244,9 +248,9 @@ router.post('/build', async (req, res) => {
 
   try {
     const result = await packageBuilder.buildFromPrompt({
-      agencyId:           req.agencyId,
-      prompt:             value.prompt,
-      previousParams:     value.previousParams     || null,
+      agencyId:            req.agencyId,
+      prompt:              value.prompt,
+      previousParams:      value.previousParams      || null,
       conversationHistory: value.conversationHistory || [],
     });
 
@@ -268,48 +272,88 @@ router.post('/build', async (req, res) => {
 
 // ─────────────────────────────────────────────
 // Internal: deliver result to traveler
+// Returns { status: 'delivered' | 'failed' | 'skipped', error?: string }
 // ─────────────────────────────────────────────
 async function _deliver(request, packages, outcome) {
   const { session_key, channel, traveler_phone, agent_note, trip_params } = request;
 
-  if (channel === 'widget') {
-    const widgetMemory = _getWidgetDelivery();
-    if (widgetMemory?.resolveRequest) {
+  try {
+    if (channel === 'widget') {
+      const widgetMemory = _getWidgetDelivery();
+      if (!widgetMemory?.resolveRequest) {
+        return { status: 'skipped', error: 'widgetMemory.resolveRequest not available' };
+      }
       await widgetMemory.resolveRequest(session_key, {
         packages,
         agentNote: agent_note || null,
         outcome,
-      }).catch(err => logger.warn('widgetMemory.resolveRequest failed', { error: err.message }));
+      });
+      return { status: 'delivered' };
     }
-    return;
+
+    if (channel === 'whatsapp' && traveler_phone) {
+      const ws = _getWhatsApp();
+      const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+      if (!ws || !phoneNumberId) {
+        return { status: 'skipped', error: 'WhatsApp service or WHATSAPP_PHONE_NUMBER_ID missing' };
+      }
+
+      if (outcome === 'declined') {
+        const reason = agent_note
+          ? `Sorry, we couldn't put together options for your trip — ${agent_note}. Please try a different search.`
+          : "Sorry, we couldn't find suitable options for your trip right now. Please try again with different dates or destinations.";
+        await ws.sendText(phoneNumberId, traveler_phone, reason);
+        return { status: 'delivered' };
+      }
+
+      if (packages.length === 0) {
+        return { status: 'skipped', error: 'No packages to send' };
+      }
+
+      // Save BEFORE sending: once the traveler sees the options and replies "1",
+      // the webhook's selection flow reads this cache.
+      const cache = _getPackageCache();
+      if (cache?.save) {
+        await cache.save(session_key, packages, trip_params || null);
+      } else {
+        logger.warn('agentRequests: packageCache unavailable — traveler will not be able to pick by number');
+      }
+
+      const intro = agent_note
+        ? `Here are your options! ${agent_note}`
+        : "Here are the options we put together for you:";
+      await ws.sendText(phoneNumberId, traveler_phone, intro);
+      await ws.sendPackages(phoneNumberId, traveler_phone, packages);
+      await ws.sendText(phoneNumberId, traveler_phone,
+        `Reply with the option number (1-${packages.length}) to book.`
+      );
+      return { status: 'delivered' };
+    }
+
+    return { status: 'skipped', error: `No delivery route for channel "${channel}"` };
+
+  } catch (err) {
+    // Typical cause on WhatsApp: free-form message outside the 24h window.
+    logger.error('agentRequests: delivery failed', { requestId: request.id, channel, error: err.message, alert: true });
+    return { status: 'failed', error: err.message };
   }
+}
 
-  if (channel === 'whatsapp' && traveler_phone) {
-    const ws = _getWhatsApp();
-    if (!ws) return;
-
-    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-    if (!phoneNumberId) return;
-
-    if (outcome === 'declined') {
-      const reason = agent_note
-        ? `Sorry, we couldn't put together options for your trip — ${agent_note}. Please try a different search.`
-        : "Sorry, we couldn't find suitable options for your trip right now. Please try again with different dates or destinations.";
-      await ws.sendText(phoneNumberId, traveler_phone, reason).catch(() => {});
-      return;
-    }
-
-    if (packages.length === 0) return;
-
-    const intro = agent_note
-      ? `Here are your options! ${agent_note}`
-      : "Here are the options we put together for you:";
-    await ws.sendText(phoneNumberId, traveler_phone, intro).catch(() => {});
-    await ws.sendPackages(phoneNumberId, traveler_phone, packages).catch(() => {});
-    await ws.sendText(phoneNumberId, traveler_phone,
-      `Reply with the option number (1-${packages.length}) to book.`
-    ).catch(() => {});
+async function _recordDelivery(requestId, delivery) {
+  try {
+    const { error } = await supabase
+      .from('package_requests')
+      .update({
+        delivery_status: delivery.status,
+        delivery_error:  delivery.error || null,
+        delivered_at:    delivery.status === 'delivered' ? new Date().toISOString() : null,
+      })
+      .eq('id', requestId);
+    if (error) logger.warn('agentRequests: could not record delivery status', { requestId, error: error.message });
+  } catch (err) {
+    logger.warn('agentRequests: recordDelivery threw', { requestId, error: err.message });
   }
 }
 
 module.exports = router;
+module.exports._deliver = _deliver;   // exported for tests

@@ -32,6 +32,7 @@ const hotelRoutes      = require('./routes/hotelRoutes');
 const hotelAdminRouter = require('./routes/hotelAdmin');
 const widgetChatRoutes = require('./routes/widgetChat');
 const agentRoutes      = require('./routes/agentRequests');
+const agentChat = require('./routes/agentChat');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -90,7 +91,7 @@ app.use('/widget.js',    widgetRoutes);
 app.use('/widget/hotel', hotelWidgetRoute);
 app.use('/api/widget',   widgetVoiceRoute);
 app.use('/api/widget',   require('./routes/widgetmemory'));
-app.use('/api/widget',   widgetVoiceRoute);
+app.use('/api/widget/chat', widgetChatRoutes);
 app.use('/api/internal', require('./routes/nudgeScheduler'));
 app.use('/api/hotel',    hotelRoutes);
 app.use('/hotel-admin',  hotelAdminRouter);
@@ -104,8 +105,7 @@ app.use('/api/monitoring', authenticateAgency, tripMonitoringRoutes);
 
 const { authenticateSession } = require('./middleware/authSession');
 app.use('/api/agent', authenticateSession, agentRoutes);
-app.use('/api/agent', authenticateSession, require('./routes/agentChat'));
-
+app.use('/api/agent', authenticateSession, agentChat);
 app.get('/test-widget.html', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(__dirname, '..', 'test-widget.html'));

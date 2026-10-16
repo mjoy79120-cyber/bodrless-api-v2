@@ -23,6 +23,7 @@
 const express = require('express');
 const router = express.Router();
 const Joi = require('joi');
+const approvalGate = require('../services/approvalGate');
 const orchestrationEngine = require('../orchestration/engine');
 const bookingService = require('../services/bookingService');
 const whatsappService = require('../services/whatsapp');
@@ -76,18 +77,20 @@ router.post('/orchestrate', async (req, res) => {
 
     const packages = Array.isArray(result?.packages) ? result.packages : [];
 
+    // ONE key used for the gate AND returned to the widget so poll/resume match.
+    const sessionKey = value.sessionId
+      || result?.sessionId
+      || `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
     _saveSearch({
       agencyId: resolvedAgencyId,
-      sessionId: value.sessionId,
+      sessionId: sessionKey,
       prompt: value.prompt,
       tripParams: result?.tripParams,
       packagesReturned: packages.length,
       channel: value.channelType,
     }).catch(err => logger.error('Search save error', { error: err.message }));
 
-     const approvalGate = require('../services/approvalGate');
-    
-    // Use maybeSingle() so it doesn't throw if the agency row isn't found
     const { data: agencyRow } = await supabase
       .from('agencies')
       .select('id, integration_type, approval_mode')
@@ -95,34 +98,34 @@ router.post('/orchestrate', async (req, res) => {
       .maybeSingle();
 
     const held = await approvalGate.check({
-      // Fallback to 'auto' mode if the agency row isn't in Supabase yet
       agencyRow: agencyRow || { id: resolvedAgencyId, integration_type: 'custom', approval_mode: 'auto' },
       result,
-      userKey: value.sessionId || `widget_${Date.now()}`,
-      channel: 'widget',
-      send:    () => Promise.resolve(),
+      userKey:  sessionKey,
+      channel:  'widget',
+      send:     () => Promise.resolve(),   // widget polls; no push needed here
     });
 
     if (held) {
       return res.json({
-        success:     true,
-        held:        true,
-        holdMessage: approvalGate.HOLD_MSG,
-        packages:    [],
-        sessionId:   result?.sessionId || `sess_${Date.now()}`,
+        success:             true,
+        held:                true,
+        holdMessage:         approvalGate.HOLD_MSG,
+        packages:            [],
+        sessionId:           sessionKey,
+        tripParams:          result?.tripParams || null,
+        conversationHistory: result?.conversationHistory || [],
       });
-    };
-    
+    }
 
     return res.json({
-      success: true,
-      sessionId: result?.sessionId || `sess_${Date.now()}`,
-      text: result?.text || null,
-      packages: packages.slice(0, 4),
-      tripParams: result?.tripParams || null,
+      success:             true,
+      sessionId:           sessionKey,
+      text:                result?.text || null,
+      packages:            packages.slice(0, 4),
+      tripParams:          result?.tripParams || null,
       conversationHistory: result?.conversationHistory || [],
-      intent: result?.intent || null,
-      needsClarification: result?.needsClarification || false,
+      intent:              result?.intent || null,
+      needsClarification:  result?.needsClarification || false,
     });
 
   } catch (err) {
