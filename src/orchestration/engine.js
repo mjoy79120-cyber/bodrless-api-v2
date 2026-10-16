@@ -2793,7 +2793,7 @@ class OrchestrationEngine {
       console.log(`[FLIGHT FALLBACK] No date for ${leg} — using ${searchDate}`);
     }
 
-    const results = [];
+    
     try {
       const flightParams = {
         origin:         effectiveOrigin,
@@ -2814,9 +2814,9 @@ class OrchestrationEngine {
         : null;
 
       const cacheResult = await cachedSearch.flights(flightParams, sendFn);
-      failed = !!cacheResult.searchFailed;
+      let failed = !!cacheResult.searchFailed;
       const liveFlights = cacheResult.results || [];
-
+const results = [];
       logger.info(`CachedSearch flights (${leg})`, {
         route:     `${effectiveOrigin}->${effectiveDestination}`,
         count:     liveFlights.length,
@@ -3383,6 +3383,6 @@ if (failed) results.searchFailed = true;
       p._changeNote = `${this._formatDateHuman(old)} has passed, so I searched ${this._formatDateHuman(p.departureDate)} instead.`;
     }
   }
-} // <--- Class closes here, after all methods
+}
 
 module.exports = new OrchestrationEngine();
