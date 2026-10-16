@@ -52,6 +52,20 @@ try {
 
 const PASSENGER_DATA_PATTERN = /^[\s\S]*?\b(name\s*:|dob\s*:|date\s+of\s+birth\s*:|gender\s*:|passport\s*:|nationality\s*:|seat\s*:|meal\s+pref)/im;
 
+function diffDays(dateA, dateB) {
+  return Math.round((new Date(dateB) - new Date(dateA)) / 86400000);
+}
+
+function rollForward(dateStr) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const d = new Date(dateStr);
+  while (d < today) {
+    d.setFullYear(d.getFullYear() + 1);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
 class OrchestrationEngine {
 
   static SUPPLIER_TIMEOUT_MS = Number(process.env.SUPPLIER_TIMEOUT_MS) || 10000;
@@ -2804,7 +2818,9 @@ if (isDestinationSwitch) {
       console.log(`[FLIGHT FALLBACK] No date for ${leg} — using ${searchDate}`);
     }
 
-    
+    let failed = false;
+    const results = [];
+
     try {
       const flightParams = {
         origin:         effectiveOrigin,
@@ -2824,10 +2840,10 @@ if (isDestinationSwitch) {
         ? tripParams._sendWhatsApp
         : null;
 
-      const cacheResult = await cachedSearch.flights(flightParams, sendFn);
-      let failed = !!cacheResult.searchFailed;
+            const cacheResult = await cachedSearch.flights(flightParams, sendFn);
+      failed = !!cacheResult.searchFailed;
       const liveFlights = cacheResult.results || [];
-const results = [];
+
       logger.info(`CachedSearch flights (${leg})`, {
         route:     `${effectiveOrigin}->${effectiveDestination}`,
         count:     liveFlights.length,
