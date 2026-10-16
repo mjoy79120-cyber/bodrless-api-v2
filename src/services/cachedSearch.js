@@ -1,24 +1,37 @@
 /**
- * CACHED SEARCH
- * ─────────────────────────────────────────────────────────────
- * Sits between the engine and all supplier adapters.
- * The engine calls THIS instead of adapters directly.
- *
- * HOTEL SUPPLIERS (parallel):
- *   HotelBeds + RateHawk both searched simultaneously.
- *   Results merged, deduped by name+city, sorted cheapest first.
- *   If one has no availability, the other fills in silently.
- * ─────────────────────────────────────────────────────────────
+ * CACHED SEARCH (patched)
+ * Changes vs previous version:
+ *  - past-date guard: never calls suppliers with a date before today
+ *  - searchFailed contract: results carry `searchFailed` so the engine can tell
+ *    "supplier errored / rate-limited" from "genuinely no inventory"
+ *  - in-flight dedupe: identical concurrent searches share one supplier call
+ *  - RateHawk call budget (10 req/min upstream): fail fast instead of burning quota
+ *  - failures are never cached
  */
 
 const fareCache  = require('./fareCache');
 const { logger } = require('../utils/logger');
+const { createWindowBudget } = require('../utils/limiter');
 
 function getDuffel()     { return require('../adapters/duffel');          }
 function getTravelDuqa() { return require('../adapters/travelduqa');      }
 function getHotelBeds()  { return require('../adapters/hotelbeds');       }
-function getRateHawk() { return require('../adapters/ratehawk'); }
-function getIabiri()     { return require('../adapters/travler');          }
+function getRateHawk()   { return require('../adapters/ratehawk');        }
+function getIabiri()     { return require('../adapters/travler');         }
+
+// RateHawk allows 10 requests / 60s on the SERP endpoint; keep headroom for other traffic
+const rateHawkBudget = createWindowBudget(Number(process.env.RATEHAWK_MAX_PER_MIN) || 8, 60000);
+
+const _inflight = new Map();
+function _shared(key, fn) {
+  if (_inflight.has(key)) return _inflight.get(key);
+  const p = Promise.resolve().then(fn).finally(() => _inflight.delete(key));
+  _inflight.set(key, p);
+  return p;
+}
+
+const _failedList = (reason) => Object.assign([], { searchFailed: true, failureReason: reason });
+const _isPast = (d) => !!d && String(d).slice(0, 10) < new Date().toISOString().slice(0, 10);
 
 function _channel(params, sendWhatsApp) {
   if (params.channel) return params.channel;
@@ -26,11 +39,18 @@ function _channel(params, sendWhatsApp) {
 }
 
 // ─────────────────────────────────────────────
-// FLIGHT SEARCH — unchanged
+// FLIGHT SEARCH
 // ─────────────────────────────────────────────
 async function flights(params, sendWhatsApp = null) {
   const contentType = 'flight';
   const channel     = _channel(params, sendWhatsApp);
+
+  if (_isPast(params.departureDate)) {
+    logger.warn('CachedSearch.flights: departure date is in the past — not calling suppliers', {
+      route: `${params.origin}→${params.destination}`, date: params.departureDate,
+    });
+    return _buildReturn([], null, false, channel, { searchFailed: true, failureReason: 'past_date' });
+  }
 
   const cached = await fareCache.get(params, contentType);
 
@@ -49,7 +69,7 @@ async function flights(params, sendWhatsApp = null) {
     logger.info('CachedSearch.flights: widget stale hit — returning with needsRefresh', {
       route: `${params.origin}→${params.destination}`, age: cached.ageMinutes,
     });
-    _backgroundRefresh(() => _liveFlight(params, cached));
+    _backgroundRefresh(() => _liveFlight(params));
     return _buildReturn(cached.results, cached, true, channel);
   }
 
@@ -59,7 +79,7 @@ async function flights(params, sendWhatsApp = null) {
     channel,
   });
 
-  const { allResults, cacheRows } = await _liveFlight(params, cached);
+  const { allResults, cacheRows, searchFailed } = await _liveFlight(params);
 
   if (cacheRows.length > 0) {
     await fareCache.set(params, contentType, cacheRows).catch(err =>
@@ -75,45 +95,62 @@ async function flights(params, sendWhatsApp = null) {
     await _safeSend(sendWhatsApp, fareCache.buildLiveConfirmMessage(liveResult, cached));
   }
 
-  return _buildReturn(allResults, cached, false, channel);
+  return _buildReturn(allResults, cached, false, channel, { searchFailed });
 }
 
-async function _liveFlight(params, cached) {
-  const [duffelRes, travelduqaRes] = await Promise.allSettled([
-    getDuffel().search({ ...params, date: params.departureDate }),
-    getTravelDuqa().search({ ...params, date: params.departureDate }),
-  ]);
+async function _liveFlight(params) {
+  const key = ['flight', params.origin, params.destination, params.departureDate,
+    params.passengers || 1, params.children || 0, params.cabinClass || 'economy'].join('|').toLowerCase();
 
-  const duffelResults     = duffelRes.status    === 'fulfilled' ? duffelRes.value    : [];
-  const travelduqaResults = travelduqaRes.status === 'fulfilled' ? travelduqaRes.value : [];
-  const allResults        = [...duffelResults, ...travelduqaResults];
-  const cacheRows         = _buildFlightCacheRows(duffelResults, travelduqaResults, params);
+  return _shared(key, async () => {
+    const [duffelRes, travelduqaRes] = await Promise.allSettled([
+      getDuffel().search({ ...params, date: params.departureDate }),
+      getTravelDuqa().search({ ...params, date: params.departureDate }),
+    ]);
 
-  return { allResults, cacheRows };
+    const duffelResults     = duffelRes.status     === 'fulfilled' ? duffelRes.value     : _failedList('rejected');
+    const travelduqaResults = travelduqaRes.status === 'fulfilled' ? travelduqaRes.value : _failedList('rejected');
+
+    const duffelFailed = duffelRes.status === 'rejected'     || duffelResults.searchFailed === true;
+    const duquaFailed  = travelduqaRes.status === 'rejected' || travelduqaResults.searchFailed === true;
+
+    const allResults = [...duffelResults, ...travelduqaResults];
+    const cacheRows  = _buildFlightCacheRows(duffelResults, travelduqaResults, params);
+
+    // "Failed" only when nobody gave us a clean answer. One supplier cleanly returning 0 = real empty.
+    const searchFailed = allResults.length === 0 && duffelFailed && duquaFailed;
+    if (searchFailed) {
+      logger.warn('CachedSearch.flights: all suppliers failed (not caching, not treating as empty inventory)', {
+        route: `${params.origin}→${params.destination}`,
+        duffel: duffelResults.failureReason || null, travelduqa: travelduqaResults.failureReason || null,
+      });
+    }
+    return { allResults, cacheRows, searchFailed };
+  });
 }
 
 // ─────────────────────────────────────────────
-// HOTEL SEARCH
-// HotelBeds + RateHawk in parallel.
-//
-// Merge logic:
-//   1. Both run via Promise.allSettled — one failing never kills the other
-//   2. Results combined into one array
-//   3. Deduped by normalised name+city — same property keeps cheaper rate
-//   4. Sorted cheapest first (totalRate in KES equivalent)
-//   5. Cache stores the cheapest result (supplier-agnostic)
+// HOTEL SEARCH — HotelBeds + RateHawk in parallel
 // ─────────────────────────────────────────────
 async function hotels(params, sendWhatsApp = null) {
   const contentType = 'hotel';
   const channel     = _channel(params, sendWhatsApp);
 
+  const checkIn = params.checkIn || params.departureDate;
+  if (_isPast(checkIn)) {
+    logger.warn('CachedSearch.hotels: check-in is in the past — not calling suppliers', {
+      destination: params.destination, checkIn,
+    });
+    return _buildReturn([], null, false, channel, { searchFailed: true, failureReason: 'past_date' });
+  }
+
   const cacheParams = {
-  destination:   params.destination,
-  departureDate: params.checkIn  || params.departureDate,
-  returnDate:    params.checkOut || params.returnDate,
-  passengers:    params.adults   || params.passengers || 1,
-  origin:        params.destination,
-};
+    destination:   params.destination,
+    departureDate: checkIn,
+    returnDate:    params.checkOut || params.returnDate,
+    passengers:    params.adults   || params.passengers || 1,
+    origin:        params.destination,
+  };
 
   const cached = await fareCache.get(cacheParams, contentType);
 
@@ -139,169 +176,118 @@ async function hotels(params, sendWhatsApp = null) {
     channel,
   });
 
-  const { hotelResults } = await _liveHotel(params, cacheParams, contentType);
+  const { hotelResults, searchFailed } = await _liveHotel(params, cacheParams, contentType);
 
   if (cached.hit && channel === 'whatsapp') {
-    const best = hotelResults[0] || null; // already sorted cheapest first
+    const best = hotelResults[0] || null;
     const liveResult = best
       ? { priceUsd: _toUsd(best.totalRate, best.currency || 'USD'), priceKes: _toKes(best.totalRate, best.currency || 'USD') }
       : null;
     await _safeSend(sendWhatsApp, fareCache.buildLiveConfirmMessage(liveResult, cached));
   }
 
-  return _buildReturn(hotelResults, cached, false, channel);
+  return _buildReturn(hotelResults, cached, false, channel, { searchFailed });
 }
 
-// ─────────────────────────────────────────────
-// _liveHotel — parallel HotelBeds + RateHawk
-// ─────────────────────────────────────────────
 async function _liveHotel(params, cacheParams, contentType) {
-  const [hbRes, rhRes] = await Promise.allSettled([
-    getHotelBeds().search(params),
-    getRateHawk().search(params),
-  ]);
+  const key = ['hotel', params.destination, params.checkIn || params.departureDate, params.checkOut || params.returnDate,
+    params.adults || params.passengers || 1, params.children || 0, params.rooms || 1].join('|').toLowerCase();
 
-  const hbResults = hbRes.status === 'fulfilled' ? (hbRes.value || []) : [];
-  const rhResults = rhRes.status === 'fulfilled' ? (rhRes.value || []) : [];
+  return _shared(key, async () => {
+    const rhAllowed = rateHawkBudget.tryAcquire();
+    if (!rhAllowed) {
+      logger.warn('CachedSearch.hotels: RateHawk per-minute budget used — skipping RateHawk for this search');
+    }
 
-  if (hbRes.status === 'rejected') {
-    logger.warn('CachedSearch.hotels: HotelBeds search failed', { error: hbRes.reason?.message });
-  }
-  if (rhRes.status === 'rejected') {
-    logger.warn('CachedSearch.hotels: RateHawk search failed', { error: rhRes.reason?.message });
-  }
+    const [hbRes, rhRes] = await Promise.allSettled([
+      getHotelBeds().search(params),
+      rhAllowed ? getRateHawk().search(params) : Promise.resolve(_failedList('budget')),
+    ]);
 
-  logger.info('CachedSearch.hotels: supplier results', {
-    destination: params.destination,
-    hotelBeds:   hbResults.length,
-    rateHawk:    rhResults.length,
+    const hbResults = hbRes.status === 'fulfilled' ? (hbRes.value || []) : _failedList('rejected');
+    const rhResults = rhRes.status === 'fulfilled' ? (rhRes.value || []) : _failedList('rejected');
+
+    if (hbRes.status === 'rejected') logger.warn('CachedSearch.hotels: HotelBeds search failed', { error: hbRes.reason?.message });
+    if (rhRes.status === 'rejected') logger.warn('CachedSearch.hotels: RateHawk search failed',  { error: rhRes.reason?.message });
+
+    logger.info('CachedSearch.hotels: supplier results', {
+      destination: params.destination, hotelBeds: hbResults.length, rateHawk: rhResults.length,
+    });
+
+    const combined     = [...hbResults, ...rhResults];
+    const hotelResults = _sortHotelsCheapest(_dedupeHotels(combined));
+
+    logger.info('CachedSearch.hotels: merged results', {
+      destination: params.destination, combined: combined.length, afterDedupe: hotelResults.length,
+      topResult: hotelResults[0] ? `${hotelResults[0].name} [${hotelResults[0].supplier}]` : 'none',
+    });
+
+    if (hotelResults.length > 0) {
+      const best = hotelResults[0];
+      await fareCache.set(cacheParams, contentType, [{
+        supplier: best.supplier,
+        priceUsd: _toUsd(best.totalRate, best.currency || 'USD'),
+        priceKes: _toKes(best.totalRate, best.currency || 'USD'),
+        currency: best.currency || 'USD',
+        result:   best,
+      }]).catch(err => logger.warn('CachedSearch.hotels: cache write failed', { error: err.message }));
+    }
+
+    const hbFailed = hbRes.status === 'rejected' || hbResults.searchFailed === true;
+    const rhFailed = rhRes.status === 'rejected' || rhResults.searchFailed === true;
+    return { hotelResults, searchFailed: hotelResults.length === 0 && hbFailed && rhFailed };
   });
-
-  const combined     = [...hbResults, ...rhResults];
-  const deduped      = _dedupeHotels(combined);
-  const hotelResults = _sortHotelsCheapest(deduped);
-  logger.info('CachedSearch.hotels: supplier breakdown after dedupe', {
-  destination: params.destination,
-  ratehawk:    hotelResults.filter(h => h.supplier === 'ratehawk').length,
-  hotelbeds:   hotelResults.filter(h => h.supplier === 'hotelbeds').length,
-  topResult:   hotelResults[0]
-    ? `${hotelResults[0].name} [${hotelResults[0].supplier}] @ ${hotelResults[0].totalRate} ${hotelResults[0].currency}`
-    : 'none',
-});
-
-  logger.info('CachedSearch.hotels: merged results', {
-    destination: params.destination,
-    combined:    combined.length,
-    afterDedupe: hotelResults.length,
-  });
-
-  if (hotelResults.length > 0) {
-    const best = hotelResults[0];
-    await fareCache.set(cacheParams, contentType, [{
-      supplier: best.supplier,
-      priceUsd: _toUsd(best.totalRate, best.currency || 'USD'),
-      priceKes: _toKes(best.totalRate, best.currency || 'USD'),
-      currency: best.currency || 'USD',
-      result:   best,
-    }]).catch(err =>
-      logger.warn('CachedSearch.hotels: cache write failed', { error: err.message })
-    );
-  }
-
-  return { hotelResults };
 }
 
-// ─────────────────────────────────────────────
-// HOTEL DEDUP
-// Same property from two suppliers — keep cheaper.
-// Key: normalised name + first word of location.
-// ─────────────────────────────────────────────
-function _dedupeHotels(hotels) {
+function _dedupeHotels(list) {
   const seen = new Map();
-
-  for (const hotel of hotels) {
+  for (const hotel of list) {
     const key = _hotelDedupeKey(hotel);
     if (!key) continue;
-
     const existing = seen.get(key);
-    if (!existing) {
-      seen.set(key, hotel);
-      continue;
-    }
-
+    if (!existing) { seen.set(key, hotel); continue; }
     const existingKES = _toKes(existing.totalRate || 0, existing.currency || 'USD');
     const hotelKES    = _toKes(hotel.totalRate    || 0, hotel.currency    || 'USD');
-
-    if (hotelKES < existingKES) {
-      logger.info('CachedSearch.hotels: deduped — kept cheaper', {
-        name:            hotel.name,
-        keptSupplier:    hotel.supplier,    keptKES:    hotelKES,
-        droppedSupplier: existing.supplier, droppedKES: existingKES,
-      });
-      seen.set(key, hotel);
-    }
+    if (hotelKES < existingKES) seen.set(key, hotel);
   }
-
   return Array.from(seen.values());
 }
 
 function _hotelDedupeKey(hotel) {
   if (!hotel.name) return null;
-
-  const normName = (hotel.name || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const normLocation = (hotel.location || hotel.city || hotel.destination || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .split(' ')[0];
-
-  if (!normName) return null;
-  return `${normName}|${normLocation}`;
+  const clean = s => (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  const normName = clean(hotel.name);
+  const normLocation = clean(hotel.location || hotel.city || hotel.destination).split(' ')[0];
+  return normName ? `${normName}|${normLocation}` : null;
 }
 
-function _sortHotelsCheapest(hotels) {
-  return [...hotels].sort((a, b) => {
-    const aKES = _toKes(a.totalRate || 0, a.currency || 'USD');
-    const bKES = _toKes(b.totalRate || 0, b.currency || 'USD');
-    return aKES - bKES;
-  });
+function _sortHotelsCheapest(list) {
+  return [...list].sort((a, b) =>
+    _toKes(a.totalRate || 0, a.currency || 'USD') - _toKes(b.totalRate || 0, b.currency || 'USD'));
 }
 
 // ─────────────────────────────────────────────
-// BUS SEARCH (IABIRI) — unchanged
+// BUS SEARCH (IABIRI) — unchanged apart from past-date guard
 // ─────────────────────────────────────────────
 async function buses(params, sendWhatsApp = null) {
   const contentType = 'bus';
   const channel     = _channel(params, sendWhatsApp);
 
+  if (_isPast(params.date)) return _buildReturn([], null, false, channel, { searchFailed: true, failureReason: 'past_date' });
+
   const cacheParams = {
-    origin:        params.origin,
-    destination:   params.destination,
-    departureDate: params.date,
-    passengers:    params.passengers || 1,
-    cabinClass:    'standard',
-    tripType:      'one_way',
+    origin: params.origin, destination: params.destination, departureDate: params.date,
+    passengers: params.passengers || 1, cabinClass: 'standard', tripType: 'one_way',
   };
 
   const cached = await fareCache.get(cacheParams, contentType);
 
   if (cached.hit && !cached.needsRefresh) {
-    logger.info('CachedSearch.buses: full cache hit', {
-      route: `${params.origin}→${params.destination}`, age: cached.ageMinutes, channel,
-    });
     return _buildReturn(cached.results, cached, true, channel);
   }
-
   if (cached.hit && cached.needsRefresh && channel === 'whatsapp') {
     await _safeSend(sendWhatsApp, fareCache.buildCachePreviewMessage(cached, { ...cacheParams, contentType }));
   }
-
   if (cached.hit && cached.needsRefresh && channel === 'widget') {
     _backgroundRefresh(() => _liveBus(params, cacheParams, contentType));
     return _buildReturn(cached.results, cached, true, channel);
@@ -309,14 +295,13 @@ async function buses(params, sendWhatsApp = null) {
 
   logger.info('CachedSearch.buses: firing live search', {
     route: `${params.origin}→${params.destination}`,
-    reason: cached.hit ? (cached.isStale ? 'stale' : 'volatile') : 'miss',
-    channel,
+    reason: cached.hit ? (cached.isStale ? 'stale' : 'volatile') : 'miss', channel,
   });
 
   const { busResults } = await _liveBus(params, cacheParams, contentType);
 
   if (cached.hit && channel === 'whatsapp') {
-    const best = busResults.sort((a, b) => a.price - b.price)[0] || null;
+    const best = [...busResults].sort((a, b) => a.price - b.price)[0] || null;
     const liveResult = best ? { priceUsd: _toUsd(best.price, 'KES'), priceKes: best.price } : null;
     await _safeSend(sendWhatsApp, fareCache.buildLiveConfirmMessage(liveResult, cached));
   }
@@ -331,38 +316,28 @@ async function _liveBus(params, cacheParams, contentType) {
   } catch (err) {
     logger.warn('CachedSearch.buses: IABIRI search failed', { error: err.message });
   }
-
   if (busResults.length > 0) {
-    const best = busResults.sort((a, b) => a.price - b.price)[0];
+    const best = [...busResults].sort((a, b) => a.price - b.price)[0];
     await fareCache.set(cacheParams, contentType, [{
-      supplier: 'iabiri',
-      priceUsd: _toUsd(best.price, 'KES'),
-      priceKes: best.price,
-      currency: 'KES',
-      result:   best,
+      supplier: 'iabiri', priceUsd: _toUsd(best.price, 'KES'), priceKes: best.price, currency: 'KES', result: best,
     }]).catch(err => logger.warn('CachedSearch.buses: cache write failed', { error: err.message }));
   }
-
   return { busResults };
 }
 
-// ─────────────────────────────────────────────
-// COMBINED TRANSPORT — unchanged
-// ─────────────────────────────────────────────
 async function transport(params, sendWhatsApp = null) {
   const [flightResult, busResult] = await Promise.allSettled([
     flights(params, sendWhatsApp),
     buses({ origin: params.origin, destination: params.destination, date: params.departureDate, passengers: params.passengers }, null),
   ]);
-
   return {
-    flights: flightResult.status === 'fulfilled' ? flightResult.value : { results: [], fromCache: false },
+    flights: flightResult.status === 'fulfilled' ? flightResult.value : { results: [], fromCache: false, searchFailed: true },
     buses:   busResult.status   === 'fulfilled' ? busResult.value   : { results: [], fromCache: false },
   };
 }
 
 // ─────────────────────────────────────────────
-// HELPERS — unchanged
+// HELPERS
 // ─────────────────────────────────────────────
 function _buildFlightCacheRows(duffelResults, travelduqaResults) {
   const rows = [];
@@ -381,14 +356,10 @@ function _pickBest(results) {
   if (!results || results.length === 0) return null;
   return results
     .filter(r => r && (r.price || r.totalRate))
-    .sort((a, b) => {
-      const pa = _toKes(a.price || a.totalRate || 0, a.currency);
-      const pb = _toKes(b.price || b.totalRate || 0, b.currency);
-      return pa - pb;
-    })[0] || null;
+    .sort((a, b) => _toKes(a.price || a.totalRate || 0, a.currency) - _toKes(b.price || b.totalRate || 0, b.currency))[0] || null;
 }
 
-function _buildReturn(results, cached, fromCache, channel = 'whatsapp') {
+function _buildReturn(results, cached, fromCache, channel = 'whatsapp', extra = {}) {
   const base = {
     results,
     best:         _pickBest(results),
@@ -397,8 +368,9 @@ function _buildReturn(results, cached, fromCache, channel = 'whatsapp') {
     isStale:      cached?.isStale      || false,
     needsRefresh: cached?.needsRefresh || false,
     suppliers:    cached?.suppliers    || [],
+    searchFailed: !!extra.searchFailed,
+    failureReason: extra.failureReason || null,
   };
-
   if (channel === 'widget') {
     base.widget = {
       showRefreshSpinner: cached?.needsRefresh || false,
@@ -413,34 +385,25 @@ function _buildReturn(results, cached, fromCache, channel = 'whatsapp') {
       trend: cached?.trend || null,
     };
   }
-
   return base;
 }
 
 function _backgroundRefresh(fn) {
-  Promise.resolve()
-    .then(fn)
-    .catch(err => logger.warn('CachedSearch: background refresh failed', { error: err.message }));
+  Promise.resolve().then(fn).catch(err => logger.warn('CachedSearch: background refresh failed', { error: err.message }));
 }
 
 const FX = { KES: 1, USD: 130, EUR: 143, GBP: 167 };
-
 function _toKes(amount, currency = 'KES') {
   const rate = FX[(currency || 'KES').toUpperCase()] || 130;
   return Math.round(Number(amount || 0) * rate);
 }
-
 function _toUsd(amount, currency = 'KES') {
-  const kes = _toKes(amount, currency);
-  return Math.round(kes / FX.USD * 100) / 100;
+  return Math.round(_toKes(amount, currency) / FX.USD * 100) / 100;
 }
 
 async function _safeSend(sendWhatsApp, message) {
-  try {
-    if (typeof sendWhatsApp === 'function' && message) await sendWhatsApp(message);
-  } catch (err) {
-    logger.warn('CachedSearch: WhatsApp send failed', { error: err.message });
-  }
+  try { if (typeof sendWhatsApp === 'function' && message) await sendWhatsApp(message); }
+  catch (err) { logger.warn('CachedSearch: WhatsApp send failed', { error: err.message }); }
 }
 
 module.exports = { flights, hotels, buses, transport };

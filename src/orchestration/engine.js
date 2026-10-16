@@ -363,6 +363,18 @@ class OrchestrationEngine {
 
       const intent = this._detectIntent(prompt, previousParams);
 
+            if (
+        intent.isFollowUp && previousParams && intent._weakFollowUp &&
+        Object.keys(intent.adjustments || {}).length === 0 &&
+        !intent.wantsCheapest && !intent.wantsAffordableSort && !intent.wantsSuggestDates
+      ) {
+        return this._buildClarificationResponse({
+          sessionId, prompt,
+          question: `I'm not sure what to change. You can tell me new dates ("December 5th"), nights ("4 nights"), travellers, budget ("cheaper"), or "add a hotel".`,
+          tripParams: previousParams, intent, conversationHistory, awaitingClarification: null,
+        });
+      }
+
       let tripParams;
 
       if (intent.isFollowUp && previousParams) {
@@ -392,7 +404,11 @@ class OrchestrationEngine {
           tripParams._awaitingHotelFollowUp = undefined;
           tripParams._lastFlightPackages    = undefined;
 
-        } else {
+                  const adjKeys = Object.keys(intent.adjustments || {});
+        const skipFreshParse = adjKeys.length > 0 &&
+          adjKeys.every(k => ['dates', 'nights', 'passengers', 'budget', 'seatPreference', 'timePreference'].includes(k));
+
+        } else if (!skipFreshParse) {
           // Original destination-changed / multi-trip override logic
           const freshParse = await parsePrompt(prompt, null);
           const freshDest  = (freshParse.destination || '').toLowerCase().trim();
@@ -467,10 +483,13 @@ class OrchestrationEngine {
   async _runSingleDestinationSearch(tripParams, sessionId, prompt, intent = null, context = {}) {
     this._validateTripParams(tripParams);
 
+    this._ensureFutureDates(tripParams);
+
     let datesWereAssumed = false;
 
     if (!tripParams.departureDate) {
       datesWereAssumed = true;
+    this._ensureFutureDates(tripParams);
       const d = new Date();
       d.setDate(d.getDate() + 1);
       tripParams.departureDate = d.toISOString().split('T')[0];
@@ -704,9 +723,7 @@ class OrchestrationEngine {
 
     let responseText;
     if (rankedPackages.length > 0) {
-      const dateLabel = tripParams._datesWereAssumed
-        ? ` — ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''}`
-        : '';
+      const dateLabel = ` — ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''}`;
       const isFlightOnlySearch = rankedPackages.length > 0 && rankedPackages.every(p => p._flightOnly);
       responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
 
@@ -761,6 +778,7 @@ class OrchestrationEngine {
         : `No flights found${origin ? ` from ${origin}` : ''} to ${dest}${depDateFmt ? ` on ${depDateFmt}` : ''}. Try a different date — what works for you?`;
     }
 
+        if (tripParams._changeNote) { responseText = `${tripParams._changeNote}\n\n${responseText}`; tripParams._changeNote = undefined; }
     return { text: responseText, packages: rankedPackages };
   }
 
@@ -1871,13 +1889,16 @@ class OrchestrationEngine {
       const tripParams = { ...previousParams };
       delete tripParams._awaitingClarification;
 
-      const parsedDate = this._parseDateAnswer(answer);
-      if (parsedDate) {
-        tripParams.departureDate = parsedDate;
-        if (tripParams.nights && !tripParams.returnDate) {
-          const dep = new Date(parsedDate);
-          dep.setDate(dep.getDate() + tripParams.nights);
-          tripParams.returnDate = dep.toISOString().split('T')[0];
+            const dx = parseDateExpression(answer);
+      if (dx) {
+        tripParams.departureDate = dx.departureDate;
+        if (dx.returnDate) {
+          tripParams.returnDate = dx.returnDate;
+          tripParams.nights = diffDays(dx.departureDate, dx.returnDate);
+        } else if (tripParams.nights) {
+          tripParams.returnDate = addDays(dx.departureDate, tripParams.nights);
+        } else {
+          tripParams.returnDate = null;
         }
         if (!tripParams.origin && !tripParams.isHotelOnly) {
           const dest = tripParams.destination ? this._titleCase(tripParams.destination) : 'your destination';
@@ -2444,6 +2465,8 @@ class OrchestrationEngine {
       if (/aisle seat/i.test(t)) adj.seatPreference = 'aisle';
       if (/morning/i.test(t)) adj.timePreference = 'morning';
       if (/evening|night/i.test(t)) adj.timePreference = 'evening';
+            const dx = parseDateExpression(t, { currentDeparture: previousParams?.departureDate || null });
+      if (dx) adj.dates = dx;
       return adj;
     };
 
@@ -2483,7 +2506,7 @@ class OrchestrationEngine {
       const match = lower.match(pattern);
       if (match) {
         const candidate = (match[1] || '').trim();
-        if (candidate.length >= 3 && !/^(that|this|it|there|here|same|different|the|a|an)$/i.test(candidate)) {
+        if (candidate.length >= 3 && !/^(that|this|it|there|here|same|different|the|a|an)$/i.test(candidate) && !parseDateExpression(candidate)) {
           logger.info('Engine: destination switch detected', {
             candidate,
             previousDest: previousParams.destination,
@@ -2537,6 +2560,20 @@ class OrchestrationEngine {
       };
     }
 
+        // 4b. Date change ("december 5th", "dec 5 to 12", "mid january", "a week later")
+    const _adj = _extractAdjustments(lower);
+    if (_adj.dates && lower.split(/\s+/).filter(Boolean).length <= 14) {
+      return {
+        isFollowUp:          true,
+        adjustments:         _adj,
+        productScope:        previousParams._pendingProductScope ||
+                             { needsTransport: true, needsHotel: true, needsTransfers: true },
+        wantsCheapest,
+        wantsAffordableSort,
+        wantsSuggestDates,
+      };
+    }
+
     // 5. Explicit adjustment signals → follow-up
     const hasAdjustment = !!(
       lower.match(/cheaper|expensive|luxury|more nights|fewer nights|\d+\s*nights?/i) ||
@@ -2566,6 +2603,7 @@ class OrchestrationEngine {
     if (wordCount <= 8 && previousParams.destination) {
       return {
         isFollowUp:          true,
+        _weakFollowUp:       true,
         adjustments:         _extractAdjustments(lower),
         productScope:        previousParams._pendingProductScope ||
                              { needsTransport: true, needsHotel: true, needsTransfers: true },
@@ -2618,6 +2656,20 @@ class OrchestrationEngine {
     if (adjustments.transportMode  !== undefined) adjusted.transportMode  = adjustments.transportMode;
     if (adjustments.seatPreference !== undefined) adjusted.seatPreference = adjustments.seatPreference;
     if (adjustments.timePreference !== undefined) adjusted.timePreference = adjustments.timePreference;
+
+        if (adjustments.dates) {
+      const { departureDate, returnDate, approx } = adjustments.dates;
+      const nights = returnDate ? diffDays(departureDate, returnDate) : (adjusted.nights || 7);
+      adjusted.departureDate     = departureDate;
+      adjusted.nights            = nights;
+      adjusted.returnDate        = returnDate || addDays(departureDate, nights);
+      adjusted._datesWereAssumed = false;
+      adjusted._changeNote =
+        `Moved your trip to ${this._formatDateHuman(adjusted.departureDate)} – ${this._formatDateHuman(adjusted.returnDate)} (${nights} nights)` +
+        (approx ? ` — I picked that date for your month, tell me if you meant another.` : '.');
+    } else if (adjustments.nights !== undefined && adjusted.departureDate) {
+      adjusted.returnDate = addDays(adjusted.departureDate, adjustments.nights);
+    }
 
     if (adjustments.destination !== undefined) {
       adjusted.destination     = adjustments.destination;
@@ -3297,94 +3349,35 @@ class OrchestrationEngine {
     return results;
   }
 
-  _formatDateHuman(dateStr) {
+    _formatDateHuman(dateStr) {
     if (!dateStr) return null;
-    try { return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }); }
-    catch { return dateStr; }
+    try {
+      const d = new Date(dateStr + 'T00:00:00');
+      const opts = { weekday: 'short', day: 'numeric', month: 'short' };
+      if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+      return d.toLocaleDateString('en-GB', opts);
+    } catch { return dateStr; }
   }
 
   _parseDateAnswer(text) {
-    if (!text) return null;
-    const t = text.trim().toLowerCase();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
-
-    const now         = new Date();
-    const currentYear = now.getFullYear();
-    const MONTHS = { jan:1,january:1,feb:2,february:2,mar:3,march:3,apr:4,april:4,may:5,jun:6,june:6,jul:7,july:7,aug:8,august:8,sep:9,september:9,sept:9,oct:10,october:10,nov:11,november:11,dec:12,december:12 };
-
-    const dayMonthMatch = t.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s*(?:(\d{4})|(\d{2}))?/i)
-      || t.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?/i);
-
-    if (dayMonthMatch) {
-      let day, month, yr;
-      if (/^\d/.test(dayMonthMatch[1] || '')) {
-        day = parseInt(dayMonthMatch[1], 10);
-        const mKey = (dayMonthMatch[2] || '').toLowerCase().slice(0, 3);
-        month = MONTHS[mKey] || MONTHS[(dayMonthMatch[2] || '').toLowerCase()];
-        yr = _normalizeYear(dayMonthMatch[3] || dayMonthMatch[4] || new Date().getFullYear());
-      } else {
-        const mKey = (dayMonthMatch[1] || '').toLowerCase().slice(0, 3);
-        month = MONTHS[mKey] || MONTHS[(dayMonthMatch[1] || '').toLowerCase()];
-        day = parseInt(dayMonthMatch[2], 10);
-        yr = _normalizeYear(dayMonthMatch[3] || new Date().getFullYear());
-      }
-      if (day && month) departureDate = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    }
-
-    const slashMatch = t.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
-    if (slashMatch) {
-      const day   = parseInt(slashMatch[1], 10);
-      const month = parseInt(slashMatch[2], 10);
-      const year  = slashMatch[3] ? (slashMatch[3].length === 2 ? 2000 + parseInt(slashMatch[3]) : parseInt(slashMatch[3])) : currentYear;
-      if (day >= 1 && day <= 31 && month >= 1 && month <= 12) return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    }
-
-    const relativeMatch = t.match(/next\s+(week|month|weekend)/i) || t.match(/in\s+(\d+)\s+(days?|weeks?)/i);
-    if (relativeMatch) {
-      const d = new Date(now);
-      if (relativeMatch[1] === 'week') d.setDate(d.getDate() + 7);
-      else if (relativeMatch[1] === 'month') d.setDate(d.getDate() + 30);
-      else if (relativeMatch[1] === 'weekend') d.setDate(d.getDate() + (6 - d.getDay() + 7) % 7 || 7);
-      else { const n = parseInt(relativeMatch[1], 10); const unit = relativeMatch[2]; d.setDate(d.getDate() + (unit.startsWith('week') ? n * 7 : n)); }
-      return d.toISOString().split('T')[0];
-    }
-
-    const earlyMidLate = t.match(/(early|mid|late|end\s+of)\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i);
-    if (earlyMidLate) {
-      const qualifier = earlyMidLate[1].toLowerCase();
-      const monthStr  = earlyMidLate[2].toLowerCase().slice(0, 3);
-      const month     = MONTHS[monthStr];
-      if (month) {
-        const day = qualifier.startsWith('early') ? 5 : qualifier.startsWith('mid') ? 15 : 25;
-        let year  = currentYear;
-        if (new Date(year, month - 1, day) < now) year = currentYear + 1;
-        return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      }
-    }
-
-    for (const [name, num] of Object.entries(MONTHS)) {
-      if (t === name || t.startsWith(name + ' ') || t.endsWith(' ' + name)) {
-        let year = currentYear;
-        if (new Date(year, num - 1, 1) < now) year = currentYear + 1;
-        return `${year}-${String(num).padStart(2, '0')}-01`;
-      }
-    }
-
-    return null;
+    return parseDateExpression(text)?.departureDate || null;
   }
 
-  _validateTripParams(params) {
+ _validateTripParams(params) {
     if (!params.destination) throw new Error("Missing destination");
   }
-}
 
-// ── Helper used in _parseDateAnswer (was an import in promptParser) ───────────
-function _normalizeYear(yearInput) {
-  const currentYear = new Date().getFullYear();
-  let yr = parseInt(yearInput, 10);
-  if (yr < 100) yr += 2000;
-  if (yr < currentYear) return currentYear;
-  return yr;
-}
+  _ensureFutureDates(p) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (p.departureDate && p.departureDate < today) {
+      const old = p.departureDate;
+      const n = p.nights || (p.returnDate ? diffDays(old, p.returnDate) : 7);
+      p.departureDate = rollForward(old);
+      p.nights = n;
+      p.returnDate = addDays(p.departureDate, n);
+      p._changeNote = `${this._formatDateHuman(old)} has passed, so I searched ${this._formatDateHuman(p.departureDate)} instead.`;
+    }
+  }
+} // <--- Class closes here, after all methods
 
 module.exports = new OrchestrationEngine();

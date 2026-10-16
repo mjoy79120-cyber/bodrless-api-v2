@@ -48,6 +48,7 @@
 const Groq = require('groq-sdk');
 const { logger } = require('../utils/logger');
 const { detectAccessibilityIntent } = require('../services/accessibilityService');
+const { parseDateExpression, rollForward, addDays, diffDays } = require('../utils/dateResolver');
 
 // ─────────────────────────────────────────────
 // CONSTANTS
@@ -132,7 +133,12 @@ const COUNTRY_TO_CITY = {
   'zambia': 'Lusaka', 'namibia': 'Windhoek', 'mozambique': 'Maputo',
   'angola': 'Luanda', 'cameroon': 'Douala', 'senegal': 'Dakar',
   'washington': 'Washington', 'washington dc': 'Washington',
-  'washington d.c.': 'Washington',
+  'washington d.c.': 'Washington',   'malaysia': 'Kuala Lumpur', 'singapore': 'Singapore', 'vietnam': 'Hanoi',
+  'sri lanka': 'Colombo', 'philippines': 'Manila', 'china': 'Beijing',
+  'south korea': 'Seoul', 'portugal': 'Lisbon', 'germany': 'Frankfurt',
+  'switzerland': 'Zurich', 'canada': 'Toronto', 'jordan': 'Amman',
+  'tunisia': 'Tunis', 'botswana': 'Gaborone', 'malawi': 'Lilongwe',
+  'ireland': 'Dublin', 'cambodia': 'Siem Reap',
 };
 
 const DESTINATION_FIXES = {
@@ -209,14 +215,6 @@ function extractName(raw) {
 
 function _normStr(s) {
   return (s || '').toLowerCase().trim().replace(/\s+/g, ' ');
-}
-
-function _normalizeYear(yearInput) {
-  const currentYear = new Date().getFullYear();
-  let yr = parseInt(yearInput, 10);
-  if (yr < 100) yr += 2000;
-  if (yr < currentYear) return currentYear;
-  return yr;
 }
 
 function _addDays(dateStr, days) {
@@ -595,72 +593,11 @@ if (simpleRoute) destination = simpleRoute[2].trim();
   if (childMatch) children = parseInt(childMatch[1], 10);
   else if (hasChild) children = childAges.length || 1;
 
-  const months = {
-    jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
-    january:1,february:2,march:3,april:4,june:6,july:7,august:8,
-    september:9,october:10,november:11,december:12,
-  };
-
-  let departureDate = null;
-  const dateMatch = lower.match(/(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s*(?:(\d{4})|(\d{2}))?/i)
-    || lower.match(/(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?/i);
-
-  if (dateMatch) {
-    let day, month, yr;
-    if (/^\d/.test(dateMatch[1] || '')) {
-      day = parseInt(dateMatch[1], 10);
-      const mKey = (dateMatch[2] || '').toLowerCase().slice(0, 3);
-      month = months[mKey] || months[(dateMatch[2] || '').toLowerCase()];
-      yr = _normalizeYear(dateMatch[3] || dateMatch[4] || new Date().getFullYear());
-    } else {
-      const mKey = (dateMatch[1] || '').toLowerCase().slice(0, 3);
-      month = months[mKey] || months[(dateMatch[1] || '').toLowerCase()];
-      day = parseInt(dateMatch[2], 10);
-      yr = _normalizeYear(dateMatch[3] || new Date().getFullYear());
-    }
-    if (day && month) departureDate = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  }
-
-  if (!departureDate) {
-    const isoMatch = lower.match(/(\d{4}-\d{2}-\d{2})/);
-    if (isoMatch) departureDate = isoMatch[1];
-  }
-
-  if (!departureDate) {
-    const monthOnlyMatch = lower.match(/\b(?:in\s+|around\s+|during\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i);
-    if (monthOnlyMatch) {
-      const mKey = monthOnlyMatch[1].toLowerCase().slice(0, 3);
-      const month = months[mKey];
-      if (month) {
-        const now = new Date();
-        let year = now.getFullYear();
-        if (new Date(year, month - 1, 1) < now) year++;
-        departureDate = `${year}-${String(month).padStart(2, '0')}-01`;
-      }
-    }
-  }
-
-  if (!departureDate) {
-    const today = new Date();
-    if (/next week/i.test(lower)) { today.setDate(today.getDate() + 7); departureDate = today.toISOString().split('T')[0]; }
-    else if (/this weekend/i.test(lower)) { const d = today.getDay(); today.setDate(today.getDate() + (6 - d)); departureDate = today.toISOString().split('T')[0]; }
-    else if (/tomorrow/i.test(lower)) { today.setDate(today.getDate() + 1); departureDate = today.toISOString().split('T')[0]; }
-  }
-
-  let returnDate = null;
-  const returnDateMatch = lower.match(/\b(?:return(?:ing)?|back|fly\s+back)\s+(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)/i);
-  if (returnDateMatch) {
-    const day   = parseInt(returnDateMatch[1], 10);
-    const mKey  = returnDateMatch[2].toLowerCase().slice(0, 3);
-    const month = months[mKey];
-    const yr    = new Date().getFullYear();
-    if (day && month) returnDate = `${yr}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  }
-  if (!returnDate && departureDate && nights) {
-    const dep = new Date(departureDate);
-    dep.setDate(dep.getDate() + nights);
-    returnDate = dep.toISOString().split('T')[0];
-  }
+    const dx = parseDateExpression(lower);
+  let departureDate = dx?.departureDate || null;
+  let returnDate    = dx?.returnDate    || null;
+  if (dx?.returnDate && !nights) nights = diffDays(dx.departureDate, dx.returnDate);
+  if (!returnDate && departureDate && nights) returnDate = addDays(departureDate, nights);
 
   let budget = null;
   if (/\b(luxury|premium|high.?end|5.?star|five.?star|splurge|lavish)\b/i.test(lower)) budget = 'luxury';
@@ -834,7 +771,7 @@ needsChildAge: true if children>0 AND childAges is empty
   "_missingFields": []
 }`;
 
-const GROQ_SYSTEM_PROMPT_SIMPLE = `Extract travel info. Return ONLY valid JSON. Current year is 2026.
+const GROQ_SYSTEM_PROMPT_SIMPLE = `Extract travel info. Return ONLY valid JSON. __TODAY_RULE__
 
 destination: real place name only (1-4 words). null if none.
 origin: single departure city. null if not mentioned. NEVER guess. NEVER use filler phrases like "book me a flight" as origin.
@@ -864,11 +801,16 @@ For multi-city trips: trips[] with ALL legs including return home.
 // GROQ ATTEMPT
 // ─────────────────────────────────────────────
 
+function _todayRule() {
+  const today = new Date().toISOString().slice(0, 10);
+  return `Today is ${today}. For dates given without a year, use the next occurrence on or after today. Years shown in examples below are format examples only.`;
+}
+
 async function _groqAttempt(prompt, systemPrompt) {
   try {
     const completion = await groqClient.chat.completions.create({
       model:           'openai/gpt-oss-120b',
-      messages:        [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }],
+      messages:        [{ role: 'system', content: systemPrompt.replace('__TODAY_RULE__', _todayRule()) }, { role: 'user', content: prompt }],
       temperature:     0.1,
       max_tokens:      1200,
       response_format: { type: 'json_object' },
@@ -888,14 +830,7 @@ async function _groqAttempt(prompt, systemPrompt) {
       parsed = JSON.parse(cleaned);
     }
 
-    const currentYear  = new Date().getFullYear();
-    const sanitizeDate = (dateStr) => {
-      if (!dateStr || typeof dateStr !== 'string') return dateStr;
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return dateStr;
-      if (d.getFullYear() < currentYear) { d.setFullYear(currentYear); return d.toISOString().split('T')[0]; }
-      return dateStr;
-    };
+    const sanitizeDate = (d) => (typeof d === 'string' ? rollForward(d) : d);
 
     if (parsed.departureDate) parsed.departureDate = sanitizeDate(parsed.departureDate);
     if (parsed.returnDate)    parsed.returnDate    = sanitizeDate(parsed.returnDate);
@@ -986,6 +921,26 @@ async function _groqAttempt(prompt, systemPrompt) {
     if (parsed.preferredHotel) {
       const pt = _extractPropertyType(parsed.preferredHotel);
       if (pt) { parsed.propertyType = parsed.propertyType || pt; parsed.preferredHotel = null; }
+    }
+
+        // Deterministic date parse beats the LLM (single-trip prompts only)
+    if (!Array.isArray(parsed.trips)) {
+      const dx = parseDateExpression(prompt);
+      if (dx) {
+        parsed.departureDate = dx.departureDate;
+        if (dx.returnDate) {
+          parsed.returnDate = dx.returnDate;
+          parsed.nights = diffDays(dx.departureDate, dx.returnDate);
+        } else {
+          parsed.returnDate = null;
+        }
+      }
+      if (parsed.departureDate && parsed.nights && !parsed.returnDate) {
+        parsed.returnDate = addDays(parsed.departureDate, parsed.nights);
+      }
+      if (parsed.departureDate && parsed.returnDate && parsed.returnDate <= parsed.departureDate) {
+        parsed.returnDate = parsed.nights ? addDays(parsed.departureDate, parsed.nights) : null;
+      }
     }
 
     const { hasSafari, excursions: ruleExcursions } = _extractActivities(prompt);
