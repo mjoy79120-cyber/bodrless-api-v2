@@ -392,8 +392,6 @@ class OrchestrationEngine {
         // ── FIX 5: DESTINATION SWITCH vs DESTINATION CHANGE ─────────────────
         const isDestinationSwitch = !!(intent.adjustments?._keepOrigin && intent.adjustments?.destination);
 
-        if (isDestinationSwitch) {
-          // "let's try Zanzibar" — keep Nairobi as origin, swap destination only
           logger.info('Engine: destination switch — keeping origin, swapping destination', {
             previous: (previousParams.destination || '').toLowerCase(),
             new:      (intent.adjustments.destination || '').toLowerCase(),
@@ -405,9 +403,22 @@ class OrchestrationEngine {
           tripParams._awaitingHotelFollowUp = undefined;
           tripParams._lastFlightPackages    = undefined;
 
-                  const adjKeys = Object.keys(intent.adjustments || {});
-        const skipFreshParse = adjKeys.length > 0 &&
-          adjKeys.every(k => ['dates', 'nights', 'passengers', 'budget', 'seatPreference', 'timePreference'].includes(k));
+                 const adjKeys = Object.keys(intent.adjustments || {});
+const skipFreshParse = adjKeys.length > 0 &&
+  adjKeys.every(k => ['dates', 'nights', 'passengers', 'budget', 'seatPreference', 'timePreference'].includes(k));
+
+if (isDestinationSwitch) {
+  // "let's try Zanzibar" — keep Nairobi as origin, swap destination only
+  logger.info('Engine: destination switch — keeping origin, swapping destination', {
+    previous: (previousParams.destination || '').toLowerCase(),
+    new:      (intent.adjustments.destination || '').toLowerCase(),
+    origin:   previousParams.origin,
+  });
+  tripParams.destination = resolveCountryToCity(intent.adjustments.destination);
+  tripParams.origin      = previousParams.origin;
+  // Clear stale date/hotel state but keep pax/budget/nights
+  tripParams._awaitingHotelFollowUp = undefined;
+  tripParams._lastFlightPackages    = undefined;
 
         } else if (!skipFreshParse) {
           // Original destination-changed / multi-trip override logic
