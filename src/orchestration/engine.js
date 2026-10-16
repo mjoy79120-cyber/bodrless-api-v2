@@ -1897,7 +1897,7 @@ class OrchestrationEngine {
           tripParams.returnDate = dx.returnDate;
           tripParams.nights = diffDays(dx.departureDate, dx.returnDate);
         } else if (tripParams.nights) {
-          tripParams.returnDate = addDays(dx.departureDate, tripParams.nights);
+          tripParams.returnDate = this._addDaysStr(dx.departureDate, tripParams.nights);
         } else {
           tripParams.returnDate = null;
         }
@@ -2663,13 +2663,13 @@ class OrchestrationEngine {
       const nights = returnDate ? diffDays(departureDate, returnDate) : (adjusted.nights || 7);
       adjusted.departureDate     = departureDate;
       adjusted.nights            = nights;
-      adjusted.returnDate        = returnDate || addDays(departureDate, nights);
+      adjusted.returnDate        = returnDate || this._addDaysStr(departureDate, nights);
       adjusted._datesWereAssumed = false;
       adjusted._changeNote =
         `Moved your trip to ${this._formatDateHuman(adjusted.departureDate)} – ${this._formatDateHuman(adjusted.returnDate)} (${nights} nights)` +
         (approx ? ` — I picked that date for your month, tell me if you meant another.` : '.');
     } else if (adjustments.nights !== undefined && adjusted.departureDate) {
-      adjusted.returnDate = addDays(adjusted.departureDate, adjustments.nights);
+      adjusted.returnDate = this._addDaysStr(adjusted.departureDate, adjustments.nights);
     }
 
     if (adjustments.destination !== undefined) {
@@ -3379,7 +3379,7 @@ if (failed) results.searchFailed = true;
       const n = p.nights || (p.returnDate ? diffDays(old, p.returnDate) : 7);
       p.departureDate = rollForward(old);
       p.nights = n;
-      p.returnDate = addDays(p.departureDate, n);
+      p.returnDate = this._addDaysStr(p.departureDate, n);
       p._changeNote = `${this._formatDateHuman(old)} has passed, so I searched ${this._formatDateHuman(p.departureDate)} instead.`;
     }
   }
