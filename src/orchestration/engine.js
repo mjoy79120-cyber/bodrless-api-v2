@@ -2813,6 +2813,7 @@ class OrchestrationEngine {
         : null;
 
       const cacheResult = await cachedSearch.flights(flightParams, sendFn);
+      failed = !!cacheResult.searchFailed;
       const liveFlights = cacheResult.results || [];
 
       logger.info(`CachedSearch flights (${leg})`, {
@@ -2825,7 +2826,10 @@ class OrchestrationEngine {
       results.push(...(hubLanding ? liveFlights.map(f => ({ ...f, hubLanding })) : liveFlights));
     } catch (err) {
       logger.error(`Flight search failed (${leg})`, { error: err.message });
+      failed = true;
     }
+    
+if (failed) results.searchFailed = true;
 
     console.log(`ALL FLIGHTS (${leg}):`, results.length);
     return results;
@@ -3358,7 +3362,7 @@ class OrchestrationEngine {
       return d.toLocaleDateString('en-GB', opts);
     } catch { return dateStr; }
   }
-
+f
   _parseDateAnswer(text) {
     return parseDateExpression(text)?.departureDate || null;
   }
