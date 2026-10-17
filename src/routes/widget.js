@@ -1684,7 +1684,7 @@ if (data.held) {
   heldTitle.innerText = '✈️ Your agent is on it!';
   var heldBody = document.createElement('div');
   heldBody.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.8);line-height:1.6;margin-bottom:14px;';
-  heldBody.innerText = 'We\'ve found some great options for your trip. Your ' + CFG.name + ' agent is handpicking the best ones and will send them to you shortly.';
+  heldBody.innerText = 'We\\'ve found some great options for your trip. Your ' + CFG.name + ' agent is handpicking the best ones and will send them to you shortly.';
   var heldDots = document.createElement('div');
   heldDots.style.cssText = 'display:flex;align-items:center;gap:8px;';
   var dotsWrap = document.createElement('div'); dotsWrap.className = 'typing-dots';
