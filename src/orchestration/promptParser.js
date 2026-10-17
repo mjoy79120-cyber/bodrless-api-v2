@@ -227,6 +227,21 @@ function _diffDays(a, b) {
   return Math.round((new Date(b) - new Date(a)) / 86400000);
 }
 
+const NUM_WORDS = { one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10 };
+function _wordsToDigits(s) {
+  return s.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\b(?=\s*(?:nights?|days?|people|adults?|pax))/gi,
+    m => NUM_WORDS[m.toLowerCase()]);
+}
+
+function _detectModes(text) {
+  const t = (text || '').toLowerCase();
+  const modes = [];
+  if (/\b(flights?|fly|flying|plane)\b/.test(t)) modes.push('flight');
+  if (/\b(sgr|train|madaraka)\b/.test(t))        modes.push('train');
+  if (/\b(bus(?:es)?|coach)\b/.test(t))          modes.push('bus');
+  return modes;
+}
+
 function _isNonFlyable(dest) {
   return !!(NON_FLYABLE_HUBS[_normStr(dest)]);
 }
@@ -290,7 +305,7 @@ const CLARIFICATION_SIGNALS = [
 
 function _scoreFreshPrompt(prompt) {
   if (!prompt) return 0;
-  const lower = prompt.toLowerCase().trim();
+  const lower = _wordsToDigits(prompt.toLowerCase().trim());
   const words = lower.split(/\s+/).filter(Boolean).length;
 
   if (words <= 3) {
@@ -540,7 +555,7 @@ function _normalizeTripLegsFromSession(trips, topLevel) {
 // ─────────────────────────────────────────────
 
 function _parseWithRules(prompt) {
-  const lower = prompt.toLowerCase().trim();
+  const lower = _wordsToDigits(prompt.toLowerCase().trim());
 
   let destination = null;
  const ACTION_WORDS = /\b(book|plan|find|get|arrange|help|show|give|fly|flight|travel|search|take|want|need)\b/i;
@@ -620,10 +635,9 @@ if (simpleRoute) destination = simpleRoute[2].trim();
     }
   }
 
-  let outboundTransportMode = null;
-  if (/\bflight|fly|flying\b/i.test(lower)) outboundTransportMode = 'flight';
-  else if (/\bbus|coach\b/i.test(lower)) outboundTransportMode = 'bus';
-  else if (/\btrain|sgr|madaraka\b/i.test(lower)) outboundTransportMode = 'train';
+const modes = _detectModes(lower);
+let outboundTransportMode = modes.length === 1 ? modes[0] : null;
+const wantsTrain = modes.includes('train');
 
   let mealPlan = null;
   if (/\ball.?inclusive\b/i.test(lower)) mealPlan = 'all_inclusive';
@@ -654,7 +668,8 @@ if (simpleRoute) destination = simpleRoute[2].trim();
     seatPreference: null, timePreference: null, needsOriginClarification, isMultiDestination: false,
     isHotelOnly, legs: [], trips: null,
     preferredTransportProvider: null, preferredHotel, propertyType,
-    activityRequests: excursions, safariDestination,
+    activityRequests: excursions, safariDestination,    
+    wantsTrain, requestedModes: modes,
     hasChild, needsChildAge,
     _parsedBy: 'rules',
   };
@@ -1109,6 +1124,15 @@ async function parsePrompt(prompt, session = null, ctx = null) {
   const raw = groqResult || _parseWithRules(prompt);
   raw._freshScore = freshScore;
 
+    const reqModes = _detectModes(prompt);
+  if (reqModes.length) {
+    raw.requestedModes = reqModes;
+    raw.outboundTransportMode = reqModes.length === 1 ? reqModes[0] : null;
+    raw.wantsTrain = reqModes.includes('train');
+  }
+  if (_parseWithRules(prompt).isHotelOnly) raw.isHotelOnly = true;
+  if (raw.isHotelOnly) raw.needsOriginClarification = false;
+
   if (!groqResult) {
     logger.info('Falling back to rule-based parser', { prompt: prompt.slice(0, 80) });
   } else {
@@ -1247,4 +1271,5 @@ module.exports = {
   scoreFreshPrompt: _scoreFreshPrompt,
   detectCheaperRequest,
   extractName,
+  wordsToDigits: _wordsToDigits,
 };
