@@ -9,11 +9,12 @@
  *   app.use('/api/widget/chat', widgetChat);
  *
  * Endpoints:
- *   POST /start        start a live chat thread
- *   POST /send         traveler sends a message
- *   GET  /poll         traveler polls for new agent messages
- *   POST /back         traveler goes back to bot assistant
- *   GET  /config       widget checks if live chat is available
+ *   POST /start              start a live chat thread
+ *   POST /send               traveler sends a message
+ *   GET  /poll               traveler polls for new agent messages
+ *   POST /back               traveler goes back to bot assistant
+ *   GET  /config             widget checks if live chat is available
+ *   GET  /poll-approval      widget polls for package approval (manual mode)
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -23,11 +24,10 @@ const Joi        = require('joi');
 const supabase   = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 
-const TIMEOUT_MS   = 30 * 60 * 1000;   // 30 min — offer "keep waiting" nudge
+const TIMEOUT_MS   = 30 * 60 * 1000;
 const NUDGE_MSG    = "Still there? Your agent hasn't replied yet. Would you like to keep waiting or go back to the assistant?";
 const MAX_MSG_LEN  = 1000;
 
-// ── resolve agency from api-key header ────────────────────────
 async function _resolveAgency(req) {
   const key = req.headers['x-api-key'] || req.headers['x-hotel-key'];
   if (!key) return null;
@@ -44,7 +44,7 @@ function _visitorToken(req) {
 }
 
 // ─────────────────────────────────────────────
-// GET /config  — widget checks availability before showing button
+// GET /config
 // ─────────────────────────────────────────────
 router.get('/config', async (req, res) => {
   try {
@@ -62,8 +62,7 @@ router.get('/config', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// POST /start  — traveler hands off from bot to agent
-// Body: { botHistory, tripParams, lastPackages, travelerName }
+// POST /start
 // ─────────────────────────────────────────────
 router.post('/start', async (req, res) => {
   const schema = Joi.object({
@@ -79,7 +78,6 @@ router.post('/start', async (req, res) => {
     const agency  = await _resolveAgency(req);
     if (!agency) return res.status(401).json({ success: false, error: 'Invalid agency key' });
 
-    // Guard: Triply never uses live chat
     if (agency.integration_type === 'triply') {
       return res.status(403).json({ success: false, error: 'Live chat not available for this agency' });
     }
@@ -90,7 +88,6 @@ router.post('/start', async (req, res) => {
     const sessionKey = _visitorToken(req);
     if (!sessionKey) return res.status(400).json({ success: false, error: 'Visitor token required' });
 
-    // Close any existing open thread for this visitor first
     await supabase
       .from('chat_threads')
       .update({ status: 'closed', closed_by: 'traveler', closed_at: new Date().toISOString() })
@@ -98,7 +95,6 @@ router.post('/start', async (req, res) => {
       .eq('agency_id', agency.id)
       .eq('status', 'open');
 
-    // Create new thread
     const { data: thread, error: insertErr } = await supabase
       .from('chat_threads')
       .insert({
@@ -116,7 +112,6 @@ router.post('/start', async (req, res) => {
 
     if (insertErr) throw insertErr;
 
-    // Post system message so agent sees context immediately
     await supabase.from('chat_messages').insert({
       thread_id: thread.id,
       agency_id: agency.id,
@@ -134,8 +129,7 @@ router.post('/start', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// POST /send  — traveler sends a message
-// Body: { threadId, text }
+// POST /send
 // ─────────────────────────────────────────────
 router.post('/send', async (req, res) => {
   const schema = Joi.object({
@@ -150,7 +144,6 @@ router.post('/send', async (req, res) => {
     const agency     = await _resolveAgency(req);
     if (!agency) return res.status(401).json({ success: false, error: 'Invalid agency key' });
 
-    // Verify thread belongs to this visitor + agency
     const { data: thread } = await supabase
       .from('chat_threads')
       .select('id, status, agency_id')
@@ -159,10 +152,9 @@ router.post('/send', async (req, res) => {
       .eq('agency_id', agency.id)
       .single();
 
-    if (!thread)            return res.status(404).json({ success: false, error: 'Thread not found' });
+    if (!thread)                  return res.status(404).json({ success: false, error: 'Thread not found' });
     if (thread.status !== 'open') return res.status(409).json({ success: false, error: 'Thread is closed' });
 
-    // Sanitise: strip HTML tags before storing
     const safeText = value.text.replace(/<[^>]*>/g, '').trim();
 
     const { data: msg, error: msgErr } = await supabase
@@ -188,8 +180,7 @@ router.post('/send', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// GET /poll  — traveler polls for new messages
-// Query: threadId, after (ISO timestamp, optional)
+// GET /poll
 // ─────────────────────────────────────────────
 router.get('/poll', async (req, res) => {
   const { threadId, after } = req.query;
@@ -200,7 +191,6 @@ router.get('/poll', async (req, res) => {
     const agency     = await _resolveAgency(req);
     if (!agency) return res.status(401).json({ success: false, error: 'Invalid agency key' });
 
-    // Verify ownership
     const { data: thread } = await supabase
       .from('chat_threads')
       .select('id, status, nudge_sent_at, created_at')
@@ -211,7 +201,6 @@ router.get('/poll', async (req, res) => {
 
     if (!thread) return res.status(404).json({ success: false, error: 'Thread not found' });
 
-    // Fetch messages newer than `after`
     let query = supabase
       .from('chat_messages')
       .select('id, sender, text, packages, agent_note, created_at')
@@ -223,13 +212,10 @@ router.get('/poll', async (req, res) => {
     const { data: messages, error: msgErr } = await query;
     if (msgErr) throw msgErr;
 
-    // Check if we should send a timeout nudge
-    // (thread open, no agent reply, >30 min since start, nudge not yet sent)
     let nudgeSent = false;
     if (thread.status === 'open' && !thread.nudge_sent_at) {
       const age = Date.now() - new Date(thread.created_at).getTime();
       if (age > TIMEOUT_MS) {
-        // Check if agent has ever replied
         const { count } = await supabase
           .from('chat_messages')
           .select('id', { count: 'exact', head: true })
@@ -237,7 +223,6 @@ router.get('/poll', async (req, res) => {
           .eq('sender', 'agent');
 
         if (!count || count === 0) {
-          // Insert nudge as system message and mark it sent
           await supabase.from('chat_messages').insert({
             thread_id: threadId,
             agency_id: agency.id,
@@ -267,8 +252,7 @@ router.get('/poll', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// POST /back  — traveler returns to bot assistant
-// Body: { threadId }
+// POST /back
 // ─────────────────────────────────────────────
 router.post('/back', async (req, res) => {
   const schema = Joi.object({ threadId: Joi.string().uuid().required() });
@@ -290,13 +274,11 @@ router.post('/back', async (req, res) => {
 
     if (!thread) return res.status(404).json({ success: false, error: 'Thread not found' });
 
-    // Close the thread
     await supabase
       .from('chat_threads')
       .update({ status: 'closed', closed_by: 'traveler', closed_at: new Date().toISOString() })
       .eq('id', thread.id);
 
-    // Post system message for agent awareness
     await supabase.from('chat_messages').insert({
       thread_id: thread.id,
       agency_id: agency.id,
@@ -306,7 +288,6 @@ router.post('/back', async (req, res) => {
 
     logger.info('widgetChat: traveler returned to bot', { threadId: thread.id });
 
-    // Return bot context so widget can resume conversation seamlessly
     return res.json({
       success:      true,
       botHistory:   thread.bot_history   || [],
@@ -317,6 +298,67 @@ router.post('/back', async (req, res) => {
   } catch (err) {
     logger.error('widgetChat POST /back', { error: err.message });
     return res.status(500).json({ success: false, error: 'Failed to return to assistant' });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /poll-approval
+// Widget polls this every 6s while in held (manual approval) state.
+// Query: sessionId
+// Returns { resolved: false } while pending,
+//         { resolved: true, outcome, packages?, agentNote?, message? } once decided.
+// ─────────────────────────────────────────────
+router.get('/poll-approval', async (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.json({ resolved: false });
+
+  try {
+    const agency = await _resolveAgency(req);
+    if (!agency) return res.json({ resolved: false });
+
+    const { data, error } = await supabase
+      .from('package_requests')
+      .select('status, packages, edited_packages, agent_note, delivery_status')
+      .eq('session_key', sessionId)
+      .eq('agency_id', agency.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) return res.json({ resolved: false });
+
+    if (data.status === 'pending') return res.json({ resolved: false });
+
+    if (data.status === 'declined') {
+      return res.json({
+        resolved: true,
+        outcome:  'declined',
+        message:  data.agent_note
+          ? `Sorry — ${data.agent_note}. Please try a different search.`
+          : "Sorry, we couldn't find suitable options right now. Please try a different search.",
+      });
+    }
+
+    if (data.status === 'approved') {
+      const packages = (data.edited_packages?.length ? data.edited_packages : data.packages) || [];
+      return res.json({
+        resolved:  true,
+        outcome:   'approved',
+        packages,
+        agentNote: data.agent_note || null,
+      });
+    }
+
+    // Expired
+    return res.json({
+      resolved: true,
+      outcome:  'declined',
+      message:  "This request expired. Please search again.",
+    });
+
+  } catch (err) {
+    logger.error('widgetChat GET /poll-approval', { error: err.message });
+    return res.json({ resolved: false });
   }
 });
 

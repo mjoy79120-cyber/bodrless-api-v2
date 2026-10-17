@@ -1575,7 +1575,7 @@ function initWidget() {
             div.style.cssText = 'font-style:italic;color:var(--et-muted);font-size:12px;'
               + 'text-align:center;background:transparent;border:none;box-shadow:none;';
           }
-          div.innerText = msg.body; messages.appendChild(div);
+          div.innerText = msg.text || msg.body || ''; messages.appendChild(div);
           if (msg.packages && msg.packages.length) {
             msg.packages.forEach(function(p, i) { messages.appendChild(addPackage(p, i, null, null)); });
           }
@@ -1595,7 +1595,7 @@ function initWidget() {
       fetch(apiBase + '/api/widget/chat/send', {
         method: 'POST',
         headers: {'Content-Type':'application/json','x-visitor-token': visitorToken,'x-api-key': agencyKey},
-        body: JSON.stringify({ threadId: _liveChatThreadId, body: text })
+        body: JSON.stringify({ threadId: _liveChatThreadId, text: text })
       }).catch(function() {});
       return;
     }
@@ -1673,6 +1673,52 @@ function initWidget() {
       if(data.conversationHistory) conversationHistory = data.conversationHistory;
 
       if(data.needsClarification){var ct=data.text||"Could you give me a bit more detail?";addMsg(ct,'bot');transcript.push({type:'bot',text:ct});persistState();return;}
+
+// ── HELD STATE ─────────────────────────────────────────────
+if (data.held) {
+  var heldDiv = document.createElement('div');
+  heldDiv.id  = 'et-held-state';
+  heldDiv.style.cssText = 'background:linear-gradient(135deg,#1E2A5E,#2d3f82);border-radius:14px;padding:18px 20px;color:white;margin-top:4px;';
+  var heldTitle = document.createElement('div');
+  heldTitle.style.cssText = 'font-size:14px;font-weight:700;margin-bottom:6px;';
+  heldTitle.innerText = '✈️ Your agent is on it!';
+  var heldBody = document.createElement('div');
+  heldBody.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.8);line-height:1.6;margin-bottom:14px;';
+  heldBody.innerText = 'We\'ve found some great options for your trip. Your ' + CFG.name + ' agent is handpicking the best ones and will send them to you shortly.';
+  var heldDots = document.createElement('div');
+  heldDots.style.cssText = 'display:flex;align-items:center;gap:8px;';
+  var dotsWrap = document.createElement('div'); dotsWrap.className = 'typing-dots';
+  dotsWrap.innerHTML = '<span></span><span></span><span></span>';
+  var dotsLabel = document.createElement('span');
+  dotsLabel.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.6);';
+  dotsLabel.innerText = 'Agent reviewing options…';
+  heldDots.appendChild(dotsWrap); heldDots.appendChild(dotsLabel);
+  heldDiv.appendChild(heldTitle); heldDiv.appendChild(heldBody); heldDiv.appendChild(heldDots);
+  messages.appendChild(heldDiv); messages.scrollTop = messages.scrollHeight;
+  var _heldPollIv = setInterval(function() {
+    fetch(apiBase + '/api/widget/chat/poll-approval?sessionId=' + encodeURIComponent(data.sessionId), {
+      headers: { 'x-api-key': agencyKey, 'x-visitor-token': visitorToken }
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(pd) {
+      if (!pd.resolved) return;
+      clearInterval(_heldPollIv);
+      var held = document.getElementById('et-held-state'); if (held) held.remove();
+      if (pd.outcome === 'declined') {
+        addMsg(pd.message || "Sorry, we couldn't find suitable options right now. Please try a different search.", 'bot');
+        return;
+      }
+      var intro = pd.agentNote ? pd.agentNote : 'Here are the options your agent put together for you:';
+      addMsg(intro, 'bot');
+      (pd.packages || []).forEach(function(p, i) { var card = addPackage(p, i, null, null); messages.appendChild(card); });
+      transcript.push({ type: 'packages', packages: pd.packages || [] });
+      messages.scrollTop = messages.scrollHeight; persistState();
+    })
+    .catch(function() {});
+  }, 6000);
+  return;
+}
+// ── END HELD STATE ──────────────────────────────────────────
 
       var pkgs = data && data.packages ? data.packages : [];
       var isHD = data.isHotelDirect || (pkgs.length > 0 && pkgs[0] && pkgs[0].isHotelDirect);
