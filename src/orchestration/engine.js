@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require("uuid");
 const supabase = require("../utils/supabase");
 const { logger } = require("../utils/logger");
 const { parseDateExpression } = require("../utils/dateResolver");
-const { parsePrompt, resolveCountryToCity, resolveSafariDestination, isFreshTripPrompt, scoreFreshPrompt, extractname } = require("./promptParser");
+const { parsePrompt, resolveCountryToCity, resolveSafariDestination, isFreshTripPrompt, scoreFreshPrompt, extractname, wordsToDigits } = require("./promptParser");
 const { rankPackages } = require("./packageRanker");
 const { toKES, sumToKES, CANONICAL_CURRENCY } = require("../utils/currency");
 const destinationIntel = require("../services/destinationIntel");
@@ -422,8 +422,7 @@ class OrchestrationEngine {
 
                  const adjKeys = Object.keys(intent.adjustments || {});
 const skipFreshParse = adjKeys.length > 0 &&
-  adjKeys.every(k => ['dates', 'nights', 'passengers', 'budget', 'seatPreference', 'timePreference'].includes(k));
-
+  adjKeys.every(k => ['dates', 'nights', 'passengers', 'budget', 'seatPreference', 'timePreference', 'requestedModes', 'outboundTransportMode', 'wantsTrain'].includes(k));
 if (isDestinationSwitch) {
   // "let's try Zanzibar" — keep Nairobi as origin, swap destination only
   logger.info('Engine: destination switch — keeping origin, swapping destination', {
@@ -584,7 +583,7 @@ if (isDestinationSwitch) {
     const _tSearch = Date.now();
     const destinationAccess = await this._resolveDestinationAccess(tripParams.destination);
 
-    const skipFlight = routeHints?.skipFlight || false;
+    const skipFlight = (routeHints?.skipFlight || false) || resolvedIntent.productScope?.needsTransport === false;
     if (skipFlight) {
       logger.info('RouteLearning: skipping flight search — low confidence on this route', {
         origin: tripParams.origin, destination: tripParams.destination,
@@ -732,7 +731,12 @@ if (isDestinationSwitch) {
       logger.warn('TravelerIntelligence.analyzeAndLearn failed — ranking without a profile', { error: err.message });
     }
 
-    let rankedPackages = rankPackages(packages, tripParams, travelerProfile).slice(0, 4);
+    const allRanked = rankPackages(packages, tripParams, travelerProfile);
+    let rankedPackages = allRanked.slice(0, 4);
+    if (tripParams.wantsTrain && !rankedPackages.some(p => p.transport?.transportType === 'train')) {
+      const trainPkg = allRanked.find(p => p.transport?.transportType === 'train');
+      if (trainPkg) rankedPackages[rankedPackages.length - 1] = trainPkg;
+    }
 
     if (scorePackages && context?.phone) {
       try {
@@ -2008,7 +2012,7 @@ if (isDestinationSwitch) {
         });
       }
     }
-    
+
     const resolvedOrigin = cleanedAnswer || answer;
     let tripParams = { ...previousParams };
     delete tripParams._awaitingClarification;
@@ -2049,6 +2053,11 @@ if (isDestinationSwitch) {
   // ─────────────────────────────────────────────────────────────────────────────
   async _continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, channel, phone = null) {
     tripParams.agencyId = agencyId;
+
+        if (tripParams.isHotelOnly) {
+      intent = { ...(intent || {}), productScope: { needsTransport: false, needsHotel: true, needsTransfers: false } };
+    }
+    if (intent?.productScope) tripParams._pendingProductScope = intent.productScope;
 
     if (!tripParams._channel) tripParams._channel = channel || 'widget';
 
@@ -2474,7 +2483,7 @@ if (isDestinationSwitch) {
   // FIX 3 + 4: INTENT DETECTION — full rewrite
   // ─────────────────────────────────────────────────────────────────────────────
   _detectIntent(prompt, previousParams) {
-    const lower = (prompt || '').toLowerCase().trim();
+    const lower = wordsToDigits((prompt || '').toLowerCase().trim());
 
     // ── SCOPE CHANGE PATTERNS — always follow-ups ─────────────────────────
     const SCOPE_CHANGES = [
@@ -2503,6 +2512,7 @@ if (isDestinationSwitch) {
       /\bi\s+(?:want|need|would\s+like)\s+to\s+(?:go\s+to|visit|fly\s+to)\s+[a-z]{4,}\b/i,
       /\bgoing\s+to\s+[a-z]{4,}\b/i,
       /\bi\s+have\s+\d+\s+(?:business\s+)?trips?\b/i,
+      /\b(?:find|get|book|need|want|looking\s+for)\s+(?:me\s+)?(?:a\s+)?hotels?\s+(?:in|at|near)\s+[a-z]{3,}/i,
     ];
 
     // ── DESTINATION SWITCH — follow-up with new destination, keep origin ──
@@ -2523,12 +2533,25 @@ if (isDestinationSwitch) {
       else if (/mid budget|moderate|reasonable/i.test(t)) adj.budget = 'mid';
       const nightsMatch = t.match(/(\d+)\s*nights?/);
       if (nightsMatch) adj.nights = parseInt(nightsMatch[1]);
+            if (!nightsMatch) {
+        const d = t.match(/(\d+)\s*days?\b(?!\s*(?:later|after))/);
+        if (d) adj.nights = Math.max(1, parseInt(d[1], 10) - 1);
+      }
+      const m = [];
+      if (/\b(flights?|fly|flying)\b/.test(t)) m.push('flight');
+      if (/\b(sgr|train|madaraka)\b/.test(t))  m.push('train');
+      if (/\b(bus(?:es)?|coach)\b/.test(t))    m.push('bus');
+      if (m.length) {
+        adj.requestedModes = m;
+        adj.outboundTransportMode = m.length === 1 ? m[0] : null;
+        adj.wantsTrain = m.includes('train');
+      }
       const passMatch = t.match(/(\d+)\s*(people|persons|passengers|of us|travelers?)/);
       if (passMatch) adj.passengers = parseInt(passMatch[1]);
       if (/window seat/i.test(t)) adj.seatPreference = 'window';
       if (/aisle seat/i.test(t)) adj.seatPreference = 'aisle';
       if (/morning/i.test(t)) adj.timePreference = 'morning';
-      if (/evening|night/i.test(t)) adj.timePreference = 'evening';
+      if (/\bevening\b|\bat night\b|\bnight flight\b/i.test(t)) adj.timePreference = 'evening';
       const dx = parseDateExpression(t, { currentDeparture: previousParams?.departureDate || null });
       if (dx) adj.dates = dx;
       return adj;
@@ -2596,8 +2619,9 @@ if (isDestinationSwitch) {
     // 4. Definite fresh structure — only treat as fresh if destination actually changed
     const isFreshStructure = DEFINITE_FRESH.some(p => p.test(lower));
     if (isFreshStructure) {
-      const destMatch = lower.match(/\bto\s+([a-z][a-z\s]{2,20}?)(?:\s+(?:from|for|on|in)|[,.]|$)/i)
-        || lower.match(/\bvisit\s+([a-z][a-z\s]{2,20}?)(?:\s+(?:from|for|on|in)|[,.]|$)/i);
+    const destMatch = lower.match(/\bto\s+([a-z][a-z\s]{2,20}?)(?:\s+(?:from|for|on|in)|[,.]|$)/i)
+        || lower.match(/\bvisit\s+([a-z][a-z\s]{2,20}?)(?:\s+(?:from|for|on|in)|[,.]|$)/i)
+        || lower.match(/\bhotels?\s+(?:in|at|near)\s+([a-z][a-z\s]{2,20}?)(?:\s+(?:from|for|on)|\s+\d|[,.]|$)/i);
       const mentionedDest = destMatch ? destMatch[1].trim() : null;
       const prevDest      = (previousParams.destination || '').toLowerCase().trim();
 
@@ -2616,8 +2640,7 @@ if (isDestinationSwitch) {
       return {
         isFollowUp:          true,
         adjustments:         _extractAdjustments(lower),
-        productScope:        previousParams._pendingProductScope ||
-                             { needsTransport: true, needsHotel: true, needsTransfers: true },
+        productScope:        (() => { const s = this._buildProductScope(lower); return s.needsTransport ? (previousParams._pendingProductScope || s) : s; })(),
         wantsCheapest,
         wantsAffordableSort,
         wantsSuggestDates,
@@ -2693,13 +2716,14 @@ if (isDestinationSwitch) {
     const hasHotelInPrompt = /\b(hotel|stay|lodge|put me in|staying at)\b/i.test(lower);
     const flightExclusive  = !hasHotelInPrompt &&
       /\bonly\s+(?:a\s+)?flights?\b|\bflights?\s+only\b|\bjust\s+(?:a\s+)?flights?\b/i.test(lower);
-    const hotelExclusive   =
-      /\bhotel\s+only\b|\bjust\s+(?:a\s+)?hotel\b|\baccommodation\s+only\b/i.test(lower);
+        const hotelExclusive   =
+      (/\bhotel\s+only\b|\bjust\s+(?:a\s+)?hotel\b|\baccommodation\s+only\b|\b(?:find|get|book|need|want|looking\s+for)\s+(?:me\s+)?(?:a\s+)?hotels?\b/i.test(lower))
+      && !/\b(flights?|sgr|train|bus(?:es)?|fly)\b/i.test(lower);
     const busExclusive     =
       /\bonly\s+(?:a\s+)?bus(?:es)?\b|\bbus(?:es)?\s+only\b/i.test(lower);
-    const trainExclusive   =
-      /\b(train|sgr|madaraka)\b/i.test(lower) && !hasHotelInPrompt;
-
+        const trainExclusive   =
+      /\b(train|sgr|madaraka)\b/i.test(lower) && !hasHotelInPrompt &&
+      !/\b(plan|trip|package|holiday|vacation)\b/i.test(lower);
     if (flightExclusive || busExclusive || trainExclusive) {
       return { needsTransport: true, needsHotel: false, needsTransfers: false };
     }
@@ -2720,6 +2744,13 @@ if (isDestinationSwitch) {
     if (adjustments.transportMode  !== undefined) adjusted.transportMode  = adjustments.transportMode;
     if (adjustments.seatPreference !== undefined) adjusted.seatPreference = adjustments.seatPreference;
     if (adjustments.timePreference !== undefined) adjusted.timePreference = adjustments.timePreference;
+    if (adjustments.requestedModes) {
+      adjusted.requestedModes        = adjustments.requestedModes;
+      adjusted.outboundTransportMode = adjustments.outboundTransportMode;
+      adjusted.returnTransportMode   = null;
+      adjusted.transportMode         = undefined;
+      adjusted.wantsTrain            = !!adjustments.wantsTrain;
+    }
 
         if (adjustments.dates) {
       const { departureDate, returnDate, approx } = adjustments.dates;
@@ -3059,7 +3090,7 @@ if (failed) results.searchFailed = true;
     const isSgrCorridor = (o === 'nairobi' && d === 'mombasa') || (o === 'mombasa' && d === 'nairobi');
     if (!isSgrCorridor) return [];
 
-    const explicitTrainRequest = mode === 'train' || !!tripParams.trainClass;
+    const explicitTrainRequest = mode === 'train' || !!tripParams.trainClass || !!tripParams.wantsTrain;
     const isBudgetSearch = tripParams.budget === 'low';
     if (!explicitTrainRequest && !isBudgetSearch) return [];
 
