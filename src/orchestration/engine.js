@@ -155,6 +155,20 @@ class OrchestrationEngine {
       }
       // ── END FIX 1 ─────────────────────────────────────────────────────────
 
+
+            if (/^\s*(start\s+(a\s*)?fresh|start\s+over|reset|new\s+trip)\s*[.!]?\s*$/i.test(prompt)) {
+        return {
+          sessionId,
+          text: "No problem, let's start fresh. Where would you like to go, and from which city?",
+          packages: [],
+          needsClarification: true,
+          tripParams: {},
+          intent: null,
+          conversationHistory: [],
+          generatedAt: new Date().toISOString(),
+        };
+      }
+
       // ── SKIP PARSING ──────────────────────────────────────────────────────
       if (skipParsing && previousParams) {
         const tripParams = { ...previousParams, agencyId };
@@ -406,17 +420,6 @@ class OrchestrationEngine {
         // ── FIX 5: DESTINATION SWITCH vs DESTINATION CHANGE ─────────────────
         const isDestinationSwitch = !!(intent.adjustments?._keepOrigin && intent.adjustments?.destination);
 
-          logger.info('Engine: destination switch — keeping origin, swapping destination', {
-            previous: (previousParams.destination || '').toLowerCase(),
-            new:      (intent.adjustments.destination || '').toLowerCase(),
-            origin:   previousParams.origin,
-          });
-          tripParams.destination = resolveCountryToCity(intent.adjustments.destination);
-          tripParams.origin      = previousParams.origin;
-          // Clear stale date/hotel state but keep pax/budget/nights
-          tripParams._awaitingHotelFollowUp = undefined;
-          tripParams._lastFlightPackages    = undefined;
-
                  const adjKeys = Object.keys(intent.adjustments || {});
 const skipFreshParse = adjKeys.length > 0 &&
   adjKeys.every(k => ['dates', 'nights', 'passengers', 'budget', 'seatPreference', 'timePreference'].includes(k));
@@ -494,7 +497,9 @@ if (isDestinationSwitch) {
         text: "I had trouble putting that together. Could you tell me in a short line where you'd like to go and which city you're travelling from? For example: \"Nairobi to Zanzibar, 3 nights\".",
         packages: [],
         needsClarification: true,
-        tripParams: null,
+        tripParams: previousParams
+  ? { ...previousParams, _awaitingClarification: undefined, _awaitingHotelFollowUp: undefined }
+  : {},
         intent: null,
         conversationHistory,
         generatedAt: new Date().toISOString(),
@@ -1904,6 +1909,21 @@ if (isDestinationSwitch) {
     }
 
     if (marker?.type === 'destination') {
+      if (answer.split(/\s+/).length > 3) {
+        const fresh = await parsePrompt(prompt, previousParams);
+        fresh.agencyId = agencyId;
+        delete fresh._awaitingClarification;
+        if (fresh.destination) {
+          return this._continueOrchestration(fresh, agencyId, prompt, conversationHistory, sessionId, neutralIntent, channel, phone);
+        }
+        return this._buildClarificationResponse({
+          sessionId, prompt,
+          question: "Which city or country would you like to travel to?",
+          tripParams: previousParams, intent: neutralIntent, conversationHistory,
+          awaitingClarification: marker,
+        });
+      }
+
       const cleanedDest = answer.replace(/^(i'?d like to |i'?d love to |i'?m |i want to |i would like to )?(go to |travel to |visit |fly to |to )?/i, '').trim() || answer;
       const tripParams  = { ...previousParams };
       delete tripParams._awaitingClarification;
@@ -1971,6 +1991,24 @@ if (isDestinationSwitch) {
     }
 
     const cleanedAnswer  = answer.replace(/^(i'?ll be |i'?m |coming |departing |leaving )?(coming |departing |leaving )?from\s+/i, '').replace(/^(it'?s|i'?m|i am)\s+/i, '').trim();
+    if (marker?.type === 'single_origin' || marker?.type === 'overall_origin') {
+      const dx = parseDateExpression(answer);
+      if (dx || /\b\d{1,2}(?:st|nd|rd|th)?\b/.test(cleanedAnswer)) {
+        const kept = { ...previousParams };
+        delete kept._awaitingClarification;
+        if (dx) {
+          kept.departureDate = dx.departureDate;
+          if (dx.returnDate) kept.returnDate = dx.returnDate;
+        }
+        return this._buildClarificationResponse({
+          sessionId, prompt,
+          question: `Noted${dx ? ' the date' : ''}. Which city will you be departing from?`,
+          tripParams: kept, intent: neutralIntent, conversationHistory,
+          awaitingClarification: marker,
+        });
+      }
+    }
+    
     const resolvedOrigin = cleanedAnswer || answer;
     let tripParams = { ...previousParams };
     delete tripParams._awaitingClarification;
