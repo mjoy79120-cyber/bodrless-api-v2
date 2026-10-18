@@ -859,7 +859,7 @@ function initWidget() {
 
     var card = document.createElement('div'); card.className = 'name-form'; card.id = 'et-alert-card';
     var p = document.createElement('p');
-    p.innerText = (guestName ? guestName + ', want' : 'Want') + ' a heads-up if prices drop for ' + dest + '? Drop your email and I will keep watch. No need to book now.';
+    p.innerText = (guestName ? guestName + ', I' : 'I') + ' can keep an eye on ' + dest + ' for you — flights, hotels, prices dropping, seats and rooms filling up. Drop your email and I\'ll give you a nudge when something changes.';
     var emailIn = document.createElement('input');
     emailIn.className = 'name-input'; emailIn.type = 'email'; emailIn.placeholder = 'Your email'; emailIn.autocomplete = 'email';
     var err = document.createElement('div'); err.style.cssText = 'color:var(--et-red);font-size:11px;margin-bottom:8px;display:none;';
