@@ -2,14 +2,15 @@
  * SANDBOX TEST — full flight + hotel + transfer booking, real voucher
  * ─────────────────────────────────────────────────────────────
  * Fixes applied:
- *   1. HOTEL_CONFIRM_FAILED added to recoverable codes so we try
- *      multiple hotel candidates, not just the first
- *   2. Prompt simplified — no budget filter that was collapsing
- *      hotel results to 1 candidate in sandbox
- *   3. Multiple hotel pairings attempted across candidates
- *   4. WhatsApp phone number ID injected so voucher delivers
- *      to WA in addition to email
- *   5. clearanceBufferService stub added to silence warning
+ *   1. HOTEL_CONFIRM_FAILED triggers a fresh search before the next
+ *      hotel attempt — Duffel invalidates the whole offer_request once
+ *      any offer from it is booked/cancelled, so stale offer IDs from
+ *      the same search will always get offer_request_already_booked (422)
+ *   2. Fresh search retries capped at 3 to avoid infinite loops
+ *   3. No budget filter — keeps full hotel inventory in sandbox
+ *   4. WhatsApp delivery skipped (no WA_PHONE_NUMBER_ID needed)
+ *   5. 8-second tail wait so fire-and-forget voucher delivery resolves
+ *      before Node exits
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -20,15 +21,11 @@ const bookingService = require('./src/services/bookingService');
 const supabase = require('./src/utils/supabase');
 
 // ── TEST CONFIGURATION ────────────────────────────────────────
-const GUEST_PHONE  = '254716098296';
-const GUEST_EMAIL  = 'petermwasi32@gmail.com';
-const AGENCY_ID    = process.env.TEST_AGENCY_ID || 'bodrless';
-
-// Real Meta Phone Number ID for your WhatsApp Business account.
-// Find it in Meta Business Suite → WhatsApp → Phone Numbers.
-// Looks like: 123456789012345 (numeric, 15 digits)
-// If null the test still runs but WhatsApp voucher delivery will be skipped.
-const WA_PHONE_NUMBER_ID = process.env.TEST_WA_PHONE_NUMBER_ID || null;
+const GUEST_PHONE = '254716098296';
+const GUEST_EMAIL = 'petermwasi32@gmail.com';
+const AGENCY_ID   = process.env.TEST_AGENCY_ID || 'bodrless';
+const SEARCH_PROMPT = 'Flight and hotel from Nairobi to Mombasa on 21st August 2026, 1 adult, 3 nights';
+const MAX_FRESH_SEARCHES = 3;
 
 function line(label) {
   console.log('\n' + '═'.repeat(70));
@@ -39,39 +36,45 @@ function line(label) {
 async function resolveAgency() {
   const { data, error } = await supabase
     .from('agencies')
-    .select('id, name, whatsapp_phone_number_id, email')
+    .select('id, name, email, whatsapp_phone_number_id')
     .eq('id', AGENCY_ID)
     .maybeSingle();
 
   if (error) throw new Error(`Could not query agencies table: ${error.message}`);
   if (!data)  throw new Error(`No agency found with id "${AGENCY_ID}"`);
 
-  // Inject WA phone number ID for this test run if configured
-  // and the agency row doesn't already have one.
-  if (WA_PHONE_NUMBER_ID && !data.whatsapp_phone_number_id) {
-    console.log(`Patching agency row with WA_PHONE_NUMBER_ID: ${WA_PHONE_NUMBER_ID}`);
-    await supabase
-      .from('agencies')
-      .update({ whatsapp_phone_number_id: WA_PHONE_NUMBER_ID })
-      .eq('id', AGENCY_ID);
-    data.whatsapp_phone_number_id = WA_PHONE_NUMBER_ID;
-  }
-
   console.log('Resolved agency:', {
-    id:   data.id,
-    name: data.name,
-    whatsapp_phone_number_id: data.whatsapp_phone_number_id,
+    id:    data.id,
+    name:  data.name,
     email: data.email,
   });
 
   if (!data.whatsapp_phone_number_id) {
-    console.warn(
-      'WARNING: whatsapp_phone_number_id is null — WhatsApp voucher will be skipped.\n' +
-      'Set TEST_WA_PHONE_NUMBER_ID=<your Meta phone number ID> in .env to enable it.'
-    );
+    console.warn('WARNING: whatsapp_phone_number_id is null — WhatsApp voucher will be skipped.');
   }
 
   return data.id;
+}
+
+// Re-runs the search and returns a fresh candidate list.
+// Called after HOTEL_CONFIRM_FAILED because Duffel invalidates the
+// entire offer_request once any offer from it is booked or cancelled —
+// any subsequent hold attempt against the same offer IDs gets 422
+// offer_request_already_booked.
+async function freshCandidates(agencyId, attempt) {
+  console.log(`\n🔄 Fresh search #${attempt} — getting new Duffel offer IDs...`);
+  const searchResult = await orchestrationEngine.orchestrate(SEARCH_PROMPT, agencyId, {});
+  const packages = searchResult.packages || [];
+  console.log(`   Got ${packages.length} package(s) from fresh search.`);
+
+  if (packages.length === 0) return [];
+
+  const withBoth = packages.filter(p => p.transport && p.hotel);
+  return [
+    ...withBoth.filter(p => p.transport?.supplier === 'duffel'),
+    ...withBoth.filter(p => p.transport?.supplier !== 'duffel'),
+    ...packages.filter(p => p.transport && !p.hotel),
+  ];
 }
 
 async function main() {
@@ -80,11 +83,7 @@ async function main() {
   // ── STEP 1: SEARCH ────────────────────────────────────────────
   line('STEP 1: SEARCH — Nairobi to Mombasa, flight + hotel');
 
-  // No budget/property filter — keeps full hotel inventory in sandbox
-  // where thin inventory + budget filter = 1 candidate = 100% failure rate
-  const prompt = 'Flight and hotel from Nairobi to Mombasa on 21st August 2026, 1 adult, 3 nights';
-
-  const searchResult = await orchestrationEngine.orchestrate(prompt, agencyId, {});
+  const searchResult = await orchestrationEngine.orchestrate(SEARCH_PROMPT, agencyId, {});
   const packages = searchResult.packages || [];
   console.log(`\nGot ${packages.length} package(s). Response: "${searchResult.text?.slice(0, 120)}"`);
 
@@ -93,16 +92,13 @@ async function main() {
     process.exit(1);
   }
 
-  // Build a larger candidate pool — try different flight+hotel combos
-  // so a single HotelBeds sandbox 500 doesn't kill the whole test
-  const withBoth = packages.filter(p => p.transport && p.hotel);
+  const withBoth   = packages.filter(p => p.transport && p.hotel);
   const withFlight = packages.filter(p => p.transport && !p.hotel);
   const withHotel  = packages.filter(p => !p.transport && p.hotel);
 
   console.log(`  ${withBoth.length} with flight+hotel, ${withFlight.length} flight-only, ${withHotel.length} hotel-only`);
 
-  // Prefer Duffel + hotel combos, then TravelDuqa + hotel, then anything
-  const candidates = [
+  let candidates = [
     ...withBoth.filter(p => p.transport?.supplier === 'duffel'),
     ...withBoth.filter(p => p.transport?.supplier !== 'duffel'),
     ...withFlight,
@@ -112,8 +108,6 @@ async function main() {
     console.error('No bookable candidates found.');
     process.exit(1);
   }
-
-  console.log(`\nWill try up to ${candidates.length} candidate(s) in order.`);
 
   // ── STEP 2: BOOK ──────────────────────────────────────────────
   line('STEP 2: BOOK — hold flight, confirm hotel, build transfers');
@@ -128,22 +122,42 @@ async function main() {
     idNumber:    'A12345678',
   }];
 
-  // All codes that mean "this candidate failed but try the next one"
-  const RECOVERABLE_CODES = new Set([
+  // Codes where we try the next candidate
+  const RETRY_NEXT = new Set([
     'INSTANT_PAYMENT_NOT_SUPPORTED',
     'FLIGHT_HOLD_FAILED',
-    'HOTEL_CONFIRM_FAILED',   // ← NEW: HotelBeds sandbox 500 = try next hotel
     'RATE_RECHECK_FAILED',
     'NON_REFUNDABLE_RATE',
   ]);
 
-  let initResult   = null;
-  let chosenPackage = null;
+  let initResult    = null;
+  let freshSearchCount = 0;
+  let candidateIndex   = 0;
 
-  for (const candidate of candidates) {
-    console.log('\nTrying candidate:', {
+  while (!initResult) {
+    if (candidateIndex >= candidates.length) {
+      // Exhausted this candidate list — do a fresh search
+      if (freshSearchCount >= MAX_FRESH_SEARCHES) {
+        console.error(`\nExhausted ${MAX_FRESH_SEARCHES} fresh searches. All candidates failed.`);
+        process.exit(1);
+      }
+      freshSearchCount++;
+      candidates = await freshCandidates(agencyId, freshSearchCount);
+      candidateIndex = 0;
+
+      if (candidates.length === 0) {
+        console.error('\nFresh search returned no candidates.');
+        process.exit(1);
+      }
+    }
+
+    const candidate = candidates[candidateIndex];
+    candidateIndex++;
+
+    console.log(`\nTrying candidate ${candidateIndex} (fresh search #${freshSearchCount}):`, {
       flightSupplier: candidate.transport?.supplier || 'none',
       airline:        candidate.transport?.airline  || 'none',
+      offerId:        candidate.transport?.offerId  || 'none',
       hotel:          candidate.hotel?.name         || 'none',
       totalPrice:     candidate.summary?.totalPrice,
       currency:       candidate.summary?.currency,
@@ -161,25 +175,35 @@ async function main() {
     });
 
     if (result.success) {
-      initResult    = result;
-      chosenPackage = candidate;
+      initResult = result;
       console.log('✅ SUCCESS with this candidate.');
       break;
     }
 
     console.warn(`❌ Failed (${result.code}): ${result.error}`);
 
-    if (!RECOVERABLE_CODES.has(result.code)) {
+    if (result.code === 'HOTEL_CONFIRM_FAILED') {
+      // KEY FIX: Duffel invalidates the entire offer_request after a
+      // hold+cancel cycle. We must do a fresh search — not just move to
+      // the next candidate — because all remaining candidates share the
+      // same (now-invalidated) offer_request_id.
+      console.log('HOTEL_CONFIRM_FAILED — forcing fresh search to get new offer IDs before retrying.');
+      freshSearchCount++;
+      if (freshSearchCount > MAX_FRESH_SEARCHES) {
+        console.error(`Exceeded max fresh searches (${MAX_FRESH_SEARCHES}). Giving up.`);
+        process.exit(1);
+      }
+      candidates = await freshCandidates(agencyId, freshSearchCount);
+      candidateIndex = 0;
+      continue;
+    }
+
+    if (!RETRY_NEXT.has(result.code)) {
       console.error('Non-recoverable error — stopping.');
       process.exit(1);
     }
 
     console.log('Recoverable — trying next candidate...');
-  }
-
-  if (!initResult) {
-    console.error('\nEvery candidate failed. See warnings above.');
-    process.exit(1);
   }
 
   console.log('\nBooking init result:', {
@@ -231,27 +255,18 @@ async function main() {
     transfer_details_present:   !!finalBooking.transfer_details,
   });
 
-  // ── STEP 5: VOUCHER CHECK ─────────────────────────────────────
-  line('STEP 5: VOUCHER DELIVERY CHECK');
+  // ── STEP 5: VOUCHER WAIT ──────────────────────────────────────
+  line('STEP 5: WAITING FOR EMAIL VOUCHER DELIVERY');
 
-  const { data: agencyRow } = await supabase
-    .from('agencies')
-    .select('whatsapp_phone_number_id')
-    .eq('id', agencyId)
-    .single();
+  console.log(`📧 Email voucher firing to: ${GUEST_EMAIL}`);
+  console.log('Waiting 8 seconds for async voucher delivery to complete...');
 
-  if (agencyRow?.whatsapp_phone_number_id) {
-    console.log(`✅ WhatsApp voucher will be sent via phone number ID: ${agencyRow.whatsapp_phone_number_id}`);
-    console.log(`   Check WhatsApp: +${GUEST_PHONE}`);
-  } else {
-    console.log('⚠️  WhatsApp voucher skipped — no phone number ID configured.');
-    console.log('   Add TEST_WA_PHONE_NUMBER_ID=<Meta numeric ID> to .env to enable.');
-  }
-
-  console.log(`📧 Email voucher sent to: ${GUEST_EMAIL}`);
+  // confirmPayment fires _fetchAgencyAndFireVoucher as fire-and-forget.
+  // Without this wait the Node process exits before the Promise resolves.
+  await new Promise(resolve => setTimeout(resolve, 8000));
 
   line(`DONE — booking ref: ${bookingRef}`);
-  console.log('Check your email and WhatsApp for the voucher.');
+  console.log(`Check ${GUEST_EMAIL} for your voucher.`);
   console.log('Booking row NOT auto-deleted — clean up in Supabase manually if needed.');
 }
 

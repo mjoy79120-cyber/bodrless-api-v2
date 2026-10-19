@@ -7,6 +7,9 @@
  *  - in-flight dedupe: identical concurrent searches share one supplier call
  *  - RateHawk call budget (10 req/min upstream): fail fast instead of burning quota
  *  - failures are never cached
+ *  - bypassCache flag on flights() and hotels(): skips cache read AND write,
+ *    always calls suppliers live. Used by the booking retry loop after
+ *    HOTEL_CONFIRM_FAILED so stale offer IDs are never reused.
  */
 
 const fareCache  = require('./fareCache');
@@ -42,14 +45,25 @@ function _channel(params, sendWhatsApp) {
 // FLIGHT SEARCH
 // ─────────────────────────────────────────────
 async function flights(params, sendWhatsApp = null) {
-  const contentType = 'flight';
-  const channel     = _channel(params, sendWhatsApp);
+  const contentType   = 'flight';
+  const channel       = _channel(params, sendWhatsApp);
+  const bypassCache   = !!params.bypassCache;
 
   if (_isPast(params.departureDate)) {
     logger.warn('CachedSearch.flights: departure date is in the past — not calling suppliers', {
       route: `${params.origin}→${params.destination}`, date: params.departureDate,
     });
     return _buildReturn([], null, false, channel, { searchFailed: true, failureReason: 'past_date' });
+  }
+
+  // bypassCache: skip cache entirely, go live, and do NOT write back to cache.
+  // Used after HOTEL_CONFIRM_FAILED so stale Duffel offer IDs are never reused.
+  if (bypassCache) {
+    logger.info('CachedSearch.flights: bypassCache=true — live search only, no cache read or write', {
+      route: `${params.origin}→${params.destination}`,
+    });
+    const { allResults, searchFailed } = await _liveFlight(params, { skipCacheWrite: true });
+    return _buildReturn(allResults, null, false, channel, { searchFailed });
   }
 
   const cached = await fareCache.get(params, contentType);
@@ -98,9 +112,15 @@ async function flights(params, sendWhatsApp = null) {
   return _buildReturn(allResults, cached, false, channel, { searchFailed });
 }
 
-async function _liveFlight(params) {
+async function _liveFlight(params, opts = {}) {
+  const skipCacheWrite = !!opts.skipCacheWrite;
+
+  // When bypassCache is set we still use _shared deduplication within this
+  // process, but we append a nonce so each bypass call gets its own live hit
+  // rather than being folded into a cached in-flight request.
+  const nonce = skipCacheWrite ? `-bypass-${Date.now()}` : '';
   const key = ['flight', params.origin, params.destination, params.departureDate,
-    params.passengers || 1, params.children || 0, params.cabinClass || 'economy'].join('|').toLowerCase();
+    params.passengers || 1, params.children || 0, params.cabinClass || 'economy'].join('|').toLowerCase() + nonce;
 
   return _shared(key, async () => {
     const [duffelRes, travelduqaRes] = await Promise.allSettled([
@@ -115,9 +135,8 @@ async function _liveFlight(params) {
     const duquaFailed  = travelduqaRes.status === 'rejected' || travelduqaResults.searchFailed === true;
 
     const allResults = [...duffelResults, ...travelduqaResults];
-    const cacheRows  = _buildFlightCacheRows(duffelResults, travelduqaResults, params);
+    const cacheRows  = skipCacheWrite ? [] : _buildFlightCacheRows(duffelResults, travelduqaResults, params);
 
-    // "Failed" only when nobody gave us a clean answer. One supplier cleanly returning 0 = real empty.
     const searchFailed = allResults.length === 0 && duffelFailed && duquaFailed;
     if (searchFailed) {
       logger.warn('CachedSearch.flights: all suppliers failed (not caching, not treating as empty inventory)', {
@@ -135,6 +154,7 @@ async function _liveFlight(params) {
 async function hotels(params, sendWhatsApp = null) {
   const contentType = 'hotel';
   const channel     = _channel(params, sendWhatsApp);
+  const bypassCache = !!params.bypassCache;
 
   const checkIn = params.checkIn || params.departureDate;
   if (_isPast(checkIn)) {
@@ -151,6 +171,15 @@ async function hotels(params, sendWhatsApp = null) {
     passengers:    params.adults   || params.passengers || 1,
     origin:        params.destination,
   };
+
+  // bypassCache: skip cache entirely, go live, do NOT write back.
+  if (bypassCache) {
+    logger.info('CachedSearch.hotels: bypassCache=true — live search only, no cache read or write', {
+      destination: params.destination,
+    });
+    const { hotelResults, searchFailed } = await _liveHotel(params, cacheParams, contentType, { skipCacheWrite: true });
+    return _buildReturn(hotelResults, null, false, channel, { searchFailed });
+  }
 
   const cached = await fareCache.get(cacheParams, contentType);
 
@@ -189,9 +218,11 @@ async function hotels(params, sendWhatsApp = null) {
   return _buildReturn(hotelResults, cached, false, channel, { searchFailed });
 }
 
-async function _liveHotel(params, cacheParams, contentType) {
+async function _liveHotel(params, cacheParams, contentType, opts = {}) {
+  const skipCacheWrite = !!opts.skipCacheWrite;
+  const nonce = skipCacheWrite ? `-bypass-${Date.now()}` : '';
   const key = ['hotel', params.destination, params.checkIn || params.departureDate, params.checkOut || params.returnDate,
-    params.adults || params.passengers || 1, params.children || 0, params.rooms || 1].join('|').toLowerCase();
+    params.adults || params.passengers || 1, params.children || 0, params.rooms || 1].join('|').toLowerCase() + nonce;
 
   return _shared(key, async () => {
     const rhAllowed = rateHawkBudget.tryAcquire();
@@ -222,7 +253,7 @@ async function _liveHotel(params, cacheParams, contentType) {
       topResult: hotelResults[0] ? `${hotelResults[0].name} [${hotelResults[0].supplier}]` : 'none',
     });
 
-    if (hotelResults.length > 0) {
+    if (!skipCacheWrite && hotelResults.length > 0) {
       const best = hotelResults[0];
       await fareCache.set(cacheParams, contentType, [{
         supplier: best.supplier,
@@ -362,14 +393,14 @@ function _pickBest(results) {
 function _buildReturn(results, cached, fromCache, channel = 'whatsapp', extra = {}) {
   const base = {
     results,
-    best:         _pickBest(results),
+    best:          _pickBest(results),
     fromCache,
-    cacheAge:     cached?.ageMinutes   || null,
-    isStale:      cached?.isStale      || false,
-    needsRefresh: cached?.needsRefresh || false,
-    suppliers:    cached?.suppliers    || [],
-    searchFailed: !!extra.searchFailed,
-    failureReason: extra.failureReason || null,
+    cacheAge:      cached?.ageMinutes   || null,
+    isStale:       cached?.isStale      || false,
+    needsRefresh:  cached?.needsRefresh || false,
+    suppliers:     cached?.suppliers    || [],
+    searchFailed:  !!extra.searchFailed,
+    failureReason: extra.failureReason  || null,
   };
   if (channel === 'widget') {
     base.widget = {
