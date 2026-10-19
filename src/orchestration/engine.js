@@ -474,6 +474,7 @@ if (isDestinationSwitch) {
 
       tripParams._channel      = context.channel || 'widget';
       tripParams._sendWhatsApp = context.sendWhatsApp || null;
+      tripParams.bypassCache   = !!context.bypassCache;
 
       return await this._continueOrchestration(tripParams, agencyId, prompt, conversationHistory, sessionId, intent, context.channel, context.phone);
 
@@ -2909,8 +2910,8 @@ if (isDestinationSwitch) {
         ? tripParams._sendWhatsApp
         : null;
 
-            const cacheResult = await cachedSearch.flights(flightParams, sendFn);
-      failed = !!cacheResult.searchFailed;
+      const cacheResult = await cachedSearch.flights({ ...flightParams, bypassCache: !!tripParams.bypassCache }, sendFn);
+        failed = !!cacheResult.searchFailed;
       const liveFlights = cacheResult.results || [];
 
       logger.info(`CachedSearch flights (${leg})`, {
@@ -3143,7 +3144,7 @@ if (failed) results.searchFailed = true;
         ? tripParams._sendWhatsApp
         : null;
 
-      const cacheResult = await cachedSearch.hotels(hotelParams, sendFn);
+            const cacheResult = await cachedSearch.hotels({ ...hotelParams, bypassCache: !!tripParams.bypassCache }, sendFn);
       const liveHotels  = cacheResult.results || [];
 
       logger.info('CachedSearch hotels', {

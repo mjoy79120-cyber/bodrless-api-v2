@@ -2,14 +2,12 @@
  * SANDBOX TEST — full flight + hotel + transfer booking, real voucher
  * ─────────────────────────────────────────────────────────────
  * Fixes applied:
- *   1. HOTEL_CONFIRM_FAILED triggers a fresh search before the next
- *      hotel attempt — Duffel invalidates the whole offer_request once
- *      any offer from it is booked/cancelled, so stale offer IDs from
- *      the same search will always get offer_request_already_booked (422)
- *   2. Fresh search retries capped at 3 to avoid infinite loops
- *   3. No budget filter — keeps full hotel inventory in sandbox
- *   4. WhatsApp delivery skipped (no WA_PHONE_NUMBER_ID needed)
- *   5. 8-second tail wait so fire-and-forget voucher delivery resolves
+ *   1. freshCandidates() passes bypassCache:true to orchestrate so
+ *      cachedSearch goes live and gets brand-new Duffel offer IDs
+ *      rather than serving the same invalidated offer_request from cache
+ *   2. Failed hotel rateKeys tracked across attempts — filtered out
+ *      before the next try so the same 500ing hotel is never retried
+ *   3. 8-second tail wait so fire-and-forget voucher delivery resolves
  *      before Node exits
  * ─────────────────────────────────────────────────────────────
  */
@@ -21,11 +19,11 @@ const bookingService = require('./src/services/bookingService');
 const supabase = require('./src/utils/supabase');
 
 // ── TEST CONFIGURATION ────────────────────────────────────────
-const GUEST_PHONE = '254716098296';
-const GUEST_EMAIL = 'petermwasi32@gmail.com';
-const AGENCY_ID   = process.env.TEST_AGENCY_ID || 'bodrless';
-const SEARCH_PROMPT = 'Flight and hotel from Nairobi to Mombasa on 21st August 2026, 1 adult, 3 nights';
-const MAX_FRESH_SEARCHES = 3;
+const GUEST_PHONE    = '254716098296';
+const GUEST_EMAIL    = 'petermwasi32@gmail.com';
+const AGENCY_ID      = process.env.TEST_AGENCY_ID || 'bodrless';
+const SEARCH_PROMPT  = 'Flight and hotel from Nairobi to Mombasa on 21st August 2026, 1 adult, 3 nights';
+const MAX_FRESH_SEARCHES = 4;
 
 function line(label) {
   console.log('\n' + '═'.repeat(70));
@@ -43,11 +41,7 @@ async function resolveAgency() {
   if (error) throw new Error(`Could not query agencies table: ${error.message}`);
   if (!data)  throw new Error(`No agency found with id "${AGENCY_ID}"`);
 
-  console.log('Resolved agency:', {
-    id:    data.id,
-    name:  data.name,
-    email: data.email,
-  });
+  console.log('Resolved agency:', { id: data.id, name: data.name, email: data.email });
 
   if (!data.whatsapp_phone_number_id) {
     console.warn('WARNING: whatsapp_phone_number_id is null — WhatsApp voucher will be skipped.');
@@ -56,16 +50,33 @@ async function resolveAgency() {
   return data.id;
 }
 
-// Re-runs the search and returns a fresh candidate list.
-// Called after HOTEL_CONFIRM_FAILED because Duffel invalidates the
-// entire offer_request once any offer from it is booked or cancelled —
-// any subsequent hold attempt against the same offer IDs gets 422
-// offer_request_already_booked.
-async function freshCandidates(agencyId, attempt) {
-  console.log(`\n🔄 Fresh search #${attempt} — getting new Duffel offer IDs...`);
-  const searchResult = await orchestrationEngine.orchestrate(SEARCH_PROMPT, agencyId, {});
-  const packages = searchResult.packages || [];
-  console.log(`   Got ${packages.length} package(s) from fresh search.`);
+// Does a fresh live search (bypasses fareCache entirely) and returns
+// a ranked candidate list with any known-bad hotel rateKeys removed.
+async function freshCandidates(agencyId, attempt, failedRateKeys) {
+  console.log(`\n🔄 Fresh search #${attempt} — live call to suppliers (cache bypassed)...`);
+
+  // bypassCache is passed through orchestrate → _runSingleDestinationSearch
+  // → cachedSearch.flights/hotels, which skip cache read and write entirely.
+  const searchResult = await orchestrationEngine.orchestrate(
+    SEARCH_PROMPT,
+    agencyId,
+    { bypassCache: true }
+  );
+
+  let packages = searchResult.packages || [];
+  console.log(`   Got ${packages.length} package(s) from live search.`);
+
+  // Filter out hotels whose rateKey has already 500'd
+  if (failedRateKeys.size > 0) {
+    const before = packages.length;
+    packages = packages.filter(p => {
+      const rk = p.hotel?.rateKey;
+      return !rk || !failedRateKeys.has(rk);
+    });
+    if (packages.length < before) {
+      console.log(`   Filtered out ${before - packages.length} package(s) with known-bad hotel rateKeys.`);
+    }
+  }
 
   if (packages.length === 0) return [];
 
@@ -80,7 +91,7 @@ async function freshCandidates(agencyId, attempt) {
 async function main() {
   const agencyId = await resolveAgency();
 
-  // ── STEP 1: SEARCH ────────────────────────────────────────────
+  // ── STEP 1: INITIAL SEARCH ────────────────────────────────────
   line('STEP 1: SEARCH — Nairobi to Mombasa, flight + hotel');
 
   const searchResult = await orchestrationEngine.orchestrate(SEARCH_PROMPT, agencyId, {});
@@ -95,7 +106,6 @@ async function main() {
   const withBoth   = packages.filter(p => p.transport && p.hotel);
   const withFlight = packages.filter(p => p.transport && !p.hotel);
   const withHotel  = packages.filter(p => !p.transport && p.hotel);
-
   console.log(`  ${withBoth.length} with flight+hotel, ${withFlight.length} flight-only, ${withHotel.length} hotel-only`);
 
   let candidates = [
@@ -122,31 +132,31 @@ async function main() {
     idNumber:    'A12345678',
   }];
 
-  // Codes where we try the next candidate
-  const RETRY_NEXT = new Set([
+  const RETRY_NEXT_ONLY = new Set([
     'INSTANT_PAYMENT_NOT_SUPPORTED',
     'FLIGHT_HOLD_FAILED',
+    'OFFER_EXPIRED',
     'RATE_RECHECK_FAILED',
     'NON_REFUNDABLE_RATE',
   ]);
 
-  let initResult    = null;
-  let freshSearchCount = 0;
-  let candidateIndex   = 0;
+  const failedRateKeys  = new Set();
+  let initResult        = null;
+  let freshSearchCount  = 0;
+  let candidateIndex    = 0;
 
   while (!initResult) {
     if (candidateIndex >= candidates.length) {
-      // Exhausted this candidate list — do a fresh search
       if (freshSearchCount >= MAX_FRESH_SEARCHES) {
         console.error(`\nExhausted ${MAX_FRESH_SEARCHES} fresh searches. All candidates failed.`);
         process.exit(1);
       }
       freshSearchCount++;
-      candidates = await freshCandidates(agencyId, freshSearchCount);
+      candidates = await freshCandidates(agencyId, freshSearchCount, failedRateKeys);
       candidateIndex = 0;
 
       if (candidates.length === 0) {
-        console.error('\nFresh search returned no candidates.');
+        console.error('\nNo candidates remain after filtering known-bad hotels.');
         process.exit(1);
       }
     }
@@ -154,11 +164,12 @@ async function main() {
     const candidate = candidates[candidateIndex];
     candidateIndex++;
 
-    console.log(`\nTrying candidate ${candidateIndex} (fresh search #${freshSearchCount}):`, {
+    console.log(`\nTrying candidate ${candidateIndex} (after ${freshSearchCount} fresh search(es)):`, {
       flightSupplier: candidate.transport?.supplier || 'none',
       airline:        candidate.transport?.airline  || 'none',
       offerId:        candidate.transport?.offerId  || 'none',
       hotel:          candidate.hotel?.name         || 'none',
+      rateKey:        candidate.hotel?.rateKey?.slice(0, 40) || 'none',
       totalPrice:     candidate.summary?.totalPrice,
       currency:       candidate.summary?.currency,
     });
@@ -183,27 +194,34 @@ async function main() {
     console.warn(`❌ Failed (${result.code}): ${result.error}`);
 
     if (result.code === 'HOTEL_CONFIRM_FAILED') {
-      // KEY FIX: Duffel invalidates the entire offer_request after a
-      // hold+cancel cycle. We must do a fresh search — not just move to
-      // the next candidate — because all remaining candidates share the
-      // same (now-invalidated) offer_request_id.
-      console.log('HOTEL_CONFIRM_FAILED — forcing fresh search to get new offer IDs before retrying.');
+      const badRateKey = candidate.hotel?.rateKey;
+      if (badRateKey) {
+        failedRateKeys.add(badRateKey);
+        console.log(`   Blacklisted rateKey: ${badRateKey.slice(0, 40)}...`);
+      }
+
+      console.log('   Forcing fresh live search to get new Duffel offer IDs...');
       freshSearchCount++;
       if (freshSearchCount > MAX_FRESH_SEARCHES) {
         console.error(`Exceeded max fresh searches (${MAX_FRESH_SEARCHES}). Giving up.`);
         process.exit(1);
       }
-      candidates = await freshCandidates(agencyId, freshSearchCount);
+      candidates = await freshCandidates(agencyId, freshSearchCount, failedRateKeys);
       candidateIndex = 0;
+
+      if (candidates.length === 0) {
+        console.error('\nNo candidates remain after filtering known-bad hotels.');
+        process.exit(1);
+      }
       continue;
     }
 
-    if (!RETRY_NEXT.has(result.code)) {
+    if (!RETRY_NEXT_ONLY.has(result.code)) {
       console.error('Non-recoverable error — stopping.');
       process.exit(1);
     }
 
-    console.log('Recoverable — trying next candidate...');
+    console.log('Recoverable — trying next candidate in current batch...');
   }
 
   console.log('\nBooking init result:', {
@@ -261,8 +279,6 @@ async function main() {
   console.log(`📧 Email voucher firing to: ${GUEST_EMAIL}`);
   console.log('Waiting 8 seconds for async voucher delivery to complete...');
 
-  // confirmPayment fires _fetchAgencyAndFireVoucher as fire-and-forget.
-  // Without this wait the Node process exits before the Promise resolves.
   await new Promise(resolve => setTimeout(resolve, 8000));
 
   line(`DONE — booking ref: ${bookingRef}`);
