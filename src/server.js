@@ -126,28 +126,35 @@ async function serveHotelLanding(req, res) {
   let group      = null;
   let properties = [];
 
-  try {
-    const { data: g } = await supabase
-      .from('hotel_groups')
-      .select('id, name, slug, logo_url, primary_color')
-      .eq('slug', hotelSlug)
-      .eq('is_active', true)
-      .maybeSingle();
-    group = g;
-
-    if (group) {
-      const { data: props } = await supabase
-        .from('hotel_properties')
-        .select('id, name, destination, location, stars, images, description')
-        .eq('group_id', group.id)
+    for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const { data: g, error: gErr } = await supabase
+        .from('hotel_groups')
+        .select('id, name, slug, logo_url, primary_color')
+        .eq('slug', hotelSlug)
         .eq('is_active', true)
-        .order('sort_order');
-      properties = props || [];
-    }
-  } catch (err) {
-    logger.warn('Hotel landing: Supabase fetch failed', { hotelSlug, error: err.message });
-  }
+        .maybeSingle();
 
+      if (gErr) throw gErr;
+      group = g;
+
+      if (group) {
+        const { data: props } = await supabase
+          .from('hotel_properties')
+          .select('id, name, destination, location, stars, images, description')
+          .eq('group_id', group.id)
+          .eq('is_active', true)
+          .order('sort_order');
+        properties = props || [];
+      }
+      break;
+
+    } catch (err) {
+      logger.warn(`Hotel landing: Supabase fetch failed (attempt ${attempt}/3)`, { hotelSlug, error: err.message });
+      if (attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt));
+    }
+  }
+  
   if (!group) {
     return res.status(404).send(`<!DOCTYPE html><html><body style="font-family:'Inter',sans-serif;padding:60px;color:#114B43;">
       <h2>Hotel group "${hotelSlug}" not found.</h2>
