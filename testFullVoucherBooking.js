@@ -5,9 +5,12 @@
  *   1. freshCandidates() passes bypassCache:true to orchestrate so
  *      cachedSearch goes live and gets brand-new Duffel offer IDs
  *      rather than serving the same invalidated offer_request from cache
- *   2. Failed hotel rateKeys tracked across attempts — filtered out
+ *   2. Failed hotel names tracked across attempts — filtered out
  *      before the next try so the same 500ing hotel is never retried
- *   3. 8-second tail wait so fire-and-forget voucher delivery resolves
+ *      (hotel name is stable across searches; rateKey is not)
+ *   3. HOTEL_CONFIRM_FAILED forces a fresh search because the offer_request
+ *      is invalidated the moment any offer from it is used in a hold attempt
+ *   4. 8-second tail wait so fire-and-forget voucher delivery resolves
  *      before Node exits
  * ─────────────────────────────────────────────────────────────
  */
@@ -51,8 +54,8 @@ async function resolveAgency() {
 }
 
 // Does a fresh live search (bypasses fareCache entirely) and returns
-// a ranked candidate list with any known-bad hotel rateKeys removed.
-async function freshCandidates(agencyId, attempt, failedRateKeys) {
+// a ranked candidate list with any known-bad hotel names removed.
+async function freshCandidates(agencyId, attempt, failedHotelNames) {
   console.log(`\n🔄 Fresh search #${attempt} — live call to suppliers (cache bypassed)...`);
 
   // bypassCache is passed through orchestrate → _runSingleDestinationSearch
@@ -66,15 +69,18 @@ async function freshCandidates(agencyId, attempt, failedRateKeys) {
   let packages = searchResult.packages || [];
   console.log(`   Got ${packages.length} package(s) from live search.`);
 
-  // Filter out hotels whose rateKey has already 500'd
-  if (failedRateKeys.size > 0) {
+  // Filter out hotels whose name has already 500'd
+  if (failedHotelNames.size > 0) {
+    console.log('   failedHotelNames:', [...failedHotelNames]);
     const before = packages.length;
     packages = packages.filter(p => {
-      const rk = p.hotel?.rateKey;
-      return !rk || !failedRateKeys.has(rk);
+      const name = p.hotel?.name;
+      return !name || !failedHotelNames.has(name);
     });
     if (packages.length < before) {
-      console.log(`   Filtered out ${before - packages.length} package(s) with known-bad hotel rateKeys.`);
+      console.log(`   Filtered out ${before - packages.length} package(s) with known-bad hotels.`);
+    } else {
+      console.log('   WARNING: hotel name filter matched nothing');
     }
   }
 
@@ -140,10 +146,10 @@ async function main() {
     'NON_REFUNDABLE_RATE',
   ]);
 
-  const failedRateKeys  = new Set();
-  let initResult        = null;
-  let freshSearchCount  = 0;
-  let candidateIndex    = 0;
+  const failedHotelNames = new Set();
+  let initResult         = null;
+  let freshSearchCount   = 0;
+  let candidateIndex     = 0;
 
   while (!initResult) {
     if (candidateIndex >= candidates.length) {
@@ -152,7 +158,7 @@ async function main() {
         process.exit(1);
       }
       freshSearchCount++;
-      candidates = await freshCandidates(agencyId, freshSearchCount, failedRateKeys);
+      candidates = await freshCandidates(agencyId, freshSearchCount, failedHotelNames);
       candidateIndex = 0;
 
       if (candidates.length === 0) {
@@ -194,21 +200,19 @@ async function main() {
     console.warn(`❌ Failed (${result.code}): ${result.error}`);
 
     if (result.code === 'HOTEL_CONFIRM_FAILED') {
-      const badRateKey = candidate.hotel?.rateKey;
-      if (badRateKey) {
-        failedRateKeys.add(badRateKey);
-        console.log(`   Blacklisted rateKey: ${badRateKey.slice(0, 40)}...`);
+      const badName = candidate.hotel?.name;
+      if (badName) {
+        failedHotelNames.add(badName);
+        console.log(`   Blacklisted hotel: ${badName}`);
       }
-
-      console.log('   Forcing fresh live search to get new Duffel offer IDs...');
+      console.log('   Forcing fresh search (offer_request is now invalid)...');
       freshSearchCount++;
       if (freshSearchCount > MAX_FRESH_SEARCHES) {
         console.error(`Exceeded max fresh searches (${MAX_FRESH_SEARCHES}). Giving up.`);
         process.exit(1);
       }
-      candidates = await freshCandidates(agencyId, freshSearchCount, failedRateKeys);
+      candidates = await freshCandidates(agencyId, freshSearchCount, failedHotelNames);
       candidateIndex = 0;
-
       if (candidates.length === 0) {
         console.error('\nNo candidates remain after filtering known-bad hotels.');
         process.exit(1);
