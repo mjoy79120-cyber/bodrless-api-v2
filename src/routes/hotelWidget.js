@@ -389,6 +389,23 @@ function initHotelWidget(){
   var conversationHistory = [];
   var previousParams      = null;
 
+  // ── PATCH 1: Persistent visitor token ─────────────────────────────────
+  var visitorToken = '';
+  try {
+    visitorToken = localStorage.getItem('bodrless_hotel_visitor_' + groupSlug) || '';
+    if (!visitorToken) {
+      visitorToken = 'hv_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem('bodrless_hotel_visitor_' + groupSlug, visitorToken);
+    }
+  } catch(e) { visitorToken = 'hv_anon_' + Date.now(); }
+
+  // ── PATCH 2: Live chat state vars ──────────────────────────────────────
+  var _hotelLiveChatEnabled   = false;
+  var _hotelLiveChatShown     = false;
+  var _hotelInLiveChat        = false;
+  var _hotelLiveChatThreadId  = null;
+  var _hotelLiveChatPollIv    = null;
+
   var MEAL_LABELS = {
     room_only:'Room only',bed_and_breakfast:'Bed & breakfast',
     half_board:'Half board',full_board:'Full board',all_inclusive:'All inclusive',
@@ -754,6 +771,22 @@ function initHotelWidget(){
   // ── Send ──────────────────────────────────────────────────────────────────
   function send(){
     var text = input.value.trim(); if(!text) return;
+
+    // If in live chat mode, route message to agent thread instead
+    if (_hotelInLiveChat && _hotelLiveChatThreadId) {
+      addMsg(text, 'user'); input.value = '';
+      fetch(apiBase + '/api/widget/chat/send', {
+        method:  'POST',
+        headers: {
+          'Content-Type':    'application/json',
+          'x-visitor-token': visitorToken || '',
+          'x-api-key':       groupSlug,
+        },
+        body: JSON.stringify({ threadId: _hotelLiveChatThreadId, text: text }),
+      }).catch(function() {});
+      return;
+    }
+
     addMsg(text,'user'); input.value=''; showTyping();
 
     fetch(apiBase+'/api/hotel/orchestrate',{
@@ -779,6 +812,285 @@ function initHotelWidget(){
       addMsg(data.text||"Here's what we have available:",'bot');
       pkgs.forEach(function(p,i){ addRoomCard(p, i); });
       msgs.scrollTop = msgs.scrollHeight;
+
+      // ── PATCH: Save wish automatically (no opt-in needed for tracking) ──
+      if (previousParams && previousParams.propertyId) {
+        fetch(apiBase + '/api/hotel/wishes/save', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'x-hotel-key': groupSlug },
+          body: JSON.stringify({
+            sessionKey:    visitorToken || ('anon_' + Date.now()),
+            propertyId:    previousParams.propertyId,
+            propertyName:  previousParams.propertyName,
+            checkIn:       previousParams.departureDate,
+            checkOut:      previousParams.returnDate,
+            nights:        previousParams.nights,
+            adults:        previousParams.adults || 1,
+            children:      previousParams.children || 0,
+            preferences:   previousParams.preferences || [],
+            lastPriceSeen: (data.packages && data.packages[0]
+              ? (data.packages[0].hotel?.pricePerNight || data.packages[0].summary?.totalPrice)
+              : null),
+            currency: (data.packages && data.packages[0]
+              ? (data.packages[0].hotel?.currency || 'KES')
+              : 'KES'),
+          }),
+        }).catch(function() {});
+      }
+
+      // ── PATCH: Show email opt-in after a short delay ───────────────────
+      var _HOTEL_ALERTS_KEY = 'bodrless_hotel_alerts_' + groupSlug;
+      var _hotelAlertsDeclined = (function() {
+        try {
+          var t = parseInt(localStorage.getItem(_HOTEL_ALERTS_KEY) || '0', 10);
+          return !!t && (Date.now() - t) < 14 * 24 * 60 * 60 * 1000;
+        } catch(e) { return false; }
+      })();
+
+      if (!_hotelAlertsDeclined && !document.getElementById('bd-hotel-alert-card')) {
+        setTimeout(function() {
+          var prop = previousParams && previousParams.propertyName
+            ? previousParams.propertyName
+            : 'this property';
+          var checkIn = previousParams && previousParams.departureDate
+            ? previousParams.departureDate
+            : null;
+
+          var card = document.createElement('div');
+          card.id  = 'bd-hotel-alert-card';
+          card.style.cssText = [
+            'background:#fff',
+            'border:1.5px solid #E6E0D6',
+            'border-radius:14px',
+            'padding:16px',
+            'margin-top:6px',
+          ].join(';');
+
+          var p = document.createElement('p');
+          p.style.cssText = 'font-size:12px;color:#1C2B4A;margin:0 0 12px;line-height:1.6;';
+          p.innerText = 'I can keep an eye on ' + prop + ' for you'
+            + (checkIn ? ' for ' + checkIn : '')
+            + ' \u2014 rooms filling up, rate drops, promos. Drop your email and I will nudge you if anything changes.';
+
+          var emailIn = document.createElement('input');
+          emailIn.type        = 'email';
+          emailIn.placeholder = 'Your email';
+          emailIn.style.cssText = [
+            'width:100%',
+            'padding:9px 12px',
+            'border:1.5px solid #E6E0D6',
+            'border-radius:8px',
+            'font-size:12px',
+            'margin-bottom:9px',
+            'box-sizing:border-box',
+            'outline:none',
+            'background:#F8F6F2',
+          ].join(';');
+
+          var nameIn = document.createElement('input');
+          nameIn.type        = 'text';
+          nameIn.placeholder = 'Your name (optional)';
+          nameIn.style.cssText = emailIn.style.cssText;
+
+          var errEl = document.createElement('div');
+          errEl.style.cssText = 'color:#A03030;font-size:11px;margin-bottom:6px;display:none;';
+
+          var go = document.createElement('button');
+          go.innerText = 'Alert me';
+          go.style.cssText = [
+            'background:#1C2B4A',
+            'color:white',
+            'border:none',
+            'padding:10px 18px',
+            'border-radius:20px',
+            'cursor:pointer',
+            'font-size:12px',
+            'font-weight:700',
+            'width:100%',
+            'margin-bottom:6px',
+          ].join(';');
+
+          var no = document.createElement('button');
+          no.innerText = 'No thanks';
+          no.style.cssText = [
+            'background:none',
+            'border:none',
+            'cursor:pointer',
+            'font-size:11px',
+            'color:#8C8279',
+            'width:100%',
+            'padding:4px',
+          ].join(';');
+
+          go.onclick = function() {
+            var email = emailIn.value.trim();
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+              errEl.innerText = 'Please enter a valid email.';
+              errEl.style.display = 'block';
+              return;
+            }
+            errEl.style.display = 'none';
+            go.innerText = 'Saving\u2026'; go.disabled = true;
+
+            fetch(apiBase + '/api/hotel/wishes/optin', {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json', 'x-hotel-key': groupSlug },
+              body: JSON.stringify({
+                sessionKey:   visitorToken || ('anon_' + Date.now()),
+                email:        email,
+                guestName:    nameIn.value.trim() || null,
+                propertyId:   previousParams && previousParams.propertyId,
+                propertyName: previousParams && previousParams.propertyName,
+                checkIn:      previousParams && previousParams.departureDate,
+                checkOut:     previousParams && previousParams.returnDate,
+                nights:       previousParams && previousParams.nights,
+                adults:       previousParams && previousParams.adults || 1,
+              }),
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              card.remove();
+              addMsg('Done \u2014 I will email you if rooms start filling up or prices change.', 'bot');
+            })
+            .catch(function() {
+              errEl.innerText = 'Could not save. Try again later.';
+              errEl.style.display = 'block';
+              go.innerText = 'Alert me'; go.disabled = false;
+            });
+          };
+
+          no.onclick = function() {
+            try { localStorage.setItem(_HOTEL_ALERTS_KEY, String(Date.now())); } catch(e) {}
+            card.remove();
+          };
+
+          card.appendChild(p);
+          card.appendChild(nameIn);
+          card.appendChild(emailIn);
+          card.appendChild(errEl);
+          card.appendChild(go);
+          card.appendChild(no);
+          msgs.appendChild(card);
+          msgs.scrollTop = msgs.scrollHeight;
+        }, 2000);
+      }
+
+      // ── PATCH: Live chat offer after results ───────────────────────────
+      fetch(apiBase + '/api/widget/chat/config', {
+        headers: { 'x-hotel-key': groupSlug },
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        _hotelLiveChatEnabled = !!(d && d.liveChatEnabled);
+
+        if (_hotelLiveChatEnabled && !_hotelLiveChatShown && !_hotelInLiveChat) {
+          _hotelLiveChatShown = true;
+          setTimeout(function() {
+            var wrap = document.createElement('div');
+            wrap.id  = 'bd-hotel-live-chat-offer';
+            wrap.style.cssText = 'text-align:center;padding:4px 0 10px;font-size:11px;color:#8C8279;';
+            wrap.innerHTML = 'Need help choosing? '
+              + '<button id="bd-hotel-talk-btn" style="background:none;border:none;color:#1C2B4A;'
+              + 'font-size:11px;font-weight:700;cursor:pointer;text-decoration:underline;padding:0;">'
+              + 'Talk to the team</button>';
+            msgs.appendChild(wrap);
+            msgs.scrollTop = msgs.scrollHeight;
+
+            document.getElementById('bd-hotel-talk-btn').onclick = function() {
+              var offer = document.getElementById('bd-hotel-live-chat-offer');
+              if (offer) offer.remove();
+              showTyping();
+              fetch(apiBase + '/api/widget/chat/start', {
+                method:  'POST',
+                headers: {
+                  'Content-Type':    'application/json',
+                  'x-visitor-token': visitorToken || '',
+                  'x-api-key':       groupSlug,
+                },
+                body: JSON.stringify({
+                  botHistory:   conversationHistory,
+                  tripParams:   previousParams,
+                  lastPackages: [],
+                }),
+              })
+              .then(function(r) { return r.json(); })
+              .then(function(d) {
+                hideTyping();
+                if (!d.success) { addMsg("Can't connect right now \u2014 try again shortly.", 'bot'); return; }
+                _hotelLiveChatThreadId = d.threadId;
+                _hotelInLiveChat       = true;
+                input.placeholder      = 'Message the team\u2026';
+                var sys = document.createElement('div'); sys.className = 'bd-msg bd-bot';
+                sys.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
+                sys.innerText = '\u2014 You are now chatting with the team. We will reply shortly. \u2014';
+                msgs.appendChild(sys);
+
+                // Back button
+                var bar = document.createElement('div'); bar.id = 'bd-hotel-back-bar';
+                bar.style.cssText = 'text-align:center;padding:6px;border-top:1px solid #E6E0D6;background:#fff;flex-shrink:0;';
+                var backBtn = document.createElement('button');
+                backBtn.style.cssText = 'background:none;border:none;color:#8C8279;font-size:11px;cursor:pointer;text-decoration:underline;';
+                backBtn.innerText = '\u2190 Back to assistant';
+                backBtn.onclick = function() {
+                  if (_hotelLiveChatPollIv) clearInterval(_hotelLiveChatPollIv);
+                  var b = document.getElementById('bd-hotel-back-bar'); if (b) b.remove();
+                  _hotelInLiveChat   = false;
+                  input.placeholder  = 'Ask about availability, dates, upgrades\u2026';
+                  if (_hotelLiveChatThreadId) {
+                    fetch(apiBase + '/api/widget/chat/back', {
+                      method:  'POST',
+                      headers: {
+                        'Content-Type':    'application/json',
+                        'x-visitor-token': visitorToken || '',
+                        'x-api-key':       groupSlug,
+                      },
+                      body: JSON.stringify({ threadId: _hotelLiveChatThreadId }),
+                    }).catch(function() {});
+                    _hotelLiveChatThreadId = null;
+                  }
+                  var s2 = document.createElement('div'); s2.className = 'bd-msg bd-bot';
+                  s2.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
+                  s2.innerText = '\u2014 Back with the assistant \u2014';
+                  msgs.appendChild(s2); msgs.scrollTop = msgs.scrollHeight;
+                };
+                bar.appendChild(backBtn);
+                chat.insertBefore(bar, inputArea);
+
+                // Poll for agent replies
+                var lastId = null;
+                _hotelLiveChatPollIv = setInterval(function() {
+                  if (!_hotelLiveChatThreadId || !_hotelInLiveChat) { clearInterval(_hotelLiveChatPollIv); return; }
+                  fetch(apiBase + '/api/widget/chat/poll?threadId=' + _hotelLiveChatThreadId + (lastId ? '&after=' + lastId : ''), {
+                    headers: { 'x-visitor-token': visitorToken || '', 'x-api-key': groupSlug },
+                  })
+                  .then(function(r) { return r.json(); })
+                  .then(function(pd) {
+                    if (pd.status === 'closed') {
+                      clearInterval(_hotelLiveChatPollIv); _hotelInLiveChat = false;
+                      var bb = document.getElementById('bd-hotel-back-bar'); if (bb) bb.remove();
+                      input.placeholder = 'Ask about availability, dates, upgrades\u2026';
+                    }
+                    (pd.messages || []).forEach(function(msg) {
+                      if (msg.sender !== 'agent' && msg.sender !== 'system') return;
+                      var div = document.createElement('div'); div.className = 'bd-msg bd-bot';
+                      if (msg.sender === 'system') div.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
+                      div.innerText = msg.text || msg.body || '';
+                      msgs.appendChild(div); msgs.scrollTop = msgs.scrollHeight;
+                      lastId = msg.id;
+                    });
+                  })
+                  .catch(function() {});
+                }, 5000);
+                msgs.scrollTop = msgs.scrollHeight;
+              })
+              .catch(function() { hideTyping(); addMsg("Can't connect right now.", 'bot'); });
+            };
+          }, 3000);
+        }
+      })
+      .catch(function() {});
+      // ── END PATCH ──────────────────────────────────────────────────────
+
     })
     .catch(function(e){
       hideTyping();

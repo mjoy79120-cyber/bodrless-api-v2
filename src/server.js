@@ -94,6 +94,7 @@ app.use('/api/widget',   require('./routes/widgetmemory'));
 app.use('/api/widget/chat', widgetChatRoutes);
 app.use('/api/internal', require('./routes/nudgeScheduler'));
 app.use('/api/hotel',    hotelRoutes);
+app.use('/api/hotel', require('./routes/hotelWishes'));
 app.use('/hotel-admin',  hotelAdminRouter);
 app.use('/api/agencies', agencyRoutes);
 app.use('/admin',        adminRoutes);
@@ -154,7 +155,7 @@ async function serveHotelLanding(req, res) {
       if (attempt < 3) await new Promise(r => setTimeout(r, 500 * attempt));
     }
   }
-  
+
   if (!group) {
     return res.status(404).send(`<!DOCTYPE html><html><body style="font-family:'Inter',sans-serif;padding:60px;color:#114B43;">
       <h2>Hotel group "${hotelSlug}" not found.</h2>
@@ -480,7 +481,13 @@ app.listen(PORT, '0.0.0.0', () => {
   // ── RATEHAWK CONFIRM POLLER ───────────────────────────────
   startPoller();
   // ── END RATEHAWK CONFIRM POLLER ──────────────────────────
+
+  // ── HOTEL NUDGE SCHEDULER ────────────────────────────────
+  require('./services/hotelNudgeScheduler').start();
+  // ── END HOTEL NUDGE SCHEDULER ────────────────────────────
 });
+
+
 
 process.on('SIGTERM', () => {
   require('./workers/ratehawkConfirmPoller').stopPoller();
