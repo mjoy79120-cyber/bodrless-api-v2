@@ -348,10 +348,43 @@ router.get('/:slug', (req, res) => {
 .bd-upsell-add:hover{background:var(--bd-navy);color:#fff;border-color:var(--bd-navy);}
 .bd-upsell-add.added{background:var(--bd-green-bg);color:var(--bd-green);border-color:var(--bd-green);cursor:default;}
 
+/* ── Talk to team bar ── */
+#bd-hotel-talk-bar{
+  display:flex;align-items:center;justify-content:center;
+  padding:7px 12px;border-top:1px solid var(--bd-border);
+  background:var(--bd-warm-white);flex-shrink:0;
+  min-height:34px;
+}
+#bd-hotel-talk-bar .bd-talk-link{
+  background:none;border:none;cursor:pointer;
+  font-size:11px;font-weight:600;color:var(--bd-gold);
+  letter-spacing:.2px;padding:0;display:flex;align-items:center;gap:5px;
+  transition:color .15s;
+}
+#bd-hotel-talk-bar .bd-talk-link:hover{ color:var(--bd-navy); }
+#bd-hotel-talk-bar .bd-talk-connecting{
+  font-size:11px;color:var(--bd-muted);font-style:italic;
+  display:flex;align-items:center;gap:6px;
+}
+#bd-hotel-talk-bar .bd-talk-dot{
+  width:6px;height:6px;border-radius:50%;
+  background:var(--bd-gold);display:inline-block;
+  animation:bd-bounce 1.2s infinite;
+}
+#bd-hotel-talk-bar .bd-talk-dot:nth-child(2){animation-delay:.2s;}
+#bd-hotel-talk-bar .bd-talk-dot:nth-child(3){animation-delay:.4s;}
+#bd-hotel-talk-bar .bd-talk-back{
+  background:none;border:none;cursor:pointer;
+  font-size:11px;color:var(--bd-muted);padding:0;
+  text-decoration:underline;letter-spacing:.1px;
+}
+#bd-hotel-talk-bar .bd-talk-back:hover{ color:var(--bd-navy); }
+
 /* ── Powered by ── */
 .bd-powered{
-  text-align:center;padding:7px 0 4px;
+  text-align:center;padding:5px 0 5px;
   font-size:10px;color:var(--bd-muted);letter-spacing:.3px;flex-shrink:0;
+  border-top:1px solid var(--bd-border);
 }
 .bd-powered a{color:var(--bd-gold);text-decoration:none;font-weight:600;}
 
@@ -399,12 +432,10 @@ function initHotelWidget(){
     }
   } catch(e) { visitorToken = 'hv_anon_' + Date.now(); }
 
-  // ── PATCH 2: Live chat state vars ──────────────────────────────────────
-  var _hotelLiveChatEnabled   = false;
-  var _hotelLiveChatShown     = false;
-  var _hotelInLiveChat        = false;
-  var _hotelLiveChatThreadId  = null;
-  var _hotelLiveChatPollIv    = null;
+  // ── Live chat state ────────────────────────────────────────────────────
+  var _hotelInLiveChat       = false;
+  var _hotelLiveChatThreadId = null;
+  var _hotelLiveChatPollIv   = null;
 
   var MEAL_LABELS = {
     room_only:'Room only',bed_and_breakfast:'Bed & breakfast',
@@ -437,9 +468,11 @@ function initHotelWidget(){
   // Messages
   var msgs = document.createElement('div'); msgs.id = 'bd-hotel-messages';
 
-  // Powered by
-  var powered = document.createElement('div'); powered.className = 'bd-powered';
-  powered.innerHTML = "Powered by <a href='https://bodrless.com' target='_blank'>Bodrless</a>";
+  // Talk to team bar (persistent, above input)
+  var talkBar = document.createElement('div'); talkBar.id = 'bd-hotel-talk-bar';
+  var talkLink = document.createElement('button'); talkLink.className = 'bd-talk-link';
+  talkLink.innerHTML = '<span>&#128172;</span> Talk to the team';
+  talkBar.appendChild(talkLink);
 
   // Input area
   var inputArea = document.createElement('div'); inputArea.id = 'bd-hotel-input-area';
@@ -450,10 +483,15 @@ function initHotelWidget(){
   sendBtn.innerHTML = '&#10148;'; sendBtn.setAttribute('aria-label','Send message');
   inputArea.appendChild(input); inputArea.appendChild(sendBtn);
 
+  // Powered by (below input)
+  var powered = document.createElement('div'); powered.className = 'bd-powered';
+  powered.innerHTML = "Powered by <a href='https://bodrless.com' target='_blank'>Bodrless</a>";
+
   chat.appendChild(hdr);
   chat.appendChild(msgs);
-  chat.appendChild(powered);
+  chat.appendChild(talkBar);
   chat.appendChild(inputArea);
+  chat.appendChild(powered);
   root.appendChild(chat);
 
   if(embedTarget){
@@ -473,6 +511,123 @@ function initHotelWidget(){
   } else {
     chat.classList.add('open'); showWelcome();
   }
+
+  // ── Persistent talk bar logic ──────────────────────────────────────────
+  function setTalkBarConnecting() {
+    talkBar.innerHTML = '<span class="bd-talk-connecting">'
+      + '<span class="bd-talk-dot"></span>'
+      + '<span class="bd-talk-dot"></span>'
+      + '<span class="bd-talk-dot"></span>'
+      + '&nbsp;Connecting you to the team\u2026</span>';
+  }
+
+  function setTalkBarConnected() {
+    talkBar.innerHTML = '';
+    var backBtn = document.createElement('button'); backBtn.className = 'bd-talk-back';
+    backBtn.innerText = '\u2190 Back to assistant';
+    backBtn.onclick = endLiveChat;
+    talkBar.appendChild(backBtn);
+  }
+
+  function setTalkBarDefault() {
+    talkBar.innerHTML = '';
+    var btn = document.createElement('button'); btn.className = 'bd-talk-link';
+    btn.innerHTML = '<span>&#128172;</span> Talk to the team';
+    btn.onclick = startLiveChat;
+    talkBar.appendChild(btn);
+  }
+
+  function endLiveChat() {
+    if (_hotelLiveChatPollIv) clearInterval(_hotelLiveChatPollIv);
+    _hotelInLiveChat  = false;
+    input.placeholder = 'Ask about availability, dates, upgrades\u2026';
+    if (_hotelLiveChatThreadId) {
+      fetch(apiBase + '/api/widget/chat/back', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'x-visitor-token': visitorToken || '', 'x-api-key': groupSlug },
+        body:    JSON.stringify({ threadId: _hotelLiveChatThreadId }),
+      }).catch(function() {});
+      _hotelLiveChatThreadId = null;
+    }
+    setTalkBarDefault();
+    var s2 = document.createElement('div'); s2.className = 'bd-msg bd-bot';
+    s2.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
+    s2.innerText = '\u2014 Back with the assistant \u2014';
+    msgs.appendChild(s2); msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function startLiveChat() {
+    if (_hotelInLiveChat) return;
+    setTalkBarConnecting();
+    fetch(apiBase + '/api/widget/chat/start', {
+      method:  'POST',
+      headers: {
+        'Content-Type':    'application/json',
+        'x-visitor-token': visitorToken || '',
+        'x-api-key':       groupSlug,
+      },
+      body: JSON.stringify({
+        botHistory:   conversationHistory,
+        tripParams:   previousParams,
+        lastPackages: [],
+      }),
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.success) {
+        setTalkBarDefault();
+        addMsg("Can't connect right now \u2014 try again shortly.", 'bot');
+        return;
+      }
+      _hotelLiveChatThreadId = d.threadId;
+      _hotelInLiveChat       = true;
+      input.placeholder      = 'Message the team\u2026';
+      setTalkBarConnected();
+
+      var sys = document.createElement('div'); sys.className = 'bd-msg bd-bot';
+      sys.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
+      sys.innerText = '\u2014 You are now chatting with the team. We will reply shortly. \u2014';
+      msgs.appendChild(sys); msgs.scrollTop = msgs.scrollHeight;
+
+      // Poll for agent replies
+      var lastId = null;
+      _hotelLiveChatPollIv = setInterval(function() {
+        if (!_hotelLiveChatThreadId || !_hotelInLiveChat) { clearInterval(_hotelLiveChatPollIv); return; }
+        fetch(apiBase + '/api/widget/chat/poll?threadId=' + _hotelLiveChatThreadId + (lastId ? '&after=' + lastId : ''), {
+          headers: { 'x-visitor-token': visitorToken || '', 'x-api-key': groupSlug },
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(pd) {
+          if (pd.status === 'closed') {
+            clearInterval(_hotelLiveChatPollIv);
+            setTalkBarDefault();
+            _hotelInLiveChat  = false;
+            input.placeholder = 'Ask about availability, dates, upgrades\u2026';
+            var closed = document.createElement('div'); closed.className = 'bd-msg bd-bot';
+            closed.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
+            closed.innerText = '\u2014 Chat ended by the team \u2014';
+            msgs.appendChild(closed); msgs.scrollTop = msgs.scrollHeight;
+          }
+          (pd.messages || []).forEach(function(msg) {
+            if (msg.sender !== 'agent' && msg.sender !== 'system') return;
+            var div = document.createElement('div'); div.className = 'bd-msg bd-bot';
+            if (msg.sender === 'system') div.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
+            div.innerText = msg.text || msg.body || '';
+            msgs.appendChild(div); msgs.scrollTop = msgs.scrollHeight;
+            lastId = msg.id;
+          });
+        })
+        .catch(function() {});
+      }, 5000);
+    })
+    .catch(function() {
+      setTalkBarDefault();
+      addMsg("Can't connect right now.", 'bot');
+    });
+  }
+
+  talkLink.onclick = startLiveChat;
+  // ── END talk bar logic ─────────────────────────────────────────────────
 
   // ── Welcome card ────────────────────────────────────────────────────────
   var welcomeShown = false;
@@ -975,121 +1130,7 @@ function initHotelWidget(){
         }, 2000);
       }
 
-      // ── PATCH: Live chat offer after results ───────────────────────────
-      fetch(apiBase + '/api/widget/chat/config', {
-        headers: { 'x-hotel-key': groupSlug },
-      })
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        _hotelLiveChatEnabled = !!(d && d.liveChatEnabled);
 
-        if (_hotelLiveChatEnabled && !_hotelLiveChatShown && !_hotelInLiveChat) {
-          _hotelLiveChatShown = true;
-          setTimeout(function() {
-            var wrap = document.createElement('div');
-            wrap.id  = 'bd-hotel-live-chat-offer';
-            wrap.style.cssText = 'text-align:center;padding:4px 0 10px;font-size:11px;color:#8C8279;';
-            wrap.innerHTML = 'Need help choosing? '
-              + '<button id="bd-hotel-talk-btn" style="background:none;border:none;color:#1C2B4A;'
-              + 'font-size:11px;font-weight:700;cursor:pointer;text-decoration:underline;padding:0;">'
-              + 'Talk to the team</button>';
-            msgs.appendChild(wrap);
-            msgs.scrollTop = msgs.scrollHeight;
-
-            document.getElementById('bd-hotel-talk-btn').onclick = function() {
-              var offer = document.getElementById('bd-hotel-live-chat-offer');
-              if (offer) offer.remove();
-              showTyping();
-              fetch(apiBase + '/api/widget/chat/start', {
-                method:  'POST',
-                headers: {
-                  'Content-Type':    'application/json',
-                  'x-visitor-token': visitorToken || '',
-                  'x-api-key':       groupSlug,
-                },
-                body: JSON.stringify({
-                  botHistory:   conversationHistory,
-                  tripParams:   previousParams,
-                  lastPackages: [],
-                }),
-              })
-              .then(function(r) { return r.json(); })
-              .then(function(d) {
-                hideTyping();
-                if (!d.success) { addMsg("Can't connect right now \u2014 try again shortly.", 'bot'); return; }
-                _hotelLiveChatThreadId = d.threadId;
-                _hotelInLiveChat       = true;
-                input.placeholder      = 'Message the team\u2026';
-                var sys = document.createElement('div'); sys.className = 'bd-msg bd-bot';
-                sys.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
-                sys.innerText = '\u2014 You are now chatting with the team. We will reply shortly. \u2014';
-                msgs.appendChild(sys);
-
-                // Back button
-                var bar = document.createElement('div'); bar.id = 'bd-hotel-back-bar';
-                bar.style.cssText = 'text-align:center;padding:6px;border-top:1px solid #E6E0D6;background:#fff;flex-shrink:0;';
-                var backBtn = document.createElement('button');
-                backBtn.style.cssText = 'background:none;border:none;color:#8C8279;font-size:11px;cursor:pointer;text-decoration:underline;';
-                backBtn.innerText = '\u2190 Back to assistant';
-                backBtn.onclick = function() {
-                  if (_hotelLiveChatPollIv) clearInterval(_hotelLiveChatPollIv);
-                  var b = document.getElementById('bd-hotel-back-bar'); if (b) b.remove();
-                  _hotelInLiveChat   = false;
-                  input.placeholder  = 'Ask about availability, dates, upgrades\u2026';
-                  if (_hotelLiveChatThreadId) {
-                    fetch(apiBase + '/api/widget/chat/back', {
-                      method:  'POST',
-                      headers: {
-                        'Content-Type':    'application/json',
-                        'x-visitor-token': visitorToken || '',
-                        'x-api-key':       groupSlug,
-                      },
-                      body: JSON.stringify({ threadId: _hotelLiveChatThreadId }),
-                    }).catch(function() {});
-                    _hotelLiveChatThreadId = null;
-                  }
-                  var s2 = document.createElement('div'); s2.className = 'bd-msg bd-bot';
-                  s2.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
-                  s2.innerText = '\u2014 Back with the assistant \u2014';
-                  msgs.appendChild(s2); msgs.scrollTop = msgs.scrollHeight;
-                };
-                bar.appendChild(backBtn);
-                chat.insertBefore(bar, inputArea);
-
-                // Poll for agent replies
-                var lastId = null;
-                _hotelLiveChatPollIv = setInterval(function() {
-                  if (!_hotelLiveChatThreadId || !_hotelInLiveChat) { clearInterval(_hotelLiveChatPollIv); return; }
-                  fetch(apiBase + '/api/widget/chat/poll?threadId=' + _hotelLiveChatThreadId + (lastId ? '&after=' + lastId : ''), {
-                    headers: { 'x-visitor-token': visitorToken || '', 'x-api-key': groupSlug },
-                  })
-                  .then(function(r) { return r.json(); })
-                  .then(function(pd) {
-                    if (pd.status === 'closed') {
-                      clearInterval(_hotelLiveChatPollIv); _hotelInLiveChat = false;
-                      var bb = document.getElementById('bd-hotel-back-bar'); if (bb) bb.remove();
-                      input.placeholder = 'Ask about availability, dates, upgrades\u2026';
-                    }
-                    (pd.messages || []).forEach(function(msg) {
-                      if (msg.sender !== 'agent' && msg.sender !== 'system') return;
-                      var div = document.createElement('div'); div.className = 'bd-msg bd-bot';
-                      if (msg.sender === 'system') div.style.cssText = 'font-style:italic;font-size:11.5px;color:#8C8279;text-align:center;background:transparent;border:none;';
-                      div.innerText = msg.text || msg.body || '';
-                      msgs.appendChild(div); msgs.scrollTop = msgs.scrollHeight;
-                      lastId = msg.id;
-                    });
-                  })
-                  .catch(function() {});
-                }, 5000);
-                msgs.scrollTop = msgs.scrollHeight;
-              })
-              .catch(function() { hideTyping(); addMsg("Can't connect right now.", 'bot'); });
-            };
-          }, 3000);
-        }
-      })
-      .catch(function() {});
-      // ── END PATCH ──────────────────────────────────────────────────────
 
     })
     .catch(function(e){
