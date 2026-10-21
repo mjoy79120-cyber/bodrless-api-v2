@@ -22,6 +22,7 @@ const { startSweeper } = require('./src/services/paymentSweeper');
 const tracking = require('./src/services/trackingService');
 const insightsEngine = require('./src/services/insightsEngine');
 const hotelbedsContent = require('./src/services/hotelbedsContent');
+const hotelChatRoutes = require('./src/routes/hotelChat');
 
 const app = express();
 
