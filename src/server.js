@@ -94,7 +94,7 @@ app.use('/api/widget',   require('./routes/widgetmemory'));
 app.use('/api/widget/chat', widgetChatRoutes);
 app.use('/api/internal', require('./routes/nudgeScheduler'));
 app.use('/api/hotel',    hotelRoutes);
-app.use('/api/hotel', require('./routes/hotelChat'));
+app.use('/api/hotel', require('./routes/hotelChats'));
 app.use('/api/hotel', require('./routes/hotelWishes'));
 app.use('/hotel-admin',  hotelAdminRouter);
 app.use('/api/agencies', agencyRoutes);
