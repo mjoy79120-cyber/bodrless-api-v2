@@ -1493,12 +1493,10 @@ function initWidget() {
       method: 'POST',
       headers: {'Content-Type':'application/json','x-visitor-token': visitorToken,'x-api-key': agencyKey},
       body: JSON.stringify({
-        visitorId:    visitorToken,
-        agencyId:     agencyKey,
-        botHistory:   conversationHistory,
-        tripParams:   previousParams,
-        lastPackages: [],
-      })
+  botHistory:   conversationHistory,
+  tripParams:   previousParams,
+  lastPackages: [],
+})
     })
     .then(function(r) { return r.json(); })
     .then(function(d) {
