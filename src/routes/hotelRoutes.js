@@ -385,17 +385,18 @@ router.post('/webhook/mpesa', async (req, res) => {
 // ─────────────────────────────
 router.post('/chat/start', requireHotelKey, async (req, res) => {
   try {
-    const { botHistory = [], tripParams = {}, lastPackages = [] } = req.body;
-    const groupId = req.hotelGroup.id;
+const { botHistory = [], tripParams, lastPackages = [] } = req.body;
+const params = tripParams || {};
+const groupId = req.hotelGroup.id;
 
     // Build a one-line context summary for the admin inbox
     const contextParts = [];
-    if (tripParams.adults)        contextParts.push(`${tripParams.adults} adult${tripParams.adults !== 1 ? 's' : ''}`);
-    if (tripParams.children)      contextParts.push(`${tripParams.children} child${tripParams.children !== 1 ? 'ren' : ''}`);
-    if (tripParams.propertyName)  contextParts.push(tripParams.propertyName);
-    if (tripParams.departureDate) contextParts.push(tripParams.departureDate);
-    if (tripParams.returnDate)    contextParts.push(`→ ${tripParams.returnDate}`);
-    if (tripParams.nights)        contextParts.push(`${tripParams.nights} night${tripParams.nights !== 1 ? 's' : ''}`);
+    if (params.adults)        contextParts.push(`${params.adults} adult${params.adults !== 1 ? 's' : ''}`);
+if (params.children)      contextParts.push(`${params.children} child${params.children !== 1 ? 'ren' : ''}`);
+if (params.propertyName)  contextParts.push(params.propertyName);
+if (params.departureDate) contextParts.push(params.departureDate);
+if (params.returnDate)    contextParts.push(`→ ${params.returnDate}`);
+if (params.nights)        contextParts.push(`${params.nights} night${params.nights !== 1 ? 's' : ''}`);
     const contextSummary = contextParts.length ? contextParts.join(', ') : 'Guest chat';
 
     // Package summary — what room they were looking at
