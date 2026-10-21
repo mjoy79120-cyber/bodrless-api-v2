@@ -422,7 +422,7 @@ function initHotelWidget(){
   var conversationHistory = [];
   var previousParams      = null;
 
-  // ── PATCH 1: Persistent visitor token ─────────────────────────────────
+  // ── Persistent visitor token ───────────────────────────────────────────
   var visitorToken = '';
   try {
     visitorToken = localStorage.getItem('bodrless_hotel_visitor_' + groupSlug) || '';
@@ -542,9 +542,9 @@ function initHotelWidget(){
     _hotelInLiveChat  = false;
     input.placeholder = 'Ask about availability, dates, upgrades\u2026';
     if (_hotelLiveChatThreadId) {
-      fetch(apiBase + '/api/widget/chat/back', {
+      fetch(apiBase + '/api/hotel/chat/back', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'x-visitor-token': visitorToken || '', 'x-api-key': groupSlug },
+        headers: { 'Content-Type': 'application/json', 'x-hotel-key': groupSlug },
         body:    JSON.stringify({ threadId: _hotelLiveChatThreadId }),
       }).catch(function() {});
       _hotelLiveChatThreadId = null;
@@ -559,12 +559,11 @@ function initHotelWidget(){
   function startLiveChat() {
     if (_hotelInLiveChat) return;
     setTalkBarConnecting();
-    fetch(apiBase + '/api/widget/chat/start', {
+    fetch(apiBase + '/api/hotel/chat/start', {
       method:  'POST',
       headers: {
-        'Content-Type':    'application/json',
-        'x-visitor-token': visitorToken || '',
-        'x-api-key':       groupSlug,
+        'Content-Type': 'application/json',
+        'x-hotel-key':  groupSlug,
       },
       body: JSON.stringify({
         botHistory:   conversationHistory,
@@ -593,8 +592,8 @@ function initHotelWidget(){
       var lastId = null;
       _hotelLiveChatPollIv = setInterval(function() {
         if (!_hotelLiveChatThreadId || !_hotelInLiveChat) { clearInterval(_hotelLiveChatPollIv); return; }
-        fetch(apiBase + '/api/widget/chat/poll?threadId=' + _hotelLiveChatThreadId + (lastId ? '&after=' + lastId : ''), {
-          headers: { 'x-visitor-token': visitorToken || '', 'x-api-key': groupSlug },
+        fetch(apiBase + '/api/hotel/chat/poll?threadId=' + _hotelLiveChatThreadId + (lastId ? '&after=' + lastId : ''), {
+          headers: { 'x-hotel-key': groupSlug },
         })
         .then(function(r) { return r.json(); })
         .then(function(pd) {
@@ -930,12 +929,11 @@ function initHotelWidget(){
     // If in live chat mode, route message to agent thread instead
     if (_hotelInLiveChat && _hotelLiveChatThreadId) {
       addMsg(text, 'user'); input.value = '';
-      fetch(apiBase + '/api/widget/chat/send', {
+      fetch(apiBase + '/api/hotel/chat/send', {
         method:  'POST',
         headers: {
-          'Content-Type':    'application/json',
-          'x-visitor-token': visitorToken || '',
-          'x-api-key':       groupSlug,
+          'Content-Type': 'application/json',
+          'x-hotel-key':  groupSlug,
         },
         body: JSON.stringify({ threadId: _hotelLiveChatThreadId, text: text }),
       }).catch(function() {});
@@ -968,7 +966,7 @@ function initHotelWidget(){
       pkgs.forEach(function(p,i){ addRoomCard(p, i); });
       msgs.scrollTop = msgs.scrollHeight;
 
-      // ── PATCH: Save wish automatically (no opt-in needed for tracking) ──
+      // ── Save wish automatically ────────────────────────────────────────
       if (previousParams && previousParams.propertyId) {
         fetch(apiBase + '/api/hotel/wishes/save', {
           method:  'POST',
@@ -993,7 +991,7 @@ function initHotelWidget(){
         }).catch(function() {});
       }
 
-      // ── PATCH: Show email opt-in after a short delay ───────────────────
+      // ── Show email opt-in after a short delay ──────────────────────────
       var _HOTEL_ALERTS_KEY = 'bodrless_hotel_alerts_' + groupSlug;
       var _hotelAlertsDeclined = (function() {
         try {
@@ -1129,8 +1127,6 @@ function initHotelWidget(){
           msgs.scrollTop = msgs.scrollHeight;
         }, 2000);
       }
-
-
 
     })
     .catch(function(e){

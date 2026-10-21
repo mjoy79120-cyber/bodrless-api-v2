@@ -64,12 +64,13 @@ function shell(title, body, group = null, activePage = '') {
   const currentPath = activePage;
 
   const sidebarLinks = group ? [
-    { href: '/hotel-admin/dashboard',    icon: '▦',  label: 'Dashboard'    },
-    { href: '/hotel-admin/revenue',      icon: '↗',  label: 'Revenue'      },
-    { href: '/hotel-admin/reservations', icon: '⊟',  label: 'Reservations' },
-    { href: '/hotel-admin/properties',   icon: '⊞',  label: 'Properties'   },
-    { href: '/hotel-admin/commission',   icon: '◈',  label: 'Commission'   },
-  ] : [];
+      { href: '/hotel-admin/dashboard',    icon: '▦',  label: 'Dashboard'    },
+  { href: '/hotel-admin/revenue',      icon: '↗',  label: 'Revenue'      },
+  { href: '/hotel-admin/reservations', icon: '⊟',  label: 'Reservations' },
+  { href: '/hotel-admin/properties',   icon: '⊞',  label: 'Properties'   },
+  { href: '/hotel-admin/chats',        icon: '💬', label: 'Live Chats'   },
+  { href: '/hotel-admin/commission',   icon: '◈',  label: 'Commission'   },
+] : [];
 
   const sidebar = group ? `
   <aside class="sidebar">
@@ -1611,4 +1612,341 @@ function paymentBadge(status) {
   return `<span class="badge ${map[status] || 'badge-navy'}">${status || 'unknown'}</span>`;
 }
 
+// ─────────────────────────────
+// CHAT INBOX — list open threads
+// ─────────────────────────────
+router.get('/chats', requireHotelAuth, async (req, res) => {
+  const status = req.query.status || 'open';
+  const groupId = req.hotelGroup.id;
+ 
+  const { data: threads } = await supabase
+    .from('hotel_chat_threads')
+    .select('id, status, context_summary, package_summary, has_unread, created_at, last_message_at')
+    .eq('group_id', groupId)
+    .eq('status', status)
+    .order('last_message_at', { ascending: false, nullsFirst: false })
+    .limit(60);
+ 
+  const success = req.query.success;
+ 
+  // For each open thread, get the last message for preview
+  const threadIds = (threads || []).map(t => t.id);
+  let lastMessages = {};
+  if (threadIds.length) {
+    // Get last guest message per thread for preview
+    const { data: msgs } = await supabase
+      .from('hotel_chat_messages')
+      .select('thread_id, text, sender, created_at')
+      .in('thread_id', threadIds)
+      .eq('sender', 'guest')
+      .order('created_at', { ascending: false });
+ 
+    // Keep only the most recent per thread
+    (msgs || []).forEach(m => {
+      if (!lastMessages[m.thread_id]) lastMessages[m.thread_id] = m;
+    });
+  }
+ 
+  const filterBtns = ['open', 'closed'].map(s =>
+    `<a href="/hotel-admin/chats?status=${s}" class="btn ${status === s ? 'btn-primary' : 'btn-outline'} btn-sm">${s.charAt(0).toUpperCase() + s.slice(1)}</a>`
+  ).join('');
+ 
+  const rows = (threads || []).map(t => {
+    const ago     = t.last_message_at
+      ? _timeAgo(new Date(t.last_message_at))
+      : _timeAgo(new Date(t.created_at));
+    const preview = lastMessages[t.id]?.text || '—';
+    const unread  = t.has_unread && status === 'open';
+ 
+    return `
+      <tr style="${unread ? 'background:#FEFBF3;' : ''}">
+        <td>
+          <div style="display:flex;align-items:center;gap:8px;">
+            ${unread ? '<div style="width:8px;height:8px;border-radius:50%;background:#C9A84C;flex-shrink:0;"></div>' : '<div style="width:8px;"></div>'}
+            <div>
+              <div style="font-size:12px;font-weight:${unread ? '700' : '500'};color:var(--ink);">
+                ${t.context_summary || 'Guest chat'}
+              </div>
+              ${t.package_summary ? `<div style="font-size:11px;color:var(--muted);margin-top:1px;">Looking at: ${t.package_summary}</div>` : ''}
+            </div>
+          </div>
+        </td>
+        <td>
+          <div style="font-size:12px;color:var(--muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            ${preview.replace(/</g, '&lt;')}
+          </div>
+        </td>
+        <td style="font-size:11px;color:var(--muted);white-space:nowrap;">${ago}</td>
+        <td>${t.status === 'open'
+          ? '<span class="badge badge-green">Open</span>'
+          : '<span class="badge badge-muted">Closed</span>'}</td>
+        <td>
+          <a href="/hotel-admin/chats/${t.id}" class="btn btn-outline btn-sm">
+            ${unread ? '💬 Reply' : 'View'}
+          </a>
+        </td>
+      </tr>
+    `;
+  }).join('');
+ 
+  res.send(shell('Live Chats', `
+    <div class="page-header">
+      <h1 class="page-title">Live Chats</h1>
+      <div class="section-actions">${filterBtns}</div>
+    </div>
+    ${success === 'replied' ? '<div class="alert alert-success">✓ Reply sent.</div>' : ''}
+    ${success === 'closed'  ? '<div class="alert alert-success">✓ Chat closed.</div>'  : ''}
+ 
+    <div class="card">
+      ${rows.length ? `
+        <table>
+          <thead><tr>
+            <th>Guest / Context</th>
+            <th>Last Message</th>
+            <th>Time</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      ` : `<div class="empty">No ${status} chats right now.</div>`}
+    </div>
+ 
+    <script>
+      // Auto-refresh open inbox every 15 seconds
+      if ('${status}' === 'open') {
+        setTimeout(function() { location.reload(); }, 15000);
+      }
+    </script>
+  `, req.hotelGroup, '/hotel-admin/chats'));
+});
+ 
+// ─────────────────────────────
+// SINGLE THREAD VIEW + REPLY
+// ─────────────────────────────
+router.get('/chats/:id', requireHotelAuth, async (req, res) => {
+  const { data: thread } = await supabase
+    .from('hotel_chat_threads')
+    .select('*')
+    .eq('id', req.params.id)
+    .eq('group_id', req.hotelGroup.id)
+    .maybeSingle();
+ 
+  if (!thread) return res.redirect('/hotel-admin/chats');
+ 
+  // Mark as read
+  if (thread.has_unread) {
+    await supabase
+      .from('hotel_chat_threads')
+      .update({ has_unread: false })
+      .eq('id', thread.id);
+  }
+ 
+  // Load all messages
+  const { data: messages } = await supabase
+    .from('hotel_chat_messages')
+    .select('id, sender, text, created_at')
+    .eq('thread_id', thread.id)
+    .order('created_at', { ascending: true });
+ 
+  const msgHTML = (messages || []).map(m => {
+    const isGuest  = m.sender === 'guest';
+    const isAgent  = m.sender === 'agent';
+    const isSystem = m.sender === 'system';
+    const time     = new Date(m.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+ 
+    if (isSystem) {
+      return `
+        <div style="text-align:center;margin:8px 0;">
+          <span style="font-size:11px;color:var(--muted);font-style:italic;background:var(--cream);padding:3px 12px;border-radius:20px;">
+            ${m.text.replace(/</g, '&lt;')}
+          </span>
+        </div>`;
+    }
+ 
+    return `
+      <div style="display:flex;flex-direction:column;align-items:${isGuest ? 'flex-start' : 'flex-end'};margin-bottom:10px;">
+        <div style="
+          max-width:72%;
+          padding:10px 14px;
+          border-radius:14px;
+          border-bottom-${isGuest ? 'left' : 'right'}-radius:4px;
+          background:${isGuest ? 'white' : 'var(--dark)'};
+          color:${isGuest ? 'var(--ink)' : 'white'};
+          border:${isGuest ? '1px solid var(--border)' : 'none'};
+          font-size:13px;
+          line-height:1.6;
+        ">
+          ${m.text.replace(/</g, '&lt;').replace(/\n/g, '<br>')}
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:3px;padding:0 4px;">
+          ${isGuest ? 'Guest' : 'You'} · ${time}
+        </div>
+      </div>`;
+  }).join('');
+ 
+  const isOpen = thread.status === 'open';
+ 
+  res.send(shell(`Chat #${thread.id.slice(0, 8)}`, `
+    <div class="breadcrumb">
+      <a href="/hotel-admin/chats">Live Chats</a> › Thread
+    </div>
+ 
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">
+          ${thread.context_summary || 'Guest Chat'}
+        </h1>
+        ${thread.package_summary
+          ? `<div style="font-size:13px;color:var(--muted);margin-top:4px;">Looking at: ${thread.package_summary}</div>`
+          : ''}
+      </div>
+      <div class="section-actions">
+        <span style="font-size:12px;color:var(--muted);">
+          Started ${_timeAgo(new Date(thread.created_at))}
+        </span>
+        ${isOpen ? `
+          <form method="POST" action="/hotel-admin/chats/${thread.id}/close">
+            <button class="btn btn-outline btn-sm" onclick="return confirm('Close this chat?')">
+              End Chat
+            </button>
+          </form>` : '<span class="badge badge-muted">Closed</span>'}
+      </div>
+    </div>
+ 
+    <!-- Message thread -->
+    <div class="card" style="padding:0;margin-bottom:16px;">
+      <div id="chat-messages" style="
+        padding:20px;
+        min-height:300px;
+        max-height:480px;
+        overflow-y:auto;
+        background:var(--cream);
+        display:flex;
+        flex-direction:column;
+      ">
+        ${msgHTML || '<div style="text-align:center;color:var(--muted);padding:40px;font-size:13px;">No messages yet.</div>'}
+      </div>
+ 
+      ${isOpen ? `
+      <!-- Reply form -->
+      <div style="padding:16px 20px;border-top:1px solid var(--border);background:white;">
+        <form method="POST" action="/hotel-admin/chats/${thread.id}/reply" id="reply-form">
+          <div style="display:flex;gap:10px;align-items:flex-end;">
+            <textarea
+              name="text"
+              id="reply-input"
+              placeholder="Type your reply…"
+              rows="2"
+              required
+              style="
+                flex:1;
+                padding:10px 14px;
+                border:1.5px solid var(--border);
+                border-radius:10px;
+                font-size:13px;
+                font-family:'Inter',sans-serif;
+                resize:none;
+                outline:none;
+              "
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();document.getElementById('reply-form').submit();}"
+            ></textarea>
+            <button type="submit" class="btn btn-primary" style="padding:10px 20px;border-radius:10px;white-space:nowrap;">
+              Send ↵
+            </button>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:6px;">
+            Press Enter to send · Shift+Enter for new line
+          </div>
+        </form>
+      </div>` : `
+      <div style="padding:16px 20px;border-top:1px solid var(--border);text-align:center;color:var(--muted);font-size:13px;">
+        This chat is closed.
+      </div>`}
+    </div>
+ 
+    <script>
+      // Scroll to bottom of messages
+      var msgBox = document.getElementById('chat-messages');
+      if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
+ 
+      // Auto-refresh open thread every 8 seconds to get new guest messages
+      ${isOpen ? `
+      setTimeout(function() { location.reload(); }, 8000);
+      ` : ''}
+    </script>
+  `, req.hotelGroup, '/hotel-admin/chats'));
+});
+ 
+// ─────────────────────────────
+// POST reply
+// ─────────────────────────────
+router.post('/chats/:id/reply', requireHotelAuth, async (req, res) => {
+  const { text } = req.body;
+  if (!text?.trim()) return res.redirect(`/hotel-admin/chats/${req.params.id}`);
+ 
+  // Verify ownership
+  const { data: thread } = await supabase
+    .from('hotel_chat_threads')
+    .select('id, status')
+    .eq('id', req.params.id)
+    .eq('group_id', req.hotelGroup.id)
+    .maybeSingle();
+ 
+  if (!thread || thread.status === 'closed') {
+    return res.redirect(`/hotel-admin/chats/${req.params.id}`);
+  }
+ 
+  await supabase.from('hotel_chat_messages').insert({
+    thread_id: req.params.id,
+    sender:    'agent',
+    text:      text.trim(),
+  });
+ 
+  await supabase
+    .from('hotel_chat_threads')
+    .update({ last_message_at: new Date().toISOString(), has_unread: false })
+    .eq('id', req.params.id);
+ 
+  res.redirect(`/hotel-admin/chats/${req.params.id}?success=replied`);
+});
+ 
+// ─────────────────────────────
+// POST close
+// ─────────────────────────────
+router.post('/chats/:id/close', requireHotelAuth, async (req, res) => {
+  const { data: thread } = await supabase
+    .from('hotel_chat_threads')
+    .select('id')
+    .eq('id', req.params.id)
+    .eq('group_id', req.hotelGroup.id)
+    .maybeSingle();
+ 
+  if (thread) {
+    await supabase
+      .from('hotel_chat_threads')
+      .update({ status: 'closed', closed_at: new Date().toISOString(), closed_by: 'agent' })
+      .eq('id', req.params.id);
+ 
+    await supabase.from('hotel_chat_messages').insert({
+      thread_id: req.params.id,
+      sender:    'system',
+      text:      'Chat closed by the team.',
+    });
+  }
+ 
+  res.redirect('/hotel-admin/chats?success=closed');
+});
+ 
+// ─────────────────────────────
+// HELPER
+// ─────────────────────────────
+function _timeAgo(date) {
+  const secs = Math.floor((Date.now() - date) / 1000);
+  if (secs < 60)   return 'just now';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+  if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
+  return Math.floor(secs / 86400) + 'd ago';
+}
+ 
 module.exports = router;
