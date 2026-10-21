@@ -86,6 +86,9 @@ app.use('/api/agencies', agencyRoutes);
 // ── Admin dashboard (protected by BODRLESS_ADMIN_KEY) ─
 app.use('/admin', adminRoutes);
 
+// ── Hotel Chat Routes (Add this line here) ────────────
+app.use('/api/hotel-chat', hotelChatRoutes);
+
 // ── Other Protected Routes ────────────────────────────
 const { authenticateAgency } = require('./src/middleware/auth');
 app.use('/api/trips',            authenticateAgency, tripRoutes);
