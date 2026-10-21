@@ -18,11 +18,11 @@ const uploadRoutes = require('./src/routes/uploads');
 const widgetRoutes = require('./src/routes/widget');
 const adminRoutes = require('./src/routes/admin');
 const itineraryRoutes = require('./src/routes/itineraryRoutes');
+const hotelChatRoutes = require('./src/routes/hotelChat');
 const { startSweeper } = require('./src/services/paymentSweeper');
 const tracking = require('./src/services/trackingService');
 const insightsEngine = require('./src/services/insightsEngine');
 const hotelbedsContent = require('./src/services/hotelbedsContent');
-const hotelChatRoutes = require('./src/routes/hotelChat');
 
 const app = express();
 
