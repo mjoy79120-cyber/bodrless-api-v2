@@ -207,7 +207,10 @@ router.get('/poll', async (req, res) => {
       .eq('thread_id', threadId)
       .order('created_at', { ascending: true });
 
-    if (after) query = query.gt('created_at', after);
+    if (after) {
+  const afterDate = new Date(after);
+  if (!isNaN(afterDate.getTime())) query = query.gt('created_at', after);
+}
 
     const { data: messages, error: msgErr } = await query;
     if (msgErr) throw msgErr;

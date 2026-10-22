@@ -1552,11 +1552,11 @@ function initWidget() {
 
   function _startLiveChatPoll() {
     if (_liveChatPollIv) clearInterval(_liveChatPollIv);
-    var lastId = null;
+    var lastMsgAt = null;
     _liveChatPollIv = setInterval(function() {
       if (!_liveChatThreadId || !_inLiveChat) { clearInterval(_liveChatPollIv); return; }
       var url = apiBase + '/api/widget/chat/poll?threadId=' + _liveChatThreadId
-        + (lastId ? '&after=' + lastId : '');
+      + (lastMsgAt ? '&after=' + encodeURIComponent(lastMsgAt) : '');
       fetch(url, { headers: {'x-visitor-token': visitorToken, 'x-api-key': agencyKey} })
       .then(function(r) { return r.json(); })
       .then(function(d) {
@@ -1578,7 +1578,7 @@ function initWidget() {
             msg.packages.forEach(function(p, i) { messages.appendChild(addPackage(p, i, null, null)); });
           }
           messages.scrollTop = messages.scrollHeight;
-          lastId = msg.id;
+          if (msg.created_at) lastMsgAt = msg.created_at;
         });
       })
       .catch(function() {});
