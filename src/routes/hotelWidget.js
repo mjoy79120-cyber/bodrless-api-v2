@@ -638,24 +638,7 @@ function initHotelWidget(){
     var tt = document.createElement('div'); tt.className = 'bd-welcome-title'; tt.innerText = 'Welcome to '+hotelName;
     var bd = document.createElement('div'); bd.className = 'bd-welcome-body';
     bd.innerText = "Tell me the occasion, your preferred dates, and how many guests \u2014 I'll find the perfect room.";
-    var dv = document.createElement('div'); dv.className = 'bd-divider';
-    var pl = document.createElement('div'); pl.className = 'bd-prompts-label'; pl.innerText = 'Popular requests';
-
-    var starters = [
-      {title:'Honeymoon stay',   text:"We're honeymooners \u2014 what's your most romantic room for 5 nights?"},
-      {title:'Family holiday',   text:'Family room for 2 adults and 2 children, full board, arriving next weekend.'},
-      {title:'Business trip',    text:'Single business room for tomorrow night, early check-in if possible.'},
-    ];
     card.appendChild(ey); card.appendChild(tt); card.appendChild(bd);
-    card.appendChild(dv); card.appendChild(pl);
-    starters.forEach(function(s){
-      var btn = document.createElement('button'); btn.className = 'bd-starter';
-      var t = document.createElement('div'); t.className = 'bd-st-title'; t.innerText = s.title;
-      var b = document.createElement('div'); b.className = 'bd-st-body'; b.innerText = s.text;
-      btn.appendChild(t); btn.appendChild(b);
-      btn.onclick = function(){ input.value = s.text; send(); };
-      card.appendChild(btn);
-    });
     msgs.appendChild(card); msgs.scrollTop = msgs.scrollHeight;
   }
 
@@ -700,10 +683,7 @@ function initHotelWidget(){
     } else {
       var ph = document.createElement('div'); ph.className = 'bd-pkg-img-placeholder';
       ph.innerText = '\uD83C\uDFE8';
-      var phn = document.createElement('div'); phn.className = 'bd-pkg-img-placeholder-name';
-      phn.innerText = hotel.propertyName||hotel.name||'Room';
       imgZone.appendChild(ph);
-      imgZone.appendChild(phn);
     }
 
     if(hotel.priceMatchApplied){
@@ -724,13 +704,9 @@ function initHotelWidget(){
     var body = document.createElement('div'); body.className = 'bd-pkg-body';
 
     var nameEl = document.createElement('div'); nameEl.className = 'bd-pkg-name';
-    var stars  = hotel.stars ? Array(Math.min(Math.round(hotel.stars),5)+1).join('\u2605') : '';
-    nameEl.innerText = (hotel.roomType||hotel.name||'Room')+(stars?' '+stars:'');
+    nameEl.innerText = (hotel.roomType||hotel.name||'Room');
 
-    var meta = document.createElement('div'); meta.className = 'bd-pkg-meta';
-    meta.innerText = (hotel.checkIn||'')+(hotel.checkOut?' \u2192 '+hotel.checkOut:'')+' \u00B7 '+nights+' night'+(nights!==1?'s':'')+' \u00B7 '+(summary.passengers||hotel.adults||1)+' guest'+((summary.passengers||1)!==1?'s':'');
-
-    body.appendChild(nameEl); body.appendChild(meta);
+    body.appendChild(nameEl);
 
     // Tags (bed type, view, amenities)
     var tags = [];

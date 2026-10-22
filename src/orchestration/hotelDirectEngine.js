@@ -1353,29 +1353,30 @@ class HotelDirectEngine {
         const ratePlans = await this._getRatePlans(roomType.id, checkIn, mealPlan, budget);
         if (!ratePlans.length) continue;
 
-        for (const ratePlan of ratePlans) {
-          const extraAdults = Math.max(0, adults - (ratePlan.base_occupancy || adults));
-          const nightsCount = nights || 1;
-          const totalPrice  = (ratePlan.price_per_night * nightsCount) +
-            ((ratePlan.extra_adult_surcharge || 0) * extraAdults * nightsCount) +
-            ((ratePlan.child_surcharge       || 0) * children    * nightsCount);
+        // One result per room type — cheapest rate plan as default,
+        // all rate plans attached as availableRates for the meal-plan switcher.
+        const defaultPlan = ratePlans[0]; // already sorted cheapest-first
+        const extraAdults = Math.max(0, adults - (defaultPlan.base_occupancy || adults));
+        const nightsCount = nights || 1;
+        const totalPrice  = (defaultPlan.price_per_night * nightsCount) +
+          ((defaultPlan.extra_adult_surcharge || 0) * extraAdults * nightsCount) +
+          ((defaultPlan.child_surcharge       || 0) * children    * nightsCount);
 
-          const { data: policy } = await supabase
-            .from('cancellation_policies').select('*')
-            .eq('rate_plan_id', ratePlan.id).maybeSingle();
+        const { data: policy } = await supabase
+          .from('cancellation_policies').select('*')
+          .eq('rate_plan_id', defaultPlan.id).maybeSingle();
 
-          results.push({
-            roomType, ratePlan, property, checkIn,
-            checkOut:           checkOut || this._addDays(checkIn, nights),
-            nights:             nightsCount, adults, children, childAges, totalPrice,
-            pricePerNight:      ratePlan.price_per_night,
-            currency:           ratePlan.currency || property.currency || 'KES',
-            mealPlan:           ratePlan.meal_plan,
-            cancellationPolicy: policy || null,
-            allRates:           ratePlans,
-            mealPlanMatched:    !mealPlan || ratePlan.meal_plan === mealPlan,
-          });
-        }
+        results.push({
+          roomType, ratePlan: defaultPlan, property, checkIn,
+          checkOut:           checkOut || this._addDays(checkIn, nights),
+          nights:             nightsCount, adults, children, childAges, totalPrice,
+          pricePerNight:      defaultPlan.price_per_night,
+          currency:           defaultPlan.currency || property.currency || 'KES',
+          mealPlan:           defaultPlan.meal_plan,
+          cancellationPolicy: policy || null,
+          allRates:           ratePlans,
+          mealPlanMatched:    !mealPlan || defaultPlan.meal_plan === mealPlan,
+        });
       }
       return results;
     } catch (err) {
