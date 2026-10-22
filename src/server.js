@@ -346,13 +346,6 @@ ${propCardsHTML}
       <span>${groupName} Concierge</span>
     </div>
     <div class="widget-body">
-      <div class="welcome">
-        👋 <strong>Welcome.</strong><br>
-        I'm here to help you book your perfect ${groupName} stay. Try something like:
-      </div>
-      <div class="prompt-grid">
-        ${promptsHTML}
-      </div>
       <div class="widget-container" id="hotel-widget-mount"></div>
     </div>
   </div>
