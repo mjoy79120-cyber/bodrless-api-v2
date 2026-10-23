@@ -128,8 +128,8 @@ async function getPending(agencyId, userKey) {
  * @param {function} [opts.send]   (message) => any — optional, failures are swallowed
  * @returns {Promise<boolean>}     true if packages were held (do NOT send them)
  */
-async function check({ agencyRow, result, userKey, channel, phone, send, prompt }) {
-  if (!isManual(agencyRow)) return false;
+async function check({ agencyRow, result, userKey, channel, phone, send, prompt, travelerName }) {
+if (!isManual(agencyRow)) return false;
   if (!result?.packages?.length) return false;   // clarifications / no-results pass through
 
   if (!agencyRow.id || !userKey) {
@@ -141,8 +141,10 @@ async function check({ agencyRow, result, userKey, channel, phone, send, prompt 
   }
 
   const travelerContext = prompt ? await _extractContext(prompt) : {};
-  logger.info('approvalGate: extracted context', { userKey, prompt: prompt?.slice(0, 80), travelerContext });
-
+if (travelerName && !travelerContext.travelerName) {
+  travelerContext.travelerName = travelerName;
+}
+logger.info('approvalGate: extracted context', { userKey, prompt: prompt?.slice(0, 80), travelerContext });
   const fields = {
     trip_params:      result.tripParams || {},
     packages:         result.packages   || [],

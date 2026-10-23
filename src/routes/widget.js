@@ -1661,10 +1661,11 @@ function initWidget() {
       : {'Content-Type':'application/json','x-api-key':  agencyKey};
     var body     = isHotelMode
       ? JSON.stringify(Object.assign({prompt:text,groupSlug:agencyKey,sessionId:sessionId,conversationHistory:conversationHistory,previousParams:previousParams,visitorId:conversationId || null}, guestName ? {guestName:guestName} : {}))
-      : JSON.stringify({
-              prompt:text,agencyId:agencyKey,channelType:'widget',visitorId:visitorToken,sessionId:sessionId,
-              conversationHistory:conversationHistory,previousParams:previousParams,
-            });
+      body: JSON.stringify({
+  prompt:text,agencyId:agencyKey,channelType:'widget',visitorId:visitorToken,sessionId:sessionId,
+  conversationHistory:conversationHistory,previousParams:previousParams,
+  travelerName:guestName||null,
+}),
 
     fetch(endpoint,{method:'POST',headers:hdrs,body:body})
     .then(function(r){ return r.json(); })

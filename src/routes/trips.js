@@ -52,6 +52,7 @@ router.post('/orchestrate', async (req, res) => {
     conversationHistory: Joi.array().optional(),
     previousParams: Joi.object().allow(null).optional(),
     visitorId: Joi.string().optional().allow(null, ''),
+    travelerName: Joi.string().allow(null, '').optional(),
   });
 
   const { error, value } = schema.validate(req.body);
@@ -104,6 +105,7 @@ router.post('/orchestrate', async (req, res) => {
       channel:  'widget',
       send:     () => Promise.resolve(),
       prompt:   value.prompt,
+      travelerName: value.travelerName || null,
     });
 
     if (held) {
