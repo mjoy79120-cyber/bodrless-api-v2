@@ -1493,10 +1493,16 @@ function initWidget() {
       method: 'POST',
       headers: {'Content-Type':'application/json','x-visitor-token': visitorToken,'x-api-key': agencyKey},
       body: JSON.stringify({
-  botHistory:   conversationHistory,
-  tripParams:   previousParams,
-  lastPackages: [],
-})
+  botHistory:    conversationHistory,
+  tripParams:    previousParams,
+  lastPackages:  [],
+  rawTranscript: transcript.map(function(t) {
+    if (t.type === 'user')     return { role: 'user', text: t.text };
+    if (t.type === 'bot')      return { role: 'bot',  text: t.text };
+    if (t.type === 'packages') return { role: 'bot',  text: '📦 ' + ((t.packages || []).length) + ' package option(s) shown' };
+    return null;
+  }).filter(Boolean),
+})  
     })
     .then(function(r) { return r.json(); })
     .then(function(d) {

@@ -222,11 +222,12 @@ router.get('/config', async (req, res) => {
 // POST /start
 // ─────────────────────────────────────────────
 router.post('/start', async (req, res) => {
-  const schema = Joi.object({
+    const schema = Joi.object({
     botHistory:    Joi.array().max(30).optional(),
     tripParams:    Joi.object().allow(null).optional(),
     lastPackages:  Joi.array().max(4).optional(),
     travelerName:  Joi.string().max(60).allow('', null).optional(),
+    rawTranscript: Joi.array().items(Joi.object()).max(60).optional(),
   });
   const { error: valErr, value } = schema.validate(req.body);
   if (valErr) return res.status(400).json({ success: false, error: valErr.details[0].message });
@@ -276,7 +277,28 @@ router.post('/start', async (req, res) => {
       text:      `${value.travelerName || 'A traveler'} has requested to chat with an agent.`,
     });
 
-    logger.info('widgetChat: thread started', { threadId: thread.id, agencyId: agency.id, sessionKey });
+        logger.info('widgetChat: thread started', { threadId: thread.id, agencyId: agency.id, sessionKey });
+
+    // Extract context from the full bot conversation transcript
+    if (value.rawTranscript && value.rawTranscript.length) {
+      const userMessages = value.rawTranscript
+        .filter(m => m.role === 'user')
+        .map(m => m.text || '')
+        .filter(Boolean)
+        .join(' ');
+      if (userMessages) {
+        logger.info('widgetChat: extracting context from transcript at start', {
+          threadId: thread.id,
+          preview:  userMessages.slice(0, 120),
+        });
+        _extractContext(userMessages).then(extracted => {
+          return _mergeContextIntoThread(thread.id, agency.id, value.tripParams, extracted);
+        }).catch(err => {
+          logger.warn('widgetChat: start context extraction error', { error: err.message });
+        });
+      }
+    }
+
     return res.json({ success: true, threadId: thread.id });
 
   } catch (err) {
