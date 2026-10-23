@@ -21,12 +21,169 @@
 const express    = require('express');
 const router     = express.Router();
 const Joi        = require('joi');
+const Groq       = require('groq-sdk');
 const supabase   = require('../utils/supabase');
 const { logger } = require('../utils/logger');
 
 const TIMEOUT_MS   = 30 * 60 * 1000;
 const NUDGE_MSG    = "Still there? Your agent hasn't replied yet. Would you like to keep waiting or go back to the assistant?";
 const MAX_MSG_LEN  = 1000;
+
+// ─────────────────────────────────────────────
+// GROQ CLIENT (lazy, shared)
+// ─────────────────────────────────────────────
+let _groq = null;
+function _getGroq() {
+  if (!_groq && process.env.GROQ_API_KEY) {
+    _groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  }
+  return _groq;
+}
+
+// ─────────────────────────────────────────────
+// CONTEXT EXTRACTION
+// Pulls traveler signals from a single message
+// and merges them into the thread's trip_params.
+// Runs fire-and-forget after /send saves the msg.
+// ─────────────────────────────────────────────
+
+const CONTEXT_SYSTEM_PROMPT = `You are a travel context extractor for a live agent dashboard.
+Given a traveler's chat message, extract any signals present. Return ONLY valid JSON — no markdown, no extra text.
+
+Extract these fields (null if not present in THIS message):
+{
+  "travelerName":     "string|null",        // name if they introduced themselves
+  "occasion":         "string|null",        // honeymoon|anniversary|birthday|family_holiday|business|romantic_getaway|graduation|babymoon|group_travel|solo_travel|other
+  "groupType":        "string|null",        // couple|family|solo|friends|corporate
+  "destination":      "string|null",        // place name only, 1-4 words
+  "origin":           "string|null",        // departure city only, null if not stated
+  "departureDate":    "YYYY-MM-DD|null",
+  "returnDate":       "YYYY-MM-DD|null",
+  "nights":           "number|null",
+  "passengers":       "number|null",        // adults only
+  "children":         "number|null",
+  "budget":           "low|mid|high|luxury|null",
+  "budgetKES":        "number|null",        // raw KES amount if stated
+  "mealPlan":         "string|null",        // all_inclusive|full_board|half_board|bed_and_breakfast|room_only
+  "propertyType":     "string|null",        // beachfront|lodge|villa|tented_camp|boutique|quiet|secluded etc.
+  "activityRequests": [],                   // ["snorkelling","safari","hiking" etc.]
+  "specialRequests":  "string|null"         // anything else noteworthy: dietary, accessibility, special setup
+}
+
+Rules:
+- YEAR: assume 2026 for any date without a year.
+- "honeymoon", "babymoon", "anniversary trip" → occasion field, NOT specialRequests.
+- "couple", "my wife/husband", "two of us" → groupType: "couple", passengers: 2.
+- "family" with kids → groupType: "family".
+- Only extract what is EXPLICITLY in this message. Do not infer or guess.
+- specialRequests: capture free-text notes that don't fit other fields. Max 120 chars.`;
+
+/**
+ * Extract context signals from a single traveler message.
+ * Returns an object with only the non-null fields found.
+ */
+async function _extractContext(text) {
+  const groq = _getGroq();
+  if (!groq) return {};
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model:           'openai/gpt-oss-120b',
+      messages:        [
+        { role: 'system', content: CONTEXT_SYSTEM_PROMPT },
+        { role: 'user',   content: text },
+      ],
+      temperature:     0,
+      max_tokens:      400,
+      response_format: { type: 'json_object' },
+    });
+
+    const raw = completion.choices[0]?.message?.content;
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw);
+
+    // Strip nulls and empty arrays — only keep what was actually found
+    const found = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (v === null || v === undefined) continue;
+      if (Array.isArray(v) && v.length === 0) continue;
+      found[k] = v;
+    }
+    return found;
+
+  } catch (err) {
+    logger.warn('widgetChat: context extraction failed', { error: err.message });
+    return {};
+  }
+}
+
+/**
+ * Merge newly extracted context into the thread's existing trip_params.
+ * Existing values are never overwritten — new signals fill in gaps only.
+ * Special cases:
+ *   - travelerName also updates chat_threads.traveler_name if it was null.
+ *   - activityRequests are union-merged (no duplicates).
+ *   - specialRequests are appended if a new one differs from existing.
+ */
+async function _mergeContextIntoThread(threadId, agencyId, existing, extracted) {
+  if (!Object.keys(extracted).length) return;
+
+  const current = existing || {};
+  const update  = {};
+
+  for (const [k, v] of Object.entries(extracted)) {
+    if (k === 'activityRequests') {
+      const merged = [...new Set([...(current.activityRequests || []), ...v])];
+      if (merged.length > (current.activityRequests || []).length) {
+        update.activityRequests = merged;
+      }
+      continue;
+    }
+
+    if (k === 'specialRequests') {
+      if (!current.specialRequests) {
+        update.specialRequests = v;
+      } else if (!current.specialRequests.includes(v)) {
+        // Append new note, cap at 300 chars total
+        update.specialRequests = `${current.specialRequests}; ${v}`.slice(0, 300);
+      }
+      continue;
+    }
+
+    // All other fields: only fill if missing
+    if (current[k] === null || current[k] === undefined) {
+      update[k] = v;
+    }
+  }
+
+  if (!Object.keys(update).length) return;
+
+  const merged = { ...current, ...update };
+
+  const threadUpdate = { trip_params: merged };
+
+  // If we just learned the traveler's name, surface it on the thread row too
+  if (update.travelerName) {
+    threadUpdate.traveler_name = update.travelerName;
+  }
+
+  const { error } = await supabase
+    .from('chat_threads')
+    .update(threadUpdate)
+    .eq('id', threadId)
+    .eq('agency_id', agencyId);
+
+  if (error) {
+    logger.warn('widgetChat: failed to merge context into thread', { threadId, error: error.message });
+  } else {
+    logger.info('widgetChat: context merged', { threadId, updatedKeys: Object.keys(update) });
+  }
+}
+
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
 
 async function _resolveAgency(req) {
   const key = req.headers['x-api-key'] || req.headers['x-hotel-key'];
@@ -146,7 +303,7 @@ router.post('/send', async (req, res) => {
 
     const { data: thread } = await supabase
       .from('chat_threads')
-      .select('id, status, agency_id')
+      .select('id, status, agency_id, trip_params')
       .eq('id', value.threadId)
       .eq('session_key', sessionKey)
       .eq('agency_id', agency.id)
@@ -169,6 +326,15 @@ router.post('/send', async (req, res) => {
       .single();
 
     if (msgErr) throw msgErr;
+
+    // ── Context extraction — fire-and-forget ──────────────────────────
+    // Runs after we've already responded to the traveler. No await.
+    _extractContext(safeText).then(extracted => {
+      return _mergeContextIntoThread(thread.id, agency.id, thread.trip_params, extracted);
+    }).catch(err => {
+      logger.warn('widgetChat: background context extraction error', { error: err.message });
+    });
+    // ─────────────────────────────────────────────────────────────────
 
     logger.info('widgetChat: traveler message', { threadId: thread.id, len: safeText.length });
     return res.json({ success: true, messageId: msg.id });
@@ -208,9 +374,9 @@ router.get('/poll', async (req, res) => {
       .order('created_at', { ascending: true });
 
     if (after) {
-  const afterDate = new Date(after);
-  if (!isNaN(afterDate.getTime())) query = query.gt('created_at', after);
-}
+      const afterDate = new Date(after);
+      if (!isNaN(afterDate.getTime())) query = query.gt('created_at', after);
+    }
 
     const { data: messages, error: msgErr } = await query;
     if (msgErr) throw msgErr;
@@ -306,10 +472,6 @@ router.post('/back', async (req, res) => {
 
 // ─────────────────────────────────────────────
 // GET /poll-approval
-// Widget polls this every 6s while in held (manual approval) state.
-// Query: sessionId
-// Returns { resolved: false } while pending,
-//         { resolved: true, outcome, packages?, agentNote?, message? } once decided.
 // ─────────────────────────────────────────────
 router.get('/poll-approval', async (req, res) => {
   const { sessionId } = req.query;
@@ -352,7 +514,6 @@ router.get('/poll-approval', async (req, res) => {
       });
     }
 
-    // Expired
     return res.json({
       resolved: true,
       outcome:  'declined',

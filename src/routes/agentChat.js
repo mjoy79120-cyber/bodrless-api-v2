@@ -33,6 +33,47 @@ function _getResend() {
 const MAX_MSG_LEN  = 2000;
 const POLL_LIMIT   = 50;   // messages per thread fetch
 
+/**
+ * Build a one-line human-readable context summary for the agent.
+ * E.g. "Jane · Nairobi → Cape Town · 10 Nov–17 Nov · 2 pax · honeymoon"
+ */
+function _contextSummary(thread) {
+  const p     = thread.trip_params || {};
+  const parts = [];
+
+  if (thread.traveler_name) parts.push(thread.traveler_name);
+
+  // Occasion and group type
+  if (p.occasion)  parts.push(p.occasion.replace(/_/g, ' '));
+  if (p.groupType) parts.push(p.groupType);
+
+  const route = [p.origin, p.destination].filter(Boolean).join(' → ');
+  if (route) parts.push(route);
+
+  if (p.departureDate || p.returnDate) {
+    const fmt = d => {
+      try { return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }); }
+      catch { return d; }
+    };
+    parts.push([p.departureDate, p.returnDate].filter(Boolean).map(fmt).join('–'));
+  }
+
+  if (p.nights)     parts.push(`${p.nights} nights`);
+  if (p.passengers) parts.push(`${p.passengers} pax${p.children ? ` (${p.children} child)` : ''}`);
+  if (p.budget)     parts.push(`budget: ${p.budget}`);
+  if (p.mealPlan)   parts.push(p.mealPlan);
+
+  const activities = (p.activityRequests || []).filter(Boolean);
+  if (activities.length) parts.push(activities.join(', '));
+
+  if (p.specialRequests) parts.push(`note: ${p.specialRequests}`);
+
+  const pkgCount = thread.last_packages?.length || 0;
+  if (pkgCount) parts.push(`${pkgCount} pkg${pkgCount !== 1 ? 's' : ''} shown`);
+
+  return parts.join(' · ') || null;
+}
+
 // ─────────────────────────────────────────────
 // GET /chat/inbox  — agent's open thread list
 // Query: status (open|closed|all), limit, offset
@@ -95,8 +136,9 @@ router.get('/chat/inbox', async (req, res) => {
 
     const enriched = (threads || []).map(t => ({
       ...t,
-      lastMessage:   lastMessages[t.id] || null,
-      unreadCount:   unreadCounts[t.id]  || 0,
+      lastMessage:    lastMessages[t.id] || null,
+      unreadCount:    unreadCounts[t.id]  || 0,
+      contextSummary: _contextSummary(t),
     }));
 
     return res.json({ success: true, threads: enriched, total: count || 0 });
@@ -184,9 +226,9 @@ router.get('/chat/thread/:id', async (req, res) => {
     }
 
     return res.json({
-      success:  true,
-      thread,
-      messages: messages || [],
+      success:        true,
+      thread:         { ...thread, contextSummary: _contextSummary(thread) },
+      messages:       messages || [],
     });
   } catch (err) {
     logger.error('agentChat GET /chat/thread/:id', { error: err.message });
