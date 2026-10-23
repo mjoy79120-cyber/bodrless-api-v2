@@ -43,33 +43,10 @@ function _getGroq() {
   return _groq;
 }
 
-const CONTEXT_PROMPT = `You are a travel context extractor. Given a traveler's raw search prompt, extract signals. Return ONLY a valid JSON object, no markdown, no explanation, nothing else.
+const CONTEXT_PROMPT = `Extract travel signals from the prompt. Return a single JSON object with these keys (null if not present):
+travelerName, occasion (honeymoon/anniversary/birthday/family_holiday/business/romantic_getaway/graduation/babymoon/solo_travel/other), groupType (couple/family/solo/friends/corporate), destination, origin, departureDate (YYYY-MM-DD), returnDate (YYYY-MM-DD), nights (number), passengers (number), children (number), budget (low/mid/high/luxury), budgetKES (number), specialRequests.
 
-{
-  "travelerName":    "string|null",
-  "occasion":        "honeymoon|anniversary|birthday|family_holiday|business|romantic_getaway|graduation|babymoon|solo_travel|other|null",
-  "groupType":       "couple|family|solo|friends|corporate|null",
-  "destination":     "string|null",
-  "origin":          "string|null",
-  "departureDate":   "YYYY-MM-DD|null",
-  "returnDate":      "YYYY-MM-DD|null",
-  "nights":          "number|null",
-  "passengers":      "number|null",
-  "children":        "number|null",
-  "budget":          "low|mid|high|luxury|null",
-  "budgetKES":       "number|null",
-  "specialRequests": "string|null"
-}
-
-Rules:
-- Assume year 2026 for dates without a year.
-- budgetKES: convert shorthand to full number — "300k" → 300000, "1.5M" → 1500000.
-- "honeymoon", "babymoon", "anniversary" → occasion field.
-- "birthday trip", "birthday" → occasion: "birthday".
-- "my wife/husband", "couple", "two of us" → groupType: "couple", passengers: 2.
-- "with my friend", "friends" → groupType: "friends".
-- Only extract what is EXPLICITLY stated. Use null for everything else.
-- Your entire response must be a single JSON object. No other text.`;
+Rules: "birthday" → occasion:birthday. "honeymoon/babymoon/anniversary" → occasion field. "couple/wife/husband/two of us" → groupType:couple + passengers:2. "friend/friends" → groupType:friends. "300k" → budgetKES:300000. Assume year 2026 for dates. Return JSON only, no other text.`;
 
 async function _extractContext(prompt) {
   const groq = _getGroq();
@@ -82,7 +59,7 @@ async function _extractContext(prompt) {
         { role: 'user',   content: prompt },
       ],
       temperature: 0,
-      max_tokens:  300,
+      max_tokens:  500,
     });
     const raw = completion.choices[0]?.message?.content?.trim();
     logger.info('approvalGate: raw model output', { raw: raw?.slice(0, 200) });
