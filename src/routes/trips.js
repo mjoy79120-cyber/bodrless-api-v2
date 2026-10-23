@@ -102,7 +102,8 @@ router.post('/orchestrate', async (req, res) => {
       result,
       userKey:  sessionKey,
       channel:  'widget',
-      send:     () => Promise.resolve(),   // widget polls; no push needed here
+      send:     () => Promise.resolve(),
+      prompt:   value.prompt,
     });
 
     if (held) {

@@ -27,9 +27,71 @@
 
 const supabase = require('../utils/supabase');
 const { logger } = require('../utils/logger');
+const Groq = require('groq-sdk');
 
 const HOLD_MSG = "✈️ Got your trip! Our agent is going through the options and handpicking the best ones for you — we'll send them your way shortly. Hang tight!";
 const STILL_HOLDING_MSG = "Still working on it! Our agent is just finalizing your options — won't be long now. We'll ping you as soon as they're ready 🙏";
+
+// ─────────────────────────────────────────────
+// GROQ CLIENT (lazy)
+// ─────────────────────────────────────────────
+let _groq = null;
+function _getGroq() {
+  if (!_groq && process.env.GROQ_API_KEY) {
+    _groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  }
+  return _groq;
+}
+
+const CONTEXT_PROMPT = `You are a travel context extractor. Given a traveler's raw search prompt, extract signals. Return ONLY valid JSON, no markdown.
+
+{
+  "travelerName":    "string|null",
+  "occasion":        "honeymoon|anniversary|birthday|family_holiday|business|romantic_getaway|graduation|babymoon|solo_travel|other|null",
+  "groupType":       "couple|family|solo|friends|corporate|null",
+  "destination":     "string|null",
+  "origin":          "string|null",
+  "departureDate":   "YYYY-MM-DD|null",
+  "returnDate":      "YYYY-MM-DD|null",
+  "nights":          "number|null",
+  "passengers":      "number|null",
+  "children":        "number|null",
+  "budget":          "low|mid|high|luxury|null",
+  "budgetKES":       "number|null",
+  "specialRequests": "string|null"
+}
+
+Rules:
+- Assume year 2026 for dates without a year.
+- "honeymoon", "babymoon", "anniversary" → occasion field.
+- "my wife/husband", "couple", "two of us" → groupType: couple, passengers: 2.
+- Only extract what is EXPLICITLY stated. Null everything else.`;
+
+async function _extractContext(prompt) {
+  const groq = _getGroq();
+  if (!groq || !prompt) return {};
+  try {
+    const completion = await groq.chat.completions.create({
+      model:           'openai/gpt-oss-120b',
+      messages:        [
+        { role: 'system', content: CONTEXT_PROMPT },
+        { role: 'user',   content: prompt },
+      ],
+      temperature:     0,
+      max_tokens:      300,
+      response_format: { type: 'json_object' },
+    });
+    const raw = completion.choices[0]?.message?.content;
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, v]) => v !== null && v !== undefined)
+    );
+  } catch (err) {
+    logger.warn('approvalGate: context extraction failed', { error: err.message });
+    return {};
+  }
+}
 
 function isManual(agencyRow) {
   if (!agencyRow) return false;
@@ -83,7 +145,7 @@ async function getPending(agencyId, userKey) {
  * @param {function} [opts.send]   (message) => any — optional, failures are swallowed
  * @returns {Promise<boolean>}     true if packages were held (do NOT send them)
  */
-async function check({ agencyRow, result, userKey, channel, phone, send }) {
+async function check({ agencyRow, result, userKey, channel, phone, send, prompt }) {
   if (!isManual(agencyRow)) return false;
   if (!result?.packages?.length) return false;   // clarifications / no-results pass through
 
@@ -95,9 +157,12 @@ async function check({ agencyRow, result, userKey, channel, phone, send }) {
     return false;
   }
 
+  const travelerContext = prompt ? await _extractContext(prompt) : {};
+
   const fields = {
-    trip_params: result.tripParams || {},
-    packages:    result.packages   || [],
+    trip_params:      result.tripParams || {},
+    packages:         result.packages   || [],
+    traveler_context: Object.keys(travelerContext).length ? travelerContext : null,
   };
 
   try {

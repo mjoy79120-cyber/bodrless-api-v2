@@ -297,7 +297,7 @@ router.post('/whatsapp', async (req, res) => {
           packages:       result.packages || [],
           sessionId:      result.sessionId,
         }).catch(() => {});
-        await _sendGated({ agencyId, phoneNumberId, recipient, userKey, result });
+        await _sendGated({ agencyId, phoneNumberId, recipient, userKey, result, prompt });
       }
       return;
     }
@@ -1200,7 +1200,7 @@ async function _getAgencyRow(agencyId) {
 
 // ── Gated sender — ALL result paths that produce packages go through here ─
 // Checks the approval gate; if not held, calls _sendOrchestrationResult.
-async function _sendGated({ agencyId, phoneNumberId, recipient, userKey, result }) {
+async function _sendGated({ agencyId, phoneNumberId, recipient, userKey, result, prompt }) {
   const agencyRow = await _getAgencyRow(agencyId);
   const held = await approvalGate.check({
     agencyRow,
@@ -1209,6 +1209,7 @@ async function _sendGated({ agencyId, phoneNumberId, recipient, userKey, result 
     channel: 'whatsapp',
     phone:   recipient,
     send:    (msg) => whatsappService.sendText(phoneNumberId, recipient, msg),
+    prompt,
   });
   if (!held) await _sendOrchestrationResult({ phoneNumberId, recipient, userKey, result });
   return held;
