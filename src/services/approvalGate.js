@@ -86,12 +86,9 @@ async function _extractContext(prompt) {
     });
     const raw = completion.choices[0]?.message?.content?.trim();
     if (!raw) return {};
-    const clean = raw
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/```\s*$/i, '')
-      .trim();
-    const parsed = JSON.parse(clean);
+        const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return {};
+    const parsed = JSON.parse(match[0]);
     return Object.fromEntries(
       Object.entries(parsed).filter(([, v]) => v !== null && v !== undefined)
     );
