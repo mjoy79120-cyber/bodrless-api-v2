@@ -59,7 +59,7 @@ async function _extractContext(prompt) {
         { role: 'user',   content: prompt },
       ],
       temperature: 0,
-      max_tokens:  500,
+      max_tokens:  800,
     });
     const raw = completion.choices[0]?.message?.content?.trim();
     logger.info('approvalGate: raw model output', { raw: raw?.slice(0, 200) });
