@@ -72,18 +72,22 @@ async function _extractContext(prompt) {
   if (!groq || !prompt) return {};
   try {
     const completion = await groq.chat.completions.create({
-      model:           'openai/gpt-oss-120b',
-      messages:        [
+      model:       'openai/gpt-oss-120b',
+      messages:    [
         { role: 'system', content: CONTEXT_PROMPT },
         { role: 'user',   content: prompt },
       ],
-      temperature:     0,
-      max_tokens:      300,
-      response_format: { type: 'json_object' },
+      temperature: 0,
+      max_tokens:  300,
     });
-    const raw = completion.choices[0]?.message?.content;
+    const raw = completion.choices[0]?.message?.content?.trim();
     if (!raw) return {};
-    const parsed = JSON.parse(raw);
+    const clean = raw
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
+    const parsed = JSON.parse(clean);
     return Object.fromEntries(
       Object.entries(parsed).filter(([, v]) => v !== null && v !== undefined)
     );
