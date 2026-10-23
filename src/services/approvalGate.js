@@ -85,6 +85,7 @@ async function _extractContext(prompt) {
       max_tokens:  300,
     });
     const raw = completion.choices[0]?.message?.content?.trim();
+    logger.info('approvalGate: raw model output', { raw: raw?.slice(0, 200) });
     if (!raw) return {};
         const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return {};
