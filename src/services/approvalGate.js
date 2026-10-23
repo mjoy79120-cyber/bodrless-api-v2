@@ -158,6 +158,7 @@ async function check({ agencyRow, result, userKey, channel, phone, send, prompt 
   }
 
   const travelerContext = prompt ? await _extractContext(prompt) : {};
+  logger.info('approvalGate: extracted context', { userKey, prompt: prompt?.slice(0, 80), travelerContext });
 
   const fields = {
     trip_params:      result.tripParams || {},
