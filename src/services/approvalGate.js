@@ -43,7 +43,7 @@ function _getGroq() {
   return _groq;
 }
 
-const CONTEXT_PROMPT = `You are a travel context extractor. Given a traveler's raw search prompt, extract signals. Return ONLY valid JSON, no markdown.
+const CONTEXT_PROMPT = `You are a travel context extractor. Given a traveler's raw search prompt, extract signals. Return ONLY a valid JSON object, no markdown, no explanation, nothing else.
 
 {
   "travelerName":    "string|null",
@@ -63,9 +63,13 @@ const CONTEXT_PROMPT = `You are a travel context extractor. Given a traveler's r
 
 Rules:
 - Assume year 2026 for dates without a year.
+- budgetKES: convert shorthand to full number — "300k" → 300000, "1.5M" → 1500000.
 - "honeymoon", "babymoon", "anniversary" → occasion field.
-- "my wife/husband", "couple", "two of us" → groupType: couple, passengers: 2.
-- Only extract what is EXPLICITLY stated. Null everything else.`;
+- "birthday trip", "birthday" → occasion: "birthday".
+- "my wife/husband", "couple", "two of us" → groupType: "couple", passengers: 2.
+- "with my friend", "friends" → groupType: "friends".
+- Only extract what is EXPLICITLY stated. Use null for everything else.
+- Your entire response must be a single JSON object. No other text.`;
 
 async function _extractContext(prompt) {
   const groq = _getGroq();
