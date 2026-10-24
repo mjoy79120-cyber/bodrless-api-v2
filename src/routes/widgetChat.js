@@ -87,14 +87,14 @@ async function _extractContext(text) {
   if (!groq) return {};
 
   try {
-    const completion = await groq.chat.completions.create({
-      model:           'openai/gpt-oss-120b',
-      messages:        [
+        const completion = await groq.chat.completions.create({
+      model:        'openai/gpt-oss-120b',
+      messages:     [
         { role: 'system', content: CONTEXT_SYSTEM_PROMPT },
-        { role: 'user',   content: text },
+        { role: 'user',   content: 'Extract travel context from this conversation:\n\n' + text.slice(0, 800) },
       ],
-      temperature:     0,
-      max_tokens:      400,
+      temperature:  0,
+      max_tokens:   600,
       response_format: { type: 'json_object' },
     });
 
