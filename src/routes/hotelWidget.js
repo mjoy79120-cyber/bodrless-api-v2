@@ -629,17 +629,25 @@ function initHotelWidget(){
   // ── END talk bar logic ─────────────────────────────────────────────────
 
   // ── Welcome card ────────────────────────────────────────────────────────
-  var welcomeShown = false;
+    var welcomeShown = false;
   function showWelcome(){
     if(welcomeShown) return; welcomeShown = true;
     var card = document.createElement('div'); card.className = 'bd-welcome';
 
-    var ey = document.createElement('div'); ey.className = 'bd-eyebrow'; ey.innerText = 'Your personal concierge';
-    var tt = document.createElement('div'); tt.className = 'bd-welcome-title'; tt.innerText = 'Welcome to '+hotelName;
+    var ey = document.createElement('div'); ey.className = 'bd-eyebrow';
+    ey.innerText = 'Your personal concierge';
+
+    var tt = document.createElement('div'); tt.className = 'bd-welcome-title';
+    tt.innerText = 'Welcome to ' + hotelName + ' \uD83C\uDFE8';
+
     var bd = document.createElement('div'); bd.className = 'bd-welcome-body';
-    bd.innerText = "Tell me the occasion, your preferred dates, and how many guests \u2014 I'll find the perfect room.";
-    card.appendChild(ey); card.appendChild(tt); card.appendChild(bd);
-    msgs.appendChild(card); msgs.scrollTop = msgs.scrollHeight;
+    bd.innerText = "Hello! I\u2019m delighted to have you here. May I start with your name, and how can I make your stay truly special today?";
+
+    card.appendChild(ey);
+    card.appendChild(tt);
+    card.appendChild(bd);
+    msgs.appendChild(card);
+    msgs.scrollTop = msgs.scrollHeight;
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
