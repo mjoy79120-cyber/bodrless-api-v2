@@ -486,6 +486,11 @@ class HotelDirectEngine {
         }
       }
 
+      // ── Auto-select when only one property in the group ──────────────
+      if (!property && allProperties.length === 1) {
+        property = allProperties[0];
+      }
+
       // ── No property and no feature — show clean picker ───────────────
       if (!property) {
         const propList = allProperties
