@@ -748,6 +748,8 @@ if (isDestinationSwitch) {
       }
     }
 
+        console.log('HOTEL SAMPLE:', JSON.stringify(rankedPackages[0]?.hotel, null, 2));
+
     const unavailableNotes = [unavailableProviderNote, unavailableHotelNote].filter(Boolean).join(' ');
 
     const dest        = this._titleCase(tripParams.destination);
