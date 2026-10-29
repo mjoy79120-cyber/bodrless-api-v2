@@ -285,7 +285,7 @@ class OrchestrationEngine {
           const dest = this._titleCase(previousParams.destination || '');
           return {
             sessionId,
-            text: `Got it — just the flight to ${dest}. Select the option you'd like above and I'll get it booked for you.`,
+            text: `No problem, just the flight to ${dest}. Pick the option you like above and I'll get it booked for you.`,
             packages:            previousParams._lastFlightPackages || [],
             needsClarification:  false,  // FIX 6: was missing, caused duplicate messages
             tripParams:          { ...previousParams, _awaitingHotelFollowUp: undefined },
@@ -761,7 +761,7 @@ if (isDestinationSwitch) {
     if (rankedPackages.length > 0) {
       const dateLabel = ` — ${depDateFmt}${retDateFmt ? ` to ${retDateFmt}` : ''}`;
       const isFlightOnlySearch = rankedPackages.length > 0 && rankedPackages.every(p => p._flightOnly);
-      responseText = `Here are ${rankedPackages.length} option${rankedPackages.length > 1 ? 's' : ''} for ${dest}${dateLabel}.${unavailableNotes ? ' ' + unavailableNotes : ''}${dateNote}`;
+      responseText = this._warmResultsIntro(dest, rankedPackages.length, dateLabel) + (unavailableNotes ? ' ' + unavailableNotes : '') + dateNote;
 
       if (tripParams._accessibleTransfers?.length > 0) {
         const t = tripParams._accessibleTransfers[0];
@@ -816,6 +816,26 @@ if (isDestinationSwitch) {
 
         if (tripParams._changeNote) { responseText = `${tripParams._changeNote}\n\n${responseText}`; tripParams._changeNote = undefined; }
     return { text: responseText, packages: rankedPackages };
+  }
+
+  _warmResultsIntro(dest, count, dateLabel) {
+    const s = count > 1 ? "s" : "";
+    const pool = [
+      "Leave it with me. I found " + count + " option" + s + " for " + dest + dateLabel + "." + (count > 1 ? " The first one is my pick." : ""),
+      "Let's get you to " + dest + "! Here " + (count > 1 ? "are " : "is ") + count + " option" + s + dateLabel + ".",
+      dest + ", lovely choice. I've lined up " + count + " option" + s + dateLabel + ".",
+      "Good news, I've found " + count + " option" + s + " for " + dest + dateLabel + ".",
+    ];
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  _warmTripIntro() {
+    const pool = [
+      "Here's your complete trip, leg by leg. I've taken care of the planning.",
+      "Leave it with me. Your whole trip is below, broken down leg by leg.",
+      "Let's build this together. Here's your trip, one leg at a time.",
+    ];
+    return pool[Math.floor(Math.random() * pool.length)];
   }
 
   _dedupeEquivalentFlights(transportList) {
@@ -1301,7 +1321,7 @@ if (isDestinationSwitch) {
       : null;
 
     const noteParts    = [excursionNote, safariLodgeNote].filter(Boolean);
-    const responseText = [`Here's your complete trip broken down by leg:`, ...noteParts].join('\n\n');
+    const responseText = [this._warmTripIntro(), ...noteParts].join('\n\n');
 
     return {
       sessionId,

@@ -230,7 +230,7 @@ router.post('/whatsapp', async (req, res) => {
       });
       if (handledByBooking) return;
 
-      await whatsappService.sendText(phoneNumberId, recipient, "Got it, thanks!");
+      await whatsappService.sendText(phoneNumberId, recipient, "Thanks! Tell me where you'd like to go next ✈️");
       return;
     }
 
@@ -467,7 +467,7 @@ router.post('/whatsapp', async (req, res) => {
       await conversationMemory.clearLegFlow(userKey, agencyId);
       await whatsappBookingFlow.clearSession(userKey);
       await whatsappService.sendText(phoneNumberId, recipient,
-        "Got it — cleared. Just send me a destination whenever you're ready! ✈️"
+        "All cleared! Send me a destination whenever you're ready ✈️"
       );
       return;
     }
@@ -638,7 +638,7 @@ router.post('/whatsapp', async (req, res) => {
           pendingChildAgeCapture: false,
         };
 
-        await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
+        await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment(contact?.name));
 
         const result = await orchestrationEngine.orchestrate(null, agencyId, {
           conversationHistory: memCtx.conversationHistory,
@@ -683,7 +683,7 @@ router.post('/whatsapp', async (req, res) => {
         logger.info('Clarification resume: injecting origin from reply', {
           userKey, origin: candidateOrigin, previousDestination: memCtx.previousParams.destination,
         });
-        await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
+        await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment(contact?.name));
 
         const resumedParams = {
           ...memCtx.previousParams,
@@ -753,7 +753,7 @@ router.post('/whatsapp', async (req, res) => {
       }
     }
 
-    await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment());
+    await whatsappService.sendText(phoneNumberId, recipient, _pickAcknowledgment(contact?.name));
     logger.info('Webhook: calling orchestrationEngine...', { userKey, prompt: prompt.slice(0, 80) });
 
     // ── TRIPLY ROUTING ─────────────────────────────────────
@@ -1082,7 +1082,7 @@ async function _handleLegFlowMessage({ phoneNumberId, recipient, userKey, agency
     const legPrice = selectedPackage.summary?.totalPrice || 0;
     const legCurrency = selectedPackage.summary?.currency || 'KES';
     await whatsappService.sendText(phoneNumberId, recipient,
-      `✅ Got it — *Option ${optionNum}* selected for *${currentLeg.roleLabel || currentLeg.label}* (${legCurrency} ${legPrice.toLocaleString()})`
+      `✅ Lovely choice — *Option ${optionNum}* selected for *${currentLeg.roleLabel || currentLeg.label}* (${legCurrency} ${legPrice.toLocaleString()})`
     );
 
     if (!updatedFlow.active) {
@@ -1340,16 +1340,25 @@ async function _clearAwaitingName({ phone, userId }) {
 }
 
 const ACKNOWLEDGMENT_MESSAGES = [
-  "On it! 🔍 Let me pull together some great options for you...",
-  "Say less — searching now, one moment...",
-  "Great, let me see what I can find for you...",
-  "Got it! Give me a second to line up some options...",
-  "Alright, let's find you something good — one moment...",
-  "Perfect, searching now — won't be long...",
+  "Let me take care of this for you 🔍 One moment...",
+  "Leave it with me, pulling together some great options...",
+  "Let's find you something good. Give me a moment...",
+  "On it! Lining up the best options for you...",
+  "Say less, searching now. One moment...",
+  "Perfect, let me see what I can find for you...",
 ];
 
-function _pickAcknowledgment() {
-  return ACKNOWLEDGMENT_MESSAGES[Math.floor(Math.random() * ACKNOWLEDGMENT_MESSAGES.length)];
+const NAMED_ACKNOWLEDGMENTS = [
+  (n) => n + ", leave it with me. Finding you something good...",
+  (n) => "Let me take care of this for you, " + n + ". One moment...",
+  (n) => "On it, " + n + "! Lining up your options now...",
+];
+
+function _pickAcknowledgment(name) {
+  const pool = ACKNOWLEDGMENT_MESSAGES.slice();
+  const first = name ? String(name).trim().split(/\s+/)[0] : '';
+  if (first) NAMED_ACKNOWLEDGMENTS.forEach(f => pool.push(f(first)));
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 function _extractName(text) {
