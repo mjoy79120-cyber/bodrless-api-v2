@@ -22,6 +22,7 @@
 
 const express = require('express');
 const router = express.Router();
+const stripPrivate = tp => { if (!tp) return tp; const { _lastFlightPackages, _lastPackages, ...rest } = tp; return rest; };
 const Joi = require('joi');
 const approvalGate = require('../services/approvalGate');
 const orchestrationEngine = require('../orchestration/engine');
@@ -115,7 +116,7 @@ router.post('/orchestrate', async (req, res) => {
         holdMessage:         approvalGate.HOLD_MSG,
         packages:            [],
         sessionId:           sessionKey,
-        tripParams:          result?.tripParams || null,
+        tripParams:          stripPrivate(result?.tripParams) || null,
         conversationHistory: result?.conversationHistory || [],
       });
     }

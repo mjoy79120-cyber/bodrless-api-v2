@@ -11,6 +11,7 @@ const travelerIntelligence = require("../services/travelerIntelligence");
 const tripMonitoringService = require("../services/tripMonitoringService");
 
 const cachedSearch = require('../services/cachedSearch');
+const searchCache = require('../services/searchSessionCache');
 const { getAccessibleOptions, formatAccessibilityResponse } = require('../services/accessibilityService');
 
 let scorePackages = null;
@@ -257,6 +258,7 @@ class OrchestrationEngine {
             _lastFlightPackages:    undefined,
           };
           const freshIntent = this._detectIntent(prompt, cleanParams);
+          if (freshIntent.isFollowUp) Object.assign(cleanParams, this._adjustParams(cleanParams, freshIntent));
           return await this._continueOrchestration(
             cleanParams, agencyId, prompt, conversationHistory,
             sessionId, freshIntent, context.channel, context.phone
@@ -436,13 +438,15 @@ if (isDestinationSwitch) {
   tripParams._awaitingHotelFollowUp = undefined;
   tripParams._lastFlightPackages    = undefined;
 
-        } else if (!skipFreshParse) {
+        } else if (/\b(?:to|from)\s+[a-z]{3,}/i.test(prompt)) {
           // Original destination-changed / multi-trip override logic
           const freshParse = await parsePrompt(prompt, null);
           const freshDest  = (freshParse.destination || '').toLowerCase().trim();
           const prevDest   = (tripParams.destination  || '').toLowerCase().trim();
 
-          const destinationChanged = freshDest && prevDest && freshDest !== prevDest;
+          const _fo = (freshParse.origin || '').toLowerCase().trim();
+          const _po = (tripParams.origin || '').toLowerCase().trim();
+          const destinationChanged = !!((freshDest && prevDest && freshDest !== prevDest) || (_fo && _po && _fo !== _po));
           const isMultiTripOverride = Array.isArray(freshParse.trips) && freshParse.trips.length > 1 &&
             !freshParse.trips.some(t => (t.destination || '').toLowerCase() === prevDest);
 
@@ -591,11 +595,17 @@ if (isDestinationSwitch) {
       });
     }
 
+    const pre = context?.prefetched;
     const [
       outboundResult, outboundBuses, outboundTrains,
       returnResult, returnBuses, returnTrains,
       hotelResults
-    ] = await Promise.all([
+    ] = pre ? [
+      { results: pre.outbound, connectsVia: pre.outConnects || null, connectingLegBookable: true },
+      [], [],
+      { results: pre.ret, connectsVia: null, connectingLegBookable: true },
+      [], [], pre.hotels,
+    ] : await Promise.all([
       skipFlight
         ? Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true })
         : this._searchFlightsWithHubFallback(tripParams, 'outbound', destinationAccess),
@@ -613,7 +623,7 @@ if (isDestinationSwitch) {
 
     console.log(`[TIMING] single-dest supplier search (${tripParams.destination}): ${Date.now() - _tSearch}ms`);
 
-    if (routeLearning) {
+    if (routeLearning && !pre) {
       const flightCount = outboundResult.results.length;
       const hotelCount  = hotelResults.length;
       const durationMs  = Date.now() - _tSearch;
@@ -666,6 +676,15 @@ if (isDestinationSwitch) {
 
     outboundTransport = this._dedupeEquivalentFlights(outboundTransport);
     returnTransport    = this._dedupeEquivalentFlights(returnTransport);
+
+    if (!pre && context?.cache && !tripParams.bypassCache && !outboundResult.results.searchFailed) {
+      const key = tripParams._cacheKey || (tripParams._cacheKey = searchCache.newKey());
+      searchCache.put(key, tripParams, {
+        outbound: outboundTransport, ret: returnTransport, hotels,
+        outConnects: outboundResult.connectsVia, hadTransport: !skipFlight,
+      });
+    }
+    outboundTransport = this._applyTimePreference(outboundTransport, tripParams.timePreference);
 
     if (routeHints?.compoundRoutes?.length > 0) {
       logger.info('RouteLearning: found compound routes', {
@@ -818,6 +837,22 @@ if (isDestinationSwitch) {
 
         if (tripParams._changeNote) { responseText = `${tripParams._changeNote}\n\n${responseText}`; tripParams._changeNote = undefined; }
     return { text: responseText, packages: rankedPackages };
+  }
+
+  _localHour(t) {
+    const s = String(t || '');
+    const x = /T(\d{2}):/.exec(s) || /^(\d{1,2}):\d{2}/.exec(s);
+    return x ? +x[1] : null;
+  }
+
+  _applyTimePreference(list, band) {
+    if (!band) return list;
+    const ok = h => band === 'morning' ? h >= 5 && h < 12
+      : band === 'afternoon' ? h >= 12 && h < 17
+      : band === 'evening' ? h >= 17 && h < 21
+      : band === 'night' ? (h >= 21 || h < 5) : true;
+    return list.filter(f => (f.transportType || 'flight') !== 'flight'
+      || this._localHour(f.departureTime) == null || ok(this._localHour(f.departureTime)));
   }
 
   _warmResultsIntro(dest, count, dateLabel) {
@@ -2357,7 +2392,16 @@ if (isDestinationSwitch) {
       return { sessionId, text: `I couldn't find flights to ${this._titleCase(tripParams.destination)} in the next few weeks. What dates are you flexible on? Give me a rough window and I'll find you something.`, packages: [], needsClarification: true, tripParams, intent, conversationHistory, generatedAt: new Date().toISOString() };
     }
 
-    const singleResult = await this._runSingleDestinationSearch(tripParams, sessionId, prompt, intent, { phone });
+    let prefetched = null;
+    if (intent?.isFollowUp && tripParams._cacheKey) {
+      const e = searchCache.get(tripParams._cacheKey, tripParams);
+      const needT = intent.productScope?.needsTransport !== false;
+      if (e && (!needT || e.hadTransport)) {
+        prefetched = { outbound: e.outbound, ret: e.ret, hotels: e.hotels, outConnects: e.outConnects };
+      }
+    }
+    const singleResult = await this._runSingleDestinationSearch(
+      tripParams, sessionId, prompt, intent, { phone, prefetched, cache: true });
 
     const updatedHistory = [...conversationHistory, { role: 'user', content: prompt }, { role: 'assistant', content: `Found ${singleResult.packages.length} packages`, params: tripParams, packageCount: singleResult.packages.length }].slice(-10);
 
@@ -2575,6 +2619,13 @@ if (isDestinationSwitch) {
       if (/aisle seat/i.test(t)) adj.seatPreference = 'aisle';
       if (/morning/i.test(t)) adj.timePreference = 'morning';
       if (/\bevening\b|\bat night\b|\bnight flight\b/i.test(t)) adj.timePreference = 'evening';
+      const _al = t.match(/\b(kenya airways|kq|emirates|qatar airways|ethiopian|rwandair|turkish|klm|lufthansa|british airways|air france)\b/);
+      if (_al) adj.preferredTransportProvider = _al[1];
+      if (/\bany airline\b|\ball airlines\b/.test(t)) adj.preferredTransportProvider = null;
+      if (/\bafternoon\b/.test(t)) adj.timePreference = 'afternoon';
+      if (/\bany ?time\b/.test(t)) adj.timePreference = null;
+      if (/\bupgrade\b|\bbetter hotel\b|\bnicer\b/.test(t)) adj.budget = 'high';
+      if (!nightsMatch && /\bmore nights\b/.test(t)) adj.nights = (previousParams?.nights || 3) + 1;
       const dx = parseDateExpression(t, { currentDeparture: previousParams?.departureDate || null });
       if (dx) adj.dates = dx;
       return adj;
@@ -2670,7 +2721,18 @@ if (isDestinationSwitch) {
       };
     }
 
-        // 4b. Date change ("december 5th", "dec 5 to 12", "mid january", "a week later")
+        // fresh "X to Y" route => new trip (prevents stale origin/destination bleed-over)
+    const _route = lower.match(/\b([a-z][a-z ]{2,20}?)\s+to\s+([a-z][a-z ]{2,25}?)(?=\s+(?:on|for|in|from|with|\d)|[,.!?]|$)/i);
+    if (_route && lower.split(/\s+/).length >= 4
+        && !/^(back|up|swap|switch|change|move|push|shift|set|make|put|bring|keep|do|go|try|add|due|next|close)\b/.test(_route[1].trim())
+        && !/\b(flight|flights|train|bus|buses|seat|hotel|option|class|airline)\b/.test(_route[1])
+        && !/^(flight|flights|train|bus|sgr|kq|the|a|an|my|\d)/.test(_route[2].trim())
+        && !parseDateExpression(_route[2])) {
+      return { isFollowUp: false, adjustments: _extractAdjustments(lower),
+               productScope: this._buildProductScope(lower), wantsCheapest, wantsAffordableSort, wantsSuggestDates };
+    }
+
+    // 4b. Date change ("december 5th", "dec 5 to 12", "mid january", "a week later")
     const _adj = _extractAdjustments(lower);
     if (_adj.dates && lower.split(/\s+/).filter(Boolean).length <= 14) {
       return {
@@ -2759,6 +2821,7 @@ if (isDestinationSwitch) {
   // ── FIX 4: _adjustParams handles destination switch + origin preservation ──
   _adjustParams(previousParams, intent) {
     const adjusted    = { ...previousParams };
+    delete adjusted._missingFields; delete adjusted._freshScore; delete adjusted._parsedBy; delete adjusted._confidence;
     const { adjustments } = intent;
 
     if (adjustments.budget         !== undefined) adjusted.budget         = adjustments.budget;
@@ -2767,6 +2830,7 @@ if (isDestinationSwitch) {
     if (adjustments.transportMode  !== undefined) adjusted.transportMode  = adjustments.transportMode;
     if (adjustments.seatPreference !== undefined) adjusted.seatPreference = adjustments.seatPreference;
     if (adjustments.timePreference !== undefined) adjusted.timePreference = adjustments.timePreference;
+    if (adjustments.preferredTransportProvider !== undefined) adjusted.preferredTransportProvider = adjustments.preferredTransportProvider;
     if (adjustments.requestedModes) {
       adjusted.requestedModes        = adjustments.requestedModes;
       adjusted.outboundTransportMode = adjustments.outboundTransportMode;
@@ -2922,7 +2986,7 @@ if (isDestinationSwitch) {
         passengers:     tripParams.passengers || 1,
         cabinClass:     tripParams.cabinClass || tripParams.transportClass || 'economy',
         tripType:       'one_way',
-        timePreference: tripParams.timePreference || null,
+        timePreference: null,
         children:       tripParams.children || 0,
         childAges:      Array.isArray(tripParams.childAges) ? tripParams.childAges : [],
         channel:        tripParams._channel || 'engine',
