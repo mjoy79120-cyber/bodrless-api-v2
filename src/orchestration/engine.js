@@ -2667,7 +2667,9 @@ if (isDestinationSwitch) {
       const match = lower.match(pattern);
       if (match) {
         const candidate = (match[1] || '').trim();
-        if (candidate.length >= 3 && !/^(that|this|it|there|here|same|different|the|a|an)$/i.test(candidate) && !parseDateExpression(candidate)) {
+        const TRANSPORT_WORDS = new Set(['flight','flights','fly','flying','train','sgr','madaraka','bus','buses','coach','ferry','drive','car']);
+            if (TRANSPORT_WORDS.has(candidate.toLowerCase())) break;
+            if (candidate.length >= 3 && !/^(that|this|it|there|here|same|different|the|a|an|flight|flights|train|sgr|madaraka|bus|fly)$/i.test(candidate) && !parseDateExpression(candidate)) {
           logger.info('Engine: destination switch detected', {
             candidate,
             previousDest: previousParams.destination,
