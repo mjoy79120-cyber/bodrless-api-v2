@@ -411,7 +411,7 @@ router.patch('/:agencyId', authenticateAgency, _updateAgencySettings);
 
 async function _updateAgencySettings(req, res) {
   const { agencyId } = req.params;
-  const schema = Joi.object({ name: Joi.string().optional(), email: Joi.string().email().optional(), phone: Joi.string().optional().allow(''), website: Joi.string().uri().optional().allow(''), markupPercentage: Joi.number().min(0).max(50).optional() });
+  const schema = Joi.object({ name: Joi.string().optional(), email: Joi.string().email().optional(), phone: Joi.string().optional().allow(''), website: Joi.string().uri().optional().allow(''), markupPercentage: Joi.number().min(0).max(50).optional(), approval_mode: Joi.string().valid('auto', 'manual').optional() });
   const { error, value } = schema.validate(req.body);
   if (error) return res.status(400).json({ success: false, error: error.details[0].message });
   try {
@@ -421,6 +421,7 @@ async function _updateAgencySettings(req, res) {
     if (value.phone)                          updates.phone             = value.phone;
     if (value.website)                        updates.website           = value.website;
     if (value.markupPercentage !== undefined) updates.markup_percentage = value.markupPercentage;
+    if (value.approval_mode !== undefined)  updates.approval_mode     = value.approval_mode;
     await supabase.from('agencies').update(updates).eq('id', agencyId);
     logger.info('Agency settings updated', { agencyId });
     return res.json({ success: true, message: 'Settings updated' });
