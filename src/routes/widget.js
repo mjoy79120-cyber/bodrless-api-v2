@@ -1269,8 +1269,12 @@ function initWidget() {
     var ppd = document.createElement('div'); ppd.className = 'pkg-price'; ppd.innerText = fmtPrice(total,cur);
     var pps = document.createElement('small'); pps.innerText = fmtPrice(ppp,cur)+'/person · '+pax+' traveller(s)'; ppd.appendChild(pps);
     if (onSelect) {
-      var selBtn = document.createElement('button'); selBtn.className = 'select-btn'; selBtn.innerText = '✓ Select';
-      selBtn.onclick = function() { selBtn.innerText = 'Selected ✓'; selBtn.className = 'select-btn selected'; selBtn.disabled = true; onSelect(p);
+      var selBtn = document.createElement('button'); selBtn.className = 'select-btn'; selBtn.innerText = 'Choose this option';
+      var detailsBtn = document.createElement('button'); detailsBtn.className = 'select-btn'; detailsBtn.style.cssText = 'background:transparent;color:var(--et-navy);border:1.5px solid var(--et-border);margin-right:6px;'; detailsBtn.innerText = 'Details ▾';
+      var pkgBodyEl = div.querySelector('.pkg-body');
+      var collapsed = true; if (pkgBodyEl) pkgBodyEl.style.display = 'none';
+      detailsBtn.onclick = function() { if (!pkgBodyEl) return; collapsed = !collapsed; pkgBodyEl.style.display = collapsed ? 'none' : 'block'; detailsBtn.innerText = collapsed ? 'Details ▾' : 'Details ▲'; };
+      selBtn.onclick = function() { selBtn.innerText = 'Selected ✓'; selBtn.className = 'select-btn selected'; selBtn.disabled = true; detailsBtn.style.display = 'none'; onSelect(p);
         selectedPkgHold = { package: p, savedAt: Date.now() };
         if (visitorToken && conversationId) {
           wapi('PUT', '/conversations/' + conversationId + '/state', {
@@ -1280,7 +1284,7 @@ function initWidget() {
         }
         persistState();
       };
-      pf.appendChild(ppd); pf.appendChild(selBtn);
+      pf.appendChild(ppd); pf.appendChild(detailsBtn); pf.appendChild(selBtn);
     } else {
       var bk = document.createElement('button'); bk.className = 'book'; bk.innerText = 'Book Now';
       bk.onclick = function(){ showNameFormStandalone(p, bk); };
