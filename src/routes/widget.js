@@ -980,7 +980,7 @@ function initWidget() {
       }
       addMsg('Here\\'s what I found for ' + w.destination + (w.departure_month ? ' in ' + w.departure_month : '') + ':', 'bot');
       d.packages_cached.slice(0, 4).forEach(function (p, i) {
-        var card = addPackage(p, i, null, null);
+        var card = addPackage(p, i, 0, function(selectedPkg) { selectedPkgHold = { package: selectedPkg, savedAt: Date.now() }; persistState(); showNameFormStandalone(selectedPkg, null); });
         messages.appendChild(card);
       });
       messages.scrollTop = messages.scrollHeight;
@@ -989,7 +989,7 @@ function initWidget() {
 
   function replayTranscript() {
     var note = document.createElement('div'); note.className = 'msg bot'; note.style.cssText = 'font-style:italic;opacity:0.6;'; note.innerText = '— Continuing where you left off —'; messages.appendChild(note);
-    for (var i = 0; i < transcript.length; i++) { var e = transcript[i]; if (!e || !e.type) continue; if (e.type === 'user' || e.type === 'bot') { addMsg(e.text || '', e.type); } else if (e.type === 'packages' && Array.isArray(e.packages)) { e.packages.slice(0,4).forEach(function(p,idx){ addPackage(p, idx, null, null); }); } }
+    for (var i = 0; i < transcript.length; i++) { var e = transcript[i]; if (!e || !e.type) continue; if (e.type === 'user' || e.type === 'bot') { addMsg(e.text || '', e.type); } else if (e.type === 'packages' && Array.isArray(e.packages)) { e.packages.slice(0,4).forEach(function(p,idx){ addPackage(p, idx, 0, function(selectedPkg) { selectedPkgHold = { package: selectedPkg, savedAt: Date.now() }; persistState(); showNameFormStandalone(selectedPkg, null); }); }); } }
     messages.scrollTop = messages.scrollHeight;
   }
 
@@ -1618,7 +1618,7 @@ function initWidget() {
           }
           div.innerText = msg.text || msg.body || ''; messages.appendChild(div);
           if (msg.packages && msg.packages.length) {
-            msg.packages.forEach(function(p, i) { messages.appendChild(addPackage(p, i, null, null)); });
+            msg.packages.forEach(function(p, i) { messages.appendChild(addPackage(p, i, 0, function(selectedPkg) { selectedPkgHold = { package: selectedPkg, savedAt: Date.now() }; persistState(); showNameFormStandalone(selectedPkg, null); })); });
           }
           messages.scrollTop = messages.scrollHeight;
           if (msg.created_at) lastMsgAt = msg.created_at;
@@ -2122,7 +2122,7 @@ if (data.held) {
     var shell = _buildMapShell(shown, tp); if (shell) { shell.style.animationDelay = (base + 80) + "ms"; messages.appendChild(shell); }
     var badges = _badgesFor(shown), cards = [];
     shown.forEach(function (p, i) {
-      var card = addPackage(p, i, null, null);
+      var card = addPackage(p, i, 0, function(selectedPkg) { selectedPkgHold = { package: selectedPkg, savedAt: Date.now() }; persistState(); showNameFormStandalone(selectedPkg, null); });
       _decorateCard(card, p, i, badges[i]);
       card.style.animationDelay = (base + 160 + i * 90) + "ms";
       messages.appendChild(card); cards.push(card);
