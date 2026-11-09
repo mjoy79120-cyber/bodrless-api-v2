@@ -1119,6 +1119,15 @@ if (isDestinationSwitch) {
     const o = this._normalizeCity(origin);
     const d = this._normalizeCity(destination);
 
+    // Safari / bush destinations — road transfer only, no flight search needed
+    const SAFARI_GROUND = [
+      'masai mara', 'maasai mara', 'amboseli', 'tsavo', 'samburu',
+      'ngorongoro', 'serengeti', 'tarangire', 'lake nakuru', 'ol pejeta',
+      'laikipia', 'meru', 'selous', 'ruaha', 'bwindi', 'queen elizabeth',
+      'mikumi', 'nyerere', 'murchison',
+    ];
+    if (SAFARI_GROUND.some(s => d.includes(s) || o.includes(s))) return ['ground'];
+
     const KNOWN_RAIL = [
       ['nairobi', 'mombasa'],
       ['barcelona', 'madrid'],   ['madrid', 'barcelona'],
@@ -1203,14 +1212,33 @@ if (isDestinationSwitch) {
         const transportModes = this._resolveInternalTransportModes(leg.origin, leg.destination);
         const destAccess     = await this._resolveDestinationAccess(leg.destination);
 
+        const isGroundOnly = transportModes.includes('ground');
+
         const [flightResult, buses, trains] = await Promise.all([
-          this._searchFlightsWithHubFallback(legParams, 'outbound', destAccess),
+          isGroundOnly
+            ? Promise.resolve({ results: [], connectsVia: null, connectingLegBookable: true })
+            : this._searchFlightsWithHubFallback(legParams, 'outbound', destAccess),
           transportModes.includes('bus')   ? this._searchBusesWithStaticFallback(legParams, 'outbound', destAccess) : Promise.resolve([]),
           transportModes.includes('train') ? this._searchTrain(legParams, 'outbound', destAccess)                   : Promise.resolve([]),
         ]);
 
         outboundFlights = this._dedupeEquivalentFlights(flightResult.results);
-        outboundBuses   = buses;
+        outboundBuses   = isGroundOnly
+          ? [{
+              transportType: 'bus',
+              provider:      'Safari Vehicle',
+              description:   `Land Cruiser / Safari Van — ${leg.origin} to ${leg.destination}`,
+              origin:        leg.origin,
+              destination:   leg.destination,
+              departureTime: null,
+              arrivalTime:   null,
+              price:         18000,
+              currency:      'KES',
+              priceKES:      18000,
+              _groundTransfer: true,
+              _safariVehicle:  true,
+            }]
+          : buses;
         outboundTrains  = trains;
 
         if (routeLearning) {
@@ -1525,9 +1553,13 @@ if (isDestinationSwitch) {
         return `**Leg 1 — ${origin} → ${dest}** (${depFmt})\n` +
                `Here are ${count} package${count !== 1 ? 's' : ''} including your outbound flight, hotel in ${dest}, and transfers. ` +
                `Your flight home is shown as the final leg.`;
-      case 'internal':
+      case 'internal': {
+        const _safariDests = ['masai mara','maasai mara','amboseli','tsavo','samburu','serengeti','ngorongoro','tarangire','ol pejeta','laikipia'];
+        const _isSafari = _safariDests.some(s => (leg.destination||'').toLowerCase().includes(s));
+        const _transportNote = _isSafari ? 'safari vehicle (land cruiser / van)' : 'transport';
         return `**${origin} → ${dest}** (${depFmt})\n` +
-               `${count} option${count !== 1 ? 's' : ''} for getting to ${dest} — includes transport, hotel, and transfers.`;
+               `${count} option${count !== 1 ? 's' : ''} for getting to ${dest} — includes ${_transportNote}, lodge, and transfers.`;
+      }
       case 'return_stay':
         return isRevisit
           ? `**Back to ${dest}** (${depFmt})\n` +
@@ -1535,9 +1567,13 @@ if (isDestinationSwitch) {
             `I've kept the same hotel from your first stay — reply "different hotel" if you'd prefer other options.`
           : `**${origin} → ${dest}** (${depFmt})\n` +
             `${count} option${count !== 1 ? 's' : ''} including transport and hotel for your stay in ${dest}.`;
-      case 'departure':
+      case 'departure': {
+        const _remoteOrigins = ['nairobi','mombasa','kampala','dar es salaam','kigali','addis ababa','london','dubai','new york','washington','houston'];
+        const _isRemote = !_remoteOrigins.includes((leg.origin || '').toLowerCase());
+        const _connNote = _isRemote ? ` These connect through Nairobi — your transfer to Wilson or JKIA is included.` : '';
         return `**Return flight — ${origin} → ${dest}** (${depFmt})\n` +
-               `${count} flight option${count !== 1 ? 's' : ''} back home. Transfer from your hotel to the airport is included.`;
+               `${count} flight option${count !== 1 ? 's' : ''} back home.${_connNote} Transfer from your hotel to the airport is included.`;
+      }
       default:
         return `${origin} → ${dest}: ${count} option${count !== 1 ? 's' : ''}.`;
     }
