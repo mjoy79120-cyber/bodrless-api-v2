@@ -101,12 +101,15 @@ function buildItinerary(p) {
 function parseStopsWithRules(prompt) {
   const t = String(prompt || '').toLowerCase().replace(/\bone\b/g,'1').replace(/\btwo\b/g,'2').replace(/\bthree\b/g,'3')
     .replace(/\bfour\b/g,'4').replace(/\bfive\b/g,'5').replace(/\bsix\b/g,'6').replace(/\bseven\b/g,'7');
+  const STOP_WORDS = new Set(['then','and','before','after','with','back','next','followed','via','through','plus','or','but']);
   const re = /(\d+)\s*(?:nights?|days?)\s+(?:back\s+)?(?:(?:in|at|to)\s+)?([a-z][a-z ]{2,25}?)(?=\s*(?:,|\.|;|$)|\s+(?:then|and|before|after|with)\b|\s+\d)/g;
   const stops = [];
   let m;
   while ((m = re.exec(t))) stops.push({ city: m[2].trim(), nights: parseInt(m[1], 10) });
   const f = [...t.matchAll(/(?:back|fly(?:ing)?|return(?:ing)?|home)\s+to\s+([a-z][a-z ]{2,25}?)\s*(?:[.,;]|$)/g)].pop();
-  return { stops: stops.length >= 2 ? stops : [], finalDestination: f ? f[1].trim() : null };
+  const filtered = stops.filter(s => !STOP_WORDS.has(s.city.toLowerCase()));
+  return { stops: filtered.length >= 2 ? filtered : [], finalDestination: f ? f[1].trim() : null };
 }
+
 
 module.exports = { buildItinerary, addDays, parseISO, validateInput, parseStopsWithRules };
