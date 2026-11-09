@@ -1144,7 +1144,7 @@ async function parsePrompt(prompt, session = null, ctx = null) {
     }
     if (Array.isArray(raw.stops) && raw.stops.length) {
       raw.stops = raw.stops.map((s) => ({ city: resolveCountryToCity(_tc(s.city)), nights: parseInt(s.nights, 10) }));
-      raw.finalDestination = raw.finalDestination ? resolveCountryToCity(_tc(raw.finalDestination)) : null;
+      raw.finalDestination = (raw.finalDestination && raw.finalDestination !== (raw.stops[raw.stops.length - 1] && raw.stops[raw.stops.length - 1].city)) ? resolveCountryToCity(_tc(raw.finalDestination)) : null;
       raw.trips = null; raw.legs = []; raw.isMultiDestination = false;
       raw.destination = raw.destination || raw.stops[0].city;
     }
