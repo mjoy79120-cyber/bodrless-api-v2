@@ -454,8 +454,8 @@ function initWidget() {
       previousParams      = __r.previousParams      || null;
       sessionId           = __r.sessionId           || null;
       transcript          = __r.transcript          || [];
-      legFlow             = __r.legFlow             || null;
-      itineraryId         = __r.itineraryId         || null;
+      legFlow = (__r.legFlow && __r.legFlow._v === 3) ? __r.legFlow : null;
+      itineraryId = legFlow ? (__r.itineraryId || null) : null;
       hasRestoredHistory  = transcript.length > 0;
       conversationId      = sessionId || null;
       _loadSelectedPkg(__r);
@@ -1204,7 +1204,7 @@ function initWidget() {
       cfb.innerText = 'Processing...'; cfb.disabled = true;
       if (itineraryId) { fetch(apiBase + '/api/trips/itinerary/' + itineraryId + '/attach-phone', { method: 'POST', headers: {'Content-Type':'application/json','x-api-key': agencyKey}, body: JSON.stringify({ phone: phone, agencyId: agencyKey }) }).catch(function(){}); }
       var selectedPackages = [];
-      if (legFlow && legFlow.selections) { var sels = legFlow.selections; for (var si = 0; si < legFlow.legs.length; si++) { if (sels[si] && sels[si].package) selectedPackages.push(sels[si].package); } }
+      if (legFlow && legFlow.selections) { var sels = legFlow.selections; for (var si = 0; si < legFlow.legs.length; si++) { if (sels[si] && sels[si].package) selectedPackages.push(legFlow.legs.some(function(l){ return l.role === 'departure'; }) && legFlow.legs[si].role !== 'departure' ? Object.assign({}, sels[si].package, { returnTransport: null }) : sels[si].package); } }
       fetch(apiBase + '/api/trips/book-init', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ agencyId: agencyKey, guestName: passengers[0].firstName + ' ' + passengers[0].lastName, guestPhone: phone, guestEmail: email, passengers: passengers, packages: selectedPackages, visitorId: visitorToken, paymentType: paymentType, itineraryId: itineraryId || null, legFlow: legFlow }) })
       .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
       .then(function(res) {
@@ -1762,7 +1762,7 @@ if (data.held) {
         var botMsg=addMsg(responseText,'bot');transcript.push({type:'bot',text:responseText});
         var actionableLegs=data.tripResults.filter(function(r){return r.packages&&r.packages.length>0;});
         if(actionableLegs.length>0){
-          legFlow={active:true,startedAt:new Date().toISOString(),tripParams:data.tripParams||previousParams,legs:data.tripResults,currentLegIndex:0,selections:{},runningTotalKES:0,_hotelMemory:{}};
+          legFlow={_v:3,active:true,startedAt:new Date().toISOString(),tripParams:data.tripParams||previousParams,legs:data.tripResults,currentLegIndex:0,selections:{},runningTotalKES:0,_hotelMemory:{}};
           persistState();_syncItineraryToServer();_renderLegFlow();scrollToEl(botMsg);
         }
         return;

@@ -750,6 +750,15 @@ trips[]:
   {origin:"Zanzibar", destination:"Mombasa", departureDate:"2026-08-15", nights:3, returnDate:"2026-08-18"}
   {origin:"Mombasa", destination:"Nairobi", departureDate:"2026-08-18", nights:0, returnDate:null}
 
+═══ MULTI-STOP RULES ═══
+If the user names 2+ stops, or flies home to a different city than they left from:
+- fill "stops" in order, one entry per visit, repeating a city if they return to it:
+  [{"city":"Nairobi","nights":2},{"city":"Maasai Mara","nights":5},{"city":"Nairobi","nights":1}]
+- "finalDestination" = the city they fly home to ("Houston"). null if same as origin.
+- "departureDate" = the day they leave origin. NEVER compute any other date.
+- nights are integers. "N days" at a stop = N nights.
+- leave "trips" null and "legs" [] for these prompts.
+
 ═══ CHILD RULES ═══
 children: count of children mentioned
 childAges: array of ages if stated. [] if not stated.
@@ -783,7 +792,7 @@ needsChildAge: true if children>0 AND childAges is empty
   "propertyType": null,
   "activityRequests": [],
   "safariDestination": null,
-  "_missingFields": []
+  "stops": null, "finalDestination": null, "_missingFields": []
 }`;
 
 const GROQ_SYSTEM_PROMPT_SIMPLE = `Extract travel info. Return ONLY valid JSON. __TODAY_RULE__
@@ -799,7 +808,7 @@ _missingFields: fields still needed before searching: ["origin","departureDate",
   Include "departureDate" only if no date OR month mentioned.
 propertyType: descriptive words like "beachfront","quiet","secluded" (not a hotel name).
 activityRequests: ["snorkelling","safari","scuba_diving"] etc.
-For multi-city trips: trips[] with ALL legs including return home.
+For 2+ stops or a different home city: fill stops [{"city","nights"}] in order (repeat a city if revisited) and finalDestination; leave trips null. Never compute dates other than departureDate.
 
 {
   "trips": null, "destination": null, "origin": null, "nights": null,
@@ -809,7 +818,7 @@ For multi-city trips: trips[] with ALL legs including return home.
   "seatPreference": null, "timePreference": null, "needsOriginClarification": false,
   "isMultiDestination": false, "isHotelOnly": false, "legs": [],
   "preferredTransportProvider": null, "preferredHotel": null, "propertyType": null,
-  "activityRequests": [], "safariDestination": null, "_missingFields": []
+  "activityRequests": [], "safariDestination": null, "stops": null, "finalDestination": null, "_missingFields": []
 }`;
 
 // ─────────────────────────────────────────────
@@ -827,7 +836,8 @@ async function _groqAttempt(prompt, systemPrompt) {
       model:           'openai/gpt-oss-120b',
       messages:        [{ role: 'system', content: systemPrompt.replace('__TODAY_RULE__', _todayRule()) }, { role: 'user', content: prompt }],
       temperature:     0.1,
-      max_tokens:      1200,
+      max_tokens:      4000,
+      reasoning_effort: 'low',
       response_format: { type: 'json_object' },
     });
 
@@ -1123,6 +1133,27 @@ async function parsePrompt(prompt, session = null, ctx = null) {
   const groqResult = await _parseWithGroq(prompt);
   const raw = groqResult || _parseWithRules(prompt);
   raw._freshScore = freshScore;
+
+  // [itinerary-builder] multi-stop prompts: stops + finalDestination drive the whole timeline
+  {
+    const { parseStopsWithRules } = require('./itineraryBuilder');
+    const _tc = (s) => String(s || '').trim().replace(/\b\w/g, (c) => c.toUpperCase());
+    if (!Array.isArray(raw.stops) || raw.stops.length < 2) {
+      const rs = parseStopsWithRules(prompt);
+      if (rs.stops.length >= 2) { raw.stops = rs.stops; raw.finalDestination = raw.finalDestination || rs.finalDestination; }
+    }
+    if (Array.isArray(raw.stops) && raw.stops.length) {
+      raw.stops = raw.stops.map((s) => ({ city: resolveCountryToCity(_tc(s.city)), nights: parseInt(s.nights, 10) }));
+      raw.finalDestination = raw.finalDestination ? resolveCountryToCity(_tc(raw.finalDestination)) : null;
+      raw.trips = null; raw.legs = []; raw.isMultiDestination = false;
+      raw.destination = raw.destination || raw.stops[0].city;
+    }
+    const _tm = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i.exec(prompt);
+    if (_tm && !raw.preferredTime) {
+      let h = parseInt(_tm[1], 10) % 12; if (/pm/i.test(_tm[3])) h += 12;
+      raw.preferredTime = String(h).padStart(2, '0') + ':' + (_tm[2] || '00');
+    }
+  }
 
     const reqModes = _detectModes(prompt);
   if (reqModes.length) {

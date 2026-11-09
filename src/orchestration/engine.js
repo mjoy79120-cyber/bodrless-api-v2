@@ -699,6 +699,7 @@ if (isDestinationSwitch) {
     console.log("FINAL HOTELS:",             hotels.length);
     console.log("HOTEL SUPPLIERS:", hotels.slice(0, 4).map(h => `${h.name} [${h.supplier}]`));
 
+    const _allOutbound = outboundTransport; // [flight-alternatives]
     let unavailableProviderNote = null;
     let unavailableHotelNote = null;
 
@@ -713,7 +714,18 @@ if (isDestinationSwitch) {
         outboundTransport = obFiltered;
         returnTransport   = retFiltered;
       } else {
-        unavailableProviderNote = `${tripParams.preferredTransportProvider} isn't available on this route, so here are the available options instead.`;
+        const _alt0 = require('./alternativesPlanner').suggestFlightAlternatives({ provider: tripParams.preferredTransportProvider, time: tripParams.preferredTime, flights: _allOutbound });
+        unavailableProviderNote = _alt0 ? _alt0.text : (`${tripParams.preferredTransportProvider} isn't available on this route, so here are the available options instead.`);
+        if (_alt0) outboundTransport = [..._alt0.options, ...outboundTransport.filter(t => !_alt0.options.includes(t))];
+      }
+    }
+
+    // [flight-alternatives] an exact-time request that no flight satisfies: offer the closest real options
+    if (tripParams.preferredTime && !unavailableProviderNote) {
+      const _alt = require('./alternativesPlanner').suggestFlightAlternatives({ provider: tripParams.preferredTransportProvider, time: tripParams.preferredTime, flights: _allOutbound });
+      if (_alt) {
+        unavailableProviderNote = _alt.text;
+        outboundTransport = [..._alt.options, ...outboundTransport.filter(t => !_alt.options.includes(t))];
       }
     }
 
@@ -1039,7 +1051,7 @@ if (isDestinationSwitch) {
       const alreadySeen = visitedCities.has(dest);
 
       let role;
-      if (isLastLeg && isOrigin) {
+      if (isLastLeg && (isOrigin || leg._returnLeg)) {
         role = 'departure';
       } else if (index === 0) {
         role = 'arrival';
@@ -1179,6 +1191,7 @@ if (isDestinationSwitch) {
         destination:        leg.destination,
         departureDate:      leg.departureDate,
         returnDate:         leg.returnDate,
+        hotelCheckIn:       leg.checkIn || null,
         nights:             leg.nights,
       };
 
@@ -1214,7 +1227,7 @@ if (isDestinationSwitch) {
 
       let returnFlights = [];
       if (role === 'arrival') {
-        const departureLeg = classifiedLegs.find(l => l._role === 'departure');
+        const departureLeg = null; // return flight is sold in the departure leg only (no double charge)
 
         if (departureLeg) {
           const returnOrigin      = departureLeg.origin;
@@ -1314,7 +1327,7 @@ if (isDestinationSwitch) {
         roleLabel: { arrival: '✈️ Outbound + Hotel + Transfers', internal: '🔀 Next Leg', return_stay: '🏨 Return Stay', departure: '✈️ Return Flight' }[role] || role,
         isRevisit,
         packages,
-        text: this._buildLegResponseText(role, leg, packages, isRevisit),
+        text: this._buildLegResponseText(role, leg, packages, isRevisit) + this._legAdvisory(role, leg, primaryTransport),
       });
     }
 
@@ -1488,6 +1501,19 @@ if (isDestinationSwitch) {
     return built.filter(Boolean);
   }
 
+  // [itinerary-builder] timing advice per leg (early arrival, late departure)
+  _legAdvisory(role, leg, transport) {
+    try {
+      if (!transport || (transport.transportType || 'flight') !== 'flight') return '';
+      const ab = require('./arrivalBuffer');
+      const ea = OrchestrationEngine.EA_BUS_CITIES;
+      const intl = !(ea.has(this._normalizeCity(leg.origin)) && ea.has(this._normalizeCity(leg.destination)));
+      const adv = role === 'arrival' ? ab.hotelCheckInAdvisory({ arrivalISO: transport.arrivalTime, international: intl })
+        : role === 'departure' ? ab.departureAdvisory({ departureISO: transport.departureTime, international: intl }) : null;
+      return adv && adv.message ? '\n\n_⏰ ' + adv.message + '_' : '';
+    } catch (e) { return ''; }
+  }
+
   _buildLegResponseText(role, leg, packages, isRevisit) {
     const origin = this._titleCase(leg.origin || '');
     const dest   = this._titleCase(leg.destination);
@@ -1498,7 +1524,7 @@ if (isDestinationSwitch) {
       case 'arrival':
         return `**Leg 1 — ${origin} → ${dest}** (${depFmt})\n` +
                `Here are ${count} package${count !== 1 ? 's' : ''} including your outbound flight, hotel in ${dest}, and transfers. ` +
-               `Your return flight back to ${origin} is bundled in each package.`;
+               `Your flight home is shown as the final leg.`;
       case 'internal':
         return `**${origin} → ${dest}** (${depFmt})\n` +
                `${count} option${count !== 1 ? 's' : ''} for getting to ${dest} — includes transport, hotel, and transfers.`;
@@ -1738,7 +1764,7 @@ if (isDestinationSwitch) {
         cursorDate = bufferCheckOut;
       }
 
-      const checkOut = this._addDaysStr(cursorDate, current.nights);
+      const checkOut = this._addDaysStr(cursorDate, (current.nights ?? current.stayNights ?? 1));
       stops.push({ destination: current.destination, checkIn: cursorDate, checkOut, nights: current.nights, isAirstripDestination: current.isAirstripDestination, intel: current.intel });
       cursorDate = checkOut;
     }
@@ -1803,9 +1829,11 @@ if (isDestinationSwitch) {
   }
 
   _addDaysStr(dateStr, days) {
-    const date = new Date(dateStr);
-    date.setDate(date.getDate() + days);
-    return date.toISOString().split('T')[0];
+    const n = Number(days);
+    const d = new Date(String(dateStr).slice(0, 10) + 'T00:00:00Z');
+    if (!dateStr || Number.isNaN(d.getTime()) || !Number.isFinite(n)) throw new Error('_addDaysStr invalid input: date=' + dateStr + ' days=' + days);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
   }
 
   _defaultStartDate() {
@@ -1815,6 +1843,7 @@ if (isDestinationSwitch) {
   }
 
   _validateMultiDestinationParams(params) {
+    params.legs = (params.legs || []).map(l => ({ ...l, nights: l.nights ?? l.stayNights }));
     if (!Array.isArray(params.legs) || params.legs.length < 2) throw new Error("Multi-destination trip requires at least 2 legs");
     for (const leg of params.legs) {
       if (!leg.destination) throw new Error("Each leg requires a destination");
@@ -2116,6 +2145,35 @@ if (isDestinationSwitch) {
       intent = { ...(intent || {}), productScope: { needsTransport: false, needsHotel: true, needsTransfers: false } };
     }
     if (intent?.productScope) tripParams._pendingProductScope = intent.productScope;
+
+    // [itinerary-builder] multi-stop prompts: build every date deterministically from stops
+    if (Array.isArray(tripParams.stops) && tripParams.stops.length && intent?.productScope?.needsTransport !== false) {
+      const { buildItinerary } = require('./itineraryBuilder');
+      const _ask = (question, type) => this._buildClarificationResponse({
+        sessionId, prompt, question, tripParams, intent, conversationHistory,
+        awaitingClarification: type ? { type } : null,
+      });
+      if (!tripParams.origin) return _ask('Where will you be flying from?', 'single_origin');
+      if (!tripParams.departureDate) {
+        return _ask(`What date do you leave ${this._titleCase(tripParams.origin)}? A rough date works.`, 'departure_date');
+      }
+      const _plan = buildItinerary({
+        origin: tripParams.origin,
+        finalDestination: tripParams.finalDestination || tripParams.origin,
+        departureDate: tripParams.departureDate,
+        stops: tripParams.stops,
+        arrivalOffsetDays: tripParams.arrivalOffsetDays,
+      });
+      if (!_plan.ok) {
+        logger.warn('Itinerary build failed', { errors: _plan.errors });
+        return _ask('I want to get the stops right. Could you list each place and how many nights at each? For example: "2 nights Nairobi, 5 nights Maasai Mara, 1 night Nairobi".', null);
+      }
+      tripParams = {
+        ...tripParams, trips: _plan.trips, destination: _plan.trips[0].destination, nights: _plan.trips[0].nights,
+        returnDate: _plan.returnDate, isMultiDestination: false, legs: undefined,
+        _itineraryBuilt: true, _itineraryAssumptions: _plan.assumptions,
+      };
+    }
 
     if (!tripParams._channel) tripParams._channel = channel || 'widget';
 
@@ -3201,7 +3259,7 @@ if (failed) results.searchFailed = true;
 
   async _searchHotels(tripParams) {
     const results = [];
-    let checkIn = tripParams.departureDate;
+    let checkIn = tripParams.hotelCheckIn || tripParams.departureDate;
     if (!checkIn) {
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate() + 1);
@@ -3211,7 +3269,7 @@ if (failed) results.searchFailed = true;
 
     try {
       const nights   = tripParams.nights || 1;
-      const checkOut = tripParams.returnDate || this._addDaysStr(checkIn, nights);
+      const checkOut = tripParams.hotelCheckIn ? this._addDaysStr(checkIn, nights) : (tripParams.returnDate || this._addDaysStr(checkIn, nights));
 
       const hotelParams = {
         destination: tripParams.destination,
