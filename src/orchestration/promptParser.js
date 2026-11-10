@@ -43,6 +43,13 @@
  *
  *  v3.2 — Origin sanitizer tightened: filler phrases like "book me a flight"
  *  no longer slip through as origin. wordCount guard lowered to >= 3.
+ *
+ *  v3.3 — Multi-stop city name sanitizer added. Groq sometimes returns
+ *  transitional phrases ("Then Head To The Mara For") as city names when
+ *  parsing complex itinerary prompts. isPlausibleCityName() now gates
+ *  every stop/trip leg city before it reaches supplier searches.
+ *  Applied in: stops[] filter, trips[] filter, and GROQ_SYSTEM_PROMPT
+ *  multi-stop rules tightened with explicit examples.
  */
 
 const Groq = require('groq-sdk');
@@ -159,6 +166,31 @@ const DESTINATION_FIXES = {
 
 const EA_DEFAULT_ORIGINS = ['Nairobi', 'Mombasa', 'Kampala', 'Dar es Salaam'];
 const DEFAULT_ORIGIN = 'Nairobi';
+
+// ─────────────────────────────────────────────
+// CITY NAME VALIDATOR (v3.3)
+// ─────────────────────────────────────────────
+// Shared gate used for stops[], trips[], and legs[].
+// Rejects transitional phrases that Groq sometimes returns as city names
+// e.g. "Then Head To The Mara For", "Then Back To Nairobi For"
+
+const MOTION_VERBS = /\b(then|head|back|fly|travel|return|and\s+then|next|go|going)\b/i;
+
+function isPlausibleCityName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  // Real city names are 1–3 words (occasionally 4 for "Dar es Salaam", "Kuala Lumpur")
+  // Phrases like "Then Head To The Mara For" are 6 words — always reject
+  if (words.length > 4) return false;
+  // 3–4 word strings containing motion verbs are transitional phrases, not cities
+  if (words.length >= 3 && MOTION_VERBS.test(trimmed)) return false;
+  // First word is a motion/filler verb → phrase, not a city
+  const firstWord = words[0].toLowerCase();
+  if (/^(then|head|back|fly|travel|return|go|going|next|and|also|after)$/.test(firstWord)) return false;
+  return true;
+}
 
 // ─────────────────────────────────────────────
 // CHEAPER REQUEST DETECTION
@@ -689,7 +721,7 @@ try {
 } catch (e) { logger.warn('Groq client init failed', { error: e.message }); }
 
 // ─────────────────────────────────────────────
-// GROQ SYSTEM PROMPT — v3
+// GROQ SYSTEM PROMPT — v3.3
 // ─────────────────────────────────────────────
 
 const GROQ_SYSTEM_PROMPT = `You are a travel intent parser for an East African travel booking platform.
@@ -752,12 +784,39 @@ trips[]:
 
 ═══ MULTI-STOP RULES ═══
 If the user names 2+ stops, or flies home to a different city than they left from:
-- fill "stops" in order, one entry per visit, repeating a city if they return to it:
-  [{"city":"Nairobi","nights":2},{"city":"Maasai Mara","nights":5},{"city":"Nairobi","nights":1}]
-- "finalDestination" = the city they fly home to ("Houston"). null if same as origin.
+- fill "stops" in order, one entry per visit, repeating a city if they return to it.
+- "city" MUST be a real place name (a city, region, or national park).
+  NEVER use transitional phrases like "then head to", "then back to", "then fly to" as the city value.
+  Extract ONLY the place name that follows the transition phrase.
+
+  CORRECT examples:
+    "3 nights then head to the mara for 4 nights" → {"city":"Maasai Mara","nights":4}
+    "then back to nairobi for 2 nights"           → {"city":"Nairobi","nights":2}
+    "then head back to new york"                   → {"city":"New York","nights":0}
+    "fly to mombasa for 3 nights"                 → {"city":"Mombasa","nights":3}
+
+  WRONG examples (never do this):
+    {"city":"Then Head To The Mara For","nights":4}   ← phrase, not a city
+    {"city":"Then Back To Nairobi For","nights":2}    ← phrase, not a city
+    {"city":"Then Head Back To New York","nights":0}  ← phrase, not a city
+
+- If you cannot identify a real place name for a stop, omit that stop entirely.
+- "finalDestination" = the city they fly home to. null if same as origin.
 - "departureDate" = the day they leave origin. NEVER compute any other date.
-- nights are integers. "N days" at a stop = N nights.
+- nights are integers. "N days" at a stop = N nights (e.g. "3 nights" = 3, not "then head to").
 - leave "trips" null and "legs" [] for these prompts.
+
+MULTI-STOP EXAMPLE:
+"from new york to nairobi on the 10th of december for 3 nights then head to the mara for 4 nights then back to nairobi for 2 nights then head back to new york"
+stops:
+  [
+    {"city":"Nairobi","nights":3},
+    {"city":"Maasai Mara","nights":4},
+    {"city":"Nairobi","nights":2}
+  ]
+origin: "New York"
+finalDestination: "New York"
+departureDate: "2026-12-10"
 
 ═══ CHILD RULES ═══
 children: count of children mentioned
@@ -808,7 +867,7 @@ _missingFields: fields still needed before searching: ["origin","departureDate",
   Include "departureDate" only if no date OR month mentioned.
 propertyType: descriptive words like "beachfront","quiet","secluded" (not a hotel name).
 activityRequests: ["snorkelling","safari","scuba_diving"] etc.
-For 2+ stops or a different home city: fill stops [{"city","nights"}] in order (repeat a city if revisited) and finalDestination; leave trips null. Never compute dates other than departureDate.
+For 2+ stops: fill stops [{"city","nights"}] with REAL PLACE NAMES ONLY — never transitional phrases like "then head to" or "then back to". Extract only the place name after each phrase. Set finalDestination to the city they fly home to (null if same as origin). Never compute dates other than departureDate. Leave trips null.
 
 {
   "trips": null, "destination": null, "origin": null, "nights": null,
@@ -866,7 +925,6 @@ async function _groqAttempt(prompt, systemPrompt) {
     }
 
     // ── FIX: tightened origin sanitizer ──────────────────────────────────
-    // Catches filler phrases like "book me a flight" slipping through as origin
     if (parsed.origin) {
       const routeStripped = parsed.origin.split(/\s+to\s+/i)[0].trim();
       const fromStripped  = routeStripped.replace(/^from\s+/i, '').trim();
@@ -899,7 +957,31 @@ async function _groqAttempt(prompt, systemPrompt) {
     parsed.needsChildAge = (parsed.children > 0 && parsed.childAges.length === 0);
     parsed.hasChild     = ruleChild.hasChild || parsed.children > 0;
 
+    // ── v3.3: sanitize stops[] city names ────────────────────────────────
+    if (Array.isArray(parsed.stops) && parsed.stops.length > 0) {
+      const cleanStops = parsed.stops
+        .map(s => ({ ...s, city: s.city ? resolveCountryToCity(s.city.trim()) : null }))
+        .filter(s => {
+          if (!s.city) return false;
+          if (!isPlausibleCityName(s.city)) {
+            logger.warn('PromptParser: rejecting stop with phrase text as city', { city: s.city });
+            return false;
+          }
+          return true;
+        });
+
+      if (cleanStops.length !== parsed.stops.length) {
+        logger.warn('PromptParser: stops[] contained phrase cities — cleaned', {
+          before: parsed.stops.map(s => s.city),
+          after:  cleanStops.map(s => s.city),
+        });
+      }
+      parsed.stops = cleanStops.length >= 1 ? cleanStops : null;
+    }
+    // ── END v3.3 stops sanitizer ─────────────────────────────────────────
+
     if (Array.isArray(parsed.trips)) {
+      // ── v3.3: sanitize trips[] destination/origin city names ─────────
       parsed.trips = parsed.trips
         .map(t => ({
           ...t,
@@ -908,7 +990,15 @@ async function _groqAttempt(prompt, systemPrompt) {
           destination:   t.destination ? (_sanitizeDestination(t.destination) || resolveCountryToCity(t.destination)) : t.destination,
           origin:        t.origin ? resolveCountryToCity(t.origin) : t.origin,
         }))
-        .filter(t => t.destination && _isPlausiblePlaceName(t.destination));
+        .filter(t => {
+          if (!t.destination) return false;
+          if (!isPlausibleCityName(t.destination)) {
+            logger.warn('PromptParser: rejecting trip leg with phrase text as destination', { destination: t.destination });
+            return false;
+          }
+          return _isPlausiblePlaceName(t.destination);
+        });
+      // ── END v3.3 trips sanitizer ──────────────────────────────────────
 
       if (parsed.trips.length >= 2 && parsed.returnDate) {
         const homeOrigin = parsed.trips[0]?.origin || parsed.origin;
@@ -948,7 +1038,7 @@ async function _groqAttempt(prompt, systemPrompt) {
       if (pt) { parsed.propertyType = parsed.propertyType || pt; parsed.preferredHotel = null; }
     }
 
-        // Deterministic date parse beats the LLM (single-trip prompts only)
+    // Deterministic date parse beats the LLM (single-trip prompts only)
     if (!Array.isArray(parsed.trips)) {
       const dx = parseDateExpression(prompt);
       if (dx) {
@@ -1143,10 +1233,33 @@ async function parsePrompt(prompt, session = null, ctx = null) {
       if (rs.stops.length >= 2) { raw.stops = rs.stops; raw.finalDestination = raw.finalDestination || rs.finalDestination; }
     }
     if (Array.isArray(raw.stops) && raw.stops.length) {
-      raw.stops = raw.stops.map((s) => ({ city: resolveCountryToCity(_tc(s.city)), nights: parseInt(s.nights, 10) }));
-      raw.finalDestination = (raw.finalDestination && raw.finalDestination !== (raw.stops[raw.stops.length - 1] && raw.stops[raw.stops.length - 1].city)) ? resolveCountryToCity(_tc(raw.finalDestination)) : null;
-      raw.trips = null; raw.legs = []; raw.isMultiDestination = false;
-      raw.destination = raw.destination || raw.stops[0].city;
+      // ── v3.3: sanitize stops from itineraryBuilder too ───────────────
+      const titledStops = raw.stops
+        .map(s => ({ ...s, city: resolveCountryToCity(_tc(s.city)) }))
+        .filter(s => {
+          if (!s.city) return false;
+          if (!isPlausibleCityName(s.city)) {
+            logger.warn('PromptParser: itineraryBuilder stop rejected — phrase text as city', { city: s.city });
+            return false;
+          }
+          return true;
+        });
+
+      if (titledStops.length >= 2) {
+        raw.stops = titledStops.map(s => ({ city: s.city, nights: parseInt(s.nights, 10) }));
+        raw.finalDestination = (raw.finalDestination && raw.finalDestination !== titledStops[titledStops.length - 1]?.city)
+          ? resolveCountryToCity(_tc(raw.finalDestination))
+          : null;
+        raw.trips = null; raw.legs = []; raw.isMultiDestination = false;
+        raw.destination = raw.destination || raw.stops[0].city;
+      } else {
+        // Not enough valid stops after sanitization — clear them so engine asks
+        logger.warn('PromptParser: stops[] reduced below 2 after city sanitization — clearing', {
+          original: raw.stops.map(s => s.city),
+        });
+        raw.stops = null;
+      }
+      // ── END v3.3 itineraryBuilder sanitizer ──────────────────────────
     }
     const _tm = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i.exec(prompt);
     if (_tm && !raw.preferredTime) {
@@ -1155,7 +1268,7 @@ async function parsePrompt(prompt, session = null, ctx = null) {
     }
   }
 
-    const reqModes = _detectModes(prompt);
+  const reqModes = _detectModes(prompt);
   if (reqModes.length) {
     raw.requestedModes = reqModes;
     raw.outboundTransportMode = reqModes.length === 1 ? reqModes[0] : null;
@@ -1182,6 +1295,7 @@ async function parsePrompt(prompt, session = null, ctx = null) {
         budgetKES:      groqResult.budgetKES,
         _missingFields: groqResult._missingFields,
         _confidence:    groqResult._confidence?.toFixed(2),
+        stops:          Array.isArray(groqResult.stops) ? groqResult.stops.map(s => s.city) : null,
       });
     }
   }
@@ -1282,7 +1396,7 @@ async function parsePrompt(prompt, session = null, ctx = null) {
   // ── Recommendation engine event logging (fire-and-forget) ─────────────
   if (ctx) _logParseEvents(raw, prompt, ctx);
 
-    // ── Accessibility intent detection ────────────────────────────────────
+  // ── Accessibility intent detection ────────────────────────────────────
   raw.accessibilityIntent = detectAccessibilityIntent(prompt);
   if (raw.accessibilityIntent) {
     raw.accessibleHotelOnly         = raw.isHotelOnly;
@@ -1303,4 +1417,5 @@ module.exports = {
   detectCheaperRequest,
   extractName,
   wordsToDigits: _wordsToDigits,
+  isPlausibleCityName,
 };
