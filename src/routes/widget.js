@@ -1046,6 +1046,7 @@ function initWidget() {
       pkgs.forEach(function(pkg, pkgIdx) {
         var card = addPackage(pkg, pkgIdx, idx, isLocked ? null : function(selectedPkg) { _selectLegPackage(idx, selectedPkg); });
         if (isLocked && sel && pkg.packageId !== sel.packageId) card.style.opacity = '0.45';
+        if (isLocked) { var _bk = card.querySelector('.book'); if (_bk) _bk.style.display = 'none'; }
         pkgWrap.appendChild(card);
       });
       body.appendChild(pkgWrap);
@@ -1761,7 +1762,7 @@ if (data.held) {
       var pkgs = data && data.packages ? data.packages : [];
       var isHD = data.isHotelDirect || (pkgs.length > 0 && pkgs[0] && pkgs[0].isHotelDirect);
 
-      if(data.isClassifiedTrip && Array.isArray(data.tripResults)){
+      if((data.isClassifiedTrip || (Array.isArray(data.tripResults) && data.tripResults.length > 1 && data.tripResults.every(function(r){ return r && r.role; }))) && Array.isArray(data.tripResults)){
         var responseText=data.text||"Here's your trip broken down by leg:";
         var botMsg=addMsg(responseText,'bot');transcript.push({type:'bot',text:responseText});
         var actionableLegs=data.tripResults.filter(function(r){return r.packages&&r.packages.length>0;});
