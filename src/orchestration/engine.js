@@ -2328,6 +2328,22 @@ if (isDestinationSwitch) {
       }
     }
 
+    // v3.3: guard against phrase-text city names surviving into trips[]
+if (Array.isArray(tripParams.trips) && tripParams.trips.length > 0) {
+  const { isPlausibleCityName } = require('./promptParser');
+  tripParams.trips = tripParams.trips.filter(t => {
+    if (!t.destination || !isPlausibleCityName(t.destination)) {
+      logger.warn('Engine: dropping trip leg with phrase text as destination', { destination: t.destination });
+      return false;
+    }
+    return true;
+  });
+  if (tripParams.trips.length < 2) {
+    logger.warn('Engine: trips[] reduced below 2 after sanitization — clearing');
+    tripParams.trips = null;
+  }
+}
+
     if (Array.isArray(tripParams.trips) && tripParams.trips.length > 1) {
       const classifiedLegs = this._classifyTripLegs(tripParams.trips);
       const roles = classifiedLegs.map(l => l._role);
