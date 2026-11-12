@@ -1023,7 +1023,7 @@ function initWidget() {
     var statusBadge = document.createElement('span'); statusBadge.className = 'leg-status ' + (isLocked ? 'locked' : isCurrent ? 'active' : 'pending');
     statusBadge.innerText = isLocked ? '✓ Selected' : isCurrent ? 'Choose' : 'Pending';
     hdr.appendChild(hdrLeft); hdr.appendChild(statusBadge);
-    var body = document.createElement('div'); body.className = 'leg-body'; if (isPending) body.classList.add('collapsed');
+    var body = document.createElement('div'); body.className = 'leg-body'; if (isPending || isLocked) body.classList.add('collapsed');
     if (isLocked) {
       var selBar = document.createElement('div'); selBar.className = 'leg-selected-summary';
       var selDetail = document.createElement('div'); selDetail.className = 'leg-selected-detail';
@@ -1252,7 +1252,7 @@ function initWidget() {
     var pr = document.createElement('span'); pr.className = 'pkg-route'; pr.innerText = route;
     ph.appendChild(pt); ph.appendChild(pr);
     var pb = document.createElement('div'); pb.className = 'pkg-body';
-    if (t) { var isb = (t.transportType||'').toLowerCase()==='bus', ist = (t.transportType||'').toLowerCase()==='train'; var sub = (t.origin||'TBC')+' → '+(t.destination||'TBC')+' · '+fmtTime(t.departureTime)+' - '+fmtTime(t.arrivalTime); if (t.stops) sub += ' · '+t.stops; if (t.cabinClass) sub += ' · '+t.cabinClass; if (!isb && t.baggageSummary) sub += ' · '+t.baggageSummary; sub += ' · '+fmtPrice(t.price,t.currency); pb.appendChild(makeRow(isb?'Outbound Bus':ist?'Train':'Outbound Flight',t.airline||t.provider||'TBC',sub)); if (t.policySummary) pb.appendChild(makeHL(t.policySummary,t.isRefundable===true?'good':t.isRefundable===false?'warn':'neutral')); }
+    if (t) { var isb = (t.transportType||'').toLowerCase()==='bus', ist = (t.transportType||'').toLowerCase()==='train'; var sub = (t.origin||'TBC')+' → '+(t.destination||'TBC')+' · '+fmtTime(t.departureTime)+' - '+fmtTime(t.arrivalTime); if (t.stops) sub += ' · '+t.stops; if (t.cabinClass) sub += ' · '+t.cabinClass; if (!isb && t.baggageSummary) sub += ' · '+t.baggageSummary; sub += ' · '+fmtPrice(t.price,t.currency); pb.appendChild(makeRow(isb?(/safari vehicle|transfer/i.test(String(t.airline||t.provider||''))?'Road transfer':'Outbound Bus'):ist?'Train':'Outbound Flight',t.airline||t.provider||'TBC',sub)); if (t.policySummary) pb.appendChild(makeHL(t.policySummary,t.isRefundable===true?'good':t.isRefundable===false?'warn':'neutral')); }
     if (rt) { var rsub = (rt.origin||'TBC')+' → '+(rt.destination||'TBC')+' · '+fmtTime(rt.departureTime)+' - '+fmtTime(rt.arrivalTime); if (rt.baggageSummary) rsub += ' · '+rt.baggageSummary; rsub += ' · '+fmtPrice(rt.price,rt.currency); pb.appendChild(makeRow('Return Flight',rt.airline||rt.provider||'TBC',rsub)); }
     if (h) {
       var stars = h.stars ? Array(Math.min(Math.round(h.stars),5)+1).join('★') : '';
@@ -1760,6 +1760,18 @@ if (data.held) {
 // ── END HELD STATE ──────────────────────────────────────────
 
       var pkgs = data && data.packages ? data.packages : [];
+      // [legflow-rebuild] packages carry _legRole + route, so legs can be rebuilt even if tripResults was dropped
+      if (!(Array.isArray(data.tripResults) && data.tripResults.length) && Array.isArray(data.packages) && data.packages.length > 1 &&
+          data.packages.every(function(p){ return p && p._legRole; })) {
+        var _lg = [], _lgIx = {};
+        data.packages.forEach(function(p){
+          var rt = (p.summary && p.summary.route) || p._legRole, k = p._legRole + '|' + rt;
+          if (_lgIx[k] == null) { _lgIx[k] = _lg.length; _lg.push({ role: p._legRole, label: rt, roleLabel: rt, packages: [], text: '' }); }
+          _lg[_lgIx[k]].packages.push(p);
+        });
+        if (_lg.length > 1) { data.tripResults = _lg; data.isClassifiedTrip = true; }
+      }
+      console.log('[BODRLESS] response', { classified: !!data.isClassifiedTrip, legs: Array.isArray(data.tripResults) ? data.tripResults.length : 0, packages: pkgs.length });
       var isHD = data.isHotelDirect || (pkgs.length > 0 && pkgs[0] && pkgs[0].isHotelDirect);
 
       if((data.isClassifiedTrip || (Array.isArray(data.tripResults) && data.tripResults.length > 1 && data.tripResults.every(function(r){ return r && r.role; }))) && Array.isArray(data.tripResults)){
