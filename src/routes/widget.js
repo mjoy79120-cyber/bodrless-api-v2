@@ -51,6 +51,8 @@ router.get('/', (req, res) => {
 #et-close{background:rgba(255,255,255,0.08);border:none;color:rgba(255,255,255,0.7);width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;}
 #et-close:hover{background:rgba(255,255,255,0.18);}
 #bodrless-messages{flex:1;padding:20px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;background:var(--et-cream);}
+/* [flexfix] children of the chat column keep their height */
+#bodrless-messages > *{flex-shrink:0;}
 .msg{padding:11px 15px;border-radius:16px;max-width:82%;font-size:13.5px;line-height:1.55;}
 .user{background:var(--et-navy);color:white;margin-left:auto;border-bottom-right-radius:4px;}
 .bot{background:var(--et-white);color:#2A2A2A;border:1px solid var(--et-border);border-bottom-left-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,0.05);}
