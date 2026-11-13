@@ -5,3 +5,7 @@ uploads/
 *.log
 .DS_Store
 dist/
+
+# patch scripts and backups
+*.bak*
+apply-*.cjs
