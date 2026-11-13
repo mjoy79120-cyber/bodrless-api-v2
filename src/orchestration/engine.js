@@ -1351,6 +1351,7 @@ if (isDestinationSwitch) {
 
       legResults.push({
         role,
+        /* [carryover-sig] */ origin: leg.origin || null, destination: leg.destination || null, departureDate: leg.departureDate || null, nights: leg.nights == null ? 0 : leg.nights,
         label:     `${leg.origin} → ${leg.destination}`,
         roleLabel: { arrival: '✈️ Outbound + Hotel + Transfers', internal: '🔀 Next Leg', return_stay: '🏨 Return Stay', departure: '✈️ Return Flight' }[role] || role,
         isRevisit,

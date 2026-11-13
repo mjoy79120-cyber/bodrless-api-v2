@@ -996,10 +996,111 @@ function initWidget() {
   var LEG_CONFIG = { arrival:{icon:'✈️',label:'Outbound + Hotel + Transfers',cls:'arrival'}, departure:{icon:'🛫',label:'Return Flight',cls:'departure'}, internal:{icon:'🔀',label:'Next Leg',cls:'internal'}, return_stay:{icon:'🏨',label:'Return Stay',cls:'return_stay'}, stopover:{icon:'⏱️',label:'Stopover',cls:'stopover'} };
   var legFlowContainer = null;
 
+  // [carryover-fns] keep the travelers choices when the itinerary is reshaped
+  function _recomputeTotal() {
+    if (!legFlow) return 0;
+    var t = 0, sels = legFlow.selections || {};
+    Object.keys(sels).forEach(function(k) {
+      var p = sels[k] && sels[k].package;
+      t += (p && p.summary && Number(p.summary.totalPrice)) || 0;
+    });
+    legFlow.runningTotalKES = t;
+    return t;
+  }
+  function _legSig(l) {
+    if (!l || !l.departureDate) return null;
+    return [l.role || '', String(l.origin || '').toLowerCase(), String(l.destination || '').toLowerCase(), l.departureDate, l.nights == null ? '' : l.nights].join('|');
+  }
+  function _pkgKey(p) {
+    var t = (p && p.transport) || {}, h = (p && p.hotel) || {}, r = (p && p.returnTransport) || {};
+    var a = t.airline || t.provider || '', n = h.name || '';
+    if (!a && !n) return null;
+    return [a, t.flightNumber || '', t.departureTime || '', n, r.flightNumber || ''].join('|').toLowerCase();
+  }
+  function _pkgLoose(p) {
+    var t = (p && p.transport) || {}, h = (p && p.hotel) || {};
+    var a = t.airline || t.provider || '', n = h.name || '';
+    if (!a && !n) return null;
+    return (a + '|' + n).toLowerCase();
+  }
+  function _pkgDesc(p) {
+    var t = (p && p.transport) || {}, h = (p && p.hotel) || {}, parts = [];
+    if (t.airline || t.provider) parts.push(t.airline || t.provider);
+    if (h.name) parts.push(h.name);
+    return parts.join(' + ') || 'your earlier pick';
+  }
+  function _looseIdx(list, p) {
+    var want = _pkgLoose(p), best = null;
+    if (!want) return null;
+    (list || []).forEach(function(c, i) { if (best === null && _pkgLoose(c) === want) best = i; });
+    return best;
+  }
+  function _carryOverSelections(prev, next) {
+    if (!prev || !prev.selections || !prev.legs || !next || !next.legs) return;
+    var prevCount = Object.keys(prev.selections).length;
+    if (!prevCount) return;
+    var po = prev.tripParams && prev.tripParams.origin, no = next.tripParams && next.tripParams.origin;
+    if (po && no && String(po).toLowerCase() !== String(no).toLowerCase()) return;
+    next.selections = next.selections || {};
+    var used = {}, kept = 0;
+    // pass 1: same leg (same signature) and the exact same flight/hotel still on offer -> keep it
+    next.legs.forEach(function(nl, ni) {
+      var ns = _legSig(nl); if (!ns) return;
+      for (var oi = 0; oi < prev.legs.length; oi++) {
+        if (used[oi] || !prev.selections[oi]) continue;
+        if (_legSig(prev.legs[oi]) !== ns) continue;
+        var sel = prev.selections[oi], want = _pkgKey(sel.package), pk = null;
+        (nl.packages || []).forEach(function(p) { if (!pk && want && _pkgKey(p) === want) pk = p; });
+        used[oi] = true;
+        if (pk) {
+          next.selections[ni] = { packageId: pk.packageId, package: pk, label: nl.label || ('Leg ' + (ni + 1)), role: nl.role || 'internal' };
+          kept++;
+        } else {
+          nl._prev = { package: sel.package, reason: 'unavailable', suggestIdx: _looseIdx(nl.packages, sel.package) };
+        }
+        break;
+      }
+    });
+    // pass 2: leg moved (dates or nights changed) -> offer the old pick as a one-tap suggestion
+    next.legs.forEach(function(nl, ni) {
+      if (next.selections[ni] || nl._prev) return;
+      var dn = String(nl.destination || '').toLowerCase();
+      for (var oi = 0; oi < prev.legs.length; oi++) {
+        var ol = prev.legs[oi];
+        if (used[oi] || !prev.selections[oi]) continue;
+        if (ol.role !== nl.role || String(ol.destination || '').toLowerCase() !== dn) continue;
+        used[oi] = true;
+        nl._prev = { package: prev.selections[oi].package, reason: 'moved', suggestIdx: _looseIdx(nl.packages, prev.selections[oi].package) };
+        break;
+      }
+    });
+    var first = 0;
+    while (first < next.legs.length && next.selections[first]) first++;
+    next.currentLegIndex = first;
+    _recomputeTotal();
+    var pend = [];
+    next.legs.forEach(function(l, i) { if (!next.selections[i] && l._prev && l._prev.suggestIdx != null) pend.push(i); });
+    var msg = 'Kept ' + kept + ' of ' + next.legs.length + ' choices.';
+    if (pend.length) msg += ' ' + pend.length + (pend.length === 1 ? ' leg changed' : ' legs changed') + ', your earlier picks are lined up as one-tap suggestions.';
+    addMsg(msg, 'bot');
+    if (pend.length > 1) {
+      var kb = document.createElement('button'); kb.className = 'summary-action-btn secondary'; kb.style.cssText = 'margin:6px 0;';
+      kb.innerText = 'Keep similar picks for all ' + pend.length + ' changed legs';
+      kb.onclick = function() {
+        kb.remove();
+        pend.forEach(function(i) {
+          var l = legFlow.legs[i];
+          if (l && !legFlow.selections[i] && l._prev && l.packages && l.packages[l._prev.suggestIdx]) _selectLegPackage(i, l.packages[l._prev.suggestIdx]);
+        });
+      };
+      messages.appendChild(kb);
+    }
+  }
+
   function _renderLegFlow() {
     if (!legFlow || !legFlow.legs) return;
     if (legFlowContainer) legFlowContainer.remove();
-    legFlowContainer = document.createElement('div'); legFlowContainer.id = 'leg-flow-container';
+    _recomputeTotal(); /* [carryover-render-total] */ legFlowContainer = document.createElement('div'); legFlowContainer.id = 'leg-flow-container';
     messages.appendChild(legFlowContainer);
     legFlow.legs.forEach(function(leg, idx) { _renderLegSection(leg, idx); });
     messages.scrollTop = messages.scrollHeight;
@@ -1039,6 +1140,21 @@ function initWidget() {
     } else { section.appendChild(hdr); section.appendChild(body); }
     hdr.onclick = function() { if (body.classList.contains('collapsed')) { body.classList.remove('collapsed'); } else if (!isCurrent) { body.classList.add('collapsed'); } };
     var pkgs = leg.packages || [];
+    // [carryover-banner] earlier pick for a leg that moved, one tap to keep it
+    if (!isLocked && leg._prev && leg._prev.package) {
+      var _nb = document.createElement('div'); _nb.className = 'price-nudge up'; _nb.style.margin = '10px 12px 0';
+      var _nt = document.createElement('div');
+      var _sg = leg._prev.suggestIdx != null ? pkgs[leg._prev.suggestIdx] : null;
+      _nt.innerText = (leg._prev.reason === 'unavailable' ? 'Your earlier pick is no longer available as it was. ' : 'This leg moved. ') + 'You had ' + _pkgDesc(leg._prev.package) + '.';
+      _nb.appendChild(_nt);
+      if (_sg) {
+        var _kb = document.createElement('button'); _kb.className = 'select-btn'; _kb.style.cssText = 'margin-top:8px;';
+        _kb.innerText = 'Keep it · ' + fmtPrice(_sg.summary && _sg.summary.totalPrice, (_sg.summary && _sg.summary.currency) || 'KES');
+        _kb.onclick = function() { _selectLegPackage(idx, _sg); };
+        _nb.appendChild(_kb);
+      }
+      body.appendChild(_nb);
+    }
     if (pkgs.length === 0) {
       var noOpts = document.createElement('div'); noOpts.style.cssText = 'padding:14px;font-size:12px;color:var(--et-muted);text-align:center;'; noOpts.innerText = 'No options found for this leg. Reply to search again.'; body.appendChild(noOpts);
     } else {
@@ -1060,7 +1176,7 @@ function initWidget() {
     if (!legFlow.selections) legFlow.selections = {};
     var leg = legFlow.legs[legIdx];
     legFlow.selections[legIdx] = { packageId: pkg.packageId, package: pkg, label: leg && leg.label || 'Leg ' + (legIdx + 1), role: leg && leg.role || 'internal' };
-    legFlow.runningTotalKES = (legFlow.runningTotalKES || 0) + (pkg.summary && pkg.summary.totalPrice || 0);
+    _recomputeTotal(); /* [carryover-total-a] */
     var nextIdx = legIdx + 1;
     while (nextIdx < legFlow.legs.length && legFlow.selections[nextIdx]) nextIdx++;
     legFlow.currentLegIndex = nextIdx;
@@ -1075,8 +1191,8 @@ function initWidget() {
   function _unlockLeg(legIdx) {
     if (!legFlow || !legFlow.selections) return;
     var sel = legFlow.selections[legIdx];
-    if (sel && sel.package && sel.package.summary) legFlow.runningTotalKES = Math.max(0, (legFlow.runningTotalKES || 0) - (sel.package.summary.totalPrice || 0));
-    delete legFlow.selections[legIdx];
+    /* [carryover-total-b] total is recomputed after the delete */
+    delete legFlow.selections[legIdx]; _recomputeTotal();
     legFlow.currentLegIndex = legIdx;
     var summary = document.getElementById('trip-summary-card'); if (summary) summary.remove();
     persistState(); _renderLegFlow();
@@ -1779,7 +1895,7 @@ if (data.held) {
         var botMsg=addMsg(responseText,'bot');transcript.push({type:'bot',text:responseText});
         var actionableLegs=data.tripResults.filter(function(r){return r.packages&&r.packages.length>0;});
         if(actionableLegs.length>0){
-          legFlow={_v:3,active:true,startedAt:new Date().toISOString(),tripParams:data.tripParams||previousParams,legs:data.tripResults,currentLegIndex:0,selections:{},runningTotalKES:0,_hotelMemory:{}};
+          var _prevFlow=legFlow; legFlow={_v:3,active:true,startedAt:new Date().toISOString(),tripParams:data.tripParams||previousParams,legs:data.tripResults,currentLegIndex:0,selections:{},runningTotalKES:0,_hotelMemory:{}}; try{_carryOverSelections(_prevFlow,legFlow);}catch(ce){console.error('[BODRLESS] carryover failed',ce);} if(Object.keys(legFlow.selections).length>=legFlow.legs.length){setTimeout(function(){try{_showTripSummary();}catch(se){}},450);}
           persistState();_syncItineraryToServer();_renderLegFlow();scrollToEl(botMsg);
         }
         return;
