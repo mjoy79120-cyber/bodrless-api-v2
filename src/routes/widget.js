@@ -1101,6 +1101,18 @@ function initWidget() {
     if (!legFlow || !legFlow.legs) return;
     if (legFlowContainer) legFlowContainer.remove();
     _recomputeTotal(); /* [carryover-render-total] */ legFlowContainer = document.createElement('div'); legFlowContainer.id = 'leg-flow-container';
+    // [legflow-total-bar] running total + Continue once every leg is chosen
+    var _selN = Object.keys(legFlow.selections || {}).length, _legN = legFlow.legs.length;
+    var _bar = document.createElement('div'); _bar.className = 'multi-prop-bar'; _bar.id = 'leg-total-bar';
+    var _bt = document.createElement('div'); _bt.className = 'multi-prop-bar-title';
+    _bt.innerText = 'Your trip: ' + _selN + ' of ' + _legN + ' legs chosen' + (legFlow.runningTotalKES > 0 ? ' · KES ' + Math.round(legFlow.runningTotalKES).toLocaleString() : '');
+    _bar.appendChild(_bt);
+    if (_selN >= _legN) {
+      var _cb = document.createElement('button'); _cb.className = 'multi-prop-checkout-btn visible'; _cb.innerText = 'Continue → review total & enter details';
+      _cb.onclick = function() { try { _showTripSummary(); } catch (e) { console.error('[BODRLESS] trip summary failed', e); showPassengerForm('full'); } };
+      _bar.appendChild(_cb);
+    }
+    legFlowContainer.appendChild(_bar);
     messages.appendChild(legFlowContainer);
     legFlow.legs.forEach(function(leg, idx) { _renderLegSection(leg, idx); });
     messages.scrollTop = messages.scrollHeight;
@@ -1184,7 +1196,7 @@ function initWidget() {
     _syncItineraryToServer();
     _renderLegFlow();
     var allSelected = legFlow.legs.every(function(_, i) { return !!legFlow.selections[i]; });
-    if (allSelected) { setTimeout(function() { _showTripSummary(); }, 300); }
+    if (allSelected) { setTimeout(function() { try { _showTripSummary(); } catch (e) { console.error('[BODRLESS] trip summary failed', e); addMsg('Your trip total is KES ' + Math.round(legFlow.runningTotalKES || 0).toLocaleString() + '. Enter your details to continue.', 'bot'); showPassengerForm('full'); } }, 300); }
     else { setTimeout(function() { var ns = document.getElementById('leg-section-' + legFlow.currentLegIndex); if (ns) scrollToEl(ns); }, 150); }
   }
 
