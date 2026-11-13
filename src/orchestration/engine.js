@@ -1415,7 +1415,26 @@ if (isDestinationSwitch) {
     };
   }
 
-  async _buildLegPackages({ role, outboundTransport, returnTransport, hotels, transfers, tripParams, isRevisit }) {
+  // [breakdown-kes] adds a KES breakdown (flights / hotel / transfers) to every leg package
+  async _buildLegPackages(args) {
+    const pkgs = await this._buildLegPackagesRaw(args);
+    for (const p of (pkgs || [])) {
+      try {
+        if (!p || !p.summary) continue;
+        const nights = Number(p.summary.nights) || 0;
+        const money = async (amt, cur) => (Number(amt) > 0 ? Number(await toKES(Number(amt), cur || 'KES')) || 0 : 0);
+        const flightsKES = (p.transport && !p.transport.priceOnRequest ? await money(p.transport.price, p.transport.currency) : 0)
+                         + (p.returnTransport && !p.returnTransport.priceOnRequest ? await money(p.returnTransport.price, p.returnTransport.currency) : 0);
+        const hotelKES = p.hotel ? await money((Number(p.hotel.pricePerNight) || 0) * (nights || 1), p.hotel.currency) : 0;
+        let transfersKES = 0;
+        for (const x of (p.transfers || [])) transfersKES += await money(x.price, x.currency);
+        p.summary.breakdown = { flightsKES: Math.round(flightsKES), hotelKES: Math.round(hotelKES), transfersKES: Math.round(transfersKES) };
+      } catch (e) { console.error('[breakdown] failed', e && e.message); }
+    }
+    return pkgs;
+  }
+
+  async _buildLegPackagesRaw({ role, outboundTransport, returnTransport, hotels, transfers, tripParams, isRevisit }) {
     const hasOutbound = outboundTransport.length > 0;
     const hasReturn   = returnTransport.length   > 0;
     const hasHotels   = hotels.length            > 0;

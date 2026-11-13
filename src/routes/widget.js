@@ -1236,7 +1236,8 @@ function initWidget() {
     var flightsTotal = 0, hotelsTotal = 0, transfersTotal = 0;
     for (var i = 0; i < legs.length; i++) {
       var sel = selections[i]; if (!sel) continue; var pkg = sel.package; if (!pkg) continue; var nights = (pkg.summary && pkg.summary.nights) || 1;
-      if (pkg.transport && pkg.transport.price)             flightsTotal   += Number(pkg.transport.price) || 0;
+      var _bd = pkg.summary && pkg.summary.breakdown; /* [breakdown-kes] */ if (_bd) { flightsTotal += _bd.flightsKES || 0; hotelsTotal += _bd.hotelKES || 0; transfersTotal += _bd.transfersKES || 0; continue; }
+      if (pkg.transport && pkg.transport.price) flightsTotal += Number(pkg.transport.price) || 0;
       if (pkg.returnTransport && pkg.returnTransport.price) flightsTotal   += Number(pkg.returnTransport.price) || 0;
       if (pkg.hotel && pkg.hotel.pricePerNight)             hotelsTotal    += (Number(pkg.hotel.pricePerNight) || 0) * nights;
       var trs = pkg.transfers || []; for (var ti = 0; ti < trs.length; ti++) transfersTotal += Number(trs[ti].price) || 0;
