@@ -9,6 +9,7 @@ const destinationIntel = require("../services/destinationIntel");
 const tracking = require("../services/trackingService");
 const travelerIntelligence = require("../services/travelerIntelligence");
 const tripMonitoringService = require("../services/tripMonitoringService");
+const tripStage = require("./tripStage");
 
 const cachedSearch = require('../services/cachedSearch');
 const searchCache = require('../services/searchSessionCache');
@@ -188,6 +189,78 @@ class OrchestrationEngine {
         });
         return await this._continueOrchestration(
           tripParams, agencyId, '', conversationHistory, sessionId, intent, context.channel, context.phone
+        );
+      }
+
+      // ── STAGE GATE ───────────────────────────────────────────────────────────
+      // "Thinking about Zanzibar next year, not sure when" is not a search request.
+      // Answer the question, keep the trip as a dateless wish, and never invent a date.
+      const _stage = tripStage.classify(prompt, previousParams);
+
+      if (_stage.mode === 'advise') {
+        const _awaitingDate = previousParams?._awaitingClarification?.type === 'departure_date' && previousParams.destination;
+        const _parsed = _awaitingDate ? { ...previousParams } : await parsePrompt(prompt, null);
+        const _dest = _parsed.destination || previousParams?.destination || null;
+
+        if (_dest) {
+          const _advice = tripStage.buildAdvice(_dest, { reason: _stage.reason, month: _stage.month });
+          const _wish = {
+            ..._parsed,
+            agencyId,
+            destination: _dest,
+            departureDate: null,
+            returnDate: null,
+            trips: null, stops: null, legs: [], isMultiDestination: false,
+            needsOriginClarification: !_parsed.origin && !_parsed.isHotelOnly,
+            _stage: 'dreaming',
+            _dateCertainty: _stage.dateCertainty,
+            _awaitingHotelFollowUp: undefined, _hotelFollowUpSetAt: undefined, _lastFlightPackages: undefined,
+            _tripStore: previousParams?._tripStore || _parsed._tripStore || {},
+          };
+          // TODO: also save _wish to the trip-wish / nudge store so a later nudge can say "still thinking about Zanzibar?"
+          logger.info('Engine: stage gate — advising instead of searching', { reason: _stage.reason, destination: _dest });
+          tracking.logTurn({
+            sessionId, agencyId, channel: context.channel || 'widget', phone: context.phone || null,
+            userMessage: prompt, engineResponse: _advice, packagesCount: 0, needsClarification: true,
+            tripParams: _wish, packages: [],
+          });
+          return this._buildClarificationResponse({
+            sessionId, prompt, question: _advice, tripParams: _wish, intent: null,
+            conversationHistory, awaitingClarification: null,
+          });
+        }
+      }
+
+      // ── STAGE FOLLOW-UP ──────────────────────────────────────────────────────
+      // They were dreaming and have now named a window ("June", "mid March, from Nairobi, 4 nights").
+      // Merge with the saved wish and search, instead of treating it as a "change my dates" edit.
+      if (!_stage.mode && previousParams?._stage === 'dreaming' && previousParams.destination && tripStage.hasWindow(prompt)) {
+        const _fresh = await parsePrompt(prompt, null);
+        const _sameDest = !_fresh.destination || String(_fresh.destination).toLowerCase() === String(previousParams.destination).toLowerCase();
+        const _merged = {
+          ..._fresh,
+          agencyId,
+          destination: _fresh.destination || previousParams.destination,
+          origin: _fresh.origin || (_sameDest ? previousParams.origin : null) || null,
+          _stage: 'narrowing',
+          _tripStore: previousParams._tripStore || {},
+          _channel: context.channel || 'widget',
+          _sendWhatsApp: context.sendWhatsApp || null,
+          bypassCache: !!context.bypassCache,
+        };
+        for (const k of ['nights', 'passengers', 'children', 'childAges', 'budget', 'budgetKES']) {
+          const v = _merged[k];
+          const empty = v == null || (Array.isArray(v) && v.length === 0) || (k === 'passengers' && v <= 1) || (k === 'children' && !v);
+          if (empty && _sameDest && previousParams[k] != null) _merged[k] = previousParams[k];
+        }
+        _merged.needsOriginClarification = !_merged.origin && !_merged.isHotelOnly;
+        const _stageIntent = {
+          isFollowUp: false, adjustments: {},
+          productScope: { needsTransport: true, needsHotel: true, needsTransfers: true },
+          wantsCheapest: false, wantsAffordableSort: false, wantsSuggestDates: false,
+        };
+        return await this._continueOrchestration(
+          _merged, agencyId, prompt, conversationHistory, sessionId, _stageIntent, context.channel, context.phone
         );
       }
 
@@ -1933,12 +2006,7 @@ if (isDestinationSwitch) {
     if (!text) return null;
     const t = text.toLowerCase().trim();
 
-    const isFlexible = /\b(flexible|anytime|any time|open|not sure|don'?t mind|whenever|no preference|up to you|surprise me|no specific|doesn'?t matter|whatever works)\b/i.test(t);
-    if (isFlexible) {
-      const d = new Date();
-      d.setDate(d.getDate() + 14);
-      return { earliestDate: d.toISOString().split('T')[0] };
-    }
+    // Generic "flexible / not sure" answers never become a date. The stage gate (tripStage) handles them first.
 
     const MONTHS = {
       jan:1, january:1, feb:2, february:2, mar:3, march:3,

@@ -56,6 +56,7 @@ const Groq = require('groq-sdk');
 const { logger } = require('../utils/logger');
 const { detectAccessibilityIntent } = require('../services/accessibilityService');
 const { parseDateExpression, rollForward, addDays, diffDays } = require('../utils/dateResolver');
+const tripStage = require('./tripStage');
 
 // ─────────────────────────────────────────────
 // CONSTANTS
@@ -1384,6 +1385,15 @@ async function parsePrompt(prompt, session = null, ctx = null) {
     if (Array.isArray(raw.trips) && raw.trips.length > 0 && raw.departureDate) {
       raw.trips = _normalizeTripLegsFromSession(raw.trips, raw);
     }
+  }
+
+  // ── Date guard: vague timing never becomes a date ─────────────────────
+  // "next year", "sometime", "not sure when" must not turn into a guessed departureDate
+  // (from the LLM, from parseDateExpression, or inherited from the session).
+  if (!Array.isArray(raw.trips) && tripStage.isVagueTiming(prompt)) {
+    raw.departureDate = null;
+    raw.returnDate = null;
+    raw._dateCertainty = 'vague';
   }
 
   // ── Null-origin resolution ────────────────────────────────────────────
