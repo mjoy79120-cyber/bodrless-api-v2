@@ -21,6 +21,7 @@ const travlerAdapter    = require('./travler');
 const travelduqaAdapter = require('./travelduqa');
 const duffelAdapter     = require('./duffel');
 const hotelbedsAdapter  = require('./hotelbeds');
+const travelportAdapter = require('./travelport'); // OFF unless TRAVELPORT_ENABLED=true
 
 class SupplierAdapterLayer {
 
@@ -31,6 +32,7 @@ class SupplierAdapterLayer {
       travelduqa: travelduqaAdapter,
       duffel:     duffelAdapter,
       hotelbeds:  hotelbedsAdapter,
+      travelport: travelportAdapter,
     };
   }
 
@@ -77,10 +79,20 @@ class SupplierAdapterLayer {
     }
 
     if (!transportMode || transportMode === 'flight') {
-      const [travelduqaResult, duffelResult] = await Promise.allSettled([
+      // Travelport runs in parallel too, only when TRAVELPORT_ENABLED=true. Its search() never throws.
+      const travelportOn = process.env.TRAVELPORT_ENABLED === 'true';
+      const [travelduqaResult, duffelResult, travelportResult] = await Promise.allSettled([
         this.adapters.travelduqa.search({ origin, destination, date, passengers, timePreference }),
         this.adapters.duffel.search({ origin, destination, date, passengers, timePreference, children, childAges }),
+        travelportOn ? this.adapters.travelport.search({ origin, destination, date, passengers, timePreference, children }) : Promise.resolve([]),
       ]);
+
+      if (travelportResult.status === 'fulfilled') {
+        results.push(...travelportResult.value);
+        if (travelportOn) console.log(`TRAVELPORT: ${travelportResult.value.length} flights added`);
+      } else {
+        console.error('Travelport adapter error:', travelportResult.reason?.message);
+      }
 
       if (travelduqaResult.status === 'fulfilled') {
         results.push(...travelduqaResult.value);
@@ -237,6 +249,17 @@ class SupplierAdapterLayer {
       });
     }
 
+    if (supplier === 'travelport') {
+      // Hold only (no ticketing yet). Pass the search result's catalogOfferingsId / catalogOfferingId / productIds.
+      return adapter.createHeldBooking({
+        catalogOfferingsId: params.catalogOfferingsId,
+        catalogOfferingId:  params.catalogOfferingId,
+        offerId:            params.offerId,
+        productIds:         params.productIds,
+        passengers:         params.passengerDetails || params.passengers,
+      });
+    }
+
     if (supplier === 'hotelbeds') {
       return adapter.book({
         rateKey:         params.rateKey,
@@ -299,6 +322,7 @@ class SupplierAdapterLayer {
     if (!adapter) throw new Error(`Unknown supplier: ${supplier}`);
     if (supplier === 'travelduqa') return adapter.cancel(orderId || bookingRef);
     if (supplier === 'duffel')     return adapter.cancel(orderId || bookingRef);
+    if (supplier === 'travelport') return adapter.cancel(orderId || bookingRef);
     if (supplier === 'hotelbeds')  return adapter.cancel(bookingRef);
     return adapter.cancel(bookingRef);
   }

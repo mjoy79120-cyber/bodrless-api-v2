@@ -10,6 +10,7 @@ const tracking = require("../services/trackingService");
 const travelerIntelligence = require("../services/travelerIntelligence");
 const tripMonitoringService = require("../services/tripMonitoringService");
 const tripStage = require("./tripStage");
+const { classifyKnowledge, answerKnowledge } = require("../services/destinationAdvisor");
 
 const cachedSearch = require('../services/cachedSearch');
 const searchCache = require('../services/searchSessionCache');
@@ -192,6 +193,41 @@ class OrchestrationEngine {
         );
       }
 
+      // ── ITINERARY EDIT GATE ──────────────────────────────────────────────
+      // "make the mara 3 nights", "drop the second nairobi", "add zanzibar after the mara"
+      // Deterministic: no LLM, no restart. Falls through (null) for anything that is not an edit.
+      const _edit = require('./itineraryEditGate').tryEdit(prompt, previousParams);
+      
+    if (_edit) {
+        const _scope = previousParams._pendingProductScope ||
+          { needsTransport: true, needsHotel: true, needsTransfers: true };
+        const _intent = { isFollowUp: true, adjustments: {}, productScope: _scope,
+          wantsCheapest: false, wantsAffordableSort: false, wantsSuggestDates: false };
+
+        if (_edit.kind === 'ask' || _edit.kind === 'error') {
+          return this._buildClarificationResponse({
+            sessionId, prompt,
+            question: _edit.kind === 'ask' ? _edit.question : _edit.message,
+            tripParams: _edit.kind === 'ask'
+              ? { ...previousParams, _pendingEditChoice: _edit.pendingChoice }
+              : previousParams,
+            intent: _intent, conversationHistory, awaitingClarification: null,
+          });
+        }
+
+        const _res = await this._continueOrchestration(
+          { ..._edit.tripParams, agencyId, _itineraryDiff: _edit.diff },
+          agencyId, prompt, conversationHistory, sessionId, _intent, context.channel, context.phone
+        );
+        if (_res && typeof _res.text === 'string') _res.text = `${_edit.message}\n\n${_res.text}`;
+        if (_res) {
+          _res.itineraryDiff = _edit.diff;
+          _res.itineraryEdit = { message: _edit.message, op: _edit.op };
+        }
+        return _res;
+      }
+      // ── END ITINERARY EDIT GATE ──────────────────────────────────────────
+
       // ── STAGE GATE ───────────────────────────────────────────────────────────
       // "Thinking about Zanzibar next year, not sure when" is not a search request.
       // Answer the question, keep the trip as a dateless wish, and never invent a date.
@@ -228,6 +264,27 @@ class OrchestrationEngine {
             sessionId, prompt, question: _advice, tripParams: _wish, intent: null,
             conversationHistory, awaitingClarification: null,
           });
+        }
+      }
+
+
+      // ── KNOWLEDGE GATE ───────────────────────────────────────────────────────
+      // Handles visa, budget, activities, safety, seasons questions while the
+      // traveller is still in dreaming mode. Never calls a supplier.
+      {
+        const _kq = classifyKnowledge(prompt, previousParams);
+        if (_kq.type && _kq.type !== 'ready') {
+          const _answer = await answerKnowledge(_kq, prompt, conversationHistory);
+          if (_answer) {
+            const _wish = previousParams
+              ? { ...previousParams, _stage: 'dreaming' }
+              : { agencyId, destination: _kq.destination, departureDate: null, returnDate: null, _stage: 'dreaming' };
+            logger.info('Engine: knowledge gate — answering destination question', { type: _kq.type, destination: _kq.destination });
+            return this._buildClarificationResponse({
+              sessionId, prompt, question: _answer, tripParams: _wish, intent: null,
+              conversationHistory, awaitingClarification: null,
+            });
+          }
         }
       }
 
@@ -3579,7 +3636,7 @@ if (failed) results.searchFailed = true;
       return { ...base, supplier: t.supplier || 'sgr_static', provider: t.serviceName || 'SGR', trainClass: t.trainClass || null, serviceName: t.serviceName || null, stopsNote: t.stopsNote || null, currency: t.currency || 'KES', canBook: t.canBook || false, hubLanding: t.hubLanding || null, policySummary: t.canBook ? 'Bookable via SGR' : 'Not yet bookable through Bodrless — purchase directly via SGR (Madaraka Express) at the station or their booking portal. Price shown is the standard published fare.', baggageSummary: null };
     }
 
-    return { ...base, seats: t.seats || null, airlineCode: t.airlineCode || null, airlineLogo: t.airlineLogo || null, cabinClass: t.cabinClass || null, checkedBags: t.checkedBags || null, carryOn: t.carryOn || null, stops: t.stops ?? null, duration: t.duration || null, currency: t.currency || 'KES', offerId: t.offerId || null, resultId: t.resultId || null, expiresAt: t.expiresAt || null, canBook: t.canBook || false, canHold: t.canHold || false, isReturn: t.isReturn || false, returnLeg: t.returnLeg || null, passengerIds: t.passengerIds || [], originIata: t.originIata || null, destIata: t.destIata || null, isRefundable: t.isRefundable ?? null, refundPenalty: t.refundPenalty ?? null, refundPenaltyCurrency: t.refundPenaltyCurrency ?? null, requiresInstantPayment: t.requiresInstantPayment ?? null, paymentRequiredBy: t.paymentRequiredBy ?? null, baggageSummary: this._formatBaggageSummary(t.checkedBags, t.carryOn), policySummary: this._formatFlightPolicySummary(t.canBook, t.canHold, t.isRefundable, t.refundPenalty, t.refundPenaltyCurrency), hubLanding: t.hubLanding || null };
+    return { ...base, seats: t.seats || null, airlineCode: t.airlineCode || null, airlineLogo: t.airlineLogo || null, cabinClass: t.cabinClass || null, checkedBags: t.checkedBags || null, carryOn: t.carryOn || null, stops: t.stops ?? null, duration: t.duration || null, currency: t.currency || 'KES', offerId: t.offerId || null, resultId: t.resultId || null, expiresAt: t.expiresAt || null, canBook: t.canBook || false, canHold: t.canHold || false, isReturn: t.isReturn || false, returnLeg: t.returnLeg || null, passengerIds: t.passengerIds || [], originIata: t.originIata || null, destIata: t.destIata || null, isRefundable: t.isRefundable ?? null, refundPenalty: t.refundPenalty ?? null, refundPenaltyCurrency: t.refundPenaltyCurrency ?? null, requiresInstantPayment: t.requiresInstantPayment ?? null, paymentRequiredBy: t.paymentRequiredBy ?? null, baggageSummary: this._formatBaggageSummary(t.checkedBags, t.carryOn), policySummary: this._formatFlightPolicySummary(t.canBook, t.canHold, t.isRefundable, t.refundPenalty, t.refundPenaltyCurrency), hubLanding: t.hubLanding || null, ...(t.supplier === 'travelport' ? { catalogOfferingsId: t.catalogOfferingsId || null, catalogOfferingId: t.catalogOfferingId || null, productIds: t.productIds || [], contentSource: t.contentSource || null, flightNumbers: t.flightNumbers || null, via: t.via || [], carriers: t.carriers || [], fareBasis: t.fareBasis || null, brandName: t.brandName || null } : {}) }; // TRAVELPORT-WIRING
   }
 
   _formatBaggageSummary(checkedBags, carryOn) {

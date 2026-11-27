@@ -9,3 +9,5 @@ dist/
 # patch scripts and backups
 *.bak*
 apply-*.cjs
+
+src/adapters/travelport/out/

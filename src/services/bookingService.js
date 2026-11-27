@@ -72,7 +72,7 @@ class BookingService {
   validatePackage(pkg, passengerDetails, guestPhone, guestEmail) {
     const transport = pkg.transport || {};
     const hotel      = pkg.hotel || {};
-    const isFlightBooking = transport.supplier === 'travelduqa' || transport.supplier === 'duffel';
+    const isFlightBooking = transport.supplier === 'travelduqa' || transport.supplier === 'duffel' || transport.supplier === 'travelport'; // TRAVELPORT-WIRING
     const isHotelBooking  = hotel.supplier === 'hotelbeds';
 
     if ((isFlightBooking || isHotelBooking) && (!passengerDetails || passengerDetails.length === 0)) {
@@ -93,6 +93,14 @@ class BookingService {
         error: 'This fare requires payment at the time of booking and is not currently supported. Please choose a different flight.',
         code: 'INSTANT_PAYMENT_NOT_SUPPORTED',
       };
+    }
+    if (transport.supplier === 'travelport') { // TRAVELPORT-WIRING
+      if (process.env.TRAVELPORT_BOOKING_ENABLED !== 'true') {
+        return { valid: false, error: 'This flight cannot be booked online yet. Please choose another flight.', code: 'TRAVELPORT_BOOKING_DISABLED' };
+      }
+      if (!transport.catalogOfferingsId || !transport.catalogOfferingId || !(transport.productIds || []).length) {
+        return { valid: false, error: 'This flight offer is missing booking details. Please search again.', code: 'OFFER_INCOMPLETE' };
+      }
     }
     if (isHotelBooking && hotel.isRefundable === false) {
       return { valid: false, error: 'This hotel rate is non-refundable and cannot be used in the combined booking flow. Please choose a refundable rate.', code: 'NON_REFUNDABLE_RATE' };
@@ -274,6 +282,49 @@ class BookingService {
             code: 'FLIGHT_HOLD_FAILED',
           };
         }
+      }
+    }
+
+    if (isFlightBooking && transport.supplier === 'travelport') { // TRAVELPORT-WIRING: HOLD only (no payment, no ticket)
+      try {
+        const passengersForBooking = passengerDetails.map((p, idx) => ({
+          ...p,
+          phone: idx === 0 ? guestPhone : p.phone,
+          email: idx === 0 ? guestEmail : p.email,
+        }));
+        flightResult = await supplierAdapter.book({
+          supplier:           'travelport',
+          catalogOfferingsId: transport.catalogOfferingsId,
+          catalogOfferingId:  transport.catalogOfferingId,
+          productIds:         transport.productIds,
+          passengers:         passengersForBooking,
+        });
+        if (flightResult?.status === 'needs_confirmation') {
+          logger.warn('Travelport flight changed since search — nothing booked', { bookingRef, warnings: flightResult.warnings });
+          return {
+            success: false,
+            error: `The airline changed this flight since you searched (${(flightResult.warnings || []).join('; ') || 'schedule or price changed'}). Please search again.`,
+            code: 'FLIGHT_CHANGED',
+          };
+        }
+        stage = 'flight_held';
+        logger.info('Travelport flight held', { bookingRef, locator: flightResult?.orderId, payBy: flightResult?.paymentRequiredBy });
+      } catch (err) {
+        logger.error('Travelport flight hold failed', { bookingRef, error: err.message, unknownOutcome: !!err.unknownOutcome });
+        tracking.alert({
+          type: 'flight_hold_failed', severity: err.unknownOutcome ? 'critical' : 'error',
+          title: `Travelport flight hold ${err.unknownOutcome ? 'OUTCOME UNKNOWN' : 'failed'} — ${bookingRef}`,
+          detail: err.unknownOutcome ? `A booking may exist at Travelport. Check before retrying. ${err.message}` : err.message,
+          context: { bookingRef, catalogOfferingId: transport.catalogOfferingId },
+          agencyId, bookingRef, channel,
+        });
+        return {
+          success: false,
+          error: err.unknownOutcome
+            ? 'We could not confirm whether this flight was held. Please contact support before trying again.'
+            : `We couldn't hold this flight with the airline (${err.message}). Please search again.`,
+          code: 'FLIGHT_HOLD_FAILED',
+        };
       }
     }
 
@@ -504,6 +555,53 @@ class BookingService {
         });
         return { success: false, error: 'Payment received, but we could not finalize the flight with the airline. Our team has been notified — please contact support.' };
       }
+    } else if (booking.supplier_order_id && transportSupplier === 'travelport') { // TRAVELPORT-TICKETING-WIRING
+      const locator = booking.supplier_order_id;
+      if (process.env.TRAVELPORT_TICKETING_ENABLED !== 'true') {
+        tracking.alert({
+          type: 'travelport_ticketing_required', severity: 'critical',
+          title: `Travelport ticketing needed after payment — ${bookingRef}`,
+          detail: `Traveler paid, but automatic Travelport ticketing is switched off. Ticket locator ${locator} manually before the payment time limit.`,
+          context: { bookingRef, locator },
+          agencyId: booking.agency_id, bookingRef,
+        });
+        return { success: false, error: 'Payment received, but this flight still needs to be ticketed by our team. Support has been notified.' };
+      }
+      // Never run a second ticketing attempt after an unclear or failed one: a human checks Travelport first.
+      if (['ticketing_unknown', 'ticketing_failed'].includes(booking.supplier_status)) {
+        logger.warn('Travelport ticketing already attempted and not clean; not retrying', { bookingRef, supplierStatus: booking.supplier_status });
+        return { success: false, error: 'Payment received, but this flight could not be ticketed automatically. Our team has been notified — please contact support.' };
+      }
+      let ticketing;
+      try {
+        ticketing = await require('../adapters/travelport').issueTicket({ locator, fop: process.env.TRAVELPORT_FOP || 'cash' });
+      } catch (err) {
+        ticketing = { status: 'unknown', locator, stage: 'unexpected', ticketNumbers: [], errors: [{ code: 'EXCEPTION', message: err.message }] };
+      }
+      if (ticketing.status !== 'ticketed') {
+        const unclear = ticketing.status === 'unknown';
+        logger.error('Travelport ticketing did not complete after M-Pesa payment', { bookingRef, locator, status: ticketing.status, stage: ticketing.stage, traceId: ticketing.traceId, errors: ticketing.errors });
+        try {
+          await supabase.from('bookings').update({ supplier_status: unclear ? 'ticketing_unknown' : 'ticketing_failed' }).eq('booking_ref', bookingRef);
+        } catch (_) {}
+        tracking.alert({
+          type: 'travelport_ticketing_failed', severity: 'critical',
+          title: `Travelport ticketing ${unclear ? 'OUTCOME UNKNOWN' : 'FAILED'} after traveler paid — ${bookingRef}`,
+          detail: `Traveler's M-Pesa payment succeeded. Ticketing locator ${locator} failed at stage "${ticketing.stage}": ${(ticketing.errors || []).map(e => e.message).join('; ') || 'no message'}. Trace: ${ticketing.traceId || 'n/a'}. Check the reservation in Travelport before doing anything else; do not ticket twice. Hold expires at ${booking.flight_hold_expires_at || 'unknown time'}.`,
+          context: { bookingRef, locator, stage: ticketing.stage, traceId: ticketing.traceId, errors: ticketing.errors, errorBody: ticketing.errorBody ? JSON.stringify(ticketing.errorBody).slice(0, 1500) : null },
+          agencyId: booking.agency_id, bookingRef,
+        });
+        return { success: false, error: 'Payment received, but we could not finalize the flight ticket. Our team has been notified — please contact support.' };
+      }
+      try {
+        await supabase.from('bookings').update({
+          supplier_status: 'ticketed',
+          flight_details: { ...(booking.flight_details || {}), ticketNumbers: ticketing.ticketNumbers },
+        }).eq('booking_ref', bookingRef);
+      } catch (err) {
+        logger.error('Ticket issued but saving ticket numbers failed', { bookingRef, ticketNumbers: ticketing.ticketNumbers, error: err.message });
+      }
+      logger.info('Travelport ticket issued', { bookingRef, locator, ticketNumbers: ticketing.ticketNumbers, alreadyTicketed: !!ticketing.alreadyTicketed });
     } else if (booking.supplier_order_id && transportSupplier === 'travelduqa' && supplierAdapter) {
       try {
         await supplierAdapter.completeHoldBooking({
@@ -1375,7 +1473,7 @@ class BookingService {
         supplier_order_id:          flightResult?.orderId                   || null,
         hotel_supplier_reference:   hotelResult?.supplierBookingReference  || null,
         hotel_rate_key:             hotel.rateKey                          || null,
-        flight_hold_expires_at:     transport.expiresAt                    || null,
+        flight_hold_expires_at:     (transport.supplier === 'travelport' ? flightResult?.paymentRequiredBy : null) || transport.expiresAt || null, // TRAVELPORT-WIRING
         channel:                    channel                                || 'widget',
         flight_details:             pkg.transport  || null,
         hotel_details:              hotel          || null,
