@@ -44,7 +44,30 @@ function _channel(params, sendWhatsApp) {
 // ─────────────────────────────────────────────
 // FLIGHT SEARCH
 // ─────────────────────────────────────────────
+// ── TRAVELPORT-WIRING: Travelport runs alongside the cached suppliers. Its results are NEVER cached
+// (offer ids expire in ~12 min) and are searched live every time. Off unless TRAVELPORT_ENABLED=true.
+function getTravelport() { return require('../adapters/travelport'); }
+async function _travelportFlights(params) {
+  if (process.env.TRAVELPORT_ENABLED !== 'true' || _isPast(params.departureDate)) return [];
+  try {
+    const key = ['tp-flight', params.origin, params.destination, params.departureDate, params.passengers || 1, params.children || 0].join('|').toLowerCase();
+    const res = await _shared(key, () => getTravelport().search({ ...params, date: params.departureDate }));
+    logger.info('CachedSearch.flights: Travelport results', { route: `${params.origin}→${params.destination}`, count: res.length });
+    return res;
+  } catch (err) {
+    logger.warn('CachedSearch.flights: Travelport search failed', { error: err.message });
+    return [];
+  }
+}
+
 async function flights(params, sendWhatsApp = null) {
+  const [base, tp] = await Promise.all([(process.env.TP_ONLY === 'true' ? Promise.resolve({ results: [], searchFailed: false }) : _flightsBase(params, sendWhatsApp)), _travelportFlights(params)]);
+  if (!tp.length) return base;
+  const results = [...base.results, ...tp];
+  return { ...base, results, best: _pickBest(results), searchFailed: false };
+}
+
+async function _flightsBase(params, sendWhatsApp = null) {
   const contentType   = 'flight';
   const channel       = _channel(params, sendWhatsApp);
   const bypassCache   = !!params.bypassCache;
